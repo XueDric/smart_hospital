@@ -54,6 +54,9 @@ cd server     # ⚠ cwd 必须是 server/，见下
 .\build\hospital-server.exe selftest
 .\build\hospital-server.exe check-db "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
 .\build\hospital-server.exe accept   "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
+
+# P1：启动 HTTP 服务（阻塞）
+.\build\hospital-server.exe serve "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital" --port 8091 --dev-auth
 ```
 
 | 子命令 | 作用 | 需要 MySQL |
@@ -61,13 +64,39 @@ cd server     # ⚠ cwd 必须是 server/，见下
 | `selftest` | schema 与 ADR 不变量的**纯本地**自检（29 项断言） | ❌ |
 | `check-db <dsn>` | 连库 + 幂等建表 + 打印表清单（★ 标记号源域） | ✅ |
 | `accept <dsn>` | P0 验收测试 AC-1…AC-8（32 项断言） | ✅ |
+| `serve <dsn>` | **P1**：启动 HTTP 服务（默认只绑 `127.0.0.1`） | ✅ |
 
 ⚠ `accept` **会清空业务表**，已内置库名守卫（库名不含 `test` 且不等于 `hospital` 时中止）。
+⚠ `serve` 的 `--dev-auth` 是**开发态身份头**，绕过全部认证；与 `--prod` 同传会拒绝启动。
+
+### P1 接口
+
+| 方法 | 路径 | 权限 |
+| --- | --- | --- |
+| GET | `/health` | 无 |
+| GET | `/api/v1/schedules/:id` | 三端可读 |
+| POST | `/api/v1/appointments` | 仅患者 |
+| POST | `/api/v1/appointments/:id/cancel` | 患者退自己的 / 管理员退任意 |
+| POST | `/api/v1/admin/schedules` | 仅管理员 |
+
+联调身份头：`X-Role: patient|doctor|admin`、`X-Patient-Id: <id>`、`X-Doctor-Id: <id>`。
+
+### 并发压测（P1 新增，补 AC-9）
+
+```powershell
+.\tests\stress-booking.ps1 -Base http://127.0.0.1:8091 -Tokens 50 -ScheduleTotal 10
+```
+
+起 N 个**独立 `curl.exe` 进程**打同一号源，断言「成功数恰好等于号源数」+ 余量守恒。
+实测三工况全绿：20抢8 → 8 成功、50抢10 → 10 成功、5抢20 → 5 成功余 15。
+
+> ⚠ 脚本会**清空并造数据**；且**必须用 `curl -K` config 文件**传 header/body ——
+> `Start-Process -ArgumentList` 会拆坏含空格的参数（详见 [../docs/P1-HANDOFF.md](../docs/P1-HANDOFF.md) §3.3）。
 
 ### 验收依据：源码哈希，不是产物哈希
 
 cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构建，exe 的 SHA256 不同，行为一致）。
-所以 `build.ps1` 每次构建都会重写 **`build/SOURCE-MANIFEST.sha256`**（43 个参与编译源文件的
+所以 `build.ps1` 每次构建都会重写 **`build/SOURCE-MANIFEST.sha256`**（45 个参与编译源文件的
 SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是**稳定**的。
 **验收请比 `SOURCE-MANIFEST.sha256` + 测试结果，不要比 exe 哈希。**
 
@@ -128,16 +157,26 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
     必然丢掉"单已取消但号未归还"这一真实中间态，于是对外**报错方向与事实相反**
     （已改为三态 `CancelOutcome`，AC-7 钉住）。
 14. **产物哈希不能当验收依据**：cjc 输出不逐字节可复现；用 `SOURCE-MANIFEST.sha256` + 测试。
-15. **表名要与基线内存 Store 错开**：基线占用了
-    `departments/members/plans/tasks/invite_links/tokens/idem/meta/meta_str/schema_version`，
-    新建表前先比对，否则 P1 整库刷盘会争表。
+16. **`Start-Process -ArgumentList` 会拆坏含空格的参数**：`"X-Role: patient"` 到达 curl 变成
+    `"X-Role:"` → 每个请求 401，压测显示"0 成功"，**看起来像服务端拒绝并发**。
+    处置：header/body 走 curl **config 文件**（`-K`），命令行只剩无空格路径。
+17. **curl config 里反斜杠是转义符**：`@C:\Users\...` 被读成 `C:Users...` → 路径写**正斜杠**。
+18. **PowerShell 反引号转义在数组拼接里原样写入**：JSON 变成非法串（`400 Invalid JSON`）。
+    处置：body 写**独立文件**，config 用 `data = "@文件"`。
+19. **`std.env` 没有 `getEnv`**：本工具链仓颉 std 不提供读环境变量
+    （框架 `config.cj:17-21` 逐字核对过）。所以任何"用环境变量做开关"的设计都会
+    **静默永不生效** —— 改用命令行开关（`--prod`）。
+20. **乐观锁重试预算不足会「少卖」**：`MAX_BOOKING_RETRY=2` 在 20 并发抢 8 号时只卖出 6 个
+    （剩 2 个号没人抢到）。失败方向是少卖而非超卖，但仍是缺陷 —— 已升到 3 +
+    HTTP 层用 6。**别靠无限加重试解决高并发**，那是把失败换成延迟。
 
 ---
 
-## 六、明确**未**做（P1+）
+## 六、明确**未**做
 
-- ❌ HTTP 路由与接口（P1 挂号闭环）——P0 刻意不先写空壳 `listen`，避免"看起来能跑其实没接口"。
-- ❌ 认证/鉴权三端角色（P1）
+- ❌ **令牌鉴权体系**（换取/持久化/过期回收）—— P1 用 `--dev-auth` 开发态身份头临时替代；
+  换令牌时 `principalOf()` 是**唯一改点**（权限矩阵 `can()` 与身份来源已解耦）
 - ❌ 内存 Store 范式（科室/医生/病历）—— AC-4 的完整回归依赖它
+- ❌ 患者"我的挂号"列表、排班列表（按科室/日期）
+- ❌ HTTPS（`serveTls`）—— ⚠ 基线 `certs/` 私钥**已按安全要求剔除**，需重新生成证书
 - ❌ AI 分诊与预问诊 SSE（P2/P4）
-- ❌ 多进程并发压测（P1 接口就绪后）

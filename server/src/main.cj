@@ -24,7 +24,7 @@
 package qingzhou
 
 /* 版本号：与 docs/adr/ADR-0001 同期。 */
-public let SERVER_VERSION: String = "0.1.0-p0"
+public let SERVER_VERSION: String = "0.2.0-p1"
 
 func usage(): Unit {
     println("智慧医院智能导诊就诊系统 · 服务端 ${SERVER_VERSION}")
@@ -32,13 +32,17 @@ func usage(): Unit {
     println("用法：")
     println("  hospital-server.exe selftest              纯本地自检（无需 MySQL）")
     println("  hospital-server.exe check-db <dsn>        连库建表并打印表清单")
-    println("  hospital-server.exe accept <dsn>          跑 P0 验收测试（ADR-0001 AC-1…AC-6）")
+    println("  hospital-server.exe accept <dsn>          跑验收测试（AC-1…AC-8）")
+    println("  hospital-server.exe serve <dsn> [--port N] [--dev-auth] [--prod] [--bind IP]")
+    println("                                            启动 HTTP 服务（P1 挂号闭环）")
     println("  hospital-server.exe version               打印版本")
     println("")
     println("DSN 格式：mysql://user:pass@host:port/db")
     println("  本机联调示例：mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital")
     println("")
-    println("⚠ P0 阶段尚未提供 HTTP 接口（属 P1 挂号闭环）。")
+    println("⚠ --dev-auth 是**开发态**身份头（X-Role/X-Patient-Id），绕过全部认证；")
+    println("  与 --prod 同时传会直接拒绝启动。")
+    println("  ⚠ 本工具链仓颉 std 无 getEnv，故生产开关走 --prod 而**不是**环境变量。")
 }
 
 /*
@@ -227,6 +231,98 @@ func selftest(): Int64 {
     return failed
 }
 
+/*
+ * serve：启动 HTTP 服务（P1 挂号闭环）。
+ *
+ * 参数：serve <dsn> [--port N] [--bind IP] [--dev-auth]
+ *
+ * ⚠ 关于 bind：轻舟 `app.serve(port)` 默认 `bindAddr = "0.0.0.0"`
+ *   —— **整个局域网都能连**，而且本阶段是**明文 HTTP、开发态身份头**。
+ *   所以默认**只绑 127.0.0.1**，要联调再显式 `--bind 0.0.0.0`（照基线的教训，
+ *   baseline/server/src/main.cj:968-977 专门为此写过一段提醒）。
+ */
+func serve(args: Array<String>): Int64 {
+    if (args.size < 1) {
+        println("用法：hospital-server.exe serve <dsn> [--port N] [--bind IP] [--dev-auth]")
+        return 2
+    }
+    let dsn = args[0]
+    var port: UInt16 = 8080
+    var bindAddr = "127.0.0.1"
+    var devAuth = false
+    var prod = false
+    var i = 1
+    while (i < args.size) {
+        if (args[i] == "--port" && i + 1 < args.size) {
+            port = parseUInt16Or(args[i + 1], 8080)
+            i = i + 2
+        } else if (args[i] == "--bind" && i + 1 < args.size) {
+            bindAddr = args[i + 1]
+            i = i + 2
+        } else if (args[i] == "--dev-auth") {
+            devAuth = true
+            i = i + 1
+        } else if (args[i] == "--prod") {
+            prod = true
+            i = i + 1
+        } else {
+            println("未知参数：${args[i]}")
+            return 2
+        }
+    }
+
+    var db: DbBackend
+    var cfg: MySqlConfig
+    try {
+        cfg = parseDsn(dsn)
+        println("连接：${cfg.describe()}")
+        db = openDatabase(cfg)
+        ensureSchema(db)
+    } catch (e: Exception) {
+        println("❌ ${e.message}")
+        return 1
+    }
+
+    var gate: DevAuthGate
+    try {
+        gate = DevAuthGate(devAuth, prod)
+    } catch (e: Exception) {
+        println("❌ ${e.message}")
+        return 2
+    }
+
+    let repo = BookingRepo(db)
+    let app = buildHospitalApp(repo, gate)
+    let box = HandleBox()
+
+    println("")
+    println("智慧医院服务端 ${SERVER_VERSION}（P1 挂号闭环）")
+    println("监听 ${bindAddr}:${port}")
+    if (bindAddr == "0.0.0.0") {
+        println("  ⚠ 已绑定全部网卡：同局域网可访问。本阶段是**明文 HTTP + 开发态身份头**，")
+        println("    绝不要把这个端口暴露到公网。")
+    }
+    if (devAuth) {
+        println("  ⚠ --dev-auth 已开启：X-Role / X-Patient-Id 请求头可直接冒用身份。")
+        println("    仅限本机联调；生产必须换令牌（--prod 会拒绝启动）。")
+    } else {
+        println("  （未开 --dev-auth：业务接口会返回 401，仅 /health 可用）")
+    }
+    println("")
+    println("接口：")
+    println("  GET  /health                              探活（无需认证）")
+    println("  GET  /api/v1/schedules/:id                查排班（三端可读）")
+    println("  POST /api/v1/appointments                 挂号（仅患者）")
+    println("  POST /api/v1/appointments/:id/cancel      退号（患者退自己的 / 管理员退任意）")
+
+    let handle = app.serve(port, bindAddr: bindAddr)
+    box.handle = Some(handle)
+    handle.wait()
+    println("服务已停止")
+    db.close()
+    return 0
+}
+
 main(args: Array<String>): Int64 {
     // args[0] 即第一个参数（不含 exe 路径）
     if (args.size < 1) {
@@ -256,6 +352,10 @@ main(args: Array<String>): Int64 {
             return 2
         }
         return accept(args[1])
+    }
+    if (cmd == "serve") {
+        // 把 serve 之后的参数整体传下去（args[1..]）
+        return serve(args[1..])
     }
     println("未知子命令：${cmd}")
     println("")

@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | 准备 | 读取文档 + 从 `cangjie_web` 搬运只读基线到 `baseline/` | ✅ 完成 |
 | **P0** | **号源/挂号独立 MySQL 路径**：ADR + 服务端骨架 + 7 张表 + 原子扣减/幂等/退号 + 验收测试 **32/32**（`selftest` 29 项） | ✅ **完成**（含复查 rev.2 五项修复） |
-| P1 | 挂号闭环：HTTP 路由 + 排班/挂号/取消接口 + 三端鉴权 + 并发压测 | ⏳ 下一步 |
+| **P1** | **挂号闭环 HTTP 层**：中间件装配 + 三端权限矩阵 + 4 个 REST + **多进程并发压测**（20抢8 / 50抢10 / 5抢20 三工况全绿） | 🟡 **首个增量完成**（令牌鉴权与内存 Store 待做） |
 | P2 | AI 分诊（加工具条目 + `verify_recommendation()` + 危急关键词兜底） | ⏳ |
 | P3 | AI 能力中心（配置/Prompt/工具开关落 MySQL） | ⏳ |
 | P4 | 预问诊 SSE + 电子病历 + 运营看板 | ⏳ |
@@ -27,6 +27,7 @@
 | [smart-hospital-project-brief.md](smart-hospital-project-brief.md) | **唯一上下文入口** —— 项目定位、已确认决策、可复用资产盘点、5 个硬骨头、里程碑、风险、待决问题 | ✏️ 本项目文档 |
 | [docs/adr/](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) | **架构决策记录** —— ADR-0001 号源/挂号独立 MySQL 路径（P0 唯一架构级决策） | ✏️ 本项目文档 |
 | [docs/P0-HANDOFF.md](docs/P0-HANDOFF.md) | P0 收尾说明：交付物、验收结果与边界、本机联调环境、P0 踩过的 12 个坑 | ✏️ 本项目文档 |
+| [docs/P1-HANDOFF.md](docs/P1-HANDOFF.md) | **P1 说明**：HTTP 接口清单、权限矩阵、并发压测结果、压测抓出的 3 个真缺陷、临时形态与未完成项 | ✏️ 本项目文档 |
 | [server/](server/README.md) | **智慧医院服务端**（仓颉 + 轻舟）：`src/` 5 个 `.cj` + 构建脚本 + README | ✏️ 本项目代码 |
 | [baseline/](baseline/SNAPSHOT.md) | **只读参考基线** —— 复制自 `cangjie_web`，**352 文件 / 7.53 MB**，基线提交 `07a0922`（上传前已剔除机密材料，见其 §二·补） | 🚫 **只读，勿就地改** |
 | [baseline/SNAPSHOT.md](baseline/SNAPSHOT.md) | 基线说明：来源/提交/排除清单/路径映射表/复用风险 | ✏️ 复制说明 |

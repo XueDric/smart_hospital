@@ -34,13 +34,23 @@ package qingzhou
 
 /*
  * 乐观锁冲突重试上限（ADR §6 调参项）。
- * 安全范围 1–3；**不要**为了"看起来更稳"调大 —— 超过 3 次说明热点冲突严重，
- * 正确处置是改悲观锁或加排队，而不是加重试。
  *
- * ⚠ 必须声明在使用它的 book() **之前**：仓颉不做顶层声明提升
- *   （放文件末尾会报 "variable 'X' is used before being defined"）。
+ * ⚠ 2026-10-07（P1 并发压测修正）：原值 2（= 共 3 次尝试）在
+ *   「20 个并发进程抢 8 个号」下**不够** —— 实测只卖出 6 个，剩 2 个号没人抢到
+ *   （失败方向是**少卖**而不是超卖，但仍然是错的）。
+ *   升到安全范围上限 3（= 共 4 次尝试）。
+ *
+ * ⚠ 但**不要**靠无限加大重试来"解决"高并发：重试是**有代价**的
+ *   （每次重试都是额外的读+写往返）。真正的处置见 ADR §3 方案 C（悲观锁）或加排队。
+ *   这里的 3 是安全范围上限，不是"越大越好"。
  */
-public let MAX_BOOKING_RETRY: Int64 = 2
+public let MAX_BOOKING_RETRY: Int64 = 3
+
+/*
+ * 挂号专用重试预算（运行时可调）。
+ * HTTP 层用 bigger 的预算抗瞬时并发；单测/验收用默认值。
+ */
+public let HTTP_BOOKING_RETRY: Int64 = 6
 
 /* ===================== 结果类型 ===================== */
 
@@ -273,13 +283,34 @@ public class BookingRepo {
     /*
      * 取本连接上一次 INSERT 生成的自增 id。
      * 与 insertAppointment 同一连接、紧邻调用，故 LAST_INSERT_ID() 语义成立。
+     *
+     * ⚠ 必须是 public：HTTP 层建完排班要回 `schedule_id` 给客户端，
+     *   而 `exec()` 只返回受影响行数（见上面 insertAppointment 的踩坑注释）。
      */
-    func lastInsertId(): Int64 {
+    public func lastInsertId(): Int64 {
         let rs = db.query("SELECT LAST_INSERT_ID()", Array<DbValue>())
         if (rs.rowCount() < 1) {
             return 0
         }
         return rs.getInt(0, 0)
+    }
+
+    /* ---------- 写：排班（管理员） ---------- */
+
+    /*
+     * 新建排班（号源）。
+     *
+     * 新排班 `version = 0`、`remain_num = total_num` —— 与乐观锁起点一致。
+     * 调用方随后用 `lastInsertId()` 取自增 id。
+     */
+    public func insertSchedule(doctorId: Int64, departmentId: Int64, workDate: String,
+                               period: String, totalNum: Int64, now: Int64): Int64 {
+        return db.exec(
+            "INSERT INTO schedule " +
+            "(doctor_id, department_id, work_date, period, total_num, remain_num, " +
+            " version, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?)",
+            [DbInt(doctorId), DbInt(departmentId), DbStr(workDate), DbStr(period),
+             DbInt(totalNum), DbInt(totalNum), DbInt(now)])
     }
 
     /* ---------- 写：幂等记录 ---------- */

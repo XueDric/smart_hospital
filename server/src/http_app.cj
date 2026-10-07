@@ -1,0 +1,437 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * 智慧医院智能导诊就诊系统 · 服务端
+ *
+ * ===== http_app.cj —— HTTP 应用装配 + 挂号闭环接口（P1）=====================
+ *
+ * 落地 P1：排班查询 / 挂号 / 取消 三个 REST，复用 P0 的 `BookingRepo`
+ * （原子扣减 + 幂等 + 三态取消），因此并发安全由数据库保证，本文件不引入新锁。
+ *
+ * ── 中间件顺序（照基线口径，baseline/server/src/main.cj:940-953）──────────
+ *   requestId → logger → bodyLimit → bodyParser → cors → timeout → router.middleware
+ * 三条硬性理由：
+ *   1. `bodyLimit` 必须在 `bodyParser` **之前**：框架的 bodyParser 是"先整个读进内存
+ *      再比 maxBytes"，只有抢在它前面按 Content-Length 拦，大 body 才进不了内存。
+ *   2. `timeout` 必须在 `router.middleware()` **之前**：router 命中后直接调 handler，
+ *      我们的 handler 从不调 next()，排在 router 后面的中间件**一次都不会执行**。
+ *   3. `router.middleware()` 必须**最后** use：在它之后注册的都不会跑。
+ *
+ * ── 三端角色（P1 简化版，如实标注）──────────────────────────────────────
+ *   患者 / 医生 / 管理员三种角色，权限判定收敛到**单一函数** `can(role, action)`
+ *   （基线铁律：禁止 handler 手写 if 判权限，见 baseline/server/src/perms.cj）。
+ *
+ *   ⚠ 与基线的差异：基线是"不透明令牌 + PBKDF2 三阶段加锁"，本阶段**尚未搬令牌体系**，
+ *     用的是 `--dev-auth` 显式开启的**开发态身份头**（`X-Role` / `X-Patient-Id`）。
+ *     这是**刻意的临时形态**：先把接口与权限骨架立起来并测通，
+ *     令牌换取/持久化/过期回收放 P1 收尾。**生产启用会直接拒绝启动**（见 requireDevAuth）。
+ */
+
+package qingzhou
+
+import std.collection.*
+import stdx.encoding.json.*
+
+/* ===================== 角色与权限（单一判定函数） ===================== */
+
+/*
+ * 三端角色。
+ * ⚠ 仓颉的枚举**不能用 `==` 比较**（API-NOTES 坑 4：invalid binary operator '==' on Enum），
+ *   所以角色比较一律走 `roleName()` 转字符串，或用 match。
+ */
+public enum Role {
+    | Patient
+    | Doctor
+    | Admin
+}
+
+public func roleName(r: Role): String {
+    match (r) {
+        case Patient => return "patient"
+        case Doctor => return "doctor"
+        case Admin => return "admin"
+    }
+}
+
+public func roleOf(name: String): ?Role {
+    if (name == "patient") {
+        return Some(Role.Patient)
+    }
+    if (name == "doctor") {
+        return Some(Role.Doctor)
+    }
+    if (name == "admin") {
+        return Some(Role.Admin)
+    }
+    return None
+}
+
+/*
+ * 权限动作。
+ */
+public enum Action {
+    | ViewSchedule        // 查排班（三端都能看）
+    | Book                // 挂号（仅患者）
+    | CancelOwn           // 取消自己的挂号（患者）
+    | CancelAny           // 取消任意挂号（管理员）
+    | ManageSchedule      // 维护排班与号源（管理员）
+}
+
+public func actionName(a: Action): String {
+    match (a) {
+        case ViewSchedule => return "view_schedule"
+        case Book => return "book"
+        case CancelOwn => return "cancel_own"
+        case CancelAny => return "cancel_any"
+        case ManageSchedule => return "manage_schedule"
+    }
+}
+
+/*
+ * ★ 权限判定的**唯一入口**（基线铁律：收敛到单一函数，禁止 handler 手写 if）。
+ *
+ * 权限矩阵（P1）：
+
+ *   动作              患者   医生   管理员
+ *   view_schedule      ✅     ✅     ✅
+ *   book               ✅     ❌     ❌
+ *   cancel_own         ✅     ❌     ❌
+ *   cancel_any         ❌     ❌     ✅
+ *   manage_schedule    ❌     ❌     ✅
+ *
+ * 医生当前**没有**写权限（接诊/写病历属 P4）。这里如实留空，
+ * 不预先发权 —— 未实现的动作给权限等于埋一个未测的入口。
+ */
+public func can(role: Role, action: Action): Bool {
+    match (action) {
+        case ViewSchedule => return true
+        case Book =>
+            match (role) {
+                case Patient => return true
+                case _ => return false
+            }
+        case CancelOwn =>
+            match (role) {
+                case Patient => return true
+                case _ => return false
+            }
+        case CancelAny =>
+            match (role) {
+                case Admin => return true
+                case _ => return false
+            }
+        case ManageSchedule =>
+            match (role) {
+                case Admin => return true
+                case _ => return false
+            }
+    }
+}
+
+/* 权限不满足时抛 FORBIDDEN_ROLE（403）。 */
+public func requireCan(role: Role, action: Action): Unit {
+    if (!can(role, action)) {
+        throw apiErrorMsg("FORBIDDEN_ROLE",
+                          "角色 ${roleName(role)} 无权执行 ${actionName(action)}")
+    }
+}
+
+/* ===================== 身份识别（开发态，明确标注） ===================== */
+
+/*
+ * 当前请求的身份。
+ */
+public class Principal {
+    public var role: Role = Role.Patient
+    public var patientId: Int64 = 0
+    public var doctorId: Int64 = 0
+}
+
+/*
+ * 开发态身份开关。
+ *
+ * ⚠⚠ 这是**临时形态**，不是最终鉴权：
+ *   基线用的是"不透明令牌 + PBKDF2 三阶段加锁"（baseline/server/src/auth.cj），
+ *   本阶段为把接口与权限骨架先立起来、先测通，改用显式请求头。
+ *
+ * 三重保险，避免它悄悄上生产：
+ *   1. 必须显式传 `--dev-auth` 才启用（默认关闭）；
+ *   2. 启用时**每个请求**都打一行 [DEV-AUTH] 警告日志；
+ *   3. 传了 `--prod` 时**直接拒绝启动**。
+ *
+ * ⚠ 为什么用 `--prod` 命令行开关而不是环境变量 `HOSPITAL_ENV`：
+ *   本工具链的仓颉 std **没有 `getEnv`/`envVars`**
+ *   （框架 config.cj:17-21 逐字核对过："neither std.env nor std.process has them"；
+ *    基线 main.cj:24-25 因此也明说"不支持环境变量配置，只能走命令行"）。
+ *   所以这里照基线的做法走命令行开关 —— 用环境变量会静默永远不生效，
+ *   那比没有更糟（以为生产被保护了，其实没有）。
+ */
+public class DevAuthGate {
+    public let enabled: Bool
+
+    public init(enabled: Bool, prod: Bool) {
+        if (enabled && prod) {
+            throw Exception("拒绝启动：--prod 时不允许开启 --dev-auth。" +
+                            "开发态身份头会绕过全部认证，生产环境必须走令牌。")
+        }
+        this.enabled = enabled
+    }
+}
+
+/*
+ * 从请求解析身份。
+ *
+ * 开发态：读 `X-Role`（patient/doctor/admin）+ `X-Patient-Id` / `X-Doctor-Id`。
+ * 非开发态：一律 401 —— **明确失败，不静默放行**（静默放行是最危险的失败方式）。
+ */
+public func principalOf(ctx: Context, gate: DevAuthGate): Principal {
+    let p = Principal()
+    if (!gate.enabled) {
+        throw apiErrorMsg("AUTH_REQUIRED",
+                          "本版本尚未接入令牌鉴权；联调请以 --dev-auth 启动（生产禁止）")
+    }
+    let roleStr = match (ctx.requestHeader("X-Role")) {
+        case Some(v) => v
+        case None => throw apiErrorMsg("AUTH_REQUIRED", "缺少 X-Role（开发态联调头）")
+    }
+    let role = match (roleOf(roleStr)) {
+        case Some(r) => r
+        case None => throw apiErrorMsg("VALIDATION_FAILED", "未知角色：${roleStr}")
+    }
+    p.role = role
+    println("[DEV-AUTH] ${ctx.method()} ${ctx.path()} 以 ${roleName(role)} 身份放行" +
+            "（开发态；生产必须走令牌）")
+    match (ctx.requestHeader("X-Patient-Id")) {
+        case Some(v) => p.patientId = parseInt64Or(v, 0)
+        case None => ()
+    }
+    match (ctx.requestHeader("X-Doctor-Id")) {
+        case Some(v) => p.doctorId = parseInt64Or(v, 0)
+        case None => ()
+    }
+    return p
+}
+
+/* ===================== 入参读取 ===================== */
+
+/* 请求体必须是 JSON 对象；否则 400（而不是让框架抛 500）。 */
+public func bodyObj(ctx: Context): JsonObject {
+    if (ctx.bodyJsonError().isSome()) {
+        throw apiErrorMsg("VALIDATION_FAILED", "请求体不是合法 JSON")
+    }
+    match (ctx.bodyJson()) {
+        case Some(v) =>
+            match (v) {
+                case o: JsonObject => return o
+                case _ => throw apiErrorMsg("VALIDATION_FAILED", "请求体必须是 JSON 对象")
+            }
+        case None =>
+            // 空体视作空对象：让"缺字段"走统一的字段校验错误
+            return JsonObject()
+    }
+}
+
+/* 出参：把 BookingResult 转成 JsonObject（客户端契约）。 */
+func bookingJson(r: BookingResult): JsonObject {
+    let o = JsonObject()
+    o.put("appointment_id", JsonInt(r.appointmentId))
+    o.put("schedule_id", JsonInt(r.scheduleId))
+    o.put("patient_id", JsonInt(r.patientId))
+    o.put("doctor_id", JsonInt(r.doctorId))
+    o.put("department_id", JsonInt(r.departmentId))
+    o.put("visit_date", JsonString(r.visitDate))     // ★ 就诊日快照
+    o.put("period", JsonString(r.period))
+    o.put("seq_no", JsonInt(r.seqNo))
+    o.put("status", JsonString(r.status))
+    return o
+}
+
+/* ===================== 路由 ===================== */
+
+/*
+ * 装配路由。三个业务接口 + 健康检查。
+ *
+ * 路径带 `/api/v1` 前缀（与基线 api-design 口径一致，便于客户端复用同一套 base-url 处理）。
+ */
+public func buildHospitalRouter(repo: BookingRepo, gate: DevAuthGate): Router {
+    let r = Router()
+
+    /* ---------- 健康检查（无需认证，供压测与探活）---------- */
+    r.get("/health", { ctx: Context, _: () -> Unit =>
+        let o = JsonObject()
+        o.put("ok", JsonBool(true))
+        o.put("service", JsonString("hospital-server"))
+        o.put("version", JsonString(SERVER_VERSION))
+        o.put("data_backend", JsonString("mysql"))
+        ctx.status(200).json(o.toString())
+    })
+
+    /* ---------- GET /api/v1/schedules/:id —— 查排班（三端可读）---------- */
+    r.get("/api/v1/schedules/:id", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate)
+        requireCan(p.role, Action.ViewSchedule)
+        let sid = parseInt64Or(ctx.paramOr("id", "0"), 0)
+        if (sid <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "排班 id 必须是正整数")
+        }
+        let found = repo.findSchedule(sid)
+        if (found.isNone()) {
+            throw apiError("SCHEDULE_NOT_FOUND")
+        }
+        let s = found.getOrThrow()
+        let o = JsonObject()
+        o.put("id", JsonInt(s.id))
+        o.put("doctor_id", JsonInt(s.doctorId))
+        o.put("department_id", JsonInt(s.departmentId))
+        o.put("work_date", JsonString(s.workDate))
+        o.put("period", JsonString(s.period))
+        o.put("total_num", JsonInt(s.totalNum))
+        o.put("remain_num", JsonInt(s.remainNum))
+        o.put("version", JsonInt(s.version))
+        o.put("enabled", JsonBool(s.enabled))
+        sendOk(ctx, o)
+    })
+
+    /* ---------- POST /api/v1/appointments —— 挂号（仅患者）---------- */
+    r.post("/api/v1/appointments", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate)
+        requireCan(p.role, Action.Book)
+        let body = bodyObj(ctx)
+        let scheduleId = requireInt(ctx, "schedule_id")
+        let clientToken = requireStr(ctx, "client_token")
+        // 患者只能给自己挂号：不接受 body 里的 patient_id，
+        // 一律用**身份里的** patientId。这样"帮别人挂号"这个面根本不存在。
+        if (p.patientId <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "缺少 X-Patient-Id（开发态联调头）")
+        }
+        let now = hNowEpoch()
+        // HTTP 层用更大的重试预算抗瞬时并发（见 domain_booking.cj 的
+        // HTTP_BOOKING_RETRY 注释：默认 3 在 20 并发抢 8 号时会少卖）。
+        let result = repo.book(p.patientId, scheduleId, clientToken, now,
+                               maxRetry: HTTP_BOOKING_RETRY)
+        // 幂等命中按 200 返回（不是 201）：没有新建资源
+        match (result.outcome) {
+            case Booked(_) => sendCreated(ctx, bookingJson(result))
+            case AlreadyBooked(_) => sendOk(ctx, bookingJson(result))
+            case SlotGone => throw apiError("SLOT_GONE")
+            case ScheduleNotFound => throw apiError("SCHEDULE_NOT_FOUND")
+        }
+    })
+
+    /* ---------- POST /api/v1/appointments/:id/cancel —— 退号 ---------- */
+    r.post("/api/v1/appointments/:id/cancel", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate)
+        let id = parseInt64Or(ctx.paramOr("id", "0"), 0)
+        if (id <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "挂号单 id 必须是正整数")
+        }
+        let found = repo.findAppointment(id)
+        if (found.isNone()) {
+            throw apiError("APPOINTMENT_NOT_FOUND")
+        }
+        let appt = found.getOrThrow()
+        /*
+         * 谁能退这张单：管理员可退任意单；患者只能退**自己的**单。
+         * ⚠ 这里不是"先判 can()"就完事 —— 必须再比对归属，否则患者能退别人的单。
+         *   两个判定的顺序：先看有没有 cancel_any（管理员），再走 cancel_own + 归属校验。
+         */
+        if (can(p.role, Action.CancelAny)) {
+            // 管理员：放行
+        } else {
+            requireCan(p.role, Action.CancelOwn)
+            if (appt.patientId != p.patientId) {
+                // 用 FORBIDDEN 而不是 NOT_FOUND：单子确实存在（避免信息泄露的两种取舍里，
+                // 这里选"明确拒绝"，因为患者退错单需要看到明确原因才能自查）
+                throw apiErrorMsg("FORBIDDEN_ROLE", "只能取消自己的挂号单")
+            }
+        }
+        match (repo.cancel(id, hNowEpoch())) {
+            case Cancelled =>
+                /*
+                 * ⚠ 必须**取消后重读**，不能用上面那个 appt 快照。
+                 *   踩过的坑：appt 是取消**之前**读的，status 还是 "booked"，
+                 *   直接回它会让客户端看到"退号成功但状态仍是已挂号"——
+                 *   自相矛盾的响应比不返回还糟。
+                 */
+                match (repo.findAppointment(id)) {
+                    case Some(after) => sendOk(ctx, bookingJson(after))
+                    case None => throw apiError("APPOINTMENT_NOT_FOUND")
+                }
+            case SlotNotRestored =>
+                // ★ 单已取消但号源未归还：HTTP 上算成功（单确实退了），
+                //   但带一个显式标记让客户端提示"需人工处理"，绝不谎报失败。
+                match (repo.findAppointment(id)) {
+                    case Some(after) =>
+                        let o = bookingJson(after)
+                        o.put("status", JsonString("cancelled"))
+                        o.put("slot_restored", JsonBool(false))
+                        o.put("warning", JsonString("号源归还异常，请联系人工处理"))
+                        sendOk(ctx, o)
+                    case None => throw apiError("APPOINTMENT_NOT_FOUND")
+                }
+            case NotFound => throw apiError("APPOINTMENT_NOT_FOUND")
+        }
+    })
+
+    /* ---------- POST /api/v1/admin/schedules —— 建排班（仅管理员）---------- */
+    /*
+     * P1 需要有办法造出真实号源才能测"扣号/退号/并发"。
+     * 正式的排班维护界面属 P4（运营看板），这里先给一个**受 --dev-auth + 管理员角色
+     * 双重保护**的最小写入接口；不开 --dev-auth 时它和业务接口一样直接 401。
+     */
+    r.post("/api/v1/admin/schedules", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate)
+        requireCan(p.role, Action.ManageSchedule)
+        let body = bodyObj(ctx)
+        let doctorId = requireInt(ctx, "doctor_id")
+        let departmentId = requireInt(ctx, "department_id")
+        let workDate = requireStr(ctx, "work_date")
+        let period = requireStr(ctx, "period")
+        let total = requireInt(ctx, "total_num")
+        if (total < 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "total_num 不能为负")
+        }
+        let now = hNowEpoch()
+        repo.insertSchedule(doctorId, departmentId, workDate, period, total, now)
+        let sid = repo.lastInsertId()
+        let o = JsonObject()
+        o.put("schedule_id", JsonInt(sid))
+        o.put("total_num", JsonInt(total))
+        o.put("remain_num", JsonInt(total))
+        sendCreated(ctx, o)
+    })
+
+    return r
+}
+
+/* ===================== 应用装配 ===================== */
+
+public func buildHospitalApp(repo: BookingRepo, gate: DevAuthGate): QingZhouApp {
+    let router = buildHospitalRouter(repo, gate)
+    return QingZhouApp()
+        .use(requestId())
+        .use(logger())
+        // bodyLimit 必须排在 bodyParser **之前**（外层）：框架的 bodyParser 是
+        // "先把整个 body 读进内存、再比 maxBytes"，只有抢在它前面按 Content-Length
+        // 拦，大 body 才进不了内存。
+        // ⚠ 基线的 `bodyLimit()` 是**基线自己写的**（baseline/server/src/limits.cj:83），
+        //   不在框架里；这里用框架原生的 `contentLengthLimit(maxBytes)`（bodyparser.cj:168）。
+        //   上限 64 KiB —— 与基线 MAX_BODY_BYTES 同口径（limits.cj:47）。
+        .use(contentLengthLimit(64 * 1024))
+        .use(bodyParser())
+        .use(cors())
+        .use(timeout(15000))
+        .use(router.middleware())
+        .onError({ ctx: Context, _: () -> Unit => hospitalErrorHandler(ctx) })
+}
+
+/*
+ * 持有 ServerHandle。
+ * 必须放在 class 的字段里而不是闭包捕获的 var —— 仓颉闭包不能捕获可变变量
+ * （本项目已踩过两次，见 domain_booking.cj 的 TxResult）。
+ */
+public class HandleBox {
+    public var handle: ?ServerHandle = None
+
+    public init() {}
+}

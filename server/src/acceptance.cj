@@ -50,16 +50,22 @@ func hResetAll(db: DbBackend): Unit {
     db.exec("DELETE FROM booking_idem", Array<DbValue>())
 }
 
-/* 建一个测试排班（显式 id，便于用例可读）。返回 (scheduleId, patientId, doctorId, deptId)。 */
+/*
+ * 建一个测试排班（显式 id，便于用例可读）。返回 (scheduleId, patientId, doctorId, deptId)。
+ *
+ * ⚠ 用 `INSERT IGNORE`：P0 的用例每次都会重建部门/医生/患者（id 固定为 1），
+ *   而 P1 的 HTTP 联调也往同一库写——若用裸 INSERT，第二次跑 accept 就会
+ *   因主键冲突整段失败。IGNORE 让"基础数据已存在"变成无害的前置条件。
+ */
 func hSeedSchedule(db: DbBackend, scheduleId: Int64, total: Int64,
                    workDate: String): (Int64, Int64, Int64, Int64) {
     let now = hNowEpoch()
-    db.exec("INSERT INTO department (id, name, code, created_at) VALUES (?, ?, ?, ?)",
+    db.exec("INSERT IGNORE INTO department (id, name, code, created_at) VALUES (?, ?, ?, ?)",
             [DbInt(1), DbStr("内科"), DbStr("NK"), DbInt(now)])
-    db.exec("INSERT INTO doctor (id, name, department_id, title, created_at) " +
+    db.exec("INSERT IGNORE INTO doctor (id, name, department_id, title, created_at) " +
             "VALUES (?, ?, ?, ?, ?)",
             [DbInt(1), DbStr("张医生"), DbInt(1), DbStr("主任医师"), DbInt(now)])
-    db.exec("INSERT INTO patient (id, phone, name, created_at) VALUES (?, ?, ?, ?)",
+    db.exec("INSERT IGNORE INTO patient (id, phone, name, created_at) VALUES (?, ?, ?, ?)",
             [DbInt(1), DbStr("13800000000"), DbStr("测试患者"), DbInt(now)])
     db.exec("INSERT INTO schedule (id, doctor_id, department_id, work_date, period, " +
             "total_num, remain_num, version, enabled, created_at) " +
