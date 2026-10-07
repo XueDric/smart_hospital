@@ -18,11 +18,18 @@
  * ⚠ 铁律（ADR §6）：withTransaction 内**绝不允许**出站网络调用（AI/HTTP）。
  *   本文件因此不 import 任何 AI/网络模块 —— 这是刻意的结构约束。
  *
- * 幂等（AC-3）用**双保险**：
- *   - 应用层：先按 client_token 查既有挂号单，命中即返回（快路径）；
- *   - 数据库层：`uk_appointment_client_token` 唯一索引兜底（并发下应用层可能都查不到，
- *     唯一索引让第二次 INSERT 直接失败，我们捕获后回读既有单）。
+ * 幂等（AC-3）用**双保险**，且**按患者隔离**：
+ *   - 应用层：先按 `(patient_id, client_token)` 查**仍然有效**（status <> 'cancelled'）
+ *     的既有挂号单，命中即返回（快路径）；
+ *   - 数据库层：`uk_appointment_patient_token (patient_id, client_token)` 唯一索引兜底
+ *     （并发下应用层可能都查不到，唯一索引让第二次 INSERT 直接失败，我们捕获后回读）。
  *   只做应用层检查在并发重复提交下是**不够的**。
+ *
+ * ⚠ 2026-10-07 修正（复查发现的跨患者泄露）：原实现按**全局** `client_token` 查 + 唯一索引，
+ *   于是患者 B 提交患者 A 用过的 token 会命中 A 的单并原样返回（不扣号、不报错）。
+ *   详见 `findAppointmentByToken` 的注释。
+ * ⚠ 也**没有** `booking_idem` 登记表：它已于同日连同实现删除（ADR §7 第 7 条）——
+ *   幂等的**唯一**保证就是上面这两层。
  *
  * ⚠ 仓颉语言约束（本项目已知坑，见 smart-hospital-project-brief.md §6.3）：
  *   **闭包不能捕获外部可变 `var`**（捕获的是值与 `let` 引用）。
@@ -33,22 +40,35 @@
 package qingzhou
 
 /*
- * 乐观锁冲突重试上限（ADR §6 调参项）。
+ * **瞬时错误**重试上限（ADR §6 调参项）。
  *
- * ⚠ 2026-10-07（P1 并发压测修正）：原值 2（= 共 3 次尝试）在
- *   「20 个并发进程抢 8 个号」下**不够** —— 实测只卖出 6 个，剩 2 个号没人抢到
- *   （失败方向是**少卖**而不是超卖，但仍然是错的）。
- *   升到安全范围上限 3（= 共 4 次尝试）。
+ * ⚠⚠ 语义在 2026-10-07 变了两次，注释必须跟着改（复查指出旧注释会误导）：
+ *   rev.2（旧）："乐观锁冲突后的重试次数"。**这个说法已作废** ——
+ *     扣号与归还都已**去掉 version 前置条件**，正常争抢下**一次就成功**，
+ *     不存在"乐观锁冲突"这种失败。
+ *   rev.3/4（现在）：它只管**真正的瞬时异常** —— 死锁、锁等待超时这类 InnoDB 报错
+ *     （`book()` 的 catch 分支里重试，重试仍失败则**原样抛出，绝不吞**）。
  *
- * ⚠ 但**不要**靠无限加大重试来"解决"高并发：重试是**有代价**的
- *   （每次重试都是额外的读+写往返）。真正的处置见 ADR §3 方案 C（悲观锁）或加排队。
- *   这里的 3 是安全范围上限，不是"越大越好"。
+ * ⚠ 历史教训（留着，因为它解释了这个常量为什么不该被当成"性能旋钮"）：
+ *   曾经为了压住"20 并发抢 8 个号只卖出 6 个"把 2 升到 3。
+ *   但**根因不是重试不够**，而是乐观锁让并发请求互相作废 ——
+ *   加大重试只是把失败换成更长的延迟，实测最穷工况下仍然少卖 15%~50%。
+ *   真正的修法是去掉 version 条件（见 `tryDeductSlot`）。
+ *
+ * 🚫 所以：**不要**再靠调大它来"解决"高并发问题。
+ *   若瞬时错误重试真的频繁耗尽，说明该加排队或改用方案 C（ADR §3）。
  */
 public let MAX_BOOKING_RETRY: Int64 = 3
 
 /*
  * 挂号专用重试预算（运行时可调）。
- * HTTP 层用 bigger 的预算抗瞬时并发；单测/验收用默认值。
+ *
+ * ⚠ 2026-10-07 复查指出的遗留：它当初是为"抗乐观锁冲突"设的（比单测的 3 更宽），
+ *   **现在这个理由已经不成立** —— 正常路径不再需要重试，它只对瞬时错误生效，
+ *   因此与 `MAX_BOOKING_RETRY` **语义上重复**。
+ *   保留是因为 HTTP 层调用点还在用它（改签名会牵动多处），
+ *   但请注意：**它不是"HTTP 层可以多试几次"的意思**，别据此放宽任何断言。
+ *   清理它需要在 HTTP 层一并改调用点，属 P1 收尾。
  */
 public let HTTP_BOOKING_RETRY: Int64 = 6
 
@@ -130,6 +150,12 @@ class TxResult {
     var newId: Int64 = 0
     var released: Bool = false
     var cancelDone: Bool = false
+    /*
+     * ★ 实际写进库的就诊序号（`MAX(seq_no)+1` 的结果）。
+     * 必须回传出来供响应回填 —— 不能在回填时用 `countBooked()` 另算一遍：
+     * 前者**不回收**已用过的号，后者统计"当前**有效**单数"，两个口径不同（实测差 1）。
+     */
+    var seqNo: Int64 = 0
 }
 
 /* ===================== 号源域仓储 ===================== */
@@ -291,14 +317,41 @@ public class BookingRepo {
 
     /*
      * 归还号源（退号 / 取消）。
-     * 同样带 version 条件；`remain_num < total_num` 防止归还超过放出量
-     * （否则反复"挂号→退号"可以把号源刷到超过总数）。
+     *
+     * ★ **不带 version 前置条件** —— 与 `tryDeductSlot` 的修法镜像对称（2026-10-07 修）。
+     *
+     * ── 为什么必须去掉 version（复查发现的**严重**缺陷）──────────────────────
+     * 原实现是 `WHERE id = ? AND version = ? AND remain_num < total_num`。
+     * 而 `releaseSlotFor` **没有任何重试** —— 于是并发退号时：
+     *   N 个退号事务读到**同一个** version，只有一个能归还成功，
+     *   其余全部拿到 0 行 ⇒ `SlotNotRestored` ⇒ **号源永久丢失**，需人工重置。
+     *
+     * 实测（10 个号源、10 张单**同时**退）：
+     *     成功归还 5 张 / **丢失 5 个号源** / remain_num = 5（应为 10）
+     *   而每个患者都收到了"退号成功"的 200 响应。
+     *   3 个人同时退号就已经中招（丢失 1 个）—— **不是极端工况**。
+     *
+     * ── 为什么去掉它仍然安全（与扣号同一套论证）──────────────────────────
+     * 防止"归还超过放出量"真正依赖的是 `remain_num < total_num`，
+     * 它和 `remain_num = remain_num + 1` 在**同一条 UPDATE 内**由 InnoDB 原子求值 ——
+     * 不存在"检查-后-写"的跨语句窗口。
+     *   · 并发退号：N 条 UPDATE 竞争同一行，InnoDB 行锁使它们**串行**执行，
+     *     每条都看到前一條的结果 ⇒ N 个号源**全部归还**，不会少、不会多。
+     *   · 反复"挂号→退号"：`remain_num < total_num` 保证**永远不会超过放出量**。
+     *
+     * ⚠ 上一版的注释在这里写着"归还路径并发强度低、重试代价可接受"——
+     *   但代码里**根本没有重试**。注释暗示了一个不存在的缓解措施，这种"注释撒谎"
+     *   比没有注释更坏（它会让人不去查真正的失败路径）。实测已证实后果。
+     *
+     * 📌 教训（本轮最重要的一条）：**同一个根因会在"镜像路径"上重现。**
+     *   修 `tryDeductSlot` 时我只改了"扣"，没顺手检查"还"—— 而两者用的是同一个
+     *   错误模式（version 前置条件 + 无重试）。以后修这类缺陷必须**双向核对**。
      */
-    public func releaseSlot(scheduleId: Int64, expectedVersion: Int64): Bool {
+    public func releaseSlot(scheduleId: Int64): Bool {
         let n = db.exec(
             "UPDATE schedule SET remain_num = remain_num + 1, version = version + 1 " +
-            "WHERE id = ? AND version = ? AND remain_num < total_num",
-            [DbInt(scheduleId), DbInt(expectedVersion)])
+            "WHERE id = ? AND remain_num < total_num",
+            [DbInt(scheduleId)])
         return n == 1
     }
 
@@ -436,7 +489,18 @@ public class BookingRepo {
             try {
                 db.withTransaction({ =>
                     if (tryDeductSlot(scheduleId)) {
+                        /*
+                         * ★ 把真正写进库的那个 seq **带出来**（存进 tx），
+                         *   供响应回填使用 —— 不要回填时另算一遍（2026-10-07 修）。
+                         *
+                         * 复查实测的不一致：退掉 seq=1 的单后再挂，库里落 seq_no=2，
+                         * 而 HTTP 响应报 seq_no=1。根因就是回填用了 `countBooked()`：
+                         *   它统计的是"**当前有效**单数"，而 seq 是 `MAX(seq_no)+1`
+                         *   （不回收已用过的号）—— **两个口径根本不是一回事**。
+                         * 就诊序号是给患者看、用来叫号的，报错号等于误导患者。
+                         */
                         let seq = nextSeqNo(scheduleId)
+                        tx.seqNo = seq
                         tx.newId = insertAppointment(scheduleId, patientId, s.doctorId,
                                                      s.departmentId, s.workDate, s.period,
                                                      seq, clientToken, now)
@@ -471,7 +535,8 @@ public class BookingRepo {
                 r.visitDate = s.workDate      // ★ 就诊日快照
                 r.period = s.period
                 r.status = "booked"
-                r.seqNo = countBooked(scheduleId)
+                // ★ 用**实际写入**的那个 seq（tx.seqNo），不要回算
+                r.seqNo = tx.seqNo
                 r.createdAt = now
                 r.outcome = BookingOutcome.Booked(tx.newId)
                 return r
@@ -615,19 +680,21 @@ public class BookingRepo {
     }
 
     /*
-     * 归还某排班的号源（读当前 version 后再还）。
+     * 归还某排班的号源。
      *
-     * ⚠ 这里的 version 条件**保留**且是必要的：`releaseSlot` 要满足
-     *   `remain_num < total_num`（防止把号源加到超过放出量），
-     *   而"读 version → 归还"之间若被别的写方插进来就会拿到过期 version 失败。
-     *   归还路径的并发强度远低于挂号（退号是低频操作），重试代价可接受。
+     * ⚠ 2026-10-07 起**不再需要**先读 version —— `releaseSlot` 已去掉 version 前置条件
+     *   （见其注释：带 version 会导致并发退号永久丢号源）。
+     *   所以这里只需先确认排班存在（排班被删则视为"单已取消即可"，返回 true）。
+     *
+     * ⚠ 必须在事务内调用：与"把单标为 cancelled"同一个事务，
+     *   否则会出现"单取消了、号没还"或反之（ADR §2.2 细节 ③）。
      */
     func releaseSlotFor(scheduleId: Int64): Bool {
         let s = findSchedule(scheduleId)
         if (s.isNone()) {
             return true       // 排班被删，单已取消即可
         }
-        return releaseSlot(scheduleId, s.getOrThrow().version)
+        return releaseSlot(scheduleId)
     }
 
     /*

@@ -9,8 +9,11 @@
  *
  * ⚠ 架构决策见 docs/adr/ADR-0001-号源与挂号独立MySQL路径.md
  *   - `schedule`（排班/号源）与 `appointment`（挂号单）走**直接 SQL**，
- *     **不进内存 Store**，由 MySQL 权威；扣减用 version 乐观锁 + remain_num > 0；
- *   - 其余表（department / doctor / patient / medical_record / booking_idem）为配套最小集，
+ *     **不进内存 Store**，由 MySQL 权威；扣减与归还都用**一次成功的原子自减/自增**
+ *     （`remain_num > 0` / `remain_num < total_num` 在同一条 UPDATE 内原子求值）。
+ *     ⚠ 2026-10-07 rev.3 起**不再用 version 乐观锁**：实测它在最穷工况下
+ *     少卖 15%~50%，且并发退号会永久丢号源（同一根因）。见 ADR rev.3/rev.4；
+ *   - 其余表（department / doctor / patient / medical_record）为配套最小集，
  *     本阶段只建表，业务路径在 P1+ 落地。
  *
  * 基线依据（只读，见 baseline/）：

@@ -246,9 +246,9 @@ P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与
 
 | 套件 | 结果 |
 | --- | --- |
-| `hospital-server.exe selftest` | ✅ **33 项** |
+| `hospital-server.exe selftest` | ✅ **30 项** |
 | `hospital-server.exe authtest` | ✅ **17 项**（含 3 个公开测试向量） |
-| `hospital-server.exe accept <dsn>` | ✅ **35 项 / 失败 0**（原 32，新增 AC-10） |
+| `hospital-server.exe accept <dsn>` | ✅ **43 项 / 失败 0**（原 32，新增 AC-10） |
 | `tests\stress-booking.ps1` | ✅ **20/30/40/50 并发抢同数号源 → 全部恰好卖光、零 409、零少卖** |
 | `tests\auth-check.ps1` | ✅ 全绿 |
 | `tests\tls-check.ps1` | ✅ 全绿 |
@@ -320,7 +320,7 @@ P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与
 | 1 | 本 ADR | `docs/adr/ADR-0001-号源与挂号独立MySQL路径.md` |
 | 2 | 最小表集 DDL + **幂等迁移** | `server/src/schema.cj`（`SCHEMA_DDL` / `migrateSchema`） |
 | 3 | 号源/挂号域实现（含原子扣减 + 按患者隔离的幂等 + 三态取消） | `server/src/domain_booking.cj` |
-| 4 | 验收测试 AC-1…AC-10 | `server/src/acceptance.cj`（**不是** `server/tests/` —— 验收测试作为源文件编进 exe，经 `accept` 子命令运行；`server/tests/` 放的是**端到端脚本**，用途不同） |
+| 4 | 验收测试 AC-1…AC-12 | `server/src/acceptance.cj`（**不是** `server/tests/` —— 验收测试作为源文件编进 exe，经 `accept` 子命令运行；`server/tests/` 放的是**端到端脚本**，用途不同） |
 | 5 | 构建链（cjc 1.2.0 + stdx 1.1.3.1） | `server/build.ps1` |
 | 6 | 源码哈希清单（验收锚点，替代不可复现的产物哈希） | `server/build/SOURCE-MANIFEST.sha256`（由 `build.ps1` 生成） |
 | 7 | ✅ **已决策并执行（rev.4，2026-10-07）**：`idemKey`/`putIdem`/`pruneIdem` + `booking_idem` 表**连同 AC-8 一起删除**。<br>**为什么删**：① 幂等已由 `(patient_id, client_token)` 唯一索引完整保证，而唯一索引是**数据库级**约束，比应用级登记表更硬（应用登记与业务写入之间仍有窗口）；② 它**从未**进入生产路径（`book()`/`cancel()` 全程不碰），只有 AC-8 在测 ⇒ 那是一个"绿色的假保证"；③ 它存在的理论价值是"操作本身不幂等"的场景（如支付，无天然唯一键），挂号有天然唯一键，用不上。<br>**代价（如实记录）**：失去"登记与业务写入解耦"的能力。若将来接入无天然唯一键的写操作，需**重新开 ADR**，而不是复活这张表。<br>**迁移**：`migrateSchema()` 里加了显式 `DROP TABLE booking_idem`（`CREATE TABLE IF NOT EXISTS` 只管建、不管删，老库不会自动消失） |

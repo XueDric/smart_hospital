@@ -94,6 +94,20 @@ func hAppointmentCount(db: DbBackend, scheduleId: Int64): Int64 {
     return rs.getInt(0, 0)
 }
 
+/*
+ * 读某挂号单**落库**的 seq_no —— 用于断言"响应值与落库值一致"（AC-12）。
+ *
+ * 为什么要单独查库：AC-12 要抓的正是"响应说一个、库里存另一个"这类不一致，
+ * 所以断言**不能**只信返回值，必须直接读库比对。
+ */
+func hAppointmentSeqNo(db: DbBackend, appointmentId: Int64): Int64 {
+    let rs = db.query("SELECT seq_no FROM appointment WHERE id = ?", [DbInt(appointmentId)])
+    if (rs.rowCount() < 1) {
+        return -1
+    }
+    return rs.getInt(0, 0)
+}
+
 /* 读某挂号单的 visit_date（快照）。 */
 func hVisitDate(db: DbBackend, appointmentId: Int64): String {
     let rs = db.query("SELECT visit_date FROM appointment WHERE id = ?",
@@ -223,6 +237,100 @@ public class TestRunner {
             let (remain, _) = hScheduleState(db, 9008)
             check("N 次扣减全部成功（无自我作废）", ok == n)
             check("余量为 0（卖光）", remain == 0)
+        })
+    }
+
+    /* ---------- AC-11：N 次归还全部成功（与 AC-10 镜像）---------- */
+    public func ac11(): Unit {
+        println("=== AC-11 N 次归还**不得丢号源**（AC-10 的镜像路径）===")
+        section("AC-11", { =>
+            /*
+             * 这是 2026-10-07 复查发现的**严重**缺陷的回归闸门，也是 AC-10 的镜像：
+             * `tryDeductSlot` 去掉 version 后，`releaseSlot` **仍然带 version 前置条件**，
+             * 而 `releaseSlotFor` 没有任何重试 —— 于是 N 个并发退号里只有一个能归还成功，
+             * 其余永久丢号源。
+             *
+             * 实测（端到端 10 并发退号）：原实现只归还 5 个、**丢 5 个号源**，
+             * 而每个患者都收到"退号成功"的 200。
+             *
+             * 📌 教训：**同一根因会在镜像路径上重现**。修"扣"时必须顺手核对"还"。
+             *   本用例就是把这个核对固化成断言：AC-10 与 AC-11 必须**同时**绿。
+             *
+             * ⚠ 同为单线程顺序模拟（真并发由 tests\stress-booking.ps1 覆盖）；
+             *   它守的不变量是"归还路径不再自我作废"—— version 时代这条**必然失败**。
+             */
+            hResetAll(db)
+            let n: Int64 = 20
+            hSeedSchedule(db, 9009, n, "2026-10-08")
+            // 先全部借出
+            var i: Int64 = 0
+            while (i < n) {
+                let _ = repo.tryDeductSlot(9009)
+                i = i + 1
+            }
+            let (afterLend, _) = hScheduleState(db, 9009)
+            check("全部借出后余量为 0", afterLend == 0)
+            // 再全部归还
+            var back: Int64 = 0
+            i = 0
+            while (i < n) {
+                if (repo.releaseSlot(9009)) {
+                    back = back + 1
+                }
+                i = i + 1
+            }
+            let (afterReturn, _) = hScheduleState(db, 9009)
+            check("N 次归还全部成功（无自我作废）", back == n)
+            check("余量回到 N（一个号源都没丢）", afterReturn == n)
+            // ★ 反向：不得归还超过放出量（反复借还也不能把号源刷大）
+            var over: Int64 = 0
+            i = 0
+            while (i < 5) {
+                if (repo.releaseSlot(9009)) {
+                    over = over + 1
+                }
+                i = i + 1
+            }
+            let (afterOver, _) = hScheduleState(db, 9009)
+            check("满员时再归还 5 次全部失败（不得超发）", over == 0)
+            check("余量仍为 N（未被刷到超过放出量）", afterOver == n)
+        })
+    }
+
+    /* ---------- AC-12：响应里的 seq_no 必须等于落库值 ---------- */
+    public func ac12(): Unit {
+        println("=== AC-12 就诊序号：响应值 == 落库值 ===")
+        section("AC-12", { =>
+            /*
+             * 复查实测的不一致：退掉 seq=1 的单后再挂，库里落 `seq_no=2`，
+             * 而 HTTP 响应报 `seq_no=1`。
+             * 根因：响应回填用了 `countBooked()`（统计**当前有效**单数），
+             * 而落库用的是 `nextSeqNo()`（`MAX(seq_no)+1`，**不回收**已用过的号）——
+             * 两个口径不是一回事。就诊序号是给患者看、用来叫号的，报错号会误导患者。
+             *
+             * 本用例直接钉住"第一次挂号的返回序号 == 库里那一行的 seq_no"。
+             */
+            hResetAll(db)
+            hSeedSchedule(db, 9010, 5, "2026-10-08")
+            let a = repo.book(1, 9010, "tok-ac12-a", hNowEpoch())
+            check("第一次挂号成功", isBooked(a))
+            check("响应 seq_no = 1", a.seqNo == 1)
+            let dbSeq1 = hAppointmentSeqNo(db, a.appointmentId)
+            check("落库 seq_no = 1（与响应一致）", dbSeq1 == 1)
+
+            // 退掉它（seq_no 不回收），再挂一单 → 应为 2，且响应与库一致
+            let c = repo.cancel(a.appointmentId, hNowEpoch())
+            check("退号成功", isCancelled(c))
+            let b = repo.book(1, 9010, "tok-ac12-b", hNowEpoch())
+            check("退号后再次挂号成功", isBooked(b))
+            let dbSeq2 = hAppointmentSeqNo(db, b.appointmentId)
+            /*
+             * ⚠ 这里**只断言"响应 == 落库"**，不断言"== 2" ——
+             *   序号是否连续/是否回收是策略问题，而本用例守的是**一致性**问题
+             *   （响应不能说一个、库里存另一个）。策略变了也不该让本用例变红。
+             */
+            check("★ 响应 seq_no 与落库 seq_no 一致（${b.seqNo} == ${dbSeq2}）", b.seqNo == dbSeq2)
+            check("退号不回收序号（第二单的 seq_no > 第一单）", dbSeq2 > dbSeq1)
         })
     }
 
@@ -443,6 +551,8 @@ public func runAcceptance(db: DbBackend): Int64 {
     runner.ac4()
     runner.ac7()
     runner.ac10()
+    runner.ac11()
+    runner.ac12()
     println("")
     println("通过 ${runner.passed} 项，失败 ${runner.failed} 项")
     if (runner.failed == 0) {
