@@ -119,6 +119,56 @@ foreach($ip in @('140.82.112.3','140.82.113.3','20.27.177.113')){
 > 📌 教训：**"端口开着"是很弱的信号**。要么用协议层探测（上面这条 curl），
 > 要么直接看 git 的 verbose 日志里 `Trying <IP>` 有没有**被换成别的地址**。
 
+### ⚠⚠ 但这个绕过有个**天花板**：它依赖 DNS"碰巧"给个好 IP
+
+2026-10-07 又一次实测，把上面的机制彻底看清了 —— **`insteadOf` 绕过本质上是不完备的**：
+
+```
+== Info:   Trying 140.82.112.3:443...          ← 我们指定的 IP，TLS 起来了
+== Info: ALPN: server accepted http/1.1
+== Info: schannel: renegotiating SSL/TLS connection
+<= Recv header: HTTP/1.1 301 Moved Permanently  ← ★ GitHub 让它去 github.com
+== Info:   Trying 20.205.243.166:443...         ← 于是重新查 DNS，拿到连不通的 IP
+fatal: unable to access 'https://140.82.112.3/...': Failed to connect to github.com:443
+```
+
+**关键**：GitHub 对"用 IP 访问"会回 **301 → `https://github.com/...`**，
+而 `url.<ip>.insteadOf` **只改写初始 URL，管不到重定向目标**。
+于是 push 能否成功，取决于**那一刻 DNS 恰好返回哪个 IP**：
+
+| DNS 返回 | 结果 |
+| --- | --- |
+| 可达 IP（如 `140.82.11x.3`） | ✅ push 成功 |
+| `20.205.243.166`（本机 DNS 的常态） | ❌ 超时 —— **哪怕初始 IP 是好的** |
+
+这解释了为什么同一条命令**上一轮成功、下一轮失败** ——
+**6 个 IP 全部"协议层可用"（探针都返回 401）时，push 依然可能全失败**，因为瓶颈不在初始 IP。
+
+**所以能做的只有"多轮重试"，等 DNS 变**：
+
+```powershell
+# 实测靠这个在第 3 轮成功（前两轮全失败）
+foreach($round in 1..8){
+  foreach($ip in @('140.82.112.3','140.82.113.3','140.82.114.3','140.82.121.3')){
+    # ⚠ 加 http.connectTimeout 让坏 IP **快速失败**，否则每轮要等 21 秒
+    git -c "url.https://$ip/.insteadOf=https://github.com/" -c http.sslVerify=false `
+        -c http.connectTimeout=6 push origin main
+    if($LASTEXITCODE -eq 0){ Write-Host "✅ 经 $ip 成功"; break }
+  }
+  if($LASTEXITCODE -eq 0){ break }
+  Start-Sleep -Seconds 2
+}
+```
+
+> 🔴 **真正可靠的修法只有两个**（都要你来做一次性的操作）：
+> 1. **改用 SSH**：`ssh.github.com:443` 实测**可达且没有这个 301 问题**，
+>    只需生成 key 并加到 GitHub（本机目前**没有** SSH key）。
+> 2. **修 hosts / DNS**：让 `github.com` 解析到可达 IP ——
+>    需要**管理员权限**（本会话没有）。
+>
+> 在做成这两件事之前，"推送"始终是**碰运气 + 重试**。
+> 📌 代码本身是安全的：提交都在**本地仓库**，push 失败不会丢东西。
+
 ---
 
 ## 3. 更稳的长期办法（按推荐顺序）
