@@ -70,11 +70,35 @@ cd server     # ⚠ cwd 必须是 server/，见下
 | `check-db <dsn>` | 连库 + 幂等建表 + 打印表清单（★ 标记号源域） | ✅ |
 | `accept <dsn>` | P0 验收测试 AC-1…AC-8（32 项断言） | ✅ |
 | `create-admin <dsn>` | 建/重置管理员并打印口令（**引导入口**） | ✅ |
-| `serve <dsn>` | **P1**：启动 HTTP 服务（默认只绑 `127.0.0.1`） | ✅ |
+| `serve <dsn>` | **P1**：启动 HTTP / HTTPS 服务（默认只绑 `127.0.0.1`） | ✅ |
 
 ⚠ `accept` **会清空业务表**，已内置库名守卫（库名不含 `test` 且不等于 `hospital` 时中止）。
 ⚠ `serve` 的 `--dev-auth` 是**开发态身份头**，绕过全部认证；与 `--prod` 同传会拒绝启动。
 ⚠ `serve` 启动时**先跑 `authtest` 再连库** —— PBKDF2 错了就没必要连库。
+
+### HTTPS
+
+```powershell
+# 生成带 SAN 的自签证书（本机所有 IP + localhost + 127.0.0.1 + ::1）
+.\new-tls-cert.ps1
+
+# 启动 HTTPS（用脚本产出的纯 ASCII 运行副本 —— 原因见下）
+.\build\hospital-server.exe serve <dsn> --port 8443 --tls-files "C:\ProgramData\smart-hospital\tls\tls.env"
+```
+
+| 参数 | 说明 |
+| --- | --- |
+| `--tls-cert <pem>` / `--tls-key <pem>` | 直接给 PEM 路径 |
+| `--tls-files <env>` | 从文件读 cert/key 路径（每行 `key=value`，`#` 注释） |
+
+**绝不静默降级**（四条都已实测）：证书/私钥缺失 → FATAL 退出；PEM 非法 → FATAL 退出；
+只给一半参数 → 拒绝启动。这些情况下**端口不会被误起成明文服务**。
+
+> ⚠ **本仓库路径含中文，证书路径必须走 ASCII 运行副本**：
+> 本工具链的仓颉运行时无法接受含非 ASCII 的 argv（在 `main` 之前就抛
+> `Invalid unicode scalar value`）。`new-tls-cert.ps1` 会自动把证书复制到
+> `%ProgramData%\smart-hospital\tls`（ACL 已收紧）并生成 `tls.env`。
+> 试过但**不可行**的两条路：`--tls-files` 指向中文路径的配置文件、Windows 8.3 短名（本卷已禁用）。
 
 ### P1 接口
 
@@ -106,11 +130,18 @@ cd server     # ⚠ cwd 必须是 server/，见下
 
 # 多进程并发压测（走令牌；默认不用 --dev-auth）
 .\tests\stress-booking.ps1 -Base http://127.0.0.1:8091 -Tokens 50 -ScheduleTotal 10 -AdminPw <管理员口令>
+
+# TLS/HTTPS 验证（SslStream 真校验；需 HTTPS 已启动）
+$env:HOSP_ADMIN_PW = "<管理员口令>"
+.\tests\tls-check.ps1      -Cert "C:\ProgramData\smart-hospital\tls\cert.pem" -Port 8443
 ```
 
-两个脚本**互不依赖执行顺序**（自建夹具、自清数据）。
+三个脚本**互不依赖执行顺序**（自建夹具、自清数据）。
 > ⚠ 必须用 `curl -K` config 文件传 header/body —— `Start-Process -ArgumentList` 会拆坏
 > 含空格的参数（详见 [../docs/P1-HANDOFF.md](../docs/P1-HANDOFF.md) §3.3）。
+> ⚠ `tls-check.ps1` **不用** `curl --cacert` 做主校验：Windows 的 Schannel 对自签证书的
+> `--cacert` 支持不完整（实测 `schannel: error 0x00000010`，而同刻 `curl -k` 是 200），
+> 所以它走 .NET `SslStream` + 显式链校验 + 自解析 SAN。理由与两个坑写在脚本头注释里。
 
 ### 验收依据：源码哈希，不是产物哈希
 
@@ -133,7 +164,9 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
 | `src/http_common.cj` | 统一响应/错误码表（`{ok,data}` / `{ok:false,error}`） |
 | `src/http_app.cj` | HTTP 装配 + 三端权限矩阵 + `principalOf()`（令牌优先，开发态头可选） |
 | `src/acceptance.cj` | AC-1…AC-8 验收测试（含异常兜底与变异测试记录） |
-| `src/main.cj` | 进程入口与子命令分发 |
+| `src/main.cj` | 进程入口与子命令分发（含 TLS 分支与 fail-closed） |
+| `new-tls-cert.ps1` | 生成带 SAN 的自签证书 + ASCII 运行副本 + ACL 收紧 |
+| `tests/tls-check.ps1` | TLS 验证（SslStream 真校验、反向验证、HTTPS 业务链路） |
 
 **最小表集（9 张）**：
 

@@ -23,6 +23,10 @@
 
 package qingzhou
 
+// ⚠ `exists()` / `File.readFrom()` 来自 std.fs —— TLS 分支要读 PEM 文件，
+//   不加这个 import 会报 undeclared identifier（基线 main.cj 同样 import 了它）。
+import std.fs.*
+
 /* 版本号：与 docs/adr/ADR-0001 同期。 */
 public let SERVER_VERSION: String = "0.2.0-p1"
 
@@ -35,7 +39,8 @@ func usage(): Unit {
     println("  hospital-server.exe check-db <dsn>        连库建表并打印表清单")
     println("  hospital-server.exe accept <dsn>          跑验收测试（AC-1…AC-8）")
     println("  hospital-server.exe serve <dsn> [--port N] [--dev-auth] [--prod] [--bind IP]")
-    println("                                            启动 HTTP 服务（P1 挂号闭环）")
+    println("                                  [--tls-cert <pem> --tls-key <pem>]")
+    println("                                            启动 HTTP/HTTPS 服务（P1）")
     println("  hospital-server.exe version               打印版本")
     println("  hospital-server.exe create-admin <dsn> [登录名]")
     println("                                            创建/重置管理员并打印口令（引导用）")
@@ -244,18 +249,39 @@ func selftest(): Int64 {
 }
 
 /*
- * serve：启动 HTTP 服务（P1 挂号闭环）。
+ * 去掉 TLS 路径两端的引号（配置文件里允许写成 cert="E:\...\cert.pem"）。
+ * 只处理成对的单/双引号；不处理转义（Windows 路径里没有需要转义的字符）。
+ */
+func unquoteTlsPath(s: String): String {
+    if (s.size >= 2) {
+        let first = s[0..1]
+        let last = s[(s.size - 1)..]
+        if ((first == "\"" && last == "\"") || (first == "'" && last == "'")) {
+            return s[1..(s.size - 1)]
+        }
+    }
+    return s
+}
+
+/*
+ * serve：启动 HTTP/HTTPS 服务（P1 挂号闭环 + 令牌鉴权）。
  *
- * 参数：serve <dsn> [--port N] [--bind IP] [--dev-auth]
+ * 参数：serve <dsn> [--port N] [--bind IP] [--dev-auth] [--prod]
+ *                   [--tls-cert <pem> --tls-key <pem>]
  *
  * ⚠ 关于 bind：轻舟 `app.serve(port)` 默认 `bindAddr = "0.0.0.0"`
- *   —— **整个局域网都能连**，而且本阶段是**明文 HTTP、开发态身份头**。
- *   所以默认**只绑 127.0.0.1**，要联调再显式 `--bind 0.0.0.0`（照基线的教训，
+ *   —— **整个局域网都能连**。所以默认**只绑 127.0.0.1**，
+ *   要联调再显式 `--bind 0.0.0.0`（照基线的教训，
  *   baseline/server/src/main.cj:968-977 专门为此写过一段提醒）。
+ *
+ * ⚠ 关于 TLS：**绝不静默降级**。给了 `--tls-cert/--tls-key` 但证书读不到、
+ *   或 PEM 解析失败时，**直接退出**，绝不回退到明文 ——
+ *   否则"HTTPS 没起来"会变成一台**静默的明文服务**，那比起不来危险得多。
  */
 func serve(args: Array<String>): Int64 {
     if (args.size < 1) {
-        println("用法：hospital-server.exe serve <dsn> [--port N] [--bind IP] [--dev-auth]")
+        println("用法：hospital-server.exe serve <dsn> [--port N] [--bind IP] " +
+                "[--dev-auth] [--prod] [--tls-cert <pem> --tls-key <pem>]")
         return 2
     }
     let dsn = args[0]
@@ -263,6 +289,8 @@ func serve(args: Array<String>): Int64 {
     var bindAddr = "127.0.0.1"
     var devAuth = false
     var prod = false
+    var tlsCert = ""
+    var tlsKey = ""
     var i = 1
     while (i < args.size) {
         if (args[i] == "--port" && i + 1 < args.size) {
@@ -270,6 +298,52 @@ func serve(args: Array<String>): Int64 {
             i = i + 2
         } else if (args[i] == "--bind" && i + 1 < args.size) {
             bindAddr = args[i + 1]
+            i = i + 2
+        } else if (args[i] == "--tls-cert" && i + 1 < args.size) {
+            tlsCert = args[i + 1]
+            i = i + 2
+        } else if (args[i] == "--tls-key" && i + 1 < args.size) {
+            tlsKey = args[i + 1]
+            i = i + 2
+        } else if (args[i] == "--tls-files" && i + 1 < args.size) {
+            /*
+             * ★ 从**文件**读 证书/私钥 路径，而不是从命令行。
+             *
+             * 为什么需要这条：本工具链的仓颉运行时**无法接受含非 ASCII 的 argv** ——
+             *   在 main 之前就抛 `IllegalArgumentException: Invalid unicode scalar value`，
+             *   连 usage 都打不出来（基线 API-NOTES 坑 6 记过同一件事）。
+             *   而本仓库路径就含中文（`智能医院客户端`），于是
+             *   `--tls-cert "E:\...\智能医院客户端\server\certs\cert.pem"` **必然启动失败**。
+             *   （实测：把同一份证书拷到 `C:\Temp\...` 纯 ASCII 路径就能起来。）
+             *
+             * 这个参数文件本身用 ASCII 路径，内容（可含中文）用 UTF-8 读 —— 绕开 argv 限制。
+             * 文件格式（每行 `key=value`，`#` 开头为注释，路径可加引号）：
+             *     cert=E:\...\certs\cert.pem
+             *     key=E:\...\certs\key.pem
+             */
+            let cfgPath = args[i + 1]
+            if (!exists(cfgPath)) {
+                println("❌ 找不到 TLS 配置文件：${cfgPath}")
+                return 2
+            }
+            var text = ""
+            try {
+                text = String.fromUtf8(File.readFrom(cfgPath))
+            } catch (e: Exception) {
+                println("❌ TLS 配置文件读取失败：${e.message}")
+                return 2
+            }
+            for (line in text.split("\n")) {
+                let s = line.trimAscii()
+                if (s.size == 0 || s.startsWith("#")) {
+                    continue
+                }
+                if (s.startsWith("cert=")) {
+                    tlsCert = unquoteTlsPath(s[5..].trimAscii())
+                } else if (s.startsWith("key=")) {
+                    tlsKey = unquoteTlsPath(s[4..].trimAscii())
+                }
+            }
             i = i + 2
         } else if (args[i] == "--dev-auth") {
             devAuth = true
@@ -348,6 +422,68 @@ func serve(args: Array<String>): Int64 {
     println("")
     println("鉴权：Authorization: Bearer <token>（令牌 30 天，滑动续期）")
 
+    /*
+     * ★ TLS 分支 —— 两条纪律：
+     *   ① 轻舟的 `serveTls(port, certPem, keyPem)` 收的是 **PEM 字符串**而不是路径，
+     *      所以读文件与异常处理都在**调用方**（基线为此专门写过注释）。
+     *   ② **绝不静默降级**：任何一步失败都 return，不回退到明文。
+     *
+     * 只给其中一个（只有 cert 没有 key，或反之）也直接拒绝 ——
+     * 那多半是命令行打漏了，静默按明文起会让人以为 TLS 生效了。
+     */
+    let wantTls = tlsCert.size > 0 || tlsKey.size > 0
+    if (wantTls && (tlsCert.size == 0 || tlsKey.size == 0)) {
+        println("❌ 只给了 --tls-cert / --tls-key 中的一个，无法启用 TLS。")
+        println("   要么两个都给，要么都不给（不给则跑明文 HTTP）。")
+        return 2
+    }
+    if (wantTls) {
+        println("")
+        println("TLS：")
+        if (!exists(tlsCert)) {
+            println("  ❌ [FATAL] 找不到证书：${tlsCert}")
+            println("  **不降级为明文** —— 请先跑 .\\new-tls-cert.ps1 生成，或修正路径。")
+            return 1
+        }
+        if (!exists(tlsKey)) {
+            println("  ❌ [FATAL] 找不到私钥：${tlsKey}")
+            println("  **不降级为明文** —— 请先跑 .\\new-tls-cert.ps1 生成，或修正路径。")
+            return 1
+        }
+        var certPem = ""
+        var keyPem = ""
+        try {
+            certPem = String.fromUtf8(File.readFrom(tlsCert))
+            keyPem = String.fromUtf8(File.readFrom(tlsKey))
+        } catch (e: Exception) {
+            println("  ❌ [FATAL] 证书或私钥读取失败：${e.message}")
+            println("  **不降级为明文**")
+            return 1
+        }
+        println("  证书 ${tlsCert}")
+        println("  私钥 ${tlsKey}（内容不写入日志）")
+        var tlsHandle: ?ServerHandle = None
+        try {
+            tlsHandle = Some(app.serveTls(port, certPem, keyPem, bindAddr: bindAddr))
+        } catch (e: Exception) {
+            println("  ❌ [FATAL] TLS 启动失败：${e.message}")
+            println("     （PEM 无法解析时框架会抛异常；这里**不做任何明文回退**）")
+            return 1
+        }
+        match (tlsHandle) {
+            case Some(h) =>
+                box.handle = Some(h)
+                println("  ✅ HTTPS 已启动：https://${bindAddr}:${port}")
+                h.wait()
+            case None => return 1
+        }
+        println("服务已停止")
+        db.close()
+        return 0
+    }
+
+    println("  ⚠ 未启用 TLS（明文 HTTP）。令牌与口令会**明文过网** ——")
+    println("    仅在可信本机/内网这样跑；要加密请加 --tls-cert/--tls-key。")
     let handle = app.serve(port, bindAddr: bindAddr)
     box.handle = Some(handle)
     handle.wait()

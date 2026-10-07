@@ -127,7 +127,7 @@ P0 的号源数据层现在**暴露成真实 HTTP 接口**了，并且用 **50 �
 
 ---
 
-## 4. ⚠ 本增量的**临时形态**（必须知道，别当成已完成）
+## 3.5 ⚠ 本增量的**临时形态**（必须知道，别当成已完成）
 
 ### 4.1 鉴权是开发态的，不是令牌
 
@@ -239,7 +239,96 @@ P0 的号源数据层现在**暴露成真实 HTTP 接口**了，并且用 **50 �
 
 ---
 
-## 5. 怎么跑
+## 5. ★ HTTPS（已上线）—— 填掉上一轮标注的最大安全缺口
+
+### 5.1 用法
+
+```powershell
+# 1) 生成带 SAN 的自签证书（本机所有 IP + localhost + 127.0.0.1 + ::1 都写进 SAN）
+cd server
+.\new-tls-cert.ps1
+
+# 2) 启动 HTTPS（用脚本产出的**纯 ASCII 运行副本**，原因见 §5.4）
+.\build\hospital-server.exe serve <dsn> --port 8443 --tls-files "C:\ProgramData\smart-hospital\tls\tls.env"
+```
+
+`serve` 新增 `--tls-cert` / `--tls-key` / `--tls-files`。
+**不给 TLS 参数则跑明文 HTTP，并明确打印警告**（令牌与口令会明文过网）。
+
+### 5.2 ★ 绝不静默降级（四条已实测）
+
+| 场景 | 行为 | 实测 |
+| --- | --- | --- |
+| 证书文件不存在 | FATAL 退出，**不回退明文** | ✅ exit=1 |
+| 私钥文件不存在 | FATAL 退出 | ✅ exit=1 |
+| PEM 内容非法 | FATAL 退出（框架抛 `Failed to parse PEM`） | ✅ exit=1 |
+| 只给了 cert 或只给了 key | 直接拒绝（多半是命令行打漏） | ✅ exit=2 |
+
+而且验证过：这些情况下**端口不会被误起成明文服务**。
+
+> 为什么这条最重要：静默降级会让"HTTPS 没起来"变成一台**看起来正常的明文服务**——
+> 客户端照样能用，没人会发现问题。
+
+### 5.3 TLS 验证结果（`tests\tls-check.ps1`）
+
+| 项 | 结果 |
+| --- | --- |
+| 证书有 SAN 且含 IP 条目 | ✅ 8 个条目（DNS=localhost + 7 个 IP） |
+| TLS 1.2 握手 + **真校验**（链 + 主机名） | ✅ 协商 Tls12 |
+| TLS 1.3 握手 + 真校验 | ✅ 协商 **Tls13** |
+| TLS 1.0 / 1.1 被拒 | ✅（服务端侧，SSPI 失败） |
+| 反向：不在 SAN 里的主机名/IP 必须不覆盖 | ✅ |
+| 反向：用**不同的 CA** 验证必须失败 | ✅ |
+| 明文打 TLS 端口必须失败 | ✅ 000 |
+| HTTPS 下登录 + 带令牌调 `/auth/me` | ✅ 200 |
+
+**不冒充的两点**（如实标注）：
+- **TLS 1.0/1.1 的拒绝是"服务端拒绝"还是"客户端不肯发起"？** 本脚本用 .NET `SslProtocols.Tls`/`Tls11`
+  显式发起，得到的是**服务端侧 SSPI 失败**，属于服务端拒绝；但要**绝对硬**的证据需
+  `openssl s_client -tls1`，而**本机没有 openssl**，所以脚本把这一点写成了 INFO 而非静默通过。
+- 验收依据仍是 `SOURCE-MANIFEST.sha256` + 测试结果。
+
+### 5.4 ★ 为什么证书要放 `C:\ProgramData\smart-hospital\tls`
+
+**根因：本工具链的仓颉运行时无法接受含非 ASCII 的 argv** ——
+在 `main` 之前就抛 `IllegalArgumentException: Invalid unicode scalar value`，
+连 usage 都打不出来（基线 API-NOTES 坑 6）。而**本仓库路径含中文**（`智能医院客户端`），
+所以 `--tls-cert "E:\...\智能医院客户端\server\certs\cert.pem"` **必然启动失败**（实测确认）。
+
+试过的两条"看起来能绕"的路，**实测都不行**（记下来省下次时间）：
+
+| 尝试 | 结果 |
+| --- | --- |
+| `--tls-files <配置文件>`（路径写文件里） | ❌ **配置文件自己的路径**也在中文目录下 → 照样炸 |
+| Windows 8.3 短名（`GetFile().ShortPath`） | ❌ 本卷**禁用了 8.3 名**，返回的还是长名 |
+
+**可行解**：把证书/私钥复制到一棵**纯 ASCII 目录树**（`%ProgramData%\smart-hospital\tls`），
+配置文件也放那里、内容里只有 ASCII 路径 ⇒ 命令行与文件内容**全 ASCII**。
+`new-tls-cert.ps1` 会自动产出这份副本，并用 `icacls` 把该目录 ACL **收紧到
+当前用户 + Administrators + SYSTEM**（私钥不外泄）。
+
+`--tls-files` 这个参数因此**保留**（它对纯 ASCII 路径的仓库仍有用），只是在本仓库必须指向 ASCII 路径。
+
+### 5.5 五个实测踩到的坑（都影响正确性，不是小事）
+
+| # | 坑 | 现象 | 处置 |
+| --- | --- | --- | --- |
+| 1 | .NET Framework 的 RSA 是 `RSACng`，**没有** `ExportRSAPrivateKey()` | `new-tls-cert.ps1` 报「RSACng 不包含名为 ExportRSAPrivateKey 的方法」 | 按 RFC 8017 A.1.2 **手工构造 PKCS#1 DER**（含"INTEGER 最高位为 1 要补 0x00"） |
+| 2 | **自签证书必须 `CA:TRUE`**，否则 Schannel 不认 | `curl --cacert cert.pem` 报 `schannel: error 0x00000010`（而 `curl -k` 是 200 ⇒ 握手本身没问题） | 生成时置 `BasicConstraints(CA:TRUE)`。**安全性没变差**：持有该私钥本就能签发任意证书 |
+| 3 | `SslStream` 回调里拿到的证书对象**回调返回后失效** | 主体/指纹全空，`X509Chain.Build` 报「链上下文句柄无效」 | 回调里**立刻 `Export(Cert)`** 取出 DER 字节，之后用 DER 重建证书 |
+| 4 | **IP SAN 是二进制**，不能按文本搜 | `Encoding.ASCII.GetString(san) -match '127\.0\.0\.1'` **永远不匹配**（会误判"证书没覆盖本机 IP"） | 按 ASN.1 解析 GeneralNames，tag `0x87` 取出字节转 `IPAddress` 再比 |
+| 5 | `New-Object X509Certificate2(,$bytes)` 命中"按文件加载"重载 | 报「指定的路径或文件名太长」（把 DER 当路径了） | 显式 `[byte[]]` cast：`-ArgumentList @(, $derBytes)` |
+
+### 5.6 仍未做（如实标注）
+
+- **证书信任分发**：现在客户端要显式信任该自签证书（或装进系统信任库）。
+  真实部署应换**受信任 CA 签发的证书**（内网可用院内 CA）。
+- **证书轮换 / 到期监控**：现在靠人记（有效期 3 年，写进生成日志）。
+- 生产环境还缺：登录限流/失败锁定、口令强度校验。
+
+---
+
+## 6. 怎么跑
 
 ```powershell
 cd server
@@ -251,34 +340,42 @@ cd server
 # 2) 建第一个管理员（引导入口，不经 HTTP；口令只打印一次）
 .\build\hospital-server.exe create-admin "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
 
-# 3) 启动服务（**不再需要** --dev-auth）
+# 3a) 启动 **HTTPS**（推荐；先生成证书）
+.\new-tls-cert.ps1
+.\build\hospital-server.exe serve "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital" `
+    --port 8443 --tls-files "C:\ProgramData\smart-hospital\tls\tls.env"
+
+# 3b) 或启动明文 HTTP（仅限可信本机/内网；启动时会打印明文警告）
 .\build\hospital-server.exe serve "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital" --port 8091
 ```
 
 ```powershell
 # 另开一个终端
-curl.exe -s http://127.0.0.1:8091/health
+curl.exe -s https://127.0.0.1:8443/health --cacert "C:\ProgramData\smart-hospital\tls\cert.pem"
+# ⚠ Windows 的 curl 走 Schannel，对自签证书的 --cacert 支持不完整（见 §5 注释）；
+#   要严格验证证书请用 .\tests\tls-check.ps1（走 .NET SslStream）。
 
 # 登录换令牌
-curl.exe -s -X POST -H "Content-Type: application/json" `
+curl.exe -s -k -X POST -H "Content-Type: application/json" `
   -d '{\"login_name\":\"admin\",\"password\":\"<上一步打印的口令>\"}' `
-  http://127.0.0.1:8091/api/v1/auth/login
+  https://127.0.0.1:8443/api/v1/auth/login
 
 # 用令牌调业务接口
-curl.exe -s -H "Authorization: Bearer <token>" http://127.0.0.1:8091/api/v1/auth/me
+curl.exe -s -k -H "Authorization: Bearer <token>" https://127.0.0.1:8443/api/v1/auth/me
 
 # 自动化测试
-$env:ADMINPW = "<口令>"
-.\tests\auth-check.ps1  -Base http://127.0.0.1:8091 -AdminPw $env:ADMINPW
-.\tests\stress-booking.ps1 -Base http://127.0.0.1:8091 -Tokens 50 -ScheduleTotal 10 -AdminPw $env:ADMINPW
+$env:HOSP_ADMIN_PW = "<口令>"
+.\tests\auth-check.ps1     -Base http://127.0.0.1:8091 -AdminPw $env:HOSP_ADMIN_PW
+.\tests\stress-booking.ps1 -Base http://127.0.0.1:8091 -Tokens 50 -ScheduleTotal 10 -AdminPw $env:HOSP_ADMIN_PW
+.\tests\tls-check.ps1      -Cert "C:\ProgramData\smart-hospital\tls\cert.pem" -Port 8443
 ```
 
 > ⚠ `serve` 是**阻塞**的；`stress-booking.ps1` 会**清空业务表**后再造数据。
-> 两个脚本**互不依赖执行顺序**（各自的夹具自建自清 —— 这修过两轮隔离缺陷）。
+> 三个脚本**互不依赖执行顺序**（各自夹具自建自清 —— 这修过两轮隔离缺陷）。
 
 ---
 
-## 6. 测试总览
+## 7. 测试总览
 
 | 套件 | 命令 | 结果 |
 | --- | --- | --- |
@@ -287,14 +384,15 @@ $env:ADMINPW = "<口令>"
 | P0 验收（AC-1…AC-8） | `hospital-server.exe accept <dsn>` | ✅ 32 项 |
 | ★ 令牌鉴权端到端 | `tests\auth-check.ps1` | ✅ 27 项（含计时防枚举） |
 | ★ 并发压测（AC-9，走令牌） | `tests\stress-booking.ps1` | ✅ 三种工况全绿 |
-| 手工 HTTP 冒烟 | 见 §5 | ✅ 401/403/404/409/400/201/200 均符合预期 |
+| ★ **TLS/HTTPS** | `tests\tls-check.ps1` | ✅ 21 项（1.2/1.3 真校验、反向验证、HTTPS 业务链路） |
+| 手工 HTTP 冒烟 | 见 §6 | ✅ 401/403/404/409/400/201/200 均符合预期 |
 
 **验收仍以 `build/SOURCE-MANIFEST.sha256` + 测试结果为准**，不要比 exe 哈希
 （cjc 产物不逐字节可复现 —— 见 ADR §5.1）。
 
 ---
 
-## 7. 本轮又抓出的缺陷（都是"响应在撒谎"这一类）
+## 8. 本轮又抓出的缺陷（都是"响应在撒谎"这一类）
 
 | # | 缺陷 | 性质 |
 | --- | --- | --- |
@@ -309,20 +407,21 @@ $env:ADMINPW = "<口令>"
 
 ---
 
-## 8. P1 仍未完成（下一步）
+## 9. P1 仍未完成（下一步）
 
 | # | 待办 | 为什么现在没做 |
 | --- | --- | --- |
-| 1 | **HTTPS（`serveTls`）** | ⚠ 令牌明文过网 —— **这是当前最大的安全缺口**。基线 `certs/` 私钥已按安全要求剔除，需重新生成证书 |
-| 2 | 登录**限流 / 失败锁定** | 现在可以无限次试口令（基线有 `rateLimit` 可借） |
-| 3 | 口令**强度校验** | 现在任意短口令都收 |
-| 4 | 内存 Store 引入 + AC-4 完整回归 | 需要先有科室/医生/病历的内存模型 |
-| 5 | 患者"我的挂号"列表、排班列表（按科室/日期） | 依赖令牌后已具备条件（patientId 稳定可得） |
-| 6 | 令牌按设备管理 / 主动踢某台设备 | 现在只能"吊销全部" |
+| 1 | **证书信任分发 / 换受信任 CA** | 现在是自签，客户端要显式信任（内网可用院内 CA 签发） |
+| 2 | 证书**轮换与到期监控** | 有效期 3 年，现在靠人记 |
+| 3 | 登录**限流 / 失败锁定** | 现在可以无限次试口令（基线有 `rateLimit` 可借） |
+| 4 | 口令**强度校验** | 现在任意短口令都收 |
+| 5 | 内存 Store 引入 + AC-4 完整回归 | 需要先有科室/医生/病历的内存模型 |
+| 6 | 患者"我的挂号"列表、排班列表（按科室/日期） | 依赖令牌后已具备条件（patientId 稳定可得） |
+| 7 | 令牌按设备管理 / 主动踢某台设备 | 现在只能"吊销全部" |
 
 ---
 
-## 9. 参考
+## 10. 参考
 
 - P0 说明：[P0-HANDOFF.md](P0-HANDOFF.md) ｜ 架构决策：[ADR-0001](adr/ADR-0001-号源与挂号独立MySQL路径.md)
 - 轻舟 API 事实清单（每条带 file:line）：[../baseline/docs/qingzhou-api-fact-sheet.md](../baseline/docs/qingzhou-api-fact-sheet.md)

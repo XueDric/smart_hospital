@@ -22,6 +22,10 @@ baseline/signing/
 baseline/_fetch/
 baseline/server/data/
 baseline/server/dist/
+# 本项目自己的 TLS 证书与私钥（由 server\new-tls-cert.ps1 生成）
+# ⚠ 私钥入库 = 泄露；基线也因此把 certs/ 整体忽略。
+#   这里同时有目录级与 *.pem 扩展名级两层 —— 防的是"把 key 放到别处"。
+server/certs/
 
 # ── 分发制品（二进制，每次重签都会变）──────────────────────────────────
 社团管理工具-*.zip
