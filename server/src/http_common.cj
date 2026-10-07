@@ -77,6 +77,12 @@ public func apiErrorSpec(code: String): (Int64, String) {
     if (code == "APPOINTMENT_NOT_FOUND") {
         return (404, "挂号单不存在")
     }
+    if (code == "USER_NOT_FOUND") {
+        return (404, "账号不存在")
+    }
+    if (code == "USER_EXISTS") {
+        return (409, "登录名已存在")
+    }
     if (code == "SLOT_GONE") {
         return (409, "号源已被抢完，请选择其它排班")
     }

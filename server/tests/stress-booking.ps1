@@ -19,10 +19,18 @@ param(
     [int]$Tokens = 20,
     [int]$ScheduleTotal = 0,     # 0 = 用 Tokens 作为号源数
     [int]$SetupPort = 0,
-    [string]$Dsn = "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
+    [string]$Dsn = "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital",
+    [string]$AdminLogin = "admin",
+    [string]$AdminPw = "",
+    [string]$PatientLogin = "13800000001",
+    [string]$PatientPw = "patient-pw-1",
+    [switch]$UseDevAuth           # 兼容旧用法；默认走令牌
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $UseDevAuth -and [string]::IsNullOrEmpty($AdminPw)) {
+    throw "默认走**令牌鉴权**，需要 -AdminPw（先跑 hospital-server.exe create-admin <dsn>）。`n  或显式加 -UseDevAuth 用开发态身份头（需服务端 --dev-auth 启动）。"
+}
 
 $mysql = "E:\cangjie\mariadb\mariadb-11.4.13-winx64\bin\mariadb.exe"
 if (-not (Test-Path $mysql)) { throw "找不到 mariadb 客户端：$mysql" }
@@ -35,6 +43,52 @@ Write-Host "  并发请求数: $Tokens"
 Write-Host "  号源总数  : $ScheduleTotal"
 $expectSuccess = [Math]::Min($Tokens, $ScheduleTotal)
 Write-Host "  期望成功数: $expectSuccess（= min(请求数, 号源数)）"
+Write-Host ""
+
+# ── 0) 取令牌（默认走真实鉴权路径）────────────────────────────────────────
+# ⚠ 并发压测**必须**穿过真实鉴权：否则测的是"开了后门之后"的系统。
+#   做法：登录一次拿管理员令牌 + 患者令牌，把两个令牌各写进一个**共享 config 文件**，
+#   N 个 worker 都 `-K` 那个文件 —— 这样命令行上不出现令牌（也避开参数含空格被拆的坑）。
+$tmpDir = Join-Path $env:TEMP ("stress-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+$tmpDirCurl = $tmpDir -replace '\\', '/'
+
+function WriteCfg($path, $method, $headers, $bodyFile) {
+    $lines = @("request = `"$method`"")
+    foreach ($h in $headers) { $lines += "header = `"$h`"" }
+    if ($bodyFile) {
+        $lines += ('data = "@' + $bodyFile + '"')
+        $lines += 'header = "Content-Type: application/json"'
+    }
+    [System.IO.File]::WriteAllText($path, ($lines -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Login($cfgPath, $login, $pw) {
+    $bf = "$tmpDirCurl/login.body"
+    [System.IO.File]::WriteAllText(($bf -replace '/', '\'),
+        ('{"login_name":"' + $login + '","password":"' + $pw + '"}'),
+        (New-Object System.Text.UTF8Encoding($false)))
+    WriteCfg $cfgPath 'POST' @() $bf
+    $out = & curl.exe -s -K $cfgPath "$Base/api/v1/auth/login"
+    try { return ($out | ConvertFrom-Json).data.token } catch { return "" }
+}
+
+$adminCfg = Join-Path $tmpDir 'admin.cfg'
+$patCfg = Join-Path $tmpDir 'patient.cfg'
+if ($UseDevAuth) {
+    Write-Host "[0/4] 鉴权：**开发态身份头**（-UseDevAuth）"
+    WriteCfg $adminCfg 'POST' @('X-Role: admin') $null
+    WriteCfg $patCfg 'POST' @('X-Role: patient', 'X-Patient-Id: 1') $null
+} else {
+    Write-Host "[0/4] 鉴权：**Bearer 令牌**"
+    $adminTok = Login (Join-Path $tmpDir 'login-admin.cfg') $AdminLogin $AdminPw
+    if ([string]::IsNullOrEmpty($adminTok)) { throw "管理员登录失败（检查 -AdminPw）" }
+    $patTok = Login (Join-Path $tmpDir 'login-patient.cfg') $PatientLogin $PatientPw
+    if ([string]::IsNullOrEmpty($patTok)) { throw "患者登录失败（检查 -PatientPw；可先跑 auth-check.ps1 修夹具）" }
+    Write-Host "  管理员令牌 $($adminTok.Length) 字符 ｜ 患者令牌 $($patTok.Length) 字符"
+    WriteCfg $adminCfg 'POST' @("Authorization: Bearer $adminTok") $null
+    WriteCfg $patCfg 'POST' @("Authorization: Bearer $patTok") $null
+}
 Write-Host ""
 
 # ── 1) 准备：清空并造一个干净排班 ──────────────────────────────────────────
@@ -59,53 +113,58 @@ Remove-Item $tmp -Force
 # 建排班（走管理员接口，顺带验证写接口）
 # ⚠ body 走**文件**而不是 -d 内联：PowerShell 会把内联 JSON 的花括号/引号弄成非法 JSON
 #   （实测报 `Invalid JSON body`）。`--data-binary @文件` 最稳。
-$createFile = Join-Path $env:TEMP "stress-create.json"
-[System.IO.File]::WriteAllText($createFile,
-    "{`"doctor_id`":1,`"department_id`":1,`"work_date`":`"2026-11-01`",`"period`":`"AM`",`"total_num`":$ScheduleTotal}",
+$createFile = "$tmpDirCurl/create.body"
+[System.IO.File]::WriteAllText(($createFile -replace '/', '\'),
+    '{"doctor_id":1,"department_id":1,"work_date":"2026-11-01","period":"AM","total_num":' + $ScheduleTotal + '}',
     (New-Object System.Text.UTF8Encoding($false)))
-$createOut = & curl.exe -s -X POST -H "X-Role: admin" -H "Content-Type: application/json" --data-binary "@$createFile" "$Base/api/v1/admin/schedules"
-Remove-Item $createFile -Force
+$createCfg = Join-Path $tmpDir 'create.cfg'
+# ⚠ 必须在第 0 步那份**管理员鉴权 config** 上追加 body ——
+#   不能另起一个只带 body 的 config，那样会把鉴权头丢掉（实测报 AUTH_REQUIRED）。
+$authLines = Get-Content $adminCfg -Encoding UTF8
+$cfg = @($authLines) + @(
+    ('data = "@' + $createFile + '"')
+    'header = "Content-Type: application/json"'
+    'silent'
+    'write-out = "\n__CODE__%{http_code}"'
+)
+[System.IO.File]::WriteAllText($createCfg, ($cfg -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
+$createOut = & curl.exe -s -K $createCfg "$Base/api/v1/admin/schedules"
 Write-Host "  建排班响应: $createOut"
-$sid = ($createOut | ConvertFrom-Json).data.schedule_id
-if (-not $sid) { throw "建排班失败" }
+# ⚠ config 里带了 `write-out = "\n__CODE__%{http_code}"`，状态码会附在 body 后面 ——
+#   直接 ConvertFrom-Json 会报「无效的 JSON 基元: __CODE__201」。必须先切掉。
+$createJson = ($createOut -split "__CODE__")[0].Trim()
+$sid = ($createJson | ConvertFrom-Json).data.schedule_id
+if (-not $sid) { throw "建排班失败（鉴权是否生效？）" }
 
 # ── 2) 并发发起：每个请求一个独立 curl 进程 ─────────────────────────────────
 Write-Host ""
 Write-Host "[2/4] 并发发起 $Tokens 个挂号请求（各自独立进程/连接）…"
-$tmpDir = Join-Path $env:TEMP ("stress-" + [Guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
 
 $procs = @()
-# ⚠ curl config 文件里**反斜杠是转义符**，Windows 路径必须写成正斜杠
-#   （实测："@C:\Users\..." 被读成 "C:Users..." → Failed to open）。
-#   curl on Windows 接受正斜杠路径，所以这里统一替换。
-$tmpDirCurl = $tmpDir -replace '\\', '/'
 for ($i = 1; $i -le $Tokens; $i++) {
     # ⚠⚠ 关键坑（实测踩到两次，都记在这里）：
     #   1) `Start-Process -ArgumentList` 会把**含空格**的参数拆坏 ——
-    #      "X-Role: patient" 到达 curl 时变成 "X-Role:"，于是每个请求都 401，
+    #      "Authorization: Bearer xxx" 到达 curl 时被拆断，于是每个请求都 401，
     #      看起来像"服务端拒绝并发"，其实是命令行被吃了。
     #   2) PowerShell 的反引号转义在数组拼接里会**原样写入**，不会变成 JSON 的引号，
     #      于是请求体变成 {"schedule_id":1,...} 这种非法串 → 400 Invalid JSON。
-    #   处置（两条一起解决）：body 写**独立文件**，config 里用 `data = "@文件"`，
-    #   命令行上只剩无空格的路径与 URL。
+    #   处置（两条一起解决）：body 与 header 全部写**文件**，命令行上只剩无空格的路径与 URL。
     $bodyFileWin = Join-Path $tmpDir "$i.body"
     [System.IO.File]::WriteAllText($bodyFileWin,
         '{"schedule_id":' + $sid + ',"client_token":"stress-' + $i + '"}',
         (New-Object System.Text.UTF8Encoding($false)))
     $bodyFileCurl = $bodyFileWin -replace '\\', '/'
 
+    # 复用第 0 步那份**共享**的患者鉴权 config（令牌只在文件里，不落命令行）
     $cfgFile = Join-Path $tmpDir "$i.cfg"
-    $cfg = @(
-        'request = "POST"'
-        'header = "X-Role: patient"'
-        'header = "X-Patient-Id: 1"'
-        'header = "Content-Type: application/json"'
+    $authLines = Get-Content $patCfg -Encoding UTF8
+    $cfg = @($authLines) + @(
         ('data = "@' + $bodyFileCurl + '"')
+        'header = "Content-Type: application/json"'
         'silent'
         'write-out = "\n__CODE__%{http_code}"'
-    ) -join "`n"
-    [System.IO.File]::WriteAllText($cfgFile, $cfg, (New-Object System.Text.UTF8Encoding($false)))
+    )
+    [System.IO.File]::WriteAllText($cfgFile, ($cfg -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
 
     $outFile = Join-Path $tmpDir "$i.out"
     $errFile = Join-Path $tmpDir "$i.err"

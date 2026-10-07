@@ -52,46 +52,65 @@ cd server
 ```powershell
 cd server     # ⚠ cwd 必须是 server/，见下
 .\build\hospital-server.exe selftest
+.\build\hospital-server.exe authtest
 .\build\hospital-server.exe check-db "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
 .\build\hospital-server.exe accept   "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
 
-# P1：启动 HTTP 服务（阻塞）
-.\build\hospital-server.exe serve "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital" --port 8091 --dev-auth
+# 建第一个管理员（引导入口，不经 HTTP；口令只打印一次）
+.\build\hospital-server.exe create-admin "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
+
+# P1：启动 HTTP 服务（阻塞）—— 默认只绑 127.0.0.1
+.\build\hospital-server.exe serve "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital" --port 8091
 ```
 
 | 子命令 | 作用 | 需要 MySQL |
 | --- | --- | --- |
-| `selftest` | schema 与 ADR 不变量的**纯本地**自检（29 项断言） | ❌ |
+| `selftest` | schema 与 ADR 不变量的**纯本地**自检（32 项断言） | ❌ |
+| `authtest` | **口令/令牌原语自检**（含 3 个公开测试向量，17 项） | ❌ |
 | `check-db <dsn>` | 连库 + 幂等建表 + 打印表清单（★ 标记号源域） | ✅ |
 | `accept <dsn>` | P0 验收测试 AC-1…AC-8（32 项断言） | ✅ |
+| `create-admin <dsn>` | 建/重置管理员并打印口令（**引导入口**） | ✅ |
 | `serve <dsn>` | **P1**：启动 HTTP 服务（默认只绑 `127.0.0.1`） | ✅ |
 
 ⚠ `accept` **会清空业务表**，已内置库名守卫（库名不含 `test` 且不等于 `hospital` 时中止）。
 ⚠ `serve` 的 `--dev-auth` 是**开发态身份头**，绕过全部认证；与 `--prod` 同传会拒绝启动。
+⚠ `serve` 启动时**先跑 `authtest` 再连库** —— PBKDF2 错了就没必要连库。
 
 ### P1 接口
 
 | 方法 | 路径 | 权限 |
 | --- | --- | --- |
 | GET | `/health` | 无 |
+| POST | `/api/v1/auth/login` | 无（换令牌） |
+| POST | `/api/v1/auth/logout` | 需令牌 |
+| GET | `/api/v1/auth/me` | 需令牌 |
 | GET | `/api/v1/schedules/:id` | 三端可读 |
 | POST | `/api/v1/appointments` | 仅患者 |
 | POST | `/api/v1/appointments/:id/cancel` | 患者退自己的 / 管理员退任意 |
 | POST | `/api/v1/admin/schedules` | 仅管理员 |
+| POST | `/api/v1/admin/users` | 仅管理员 |
+| GET | `/api/v1/admin/users?login_name=` | 仅管理员（只回非敏感字段） |
+| POST | `/api/v1/admin/users/:id/password` | 仅管理员（**同时吊销该账号全部令牌**） |
 
-联调身份头：`X-Role: patient|doctor|admin`、`X-Patient-Id: <id>`、`X-Doctor-Id: <id>`。
+**鉴权**：`Authorization: Bearer <token>`。令牌 32 字节随机（64 hex），有效期 30 天、
+滑动续期（每天最多写一次）。**有状态**（服务端存 token → user）⇒ 停用/改口令可立即踢下线。
 
-### 并发压测（P1 新增，补 AC-9）
+联调备用：`--dev-auth` 开启后可用 `X-Role: patient|doctor|admin` + `X-Patient-Id: <id>`；
+**未开启时这些头被忽略并返回 401**（有测试钉住）。
+
+### 自动化测试脚本
 
 ```powershell
-.\tests\stress-booking.ps1 -Base http://127.0.0.1:8091 -Tokens 50 -ScheduleTotal 10
+# 令牌鉴权端到端（登录/权限/登出/改口令踢下线/防枚举计时）
+.\tests\auth-check.ps1     -Base http://127.0.0.1:8091 -AdminPw <管理员口令>
+
+# 多进程并发压测（走令牌；默认不用 --dev-auth）
+.\tests\stress-booking.ps1 -Base http://127.0.0.1:8091 -Tokens 50 -ScheduleTotal 10 -AdminPw <管理员口令>
 ```
 
-起 N 个**独立 `curl.exe` 进程**打同一号源，断言「成功数恰好等于号源数」+ 余量守恒。
-实测三工况全绿：20抢8 → 8 成功、50抢10 → 10 成功、5抢20 → 5 成功余 15。
-
-> ⚠ 脚本会**清空并造数据**；且**必须用 `curl -K` config 文件**传 header/body ——
-> `Start-Process -ArgumentList` 会拆坏含空格的参数（详见 [../docs/P1-HANDOFF.md](../docs/P1-HANDOFF.md) §3.3）。
+两个脚本**互不依赖执行顺序**（自建夹具、自清数据）。
+> ⚠ 必须用 `curl -K` config 文件传 header/body —— `Start-Process -ArgumentList` 会拆坏
+> 含空格的参数（详见 [../docs/P1-HANDOFF.md](../docs/P1-HANDOFF.md) §3.3）。
 
 ### 验收依据：源码哈希，不是产物哈希
 
@@ -106,25 +125,29 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/schema.cj` | 最小表集 DDL（7 张）+ 两层范围锁死（业务状态 / 幂等基础设施） |
+| `src/schema.cj` | 最小表集 DDL（9 张：7 业务 + 2 鉴权）+ 分域范围锁死 |
 | `src/domain_booking.cj` | ★ 号源/挂号域：原子扣减、幂等、取消归还（三态 `CancelOutcome`）、`visit_date` 快照 |
+| `src/auth_crypto.cj` | PBKDF2-HMAC-SHA256（100k）+ 令牌原语 + **3 个公开测试向量自检** |
+| `src/auth_repo.cj` | 鉴权仓储：账号、按登录名查、登录（防枚举）、令牌签发/校验/续期/吊销 |
 | `src/db_bootstrap.cj` | MySQL 建连 + `SET NAMES utf8mb4` + DSN 解析 + 驱动注册 |
+| `src/http_common.cj` | 统一响应/错误码表（`{ok,data}` / `{ok:false,error}`） |
+| `src/http_app.cj` | HTTP 装配 + 三端权限矩阵 + `principalOf()`（令牌优先，开发态头可选） |
 | `src/acceptance.cj` | AC-1…AC-8 验收测试（含异常兜底与变异测试记录） |
 | `src/main.cj` | 进程入口与子命令分发 |
 
-**最小表集（7 张）**：
+**最小表集（9 张）**：
 
 | 表 | 层 | 数据访问 |
 | --- | --- | --- |
 | `schedule` | 号源域 · **业务状态** | 直接 SQL |
 | `appointment` | 挂号域 · **业务状态** | 直接 SQL |
 | `booking_idem` | 号源域 · **幂等基础设施** | 直接 SQL（仅 `BookingRepo` 写） |
+| `auth_user` `auth_token` | **鉴权域** | 直接 SQL（仅 `AuthRepo` 写） |
 | `department` `doctor` `patient` `medical_record` | 业务 | 内存 Store 范式（P1+ 落地） |
 
-> ⚠ `booking_idem` **刻意不叫** `idem`：基线内存 Store 已占用 `idem` 表名
-> （`baseline/server/src/mysql_store.cj:892`，列定义不同）。P1 引入内存 Store 后
-> 整库刷盘的 `replaceBatched("idem", …)` 会与本侧挂号幂等记录争同一张表。
-> 现「本侧 7 张表 ∩ 基线 10 张表 = ∅」，由 `selftest` + AC-4 钉住。
+> ⚠ `booking_idem` 与 `auth_token` **刻意不叫** `idem` / `tokens`：
+> 基线内存 Store 已占用这两个表名（`mysql_store.cj:891-892`），列定义也不同。
+> 现「本侧 9 张表 ∩ 基线 10 张表 = ∅」，由 `selftest` + AC-4 钉住。
 
 ---
 

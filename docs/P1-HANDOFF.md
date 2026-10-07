@@ -149,24 +149,132 @@ P0 的号源数据层现在**暴露成真实 HTTP 接口**了，并且用 **50 �
 
 ---
 
+## 4. ★ 令牌鉴权（已上线，`--dev-auth` 降为可选联调开关）
+
+### 4.1 口径
+
+| 项 | 做法 |
+| --- | --- |
+| 口令 | **PBKDF2-HMAC-SHA256，100000 次迭代**，16 字节随机盐（照基线口径） |
+| 令牌 | **32 字节随机 → 64 位 hex**，落 MySQL `auth_token` |
+| 会话模型 | **有状态**（服务端存 token → user），**不是无状态 JWT** ⇒ 停用账号/改口令能**立即踢下线** |
+| 有效期 | 30 天，**滑动续期**，但用 `last_renew_at` **节流到每天最多写一次** |
+| 回收 | 签发时顺手清过期令牌（基线的"tokens 表只增不减"教训） |
+| 防枚举 | 账号不存在时**照样跑一次完整 PBKDF2**（假材料），且与口令错误**返回同一个错误码** |
+| 比较 | 口令摘要用**定时安全比较**，不在第一个不同字节返回 |
+
+### 4.2 ★ 密码学是"验过"的，不是"抄过"的
+
+`hospital-server.exe authtest` 用**三个公开测试向量**钉住 PBKDF2：
+
+| 向量 | 来源 |
+| --- | --- |
+| `pbkdf2("passwd","salt",1,64)` | RFC 7914 §11 |
+| `pbkdf2("Password","NaCl",80000,64)` | RFC 7914 §11 |
+| `pbkdf2("password","saltSALT",100000,32)` | 与 .NET `Rfc2898DeriveBytes` 对拍（**正式参数档**） |
+
+外加：非法参数（`iters<=0` / `dkLen<=0`）必须 **fail closed 返回空**，不得静默降级成 1 轮。
+
+> `serve` 启动时**先跑 authtest 再连库** —— 否则连上库也只是在用错的哈希签发令牌。
+> 另有独立子命令 `authtest`，不需要数据库。
+
+### 4.3 ★ 防枚举：实测计时比值 **1.01 ~ 1.06**
+
+基线记过：未防护时"账号存在/不存在"的登录耗时差约 **13 倍**，登录接口本身就是个账号枚举器。
+本项目实测（各 5 次）：
+
+| 场景 | 平均耗时 |
+| --- | --- |
+| 账号存在但口令错 | 473.9 ms |
+| 账号不存在 | 448.3 ms |
+| **比值** | **1.06** ✅ |
+
+对医院尤其要紧：**"谁在本院看过病"是最该保护的一类信息。**
+
+### 4.4 接口
+
+| 方法 | 路径 | 权限 |
+| --- | --- | --- |
+| POST | `/api/v1/auth/login` | 无（换令牌） |
+| POST | `/api/v1/auth/logout` | 需令牌（吊销当前令牌） |
+| GET | `/api/v1/auth/me` | 需令牌 |
+| POST | `/api/v1/admin/users` | 仅管理员（已存在 → **409**，不静默复用） |
+| GET | `/api/v1/admin/users?login_name=` | 仅管理员（**只回非敏感字段**，绝不回盐/摘要） |
+| POST | `/api/v1/admin/users/:id/password` | 仅管理员（★ **同时吊销该账号全部令牌**） |
+
+### 4.5 ★ 引导问题：第一个管理员怎么来
+
+`POST /admin/users` 需要管理员身份，而第一个管理员还不存在 —— 鸡生蛋。
+所以引导入口**不经 HTTP**：
+
+```powershell
+.\build\hospital-server.exe create-admin <dsn> [登录名]
+```
+
+口令本机随机生成、**只打印一次**、不落盘；账号已存在则改口令（并吊销其全部令牌）。
+它与"直接改 `auth_user` 表"等价，**不引入新的信任假设**（能改库的人本来就能改任何东西）。
+
+### 4.6 `principalOf()` 与 `can()` 解耦 —— 换鉴权零业务改动
+
+从开发态身份头切到令牌，**业务逻辑与权限矩阵一行未改**：唯一改点是 `principalOf()` 的实参。
+
+解析优先级：
+1. **`Authorization: Bearer <token>`** —— 正式路径（先看，避免"以为在用令牌其实在用头"）；
+2. 开发态头 `X-Role`/`X-Patient-Id` —— **仅 `--dev-auth` 下**，每请求打警告；
+3. 都没有 → **401，明确失败**（不静默放行）。
+
+实测确认：**未开 `--dev-auth` 时，`X-Role: admin` 头被忽略并返回 401**。
+
+### 4.7 与基线的差异（如实标注）
+
+| 项 | 基线 | 本侧 |
+| --- | --- | --- |
+| 令牌存储 | 内存 `s.tokens` + 整库刷盘 | **直接 SQL `auth_token`**（两套范式，见 ADR-0001 §4.2） |
+| 表名 | `tokens` | **`auth_token`**（避撞名：基线占了 `tokens`） |
+| 三阶段加锁 | 有（PBKDF2 移出全局锁） | **不需要** —— 无全局锁，PBKDF2 天然不在锁内 |
+| 角色 | 社团角色 | 患者/医生/管理员三端 |
+
+> ⚠ 仍**未做**：HTTPS（令牌明文过网）、登录限流/锁定、口令强度校验、令牌按设备管理。
+> 这些都不该在明文 HTTP 上宣称"已完成"。
+
+---
+
 ## 5. 怎么跑
 
 ```powershell
 cd server
 .\build.ps1
-.\build\hospital-server.exe serve "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital" --port 8091 --dev-auth
+
+# 1) 口令/令牌原语自检（不需要数据库）
+.\build\hospital-server.exe authtest
+
+# 2) 建第一个管理员（引导入口，不经 HTTP；口令只打印一次）
+.\build\hospital-server.exe create-admin "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
+
+# 3) 启动服务（**不再需要** --dev-auth）
+.\build\hospital-server.exe serve "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital" --port 8091
 ```
 
 ```powershell
 # 另开一个终端
 curl.exe -s http://127.0.0.1:8091/health
-curl.exe -s -H "X-Role: patient" -H "X-Patient-Id: 1" http://127.0.0.1:8091/api/v1/schedules/1
 
-# 并发压测（会先清表造数据）
-.\tests\stress-booking.ps1 -Base http://127.0.0.1:8091 -Tokens 50 -ScheduleTotal 10
+# 登录换令牌
+curl.exe -s -X POST -H "Content-Type: application/json" `
+  -d '{\"login_name\":\"admin\",\"password\":\"<上一步打印的口令>\"}' `
+  http://127.0.0.1:8091/api/v1/auth/login
+
+# 用令牌调业务接口
+curl.exe -s -H "Authorization: Bearer <token>" http://127.0.0.1:8091/api/v1/auth/me
+
+# 自动化测试
+$env:ADMINPW = "<口令>"
+.\tests\auth-check.ps1  -Base http://127.0.0.1:8091 -AdminPw $env:ADMINPW
+.\tests\stress-booking.ps1 -Base http://127.0.0.1:8091 -Tokens 50 -ScheduleTotal 10 -AdminPw $env:ADMINPW
 ```
 
 > ⚠ `serve` 是**阻塞**的；`stress-booking.ps1` 会**清空业务表**后再造数据。
+> 两个脚本**互不依赖执行顺序**（各自的夹具自建自清 —— 这修过两轮隔离缺陷）。
 
 ---
 
@@ -174,33 +282,47 @@ curl.exe -s -H "X-Role: patient" -H "X-Patient-Id: 1" http://127.0.0.1:8091/api/
 
 | 套件 | 命令 | 结果 |
 | --- | --- | --- |
-| schema 自检（无需库） | `hospital-server.exe selftest` | ✅ 29 项 |
+| schema 自检（无需库） | `hospital-server.exe selftest` | ✅ 32 项 |
+| ★ 口令/令牌原语（含 3 个公开向量） | `hospital-server.exe authtest` | ✅ 17 项 |
 | P0 验收（AC-1…AC-8） | `hospital-server.exe accept <dsn>` | ✅ 32 项 |
-| **并发压测（AC-9）** | `tests\stress-booking.ps1` | ✅ 三种工况全绿 |
-| 手工 HTTP 冒烟 | 见 §5 | ✅ 401/403/400/201/409/200 均符合预期 |
+| ★ 令牌鉴权端到端 | `tests\auth-check.ps1` | ✅ 27 项（含计时防枚举） |
+| ★ 并发压测（AC-9，走令牌） | `tests\stress-booking.ps1` | ✅ 三种工况全绿 |
+| 手工 HTTP 冒烟 | 见 §5 | ✅ 401/403/404/409/400/201/200 均符合预期 |
 
 **验收仍以 `build/SOURCE-MANIFEST.sha256` + 测试结果为准**，不要比 exe 哈希
 （cjc 产物不逐字节可复现 —— 见 ADR §5.1）。
 
 ---
 
-## 7. P1 未完成的部分（下一步）
+## 7. 本轮又抓出的缺陷（都是"响应在撒谎"这一类）
 
-| # | 待办 | 为什么现在没做 |
+| # | 缺陷 | 性质 |
 | --- | --- | --- |
-| 1 | **令牌鉴权体系**（换取/持久化/过期回收，替掉 `--dev-auth`） | 增量太大，先把接口与权限骨架立起来并测通更划算；换令牌时 `principalOf()` 是**唯一改点** |
-| 2 | **内存 Store 引入 + AC-4 完整回归**（整库刷盘后断言号源域表逐值不变） | 需要先有科室/医生/病历的内存模型（属后续域） |
-| 3 | 患者"我的挂号"列表 | 依赖令牌拿到稳定 patientId |
-| 4 | 排班列表（按科室/日期查） | 需先定分页口径 |
-| 5 | HTTPS（`serveTls`） | 需证书；⚠ `baseline/server/certs/` 的私钥**已按安全要求剔除**，需重新生成 |
+| 1 | `/admin/users` 对已存在的登录名**静默复用**既有账号并**忽略传入的 password** | 「看起来成功其实没生效」——调用方以为账号建好了、口令是新的，然后登录失败找不到原因。已改 **409 USER_EXISTS** 并提示改用改口令接口 |
+| 2 | `/admin/users/:id/password` 对不存在的账号会 **UPDATE 影响 0 行却回 200** | 同类谎言。已先查存在性，回 **404 USER_NOT_FOUND** |
+| 3 | 测试脚本**依赖残留状态**（假定患者口令是固定值 / 假定排班存在） | 两次假失败，根因都在测试而非代码。已改为**自建夹具**（按登录名反查 id → 重置口令）并断言"**非 403**"而非"必须 200" |
+| 4 | `selftest` 硬编码"最小表集 7 张"，加鉴权表后当场变红 | 断言写死数字必然在加表时漏改。已改为"业务表 7 + 鉴权表 2"分项断言 |
 
-> 换令牌时 `principalOf()` 是唯一改点，这是刻意设计的：
-> **权限判定（`can()`）与身份来源（`principalOf()`）解耦**，
-> 所以换鉴权方式**不会碰到任何业务逻辑或权限矩阵**。
+> 值得注意：**#1/#2 是我自己在本轮写出来的**，而且都是"响应语义不诚实"这一类 ——
+> 与 P0 的"少卖"、P1 的"退号却报 booked"是同一种病。
+> 这类缺陷测试最容易漏，因为它们**看起来是成功的**。
 
 ---
 
-## 8. 参考
+## 8. P1 仍未完成（下一步）
+
+| # | 待办 | 为什么现在没做 |
+| --- | --- | --- |
+| 1 | **HTTPS（`serveTls`）** | ⚠ 令牌明文过网 —— **这是当前最大的安全缺口**。基线 `certs/` 私钥已按安全要求剔除，需重新生成证书 |
+| 2 | 登录**限流 / 失败锁定** | 现在可以无限次试口令（基线有 `rateLimit` 可借） |
+| 3 | 口令**强度校验** | 现在任意短口令都收 |
+| 4 | 内存 Store 引入 + AC-4 完整回归 | 需要先有科室/医生/病历的内存模型 |
+| 5 | 患者"我的挂号"列表、排班列表（按科室/日期） | 依赖令牌后已具备条件（patientId 稳定可得） |
+| 6 | 令牌按设备管理 / 主动踢某台设备 | 现在只能"吊销全部" |
+
+---
+
+## 9. 参考
 
 - P0 说明：[P0-HANDOFF.md](P0-HANDOFF.md) ｜ 架构决策：[ADR-0001](adr/ADR-0001-号源与挂号独立MySQL路径.md)
 - 轻舟 API 事实清单（每条带 file:line）：[../baseline/docs/qingzhou-api-fact-sheet.md](../baseline/docs/qingzhou-api-fact-sheet.md)

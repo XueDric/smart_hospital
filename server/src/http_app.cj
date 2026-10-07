@@ -140,11 +140,17 @@ public func requireCan(role: Role, action: Action): Unit {
 
 /*
  * 当前请求的身份。
+ *
+ * ⚠ 这是 `principalOf()` 与 `can()` 之间的**唯一契约**：
+ *   身份来源怎么变（开发态头 / 令牌），这个结构不变，
+ *   所以权限矩阵与业务逻辑都不用动。
  */
 public class Principal {
+    public var userId: Int64 = 0
     public var role: Role = Role.Patient
     public var patientId: Int64 = 0
     public var doctorId: Int64 = 0
+    public var loginName: String = ""
 }
 
 /*
@@ -181,35 +187,78 @@ public class DevAuthGate {
 /*
  * 从请求解析身份。
  *
- * 开发态：读 `X-Role`（patient/doctor/admin）+ `X-Patient-Id` / `X-Doctor-Id`。
- * 非开发态：一律 401 —— **明确失败，不静默放行**（静默放行是最危险的失败方式）。
+ * ★ 优先级（P1 令牌体系上线后）：
+ *   1. **`Authorization: Bearer <token>`** —— 正式路径。
+ *      令牌是 32 字节随机 → 64 位 hex，服务端存 token → user 映射（不是无状态 JWT），
+ *      所以"停用账号/改密码"能立即踢下线。
+ *   2. 开发态身份头（`X-Role` / `X-Patient-Id`）—— **仅在 `--dev-auth` 下才看**，
+ *      每请求打 `[DEV-AUTH]` 警告。用于本机快速联调。
+ *   3. 两者都没有 → **401，明确失败**。
+ *
+ * ⚠ 顺序很重要：先看令牌。这样即使有人误开了 `--dev-auth`，
+ *   带合法令牌的正式请求也不会走开发态分支（少一条"以为在用令牌其实在用头"的歧路）。
+ *
+ * ⚠ 非开发态下**绝不静默放行** —— 静默放行是最危险的失败方式。
  */
-public func principalOf(ctx: Context, gate: DevAuthGate): Principal {
-    let p = Principal()
-    if (!gate.enabled) {
-        throw apiErrorMsg("AUTH_REQUIRED",
-                          "本版本尚未接入令牌鉴权；联调请以 --dev-auth 启动（生产禁止）")
-    }
-    let roleStr = match (ctx.requestHeader("X-Role")) {
-        case Some(v) => v
-        case None => throw apiErrorMsg("AUTH_REQUIRED", "缺少 X-Role（开发态联调头）")
-    }
-    let role = match (roleOf(roleStr)) {
-        case Some(r) => r
-        case None => throw apiErrorMsg("VALIDATION_FAILED", "未知角色：${roleStr}")
-    }
-    p.role = role
-    println("[DEV-AUTH] ${ctx.method()} ${ctx.path()} 以 ${roleName(role)} 身份放行" +
-            "（开发态；生产必须走令牌）")
-    match (ctx.requestHeader("X-Patient-Id")) {
-        case Some(v) => p.patientId = parseInt64Or(v, 0)
+public func principalOf(ctx: Context, gate: DevAuthGate, auth: AuthRepo): Principal {
+    let now = hNowEpoch()
+
+    /* 1) 正式路径：Bearer 令牌 */
+    match (bearerToken(ctx)) {
+        case Some(tok) =>
+            match (auth.principalByToken(tok, now)) {
+                case Some(p) => return p
+                case None =>
+                    // 令牌无效/过期 —— 明确区分"过期"与"无效"，便于客户端决定是否跳登录页
+                    throw apiErrorMsg("AUTH_TOKEN_EXPIRED",
+                                      "令牌无效或已过期，请重新登录")
+            }
         case None => ()
     }
-    match (ctx.requestHeader("X-Doctor-Id")) {
-        case Some(v) => p.doctorId = parseInt64Or(v, 0)
-        case None => ()
+
+    /* 2) 开发态身份头（仅 --dev-auth 下） */
+    if (gate.enabled) {
+        match (ctx.requestHeader("X-Role")) {
+            case Some(roleStr) =>
+                let role = match (roleOf(roleStr)) {
+                    case Some(r) => r
+                    case None => throw apiErrorMsg("VALIDATION_FAILED", "未知角色：${roleStr}")
+                }
+                let p = Principal()
+                p.role = role
+                println("[DEV-AUTH] ${ctx.method()} ${ctx.path()} 以 ${roleName(role)} 身份放行" +
+                        "（开发态；生产必须走令牌）")
+                match (ctx.requestHeader("X-Patient-Id")) {
+                    case Some(v) => p.patientId = parseInt64Or(v, 0)
+                    case None => ()
+                }
+                match (ctx.requestHeader("X-Doctor-Id")) {
+                    case Some(v) => p.doctorId = parseInt64Or(v, 0)
+                    case None => ()
+                }
+                return p
+            case None => ()
+        }
     }
-    return p
+
+    /* 3) 都没有 → 401 */
+    throw apiErrorMsg("AUTH_REQUIRED", "缺少 Authorization: Bearer <token>")
+}
+
+/* 取出 Authorization: Bearer <token>（照基线 auth.cj:136 口径）。 */
+public func bearerToken(ctx: Context): ?String {
+    match (ctx.requestHeader("authorization")) {
+        case Some(v) =>
+            if (!startsWithAscii(v.toAsciiLower(), "bearer ")) {
+                return None
+            }
+            let t = subFrom(v, 7).trimAscii()
+            if (t.size == 0) {
+                return None
+            }
+            return Some(t)
+        case None => return None
+    }
 }
 
 /* ===================== 入参读取 ===================== */
@@ -249,11 +298,14 @@ func bookingJson(r: BookingResult): JsonObject {
 /* ===================== 路由 ===================== */
 
 /*
- * 装配路由。三个业务接口 + 健康检查。
+ * 装配路由。
  *
  * 路径带 `/api/v1` 前缀（与基线 api-design 口径一致，便于客户端复用同一套 base-url 处理）。
+ *
+ * ⚠ 三端业务接口的**身份来源**是 `principalOf(ctx, gate, auth)` ——
+ *   从开发态头切到令牌，这里只改了这一个调用点的实参，业务逻辑一行未动。
  */
-public func buildHospitalRouter(repo: BookingRepo, gate: DevAuthGate): Router {
+public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate): Router {
     let r = Router()
 
     /* ---------- 健康检查（无需认证，供压测与探活）---------- */
@@ -263,12 +315,190 @@ public func buildHospitalRouter(repo: BookingRepo, gate: DevAuthGate): Router {
         o.put("service", JsonString("hospital-server"))
         o.put("version", JsonString(SERVER_VERSION))
         o.put("data_backend", JsonString("mysql"))
+        o.put("dev_auth", JsonBool(gate.enabled))
         ctx.status(200).json(o.toString())
     })
 
+    /* ===================== 鉴权接口 ===================== */
+
+    /* ---------- POST /api/v1/auth/login —— 登录换令牌 ---------- */
+    r.post("/api/v1/auth/login", { ctx: Context, _: () -> Unit =>
+        let body = bodyObj(ctx)
+        let loginName = requireStr(ctx, "login_name")
+        let password = requireStr(ctx, "password")
+        let now = hNowEpoch()
+        match (auth.login(loginName, password, now)) {
+            case Some(x) =>
+                let o = JsonObject()
+                o.put("token", JsonString(x[1]))
+                o.put("expires_at", JsonInt(x[2]))
+                // 顺带回身份摘要，省一次 /me 往返
+                match (auth.findUser(loginName)) {
+                    case Some(u) =>
+                        o.put("user_id", JsonInt(u.id))
+                        o.put("role", JsonString(roleName(u.role)))
+                        o.put("ref_id", JsonInt(u.refId))
+                        o.put("display_name", JsonString(u.displayName))
+                    case None => ()
+                }
+                sendOk(ctx, o)
+            case None =>
+                /*
+                 * ⚠ 账号不存在与口令错误**返回同一个错误码**（AUTH_BAD_CREDENTIALS）。
+                 *   分开回就是在告诉攻击者"这个手机号注册过" ——
+                 *   而"谁在本院看过病"正是最该保护的信息（见 auth_crypto.cj loginCreds）。
+                 */
+                throw apiError("AUTH_BAD_CREDENTIALS")
+        }
+    })
+
+    /* ---------- POST /api/v1/auth/logout —— 登出（吊销当前令牌）---------- */
+    r.post("/api/v1/auth/logout", { ctx: Context, _: () -> Unit =>
+        let tok = match (bearerToken(ctx)) {
+            case Some(t) => t
+            case None => throw apiError("AUTH_REQUIRED")
+        }
+        // 先确认令牌有效（无效令牌登出应报 401，而不是假装成功）
+        let _ = principalOf(ctx, gate, auth)
+        let _ = auth.revokeToken(tok)
+        let o = JsonObject()
+        o.put("logged_out", JsonBool(true))
+        sendOk(ctx, o)
+    })
+
+    /* ---------- GET /api/v1/auth/me —— 当前身份 ---------- */
+    r.get("/api/v1/auth/me", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        let o = JsonObject()
+        o.put("user_id", JsonInt(p.userId))
+        o.put("role", JsonString(roleName(p.role)))
+        o.put("patient_id", JsonInt(p.patientId))
+        o.put("doctor_id", JsonInt(p.doctorId))
+        sendOk(ctx, o)
+    })
+
+    /* ---------- POST /api/v1/admin/users —— 建账号（仅管理员）---------- */
+    /*
+     * P1 需要能造出可登录的账号；正式的账号管理界面属 P4。
+     * 与建排班同理，受**认证 + 管理员角色**双重保护。
+     */
+    r.post("/api/v1/admin/users", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        let body = bodyObj(ctx)
+        let loginName = requireStr(ctx, "login_name")
+        let password = requireStr(ctx, "password")
+        let roleStr = requireStr(ctx, "role")
+        let role = match (roleOf(roleStr)) {
+            case Some(r) => r
+            case None => throw apiErrorMsg("VALIDATION_FAILED", "未知角色：${roleStr}")
+        }
+        // ref_id：患者/医生必填（指向业务实体），管理员为 0
+        var refId: Int64 = 0
+        match (bodyInt64(ctx, "ref_id")) {
+            case Some(v) => refId = v
+            case None => ()
+        }
+        // ref_id：患者/医生必填（指向业务实体），管理员为 0。
+        // ⚠ 仓颉的枚举**不能用 `==`**（API-NOTES 坑 4：invalid binary operator '==' on Enum），
+        //   所以角色判定一律走 match（或用 roleName() 转字符串比较）。
+        match (role) {
+            case Patient =>
+                if (refId <= 0) {
+                    throw apiErrorMsg("VALIDATION_FAILED", "患者账号必须给 ref_id（patient.id）")
+                }
+            case Doctor =>
+                if (refId <= 0) {
+                    throw apiErrorMsg("VALIDATION_FAILED", "医生账号必须给 ref_id（doctor.id）")
+                }
+            case Admin => ()
+        }
+        let displayName = match (bodyStr(ctx, "display_name")) {
+            case Some(v) => v
+            case None => loginName
+        }
+        /*
+         * ★ 登录名已存在 → **409 明确报错**，不静默复用既有账号。
+         *
+         * 踩过的坑（本端点自己）：`AuthRepo.createUser` 是幂等的 ——
+         * 已存在就返回既有 id。若这里直接回 201，就会出现
+         * 「建账号成功、但传的 password 被静默忽略」这种**看起来成功其实没生效**的响应，
+         * 调用方（人和脚本都会）据此以为账号建好了、口令是新的 —— 然后登录失败找不到原因。
+         * 建账号与改口令是两件事，必须让调用方知道是哪一件。
+         */
+        if (auth.findUser(loginName).isSome()) {
+            throw apiErrorMsg("USER_EXISTS",
+                              "登录名已存在：${loginName}（要改口令请调 POST /api/v1/admin/users/:id/password）")
+        }
+        let uid = auth.createUser(loginName, role, refId, displayName, password, hNowEpoch())
+        let o = JsonObject()
+        o.put("user_id", JsonInt(uid))
+        o.put("role", JsonString(roleName(role)))
+        sendCreated(ctx, o)
+    })
+
+    /* ---------- GET /api/v1/admin/users?login_name= —— 按登录名查账号（仅管理员）---------- */
+    /*
+     * 用途：前台"这个手机号对应的账号 id 是多少"是常规需求；
+     * 测试夹具也需要它来把已存在的账号口径拉回已知状态。
+     *
+     * ⚠ **只返回非敏感字段** —— 绝不回 pw_salt / pw_hash（哪怕给管理员也不回：
+     *   口令材料没有任何前端用途，回它只是给泄露多开一条路）。
+     */
+    r.get("/api/v1/admin/users", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        let loginName = ctx.queryParamOr("login_name", "")
+        if (loginName.size == 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "缺少查询参数 login_name")
+        }
+        match (auth.findUser(loginName)) {
+            case Some(u) =>
+                let o = JsonObject()
+                o.put("user_id", JsonInt(u.id))
+                o.put("login_name", JsonString(u.loginName))
+                o.put("role", JsonString(roleName(u.role)))
+                o.put("ref_id", JsonInt(u.refId))
+                o.put("display_name", JsonString(u.displayName))
+                o.put("status", JsonString(u.status))
+                sendOk(ctx, o)
+            case None => throw apiErrorMsg("USER_NOT_FOUND", "账号不存在：${loginName}")
+        }
+    })
+
+    /* ---------- POST /api/v1/admin/users/:id/password —— 重置口令（仅管理员）---------- */
+    /*
+     * 医院必须能重置忘记的口令（前台帮患者重置是常规操作）。
+     *
+     * ★ 安全语义：`setPassword` 会**吊销该账号的全部令牌** ——
+     *   改口令必须踢下线，否则"口令泄露 → 改口令"这个补救动作是无效的
+     *   （旧令牌仍然能用）。这条有测试钉住。
+     */
+    r.post("/api/v1/admin/users/:id/password", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        let uid = parseInt64Or(ctx.paramOr("id", "0"), 0)
+        if (uid <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "user_id 必须是正整数")
+        }
+        let body = bodyObj(ctx)
+        let password = requireStr(ctx, "password")
+        // 先确认账号存在（否则 UPDATE 影响 0 行、却回 200 —— 那是撒谎）
+        if (!auth.userExists(uid)) {
+            throw apiErrorMsg("USER_NOT_FOUND", "账号不存在：${uid}")
+        }
+        auth.setPassword(uid, password, hNowEpoch())
+        let o = JsonObject()
+        o.put("user_id", JsonInt(uid))
+        o.put("tokens_revoked", JsonBool(true))
+        sendOk(ctx, o)
+    })
+
+    /* ===================== 业务接口 ===================== */
+
     /* ---------- GET /api/v1/schedules/:id —— 查排班（三端可读）---------- */
     r.get("/api/v1/schedules/:id", { ctx: Context, _: () -> Unit =>
-        let p = principalOf(ctx, gate)
+        let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.ViewSchedule)
         let sid = parseInt64Or(ctx.paramOr("id", "0"), 0)
         if (sid <= 0) {
@@ -294,7 +524,7 @@ public func buildHospitalRouter(repo: BookingRepo, gate: DevAuthGate): Router {
 
     /* ---------- POST /api/v1/appointments —— 挂号（仅患者）---------- */
     r.post("/api/v1/appointments", { ctx: Context, _: () -> Unit =>
-        let p = principalOf(ctx, gate)
+        let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.Book)
         let body = bodyObj(ctx)
         let scheduleId = requireInt(ctx, "schedule_id")
@@ -320,7 +550,7 @@ public func buildHospitalRouter(repo: BookingRepo, gate: DevAuthGate): Router {
 
     /* ---------- POST /api/v1/appointments/:id/cancel —— 退号 ---------- */
     r.post("/api/v1/appointments/:id/cancel", { ctx: Context, _: () -> Unit =>
-        let p = principalOf(ctx, gate)
+        let p = principalOf(ctx, gate, auth)
         let id = parseInt64Or(ctx.paramOr("id", "0"), 0)
         if (id <= 0) {
             throw apiErrorMsg("VALIDATION_FAILED", "挂号单 id 必须是正整数")
@@ -380,7 +610,7 @@ public func buildHospitalRouter(repo: BookingRepo, gate: DevAuthGate): Router {
      * 双重保护**的最小写入接口；不开 --dev-auth 时它和业务接口一样直接 401。
      */
     r.post("/api/v1/admin/schedules", { ctx: Context, _: () -> Unit =>
-        let p = principalOf(ctx, gate)
+        let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.ManageSchedule)
         let body = bodyObj(ctx)
         let doctorId = requireInt(ctx, "doctor_id")
@@ -406,8 +636,8 @@ public func buildHospitalRouter(repo: BookingRepo, gate: DevAuthGate): Router {
 
 /* ===================== 应用装配 ===================== */
 
-public func buildHospitalApp(repo: BookingRepo, gate: DevAuthGate): QingZhouApp {
-    let router = buildHospitalRouter(repo, gate)
+public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate): QingZhouApp {
+    let router = buildHospitalRouter(repo, auth, gate)
     return QingZhouApp()
         .use(requestId())
         .use(logger())

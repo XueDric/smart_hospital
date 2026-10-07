@@ -30,12 +30,15 @@ func usage(): Unit {
     println("智慧医院智能导诊就诊系统 · 服务端 ${SERVER_VERSION}")
     println("")
     println("用法：")
-    println("  hospital-server.exe selftest              纯本地自检（无需 MySQL）")
+    println("  hospital-server.exe selftest              纯本地自检（schema 不变量，无需 MySQL）")
+    println("  hospital-server.exe authtest              口令/令牌原语自检（含公开测试向量，无需 MySQL）")
     println("  hospital-server.exe check-db <dsn>        连库建表并打印表清单")
     println("  hospital-server.exe accept <dsn>          跑验收测试（AC-1…AC-8）")
     println("  hospital-server.exe serve <dsn> [--port N] [--dev-auth] [--prod] [--bind IP]")
     println("                                            启动 HTTP 服务（P1 挂号闭环）")
     println("  hospital-server.exe version               打印版本")
+    println("  hospital-server.exe create-admin <dsn> [登录名]")
+    println("                                            创建/重置管理员并打印口令（引导用）")
     println("")
     println("DSN 格式：mysql://user:pass@host:port/db")
     println("  本机联调示例：mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital")
@@ -129,8 +132,16 @@ func selftest(): Int64 {
 
     println("=== schema 自检 ===")
 
-    // 1) 七张最小表齐备（brief §10 Q2 建议最小集 7 张）
-    check("最小表集为 7 张（实际 ${ALL_TABLES.size}）", ALL_TABLES.size == 7)
+    // 1) 最小表集：brief §10 Q2 的 7 张**业务**表 + P1 令牌体系的 2 张**鉴权**表 = 9。
+    //    ⚠ 用"业务表数 + 鉴权表数"两个分项断言，而不是硬编码总数 ——
+    //      硬编码数字在加表时必然要手改，而漏改就变成"测试说没事、其实漂移了"。
+    //      （本次加鉴权表时就正好触发了这条，所以它是有用的。）
+    let bizTables = 7
+    let authTables = 2
+    check("业务表为 ${bizTables} 张 + 鉴权表 ${authTables} 张", ALL_TABLES.size == bizTables + authTables)
+    check("鉴权表恰好 2 张（auth_user / auth_token）",
+          isAuthTable(TABLE_AUTH_USER) && isAuthTable(TABLE_AUTH_TOKEN))
+    check("业务表不误入鉴权域", !isAuthTable(TABLE_PATIENT) && !isAuthTable(TABLE_SCHEDULE))
 
     // 2) 每张**业务表**都有对应 DDL。
     //    ⚠ 不能断言 `SCHEMA_DDL.size == ALL_TABLES.size` —— DDL 数组里还可以有
@@ -203,7 +214,8 @@ func selftest(): Int64 {
             }
         }
     }
-    check("本侧 7 张表与基线内存 Store 表名零交集（含 idem 改名生效）", clash == 0)
+    check("本侧 ${ALL_TABLES.size} 张表与基线内存 Store 表名零交集（含 idem/tokens 改名生效）",
+          clash == 0)
     check("本侧不再有裸 'idem' 表", !isBookingOwnedTable("idem"))
 
     // 6) ★ 防超卖两支柱必须在 DDL 里（ADR AC-2 / AC-1）
@@ -271,6 +283,19 @@ func serve(args: Array<String>): Int64 {
         }
     }
 
+    /*
+     * ★ 连库**之前**先跑口令/令牌原语自检。
+     *
+     * 理由：如果 PBKDF2 是错的，连上库也只是在用错的哈希签发令牌 ——
+     * 那种错误会在很久以后以"某天所有口令都对不上"的形式爆出来。
+     * 这里用三个公开测试向量（RFC 7914 §11 两条 + 100k 对拍 .NET 一条）当场钉死。
+     */
+    if (authSelfTest() != 0) {
+        println("❌ 口令/令牌原语自检失败，拒绝启动（连库也没有意义）")
+        return 3
+    }
+    println("")
+
     var db: DbBackend
     var cfg: MySqlConfig
     try {
@@ -292,33 +317,94 @@ func serve(args: Array<String>): Int64 {
     }
 
     let repo = BookingRepo(db)
-    let app = buildHospitalApp(repo, gate)
+    let auth = AuthRepo(db)
+    let app = buildHospitalApp(repo, auth, gate)
     let box = HandleBox()
 
     println("")
-    println("智慧医院服务端 ${SERVER_VERSION}（P1 挂号闭环）")
+    println("智慧医院服务端 ${SERVER_VERSION}（P1 挂号闭环 + 令牌鉴权）")
     println("监听 ${bindAddr}:${port}")
     if (bindAddr == "0.0.0.0") {
-        println("  ⚠ 已绑定全部网卡：同局域网可访问。本阶段是**明文 HTTP + 开发态身份头**，")
-        println("    绝不要把这个端口暴露到公网。")
+        println("  ⚠ 已绑定全部网卡：同局域网可访问。本阶段是**明文 HTTP**，")
+        println("    绝不要把这个端口暴露到公网（令牌会以明文过网）。")
     }
     if (devAuth) {
         println("  ⚠ --dev-auth 已开启：X-Role / X-Patient-Id 请求头可直接冒用身份。")
-        println("    仅限本机联调；生产必须换令牌（--prod 会拒绝启动）。")
+        println("    仅限本机联调；生产必须走令牌（--prod 会拒绝启动）。")
     } else {
         println("  （未开 --dev-auth：业务接口会返回 401，仅 /health 可用）")
     }
     println("")
     println("接口：")
     println("  GET  /health                              探活（无需认证）")
+    println("  POST /api/v1/auth/login                   登录换令牌（无需认证）")
+    println("  POST /api/v1/auth/logout                  登出（吊销当前令牌）")
+    println("  GET  /api/v1/auth/me                      当前身份")
     println("  GET  /api/v1/schedules/:id                查排班（三端可读）")
     println("  POST /api/v1/appointments                 挂号（仅患者）")
     println("  POST /api/v1/appointments/:id/cancel      退号（患者退自己的 / 管理员退任意）")
+    println("  POST /api/v1/admin/schedules              建排班（仅管理员）")
+    println("  POST /api/v1/admin/users                  建账号（仅管理员）")
+    println("")
+    println("鉴权：Authorization: Bearer <token>（令牌 30 天，滑动续期）")
 
     let handle = app.serve(port, bindAddr: bindAddr)
     box.handle = Some(handle)
     handle.wait()
     println("服务已停止")
+    db.close()
+    return 0
+}
+
+/*
+ * create-admin：创建/重置一个管理员账号并打印口令。
+ *
+ * ── 为什么需要它（引导问题）────────────────────────────────────────────────
+ * `POST /api/v1/admin/users` 建账号需要**管理员身份**，而第一个管理员还不存在
+ * —— 鸡生蛋。所以引导入口必须**不经 HTTP**：只能在本机命令行、有数据库口令的人才能跑。
+ *
+ * ⚠ 安全姿态：
+ *   · 口令本机随机生成、**只打印到控制台一次**，不写日志文件；
+ *   · 若账号已存在 → **改口令**（同时吊销其全部令牌，见 setPassword）；
+ *   · 这是"有 DB 写权限即可拿到管理员"的路径 —— 与直接改库等价，
+ *     所以它不引入新的信任假设（能改 auth_user 表的人本来就能改任何东西）。
+ */
+func createAdmin(args: Array<String>): Int64 {
+    if (args.size < 1) {
+        println("用法：hospital-server.exe create-admin <dsn> [登录名]")
+        return 2
+    }
+    let dsn = args[0]
+    var loginName = "admin"
+    if (args.size >= 2) {
+        loginName = args[1]
+    }
+    var db: DbBackend
+    var cfg: MySqlConfig
+    try {
+        cfg = parseDsn(dsn)
+        db = openDatabase(cfg)
+        ensureSchema(db)
+    } catch (e: Exception) {
+        println("❌ ${e.message}")
+        return 1
+    }
+    let auth = AuthRepo(db)
+    // 生成可读口令：用去混淆字符表（与基线 CODE_ALPHABET 同思路），便于人工抄录
+    let pw = randCode(12)
+    let existed = auth.findUser(loginName).isSome()
+    let uid = auth.createUser(loginName, Role.Admin, 0, "管理员", pw, hNowEpoch())
+    if (existed) {
+        // 已存在 → 改口令（setPassword 会顺带吊销其全部令牌）
+        auth.setPassword(uid, pw, hNowEpoch())
+    }
+    println("")
+    println("管理员账号：")
+    println("  登录名：${loginName}")
+    println("  口  令：${pw}")
+    println("  user_id：${uid}   （${if (existed) { "已存在 → 已重置口令并吊销旧令牌" } else { "新建" }}）")
+    println("")
+    println("⚠ 口令只显示这一次（未落盘）；请立即用 POST /api/v1/auth/login 换令牌。")
     db.close()
     return 0
 }
@@ -339,6 +425,10 @@ main(args: Array<String>): Int64 {
     if (cmd == "selftest") {
         return selftest()
     }
+    if (cmd == "authtest") {
+        // 口令/令牌原语自检（含 RFC 7914 公开测试向量），不需要数据库
+        return authSelfTest()
+    }
     if (cmd == "check-db") {
         if (args.size < 2) {
             println("用法：hospital-server.exe check-db <dsn>")
@@ -356,6 +446,9 @@ main(args: Array<String>): Int64 {
     if (cmd == "serve") {
         // 把 serve 之后的参数整体传下去（args[1..]）
         return serve(args[1..])
+    }
+    if (cmd == "create-admin") {
+        return createAdmin(args[1..])
     }
     println("未知子命令：${cmd}")
     println("")

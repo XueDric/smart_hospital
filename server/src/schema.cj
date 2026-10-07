@@ -53,6 +53,17 @@ public let TABLE_PATIENT: String = "patient"
 public let TABLE_MEDICAL_RECORD: String = "medical_record"
 public let TABLE_BOOKING_IDEM: String = "booking_idem"
 
+/*
+ * 鉴权表（P1 令牌体系）。
+ *
+ * ⚠ 命名同样避开基线：基线内存 Store 占用了 `tokens`（`mysql_store.cj:891`
+ *   的 `PersistedState.tokens`，DDL 同名）。所以本侧叫 **`auth_token`**。
+ *   账号表叫 `auth_user`（基线没有同名表，但加 auth_ 前缀是为了让"这是鉴权域"
+ *   一眼可辨，与业务表 `patient`/`doctor` 区分开）。
+ */
+public let TABLE_AUTH_USER: String = "auth_user"
+public let TABLE_AUTH_TOKEN: String = "auth_token"
+
 /* 号源/挂号**业务状态**表 —— 唯二走直接 SQL 的业务表（ADR-0001 §4.3）。 */
 public let BOOKING_DOMAIN_TABLES: Array<String> = [TABLE_SCHEDULE, TABLE_APPOINTMENT]
 
@@ -68,7 +79,8 @@ public let BOOKING_INFRA_TABLES: Array<String> = [TABLE_BOOKING_IDEM]
  */
 public let ALL_TABLES: Array<String> = [
     TABLE_DEPARTMENT, TABLE_DOCTOR, TABLE_SCHEDULE,
-    TABLE_APPOINTMENT, TABLE_PATIENT, TABLE_MEDICAL_RECORD, TABLE_BOOKING_IDEM
+    TABLE_APPOINTMENT, TABLE_PATIENT, TABLE_MEDICAL_RECORD, TABLE_BOOKING_IDEM,
+    TABLE_AUTH_USER, TABLE_AUTH_TOKEN
 ]
 
 /* ===================== DDL ===================== */
@@ -198,6 +210,44 @@ public let SCHEMA_DDL: Array<String> = [
     "created_at BIGINT NOT NULL DEFAULT 0, " +
     "PRIMARY KEY (idem_key), " +
     "KEY idx_booking_idem_created (created_at)" +
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+
+    // ── 鉴权账号（P1 令牌体系）───────────────────────────────────────────
+    // 一个账号 = 一个登录身份。三端角色（patient/doctor/admin）共用本表，
+    // 用 role 区分；`ref_id` 指向该角色对应的业务实体
+    // （患者 → patient.id，医生 → doctor.id，管理员 → 0 表示无业务实体）。
+    //
+    // ⚠ 为什么不合进 patient 表：医生与管理员也要登录，而他们不是患者；
+    //   把三者塞进一张表会让"谁是患者"这个判定变得依赖 role 字段，
+    //   而 role 是鉴权属性、不是业务属性。分开后 patient 表保持纯业务语义。
+    "CREATE TABLE IF NOT EXISTS auth_user (" +
+    "id BIGINT NOT NULL AUTO_INCREMENT, " +
+    "login_name VARCHAR(64) NOT NULL, " +      // 患者用手机号；医生/管理员用工号
+    "role VARCHAR(16) NOT NULL, " +            // patient / doctor / admin
+    "ref_id BIGINT NOT NULL DEFAULT 0, " +     // 对应业务实体 id
+    "display_name VARCHAR(64) NOT NULL DEFAULT '', " +
+    "pw_salt VARCHAR(64) NOT NULL, " +         // 16 字节盐的 hex
+    "pw_hash VARCHAR(128) NOT NULL, " +        // 32 字节摘要的 hex
+    "pw_iter BIGINT NOT NULL DEFAULT 0, " +    // 迭代数（随记录走，便于将来升级）
+    "status VARCHAR(16) NOT NULL DEFAULT 'active', " +  // active / disabled
+    "created_at BIGINT NOT NULL DEFAULT 0, " +
+    "PRIMARY KEY (id), " +
+    "UNIQUE KEY uk_auth_user_login (login_name)" +
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+
+    // ── 鉴权令牌（P1 令牌体系）───────────────────────────────────────────
+    // ⚠ 刻意**不叫** `tokens`：基线内存 Store 已占用该表名（mysql_store.cj:891）。
+    // 令牌是 64 个十六进制字符（32 字节随机），用 VARCHAR(64) 主键。
+    // 服务端存 token → user 映射 ⇒ **不是无状态 JWT**，所以"停用账号"能立即踢下线。
+    "CREATE TABLE IF NOT EXISTS auth_token (" +
+    "token VARCHAR(64) NOT NULL, " +
+    "user_id BIGINT NOT NULL, " +
+    "created_at BIGINT NOT NULL DEFAULT 0, " +
+    "expires_at BIGINT NOT NULL DEFAULT 0, " +
+    "last_renew_at BIGINT NOT NULL DEFAULT 0, " +  // 滑动续期节流用
+    "PRIMARY KEY (token), " +
+    "KEY idx_auth_token_user (user_id), " +
+    "KEY idx_auth_token_expires (expires_at)" +
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
 ]
 
@@ -245,6 +295,17 @@ public func isBookingInfraTable(name: String): Bool {
         }
     }
     return false
+}
+
+/*
+ * 判定某表是否属于**鉴权域**（auth_user / auth_token）。
+ *
+ * 与号源域同理：鉴权表也走直接 SQL（见 auth_repo.cj），
+ * 但它们是**基础设施**而非业务状态，所以与 BOOKING_* 分开列 ——
+ * 这样"某张表归谁管"永远能从一个函数问出来，而不是靠读代码猜。
+ */
+public func isAuthTable(name: String): Bool {
+    return name == TABLE_AUTH_USER || name == TABLE_AUTH_TOKEN
 }
 
 /*
