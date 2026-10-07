@@ -41,6 +41,24 @@ package qingzhou
  */
 import std.collection.*
 
+/* ===================== 内存 Store 负责的表清单 ===================== */
+
+/*
+ * ★★ **内存 Store 负责的表清单** —— ADR-0001 §4.3 范围锁死的另一半。
+ *
+ * 这是 AC-4 的**机制性保证**：`flushToMysql()` 遍历的就是这个清单，
+ * 所以"刷盘会不会碰号源域"有一个**可查询的答案**：
+ *     `MEM_TABLES` 与 `BOOKING_DOMAIN_TABLES` 的交集必须为空。
+ * 两个函数都从清单算，而不是各自写死 —— 免得将来加表时漏改一处。
+ *
+ * ⚠ 必须放在**文件靠前**：仓颉**没有函数/全局提升**（no hoisting），
+ *   定义在使用之后会报 `variable 'MEM_TABLES' is used before being defined`
+ *   —— 实测就是在 `flushToMysql` 的错误信息里用到它才暴露的。
+ */
+public let MEM_TABLES: Array<String> = [
+    TABLE_DEPARTMENT, TABLE_DOCTOR, TABLE_PATIENT, TABLE_MEDICAL_RECORD
+]
+
 /* ===================== 内存实体 ===================== */
 
 /*
@@ -130,10 +148,36 @@ public class MemStore {
     /* ---------- 载入 ---------- */
 
     /*
+     * ★ 是否已成功 `loadAll()` 过 —— `flushToMysql()` 的安全闸门。
+     *
+     * ── 为什么必须有它（2026-10-07 加，复查指出）────────────────────────────
+     * `flushToMysql()` 是 **DELETE 整表 + 按内存内容重写**。
+     * 所以**若在没 loadAll 的情况下调用它，会把 4 张表清空**
+     * （内存是空的 ⇒ DELETE 掉全部行、然后一行都不写回）。
+     * 这是这个范式**最危险的一步**。
+     *
+     * 当前唯一调用方（AC-4）是先 loadAll 再刷，所以**不可达**；
+     * 但"当前不可达"不等于"安全" —— 将来真正接上科室/医生域时，
+     * 一个漏掉 loadAll 的调用就是**整表数据丢失**。所以现在就加闸门：
+     * **未载入就拒绝刷盘**（fail closed），而不是安静地清库。
+     *
+     * ⚠ 这是**读代码得出的加固**，不是实测抓到的线上缺陷
+     *   （从 CLI 无法触达：目前只有 AC-4 一个调用方，且它先 loadAll）。
+     *   如实标注，不冒充"抓到了一个 bug"。
+     */
+    private var loaded: Bool = false
+
+    /*
      * 从 MySQL 全量载入这批表到内存。
      * 返回载入的行数合计（便于启动日志与测试断言）。
      */
     public func loadAll(): Int64 {
+        let n = doLoadAll()
+        loaded = true
+        return n
+    }
+
+    func doLoadAll(): Int64 {
         var n: Int64 = 0
         departments.clear()
         doctors.clear()
@@ -235,7 +279,20 @@ public class MemStore {
      */
     public func flushToMysql(): Int64 {
         /*
-         * ⚠ 结果必须装在 **class 的 var 字段**里回传，不能直接捕获外层的 `var written`
+         * ★★ 安全闸门：未 loadAll 就刷盘 = **整表清空**（内存为空 ⇒ DELETE 全部 + 不写回）。
+         * 直接抛异常（fail closed），绝不"安静地清库"。
+         * 调用方若确实想清空这些表，应当**显式**先 loadAll（拿到空快照）再刷 ——
+         * 让"清空"成为一个需要写出来的意图，而不是一次遗漏的副作用。
+         */
+        if (!loaded) {
+            throw Exception(
+                "MemStore.flushToMysql() 在未 loadAll() 的情况下被调用 —— " +
+                "这会把 ${MEM_TABLES.size} 张表清空（本方法是 DELETE 整表 + 按内存重写）。\n" +
+                "  处置：先调用 loadAll() 载入现有数据；若确实想清空，请显式 loadAll() 后刷盘。\n" +
+                "  ⚠ 这是一道 fail-closed 闸门（2026-10-07 加），不是可以绕过的检查。")
+        }
+        /*
+         * ⚠ 结果必须装在 **class 的 var 字段**里回传，不能直接捕获外层的 `var`
          *   —— 实测报 `lambda capturing mutable variables needs to be called directly`
          *   （仓颉的闭包捕获限制，本项目已多次踩到，见 domain_booking.cj 的 TxResult）。
          */
@@ -393,17 +450,6 @@ public class MemStore {
 
 /* ===================== 刷盘的"遍历源" ===================== */
 
-/*
- * ★★ **内存 Store 负责的表清单** —— ADR-0001 §4.3 范围锁死的另一半。
- *
- * 这是 AC-4 的**机制性保证**：`flushToMysql()` 遍历的就是这个清单，
- * 所以"刷盘会不会碰号源域"这个问题有一个**可查询的答案**：
- *     `MEM_TABLES` 与 `BOOKING_DOMAIN_TABLES` 的交集必须为空。
- * 两个函数都从清单算，而不是各自写死 —— 免得将来加表时漏改一处。
- */
-public let MEM_TABLES: Array<String> = [
-    TABLE_DEPARTMENT, TABLE_DOCTOR, TABLE_PATIENT, TABLE_MEDICAL_RECORD
-]
 
 /* 某表是否由内存 Store 负责。 */
 public func isMemStoreTable(name: String): Bool {

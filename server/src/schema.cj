@@ -101,7 +101,9 @@ public let ALL_TABLES: Array<String> = [
  * 建表 DDL（幂等：全部 IF NOT EXISTS）。
  *
  * 设计要点：
- *  1. `schedule.version` —— 乐观锁版本号（ADR-0001 §2.2）。每次成功扣减 +1。
+ *  1. `schedule.version` —— 版本号（ADR-0001 §2.2）。每次成功扣减/归还 +1。
+ *     ⚠ rev.3 起**不再是扣号的乐观锁前置条件**（实测它会让人少卖），
+ *       改为服务「管理端并发编辑」的防覆盖 —— 见 domain_booking.cj tryDeductSlot 的长注释。
  *  2. `schedule.remain_num` —— 剩余号源。**扣减必须带 `remain_num > 0` 条件**，
  *     绝不出现负数（AC-2）。
  *  3. `schedule.work_date` —— 排班就诊日。管理员可一键顺延（改它）。
@@ -155,7 +157,7 @@ public let SCHEMA_DDL: Array<String> = [
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 
     // ── 排班 / 号源 ★ 号源域 ──────────────────────────────────────────────
-    // version + remain_num 是防超卖的两个支柱（ADR-0001 §2.2）。
+    // remain_num 才是防超卖的支柱（ADR-0001 §2.2）；version 只用于管理端防覆盖。
     "CREATE TABLE IF NOT EXISTS schedule (" +
     "id BIGINT NOT NULL AUTO_INCREMENT, " +
     "doctor_id BIGINT NOT NULL, " +
@@ -164,7 +166,7 @@ public let SCHEMA_DDL: Array<String> = [
     "period VARCHAR(16) NOT NULL DEFAULT 'AM', " + // AM / PM
     "total_num BIGINT NOT NULL DEFAULT 0, " +
     "remain_num BIGINT NOT NULL DEFAULT 0, " +
-    "version BIGINT NOT NULL DEFAULT 0, " +        // ← 乐观锁
+    "version BIGINT NOT NULL DEFAULT 0, " +        // ← 版本号（rev.3 起不是扣号前置条件，用途见上）
     "enabled TINYINT NOT NULL DEFAULT 1, " +
     "created_at BIGINT NOT NULL DEFAULT 0, " +
     "PRIMARY KEY (id), " +

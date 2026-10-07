@@ -82,7 +82,7 @@ public let HTTP_BOOKING_RETRY: Int64 = 6
 public enum BookingOutcome {
     | Booked(Int64)                        // 成功，携带挂号单 id
     | AlreadyBooked(Int64)                 // 幂等命中，携带既有挂号单 id
-    | SlotGone                             // 号源已变/已满（乐观锁冲突或 remain_num=0）
+    | SlotGone                             // 号源已放完（remain_num = 0；rev.3 起不存在"乐观锁冲突"这种失败）
     | ScheduleNotFound                     // 排班不存在或未启用
 }
 
@@ -100,7 +100,8 @@ public enum CancelOutcome {
 
 /*
  * 排班行（读模型）。
- * ⚠ 只读快照，不参与写入决策 —— 版本号可能在你拿到它的一瞬间就变了（这正是乐观锁的前提）。
+ * ⚠ 只读快照，**不参与写入决策** —— 版本号可能在你拿到它的一瞬间就变了。
+ *   （rev.3 前它是乐观锁的读基准；现在扣号/归还都不带 version 条件，所以这里只是展示用。）
  */
 public class ScheduleRow {
     public var id: Int64 = 0

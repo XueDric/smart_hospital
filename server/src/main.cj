@@ -281,7 +281,8 @@ func selftest(): Int64 {
         if (sql.contains("visit_date VARCHAR")) { hasVisitDate = true }
         if (sql.contains("client_token VARCHAR")) { hasClientToken = true }
     }
-    check("schedule 有 version 乐观锁列", hasVersion)
+    // ⚠ 文案订正：version 列还在，但 rev.3 起**不是**扣号的前置条件了（别再叫它"乐观锁列"）
+    check("schedule 有 version 列（供管理端防覆盖；rev.3 起不参与扣号）", hasVersion)
     check("schedule 有 remain_num 列", hasRemain)
     check("appointment 有 visit_date 就诊日快照列", hasVisitDate)
     check("appointment 有 client_token 幂等键列", hasClientToken)

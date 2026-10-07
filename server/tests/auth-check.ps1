@@ -18,6 +18,8 @@ param(
     [string]$PatientLogin = "13800000001",
     [string]$PatientPw = "patient-pw-1",
     [int]$PatientRefId = 1,
+    # 用于**自清限流状态**（本脚本会故意打错口令，不清理就会把自己锁死）
+    [string]$Dsn = "mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital_test",
     [switch]$SkipTiming
 )
 
@@ -26,8 +28,35 @@ if ([string]::IsNullOrEmpty($AdminPw)) {
     throw "必须提供 -AdminPw（先跑 hospital-server.exe create-admin <dsn> 拿到口令）"
 }
 
+# ── 连接参数从 DSN 派生（唯一事实来源，见 common.ps1 顶部说明）──
+. "$PSScriptRoot\common.ps1"
+$My = Get-MySqlClientArgs -Dsn $Dsn
+
 $tmp = Join-Path $env:TEMP ("authcheck-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+
+# ★ 自清限流状态（2026-10-07 修，第三份复查发现的**严重**缺陷）。
+#
+# ── 问题：本脚本**不再可重复**、也不再顺序无关 ──────────────────────────
+# 第 7 节"防枚举计时"会对 admin **连打 5 次错口令** —— 正好触发登录锁定，
+# 而脚本**没有清理限流状态**。实测：
+#     第 1 次跑：25 PASS / 0 FAIL
+#     紧接着第 2 次：13 PASS / 12 FAIL，且登录全部 429
+#
+# 这推翻了 P1-HANDOFF 里"三个脚本互不依赖执行顺序（各自夹具自建自清）"的说法，
+# 也会让"跑完 auth-check 再跑 stress/tls"失败 —— 因为 admin 已被锁死。
+# 讽刺的是 `rate-limit-check.ps1` 的注释里**已经识别了这个风险**
+# （"塞进 auth-check 会让那个脚本的假设被限流状态污染"），
+# 却只顾自己做自清，没管 auth-check。现在补上。
+#
+# ⚠ 清的是**限流计数**（auth_login_attempt），不是业务数据 ——
+#   与其它脚本"自建夹具、自清"的纪律一致。
+# ⚠ 这里必须用 PowerShell 的 `#` 注释：本文件是 **PowerShell 脚本**，
+#   写 C 风格 /* */ 会被当命令执行（实测报 "无法将 /* 项识别为 cmdlet"）。
+function Reset-LoginAttempts {
+    $null = Invoke-MySqlScalar -My $My -Sql "DELETE FROM auth_login_attempt" -Label "清限流计数"
+}
+Reset-LoginAttempts
 
 $fail = 0
 function Check($name, $ok) {
@@ -198,11 +227,14 @@ if (-not $SkipTiming) {
     Write-Host ("    账号存在(口令错) 平均 {0:N1} ms ｜ 账号不存在 平均 {1:N1} ms" -f $a1, $a2)
     Write-Host ("    比值 {0:N2}（基线未防护时约 13 倍）" -f $ratio)
     Check "计时接近（比值 < 2）⇒ 防枚举成立" ($ratio -lt 2)
+    # ★ 计时段打了 5+ 次错口令 —— 跑完必须清，否则 admin 被锁着交给下一个脚本
+    Reset-LoginAttempts
 }
 
 Remove-Item $tmp -Recurse -Force
 Write-Host ""
 if ($fail -eq 0) {
+    Reset-LoginAttempts
     Write-Host "✅ 令牌鉴权端到端测试全部通过"
     exit 0
 } else {

@@ -26,12 +26,18 @@ package qingzhou
 
 /*
  * ⚠ 本文件原先**没有 import**（它只用 String/Int64 与 db.exec/query）。
- *   2026-10-07 引入"登录名哈希"后需要两个 stdx 模块，必须显式 import ——
+ *   2026-10-07 引入"登录名归一 + 哈希"后需要两个 stdx 模块，必须显式 import ——
  *   否则报 `undeclared identifier 'toHexString'`（实测踩到）。
  *   · stdx.crypto.digest  → HMAC / SHA256（经 auth_crypto.hmacSha256 间接用）
  *   · stdx.encoding.hex   → toHexString
- *   与 auth_crypto.cj 的 import 口径保持一致。
+ *
+ * ⚠⚠ **不要** import `std.convert.*`：实测加上之后 `trimAscii` 反而变成
+ *   `undeclared identifier 'trimAscii'`（那个模块有同名符号，把可用的那个遮蔽掉了）。
+ *   真正让 `trimAscii` / `toAsciiLower` 可用的是 **`std.collection.*`** ——
+ *   证据：两个用它们的文件（`main.cj` / `http_app.cj`）都 import 了它。
+ *   这个"到底谁提供 trimAscii"的排查花了好几轮，记下来免得下次再找。
  */
+import std.collection.*
 import stdx.crypto.digest.*
 import stdx.encoding.hex.*
 
@@ -63,35 +69,100 @@ public class AuthUser {
  * 取值口径（三个数字都要能解释，不能拍脑袋）：
  *   · FAIL_LIMIT = 5        —— 正常人手误 1~2 次；5 次足够容错，又不给爆破留空间。
  *   · FAIL_WINDOW = 900s    —— 15 分钟窗口内的失败才累计；零散的手误不会累积成锁定。
- *   · LOCK_SECONDS = 900s   —— 锁 15 分钟。**刻意不用"永久锁定"**：
- *       永久锁会让攻击者用"故意输错"来**拒绝服务**真实用户（而且解锁要人工）。
- *       有限窗口下，攻击者最多拖慢自己，用户等一会儿即可自愈。
+ *   · LOCK_SECONDS = 900s   —— 锁 15 分钟。
+ *
+ * ── ★ 关于"锁定"的代价：必须**如实**说，不能美化（2026-10-07 订正）────────
+ * 本文件原先写着"攻击者最多拖慢自己，用户等一会儿即可自愈"。
+ * **这句话是错的** —— 复查指出，实测也证实：锁定记在**账号**上，
+ * 所以知道某人登录名的攻击者**可以故意输错 5 次来锁死那个真实用户**
+ * （锁定期内他连**正确口令**也进不来，实测同样返回 429）。
+ *
+ * 这是**账号级锁定固有的代价**，不是实现 bug。如实写成：
+ *     「可被用于对**特定账号**做 15 分钟量级的拒绝服务」。
+ *
+ * 为什么仍然选账号级锁定（而不是因此取消）：
+ *   · 不锁 ⇒ 在线爆破不受限，那是更严重的问题（口令被撞开，泄露的是病历）；
+ *   · 折中是**有限窗口**：受害者最多等 15 分钟即可自愈，**无需人工解锁**。
+ *     永久锁定才是真正的 DoS —— 攻击者一次故意输错就能永久挡住用户，还要运维介入；
+ *   · 要**彻底**消除这个代价，需要按 IP 限流或加验证码 —— 属于 P2+ 范围。
+ *     这里如实记录为**已知边界**，不假装没有。
  */
 public let LOGIN_FAIL_LIMIT: Int64 = 5
 public let LOGIN_FAIL_WINDOW: Int64 = 900
 public let LOGIN_LOCK_SECONDS: Int64 = 900
 
 /*
- * 登录名的哈希（十六进制）。
+ * ★★ 登录名归一口径（2026-10-07 修，第三份复查发现的**严重**缺陷）。
+ *
+ * ── 缺陷长什么样（实测复现）──────────────────────────────────────────────
+ * 限流计数按**登录名字符串**记，而账号查找是 **TC 不敏感**
+ * （`utf8mb4_general_ci` + `PAD SPACE`：`'Admin' = login_name` → 1，
+ *   `'admin ' = login_name` → 1）。两套口径不一致 ⇒ 换个写法就换一份新预算：
+ *     先把 `admin` 锁死（5 次）→ 再用**正确口令**试：
+ *        'Admin'     -> 200 拿到令牌
+ *        'aDmIn'     -> 200 拿到令牌
+ *        'admin  '   -> 200 拿到令牌        ← 尾空格
+ *        '  admin'   -> 401（MySQL 不忽略**首**空格）
+ *   库里当时躺着**两份**计数（`fail_count=5` 与 `fail_count=1`）。
+ *
+ * 危害程度按登录名形态不同（如实算清楚，不含糊）：
+ *   · 字母/拼音登录名（`admin`）：大小写变体上限 2^n − 1 份预算
+ *     （`admin` 就是 2^5 − 1 = **31 份**，31×5 = 155 次/15 分钟）；
+ *   · **尾空格变体**：`admin` / `admin ` / `admin  ` … 任意长 ⇒ **无限份预算**；
+ *   · ★ **纯数字登录名（手机号）没有字母**，大小写变体为 0，
+ *     但**尾空格变体**照样给任意份预算（`13800000001` / `13800000001 ` …）。
+ *   所以"当前最容易被攻击的那一面"的修复，本来可以用**一个字符**绕过。
+ *
+ * ── 修法：**库与哈希共用同一个归一值** ──────────────────────────────────
+ *   ① `trimAscii` —— 去掉首尾空白（**首空格也要去**：MySQL 只忽略尾空格，
+ *      只做 trim 尾侧会让 `  admin` 变成第六份预算）；
+ *   ② `toAsciiLower` —— 统一小写（与 `_ci` 一致）。
+ *   然后 `findUser` / `createUser` / `login` / `loginNameHash` **全都**先归一。
+ *
+ * ⚠ 为什么用 `toAsciiLower` 而不是 locale 感知的 `toLower`：
+ *   登录名是 ASCII（手机号 / 工号 / 字母用户名）。用 locale 感知的转换会引入
+ *   "同一字符串在不同机器上归一成不同结果"的风险（土耳其语 I 问题那一类），
+ *   而**归一口径必须跨机器一致**，否则限流又能被绕过（换台机器就是新预算的翻版）。
+ *   ASCII-only 宁可少归一，也不要**不一致地**归一。
+ *
+ * 📌 归一只在**边界**做一次（仓储层），调用方不必各自记得 ——
+ *   这正是"两处口径容易漂移"的防范：现在只有 `normalizeLoginName` 一处定义。
+ */
+public func normalizeLoginName(raw: String): String {
+    /*
+     * ⚠ `trimAscii` 是 **String 的方法**，不是自由函数 ——
+     *   实测写成 `trimAscii(raw)` 报 `undeclared identifier 'trimAscii'`
+     *   （而单独写 `raw.trimAscii()` 完全正常）。这一点排查了好几轮，
+     *   因为错误信息只说"未声明标识符"，不提示"你可能漏了接收者"。
+     */
+    return raw.trimAscii().toAsciiLower()
+}
+
+/*
+ * 归属哈希用的固定密钥。
+ * ⚠ 见 `loginNameHash` 的说明：这是**公开常量**，不是机密；**不要轮换**它
+ *   （轮换会让所有历史计数行失配 = 等价于清空限流状态）。
+ */
+private let LOGIN_HASH_KEY: String = "smart-hospital/login-attempt/v1"
+
+/*
+ * 登录名的哈希（十六进制）。**入参是已归一化的值**。
  *
  * 为什么键用哈希而不是原文：
  *   ① 库被读走后不会直接得到一份"谁被撞过库"的名单；
  *   ② 让"不存在的登录名"与"存在的登录名"在**存储层**也长得一样 ——
  *      这是本项目"防枚举"口径的一部分（与 auth_crypto 的假材料同一思路）。
  *
- * ⚠ 实现说明（避免下次又写错）：本项目的 crypto 层**只暴露了 HMAC-SHA256**
+ * ⚠ 实现说明：本项目的 crypto 层**只暴露了 HMAC-SHA256**
  *   （`hmacSha256`，见 auth_crypto.cj:162），没有裸的 `sha256(bytes)`。
- *   所以这里用 **HMAC-SHA256 + 固定密钥** 当带密钥的摘要 —— 语义上更合适
- *   （它本质就是"用固定 key 做哈希"），不是将就。
+ *   所以这里用 **HMAC-SHA256 + 固定密钥** 当带密钥的摘要。
  *
  * ⚠ 这个 key 是**公开常量**，不是机密：它的作用只是"把登录名映射成定长键"，
- *   不是抗离线爆破（登录名不是口令）。**不要**把它当成安全参数去轮换 ——
+ *   不是抗离线爆破（登录名不是口令）。**不要**把它当安全参数去轮换 ——
  *   轮换会让所有历史计数行失配（等价于清空限流状态）。
  */
-private let LOGIN_HASH_KEY: String = "smart-hospital/login-attempt/v1"
-
 public func loginNameHash(loginName: String): String {
-    return toHexString(hmacSha256(LOGIN_HASH_KEY.toArray(), loginName.toArray()))
+    return toHexString(hmacSha256(LOGIN_HASH_KEY.toArray(), normalizeLoginName(loginName).toArray()))
 }
 
 /* 登录锁定状态。 */
@@ -227,9 +298,16 @@ public class AuthRepo {
 
     /* 按登录名查账号；不存在返回 None。 */
     public func findUser(loginName: String): ?AuthUser {
+        /*
+         * ★ 查询前归一（2026-10-07）：账号查找在 DB 侧本来就是 TC 不敏感
+         *   （utf8mb4_general_ci + PAD SPACE），所以归一只是把**既有的实际行为**
+         *   在应用侧写明。这样"归一值"就成了限流计数与账号查找的**同一个口径** ——
+         *   不会再有"换个大写就是新预算"的绕过。
+         */
         let rs = db.query(
             "SELECT id, login_name, role, ref_id, display_name, pw_salt, pw_hash, " +
-            "pw_iter, status FROM auth_user WHERE login_name = ?", [DbStr(loginName)])
+            "pw_iter, status FROM auth_user WHERE login_name = ?",
+            [DbStr(normalizeLoginName(loginName))])
         if (rs.rowCount() < 1) {
             return None
         }
@@ -255,6 +333,12 @@ public class AuthRepo {
      */
     public func createUser(loginName: String, role: Role, refId: Int64,
                            displayName: String, password: String, now: Int64): Int64 {
+        /*
+         * ★ 写入前归一：库里存的**就是**归一值，于是唯一索引
+         *   `uk_auth_user_login (login_name)` 才真正拦住"大小写变体重复注册"。
+         *   （否则 `Admin` 与 `admin` 会被 _ci 索引判重而报 1062 —— 错误信息
+         *     还会说"已存在"，但用归一值就根本不会走到那一步。）
+         */
         let existing = findUser(loginName)
         if (existing.isSome()) {
             return existing.getOrThrow().id
@@ -264,7 +348,7 @@ public class AuthRepo {
             "INSERT INTO auth_user " +
             "(login_name, role, ref_id, display_name, pw_salt, pw_hash, pw_iter, " +
             " status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)",
-            [DbStr(loginName), DbStr(roleName(role)), DbInt(refId), DbStr(displayName),
+            [DbStr(normalizeLoginName(loginName)), DbStr(roleName(role)), DbInt(refId), DbStr(displayName),
              DbStr(rec[0]), DbStr(rec[1]), DbInt(rec[2]), DbInt(now)])
         let rs = db.query("SELECT LAST_INSERT_ID()", Array<DbValue>())
         if (rs.rowCount() < 1) {
