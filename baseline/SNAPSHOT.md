@@ -41,7 +41,7 @@
 | `server/admin-web/` | 17 | Vue 3 管理端源码 + **随仓库提交的 `dist`** —— 运营看板可沿用 | ⭐⭐⭐ |
 | `server/` 根脚本 | — | `build.ps1`（按版本探测 SDK：cjc 1.2.0 + stdx 1.1.3.1，校验 `MANIFEST.sha256`）等 6 个 `.ps1`/`.cmd` | ⭐⭐⭐⭐ |
 | `AppScope/` `hvigor/` `scripts/` `assets/` `spike/` | 30 | 客户端脚手架、构建脚本与早期验证件 | ⭐⭐ |
-| 根构建配置 | 8 | `build-profile.json5` / `oh-package.json5` / `hvigorfile.ts` / `code-linter.json5` / `.gitignore` / `.gitattributes` / `oh-package-lock.json5` / `local.properties` | ⭐⭐⭐⭐ |
+| 根构建配置 | 7 | `build-profile.json5` / `oh-package.json5` / `hvigorfile.ts` / `code-linter.json5` / `.gitignore` / `.gitattributes` / `oh-package-lock.json5`。**注意**：同目录的 `local.properties` 未入库 —— 它是 DevEco 自动生成的机器本地配置，源仓库与基线 `.gitignore` 都忽略它 | ⭐⭐⭐⭐ |
 | 根 `README.md` | 1 | 社团管理工具 README（含未决事项 #12、已知缺陷 S-14）——**关键证据来源** | ⭐⭐⭐⭐⭐ |
 
 ---
