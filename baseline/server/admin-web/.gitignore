@@ -1,0 +1,5 @@
+# 前端依赖（npm install 重新安装）
+node_modules/
+
+# 构建产物保留提交，便于 QingZhou admin 示例开箱即用
+# dist/  —— 不忽略，提交

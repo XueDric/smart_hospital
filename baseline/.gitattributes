@@ -1,0 +1,4 @@
+# 内置的轻舟框架必须**逐字节**保持上游原样（server/third_party/qingzhou/MANIFEST.sha256 会校验内容），
+# 因此禁止任何行尾转换。本机 core.autocrlf=true，不加这条时检出会把上游的 LF 转成 CRLF，
+# 于是清单校验全红、且换台机器/换设置又会得到另一份字节。
+server/third_party/qingzhou/** -text

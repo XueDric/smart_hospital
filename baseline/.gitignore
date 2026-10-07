@@ -1,0 +1,86 @@
+/node_modules
+/oh_modules
+/local.properties
+/.idea
+# 编辑器个人设置（VS Code：autoSave、TS 校验开关之类，与本项目无关）
+/.vscode
+**/build
+/.hvigor
+.cxx
+/.clangd
+/.clang-format
+/.clang-tidy
+**/.test
+/.appanalyzer
+**/.preview
+**/IDL_Dependencies_List~
+**/build-script-cache
+/.tools/
+
+# ── 服务端 ─────────────────────────────────────────────
+# 运行期数据（true 成员数据，绝不入库）
+/server/data
+# 证书与私钥（自签证书的 key.pem 是机密）
+/server/certs
+# 部署包：内含 certs/key.pem（私钥），且是可再生的制品，绝不入库
+/server/dist
+# 编译期 API 探针（一次性，结论已固化到 server/API-NOTES.md）
+/server/.probe
+
+# ── 独立仓库，不属于本项目 ──────────────────────────────
+# cjenv 是另一个项目（自成 git 仓库，origin = gitcode.com/xuguowei/cjenv.git）。
+# 若在根仓库里 add 它，git 只会记一个 gitlink，clone 下来是个空壳。
+/cjenv/
+
+# cjenv 工作流留下的散落产物（补丁/分析报告），不属于本仓库
+/cjenv-*.patch
+/cjenv-*.md
+
+# 临时提交信息文件（PS 5.1 不支持 heredoc，只能落文件后 -F）
+.commitmsg*.tmp
+
+# 生成给仓颉团队的证据包（由 server/build/make-report-zip.ps1 生成，不入库）
+/cangjie-runtime-crash-report-*.zip
+
+# 内置轻舟的 OpenSSL 依赖 DLL（6.5 MB 二进制，不进仓库；来源见该目录 README.md）
+server/third_party/qingzhou/deps/openssl/*.dll
+
+# ── 设计资产与助手工作区，不属于工程代码 ─────────────────
+# 标识设计的过程资产（多套方案 + 生成脚本 + 可覆盖资源，约 6.8 MB）。
+# 客户端现行 logo 以 assets/ 与 resources/base/media/ 为准，本目录不参与构建。
+/brand/
+
+# AI 助手的本地工作区（会话记忆、临时产物），只属于个人环境。
+/.workbuddy/
+
+# ── 抓取的外部资料（原始证据，约 760 KB）────────────────
+# 赛道官方页面快照 / 章程 PDF / 路由脚本等一次性抓取物。结论已逐字整理进
+# docs/cangjie-cup-2026-requirements.md，原始文件留在本机即可，不进版本库
+# （避免仓库持续增重）。需要复核时按该文档 §1/§9 的方法重新抓取。
+/_fetch/
+
+# ── 客户端签名材料（机密，绝不入库）────────────────────
+# 所有签名材料统一放在 /signing/ 目录下，该目录整体忽略。
+# 里面是：Xue_Dric.p12（私钥，别名 xue）、tiaoshi.cer + tiaoshiDebug.p7b
+# （调试证书与调试 Profile，Profile 里登记了调试设备 UDID）、以及 DevEco
+# 生成密钥时留下的 material/ 缓存。
+# ⚠ .p12 一旦提交就等于泄露；.cer/.p7b 按 AppGallery 规则也不得转发。
+/signing/
+# 保险起见，按扩展名再兜一层（防止有人把材料放到别处）
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.csr
+*.cer
+*.crt
+*.p7b
+*.p10
+# DevEco 生成密钥时留下的缓存目录（历史位置，已被 /signing/ 取代）
+/material/
+
+# ── 分发制品，不入库（保持主目录整洁）──────────────────
+# 安装说明与已签名的安装包属于"发出去的历史制品"：二进制、体积大，且每次
+# 重新签名都会变化。它们留在本机主目录即可，不要进版本库。
+/安装说明.txt
+/社团管理工具-*.zip

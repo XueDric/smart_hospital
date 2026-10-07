@@ -1,0 +1,66 @@
+# ── ⚠ 机密材料：绝不能入库 ─────────────────────────────────────────────────
+# 这些是**源仓库 cangjie_web 自己也未入库**的东西（见其 .gitignore）：
+#   /server/certs  → 「自签证书的 key.pem 是机密」
+#   /signing/      → 「.p12 一旦提交就等于泄露；.cer/.p7b 按 AppGallery 规则也不得转发」
+#   /_fetch/       → 一次性抓取的外部资料（结论已固化进文档）
+#   /server/data   → 真实业务数据
+#   /server/dist   → 部署包（内含私钥）
+# 复制基线时**已从 baseline/ 中剔除**上面这些；这里再按扩展名兜一层，
+# 防止将来有人把材料放到别处。
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.csr
+*.cer
+*.crt
+*.p7b
+*.p10
+baseline/server/certs/
+baseline/signing/
+baseline/_fetch/
+baseline/server/data/
+baseline/server/dist/
+
+# ── 分发制品（二进制，每次重签都会变）──────────────────────────────────
+社团管理工具-*.zip
+安装说明.txt
+.tools/
+
+# ── 构建产物（可重新生成，**不入库**）──────────────────────────────────────
+# ⚠ 尤其 server/build/：里面有 12 MB 的 exe + 5.7 MB 的 OpenSSL DLL + 编译好的
+#   MariaDB 驱动 .cjo/.a（约 1.5 MB）。这些都能由 build.ps1 / build-mysql-driver.ps1
+#   / setup-runtime.ps1 重新生成，入库只会让仓库膨胀、且制造"产物对不上"的假信号。
+server/build/
+!server/build/SOURCE-MANIFEST.sha256
+
+# 驱动构建产物
+server/build/mysql-driver/
+
+# ── 基线里的构建产物（本来就该在 .gitignore 里）────────────────────────────
+baseline/entry/build/
+baseline/server/build/
+baseline/.hvigor/
+baseline/oh_modules/
+baseline/node_modules/
+
+# ── 运行时/日志 ────────────────────────────────────────────────────────────
+*.log
+*.err
+mysqld*.log*
+*.tmp
+
+# ── IDE ───────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.user
+*.suo
+
+# ── OS ────────────────────────────────────────────────────────────────────
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ⚠ 注意：**不要**把 baseline/ 整体忽略 —— 它是本仓库的只读参考基线，
+#   是项目上下文的一部分（见 baseline/SNAPSHOT.md），有意入库。

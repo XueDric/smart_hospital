@@ -1,0 +1,16 @@
+{
+  "src": [
+    "pages/ServerConfigPage",
+    "pages/Index",
+    "pages/LoginPage",
+    "pages/RegisterPage",
+    "pages/PendingPage",
+    "pages/TaskDetailPage",
+    "pages/PlanDetailPage",
+    "pages/CreateTaskPage",
+    "pages/AskPage",
+    "pages/CreatePlanPage",
+    "pages/ApprovePage",
+    "pages/AdminPage"
+  ]
+}

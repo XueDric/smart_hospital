@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "社团管理工具 · 主模块"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "社团管理工具"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "社团管理工具"
+    },
+    {
+      "name": "permission_calendar_reason",
+      "value": "用于把任务同步到系统日历（可随时在系统设置里关闭）"
+    }
+  ]
+}
