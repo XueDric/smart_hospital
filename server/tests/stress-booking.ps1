@@ -103,7 +103,9 @@ Write-Host "[1/4] 准备干净数据…"
 $sql = @"
 DELETE FROM appointment;
 DELETE FROM schedule;
-DELETE FROM booking_idem;
+-- ⚠ 这里原先还有一行 `DELETE FROM booking_idem;`。
+--   该表已于 2026-10-07 连同实现一起删除（死代码，见 ADR-0001 §7 第 7 条），
+--   继续 DELETE 它会让整个夹具脚本报错 → 压测在"准备数据"阶段就挂掉。
 DELETE FROM doctor;
 DELETE FROM department;
 DELETE FROM patient;

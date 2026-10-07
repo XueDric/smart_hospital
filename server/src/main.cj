@@ -37,7 +37,7 @@ func usage(): Unit {
     println("  hospital-server.exe selftest              纯本地自检（schema 不变量，无需 MySQL）")
     println("  hospital-server.exe authtest              口令/令牌原语自检（含公开测试向量，无需 MySQL）")
     println("  hospital-server.exe check-db <dsn>        连库建表并打印表清单")
-    println("  hospital-server.exe accept <dsn>          跑验收测试（AC-1…AC-8）")
+    println("  hospital-server.exe accept <dsn>          跑验收测试（AC-1…AC-10）")
     println("  hospital-server.exe serve <dsn> [--port N] [--dev-auth] [--prod] [--bind IP]")
     println("                                  [--tls-cert <pem> --tls-key <pem>]")
     println("                                            启动 HTTP/HTTPS 服务（P1）")
@@ -97,7 +97,7 @@ func checkDb(dsn: String): Int64 {
 /*
  * accept：跑验收测试。
  *
- * ⚠ 会**清空业务表**（appointment / schedule / doctor / department / patient / booking_idem），
+ * ⚠ 会**清空业务表**（appointment / schedule / doctor / department / patient），
  *   所以只允许对**显式标记为测试用**的库名跑。
  *
  * ★ 2026-10-07 修（第三方复查发现的守卫漏洞）：
@@ -169,8 +169,9 @@ func selftest(): Int64 {
     // 1) 最小表集：brief §10 Q2 的 7 张**业务**表 + P1 令牌体系的 2 张**鉴权**表 = 9。
     //    ⚠ 用"业务表数 + 鉴权表数"两个分项断言，而不是硬编码总数 ——
     //      硬编码数字在加表时必然要手改，而漏改就变成"测试说没事、其实漂移了"。
-    //      （本次加鉴权表时就正好触发了这条，所以它是有用的。）
-    let bizTables = 7
+    //      （加鉴权表时触发过一次；2026-10-07 删掉 booking_idem 时又触发了一次
+    //        —— 两次都证明这条断言**有用**，它确实拦住了一次静默漂移。）
+    let bizTables = 6
     let authTables = 2
     check("业务表为 ${bizTables} 张 + 鉴权表 ${authTables} 张", ALL_TABLES.size == bizTables + authTables)
     check("鉴权表恰好 2 张（auth_user / auth_token）",
@@ -198,14 +199,23 @@ func selftest(): Int64 {
     check("DDL 条数不少于业务表数（${SCHEMA_DDL.size} ≥ ${ALL_TABLES.size}）",
           SCHEMA_DDL.size >= ALL_TABLES.size)
 
-    // 3) 已移除的旧表名不应再出现（防改名只改一半）
+    /*
+     * 3) ★ DDL 里不得出现任何以 `idem` 命名的表（**长期纪律**，不是"改名只改一半"的临时检查）。
+     *
+     * 背景：本侧曾有一张 `booking_idem`（挂号幂等登记表），2026-10-07 连同实现删除
+     * （死代码，见 ADR-0001 §7 第 7 条）。这条断言现在的作用变成**防止它被复活** ——
+     * 删死代码之后最怕的就是下一个人又加回一张同义表。
+     *
+     * 同时它仍然守着原来的撞名风险：基线的内存 Store 占用了 `idem` 表名
+     * （`baseline/server/src/mysql_store.cj:892`），P1 引入整库刷盘后同名表会争同一张表。
+     */
     var staleIdem = false
     for (sql in SCHEMA_DDL) {
-        if (sql.contains("CREATE TABLE IF NOT EXISTS idem ")) {
+        if (sql.contains("CREATE TABLE IF NOT EXISTS idem")) {
             staleIdem = true
         }
     }
-    check("DDL 里没有裸 'idem' 表（已改名 booking_idem）", !staleIdem)
+    check("DDL 里没有任何以 idem 命名的表（不得与基线撞名，也不得复活死代码）", !staleIdem)
 
     // 4) 全部 DDL 幂等（IF NOT EXISTS）+ utf8mb4
     for (sql in SCHEMA_DDL) {
@@ -219,20 +229,25 @@ func selftest(): Int64 {
         }
     }
 
-    // 5) ★ ADR-0001 §4.3 范围锁死：直接 SQL 域
-    //    —— 业务状态表**只准**两张；幂等基础设施表单列（不是业务状态）
+    // 5) ★ ADR-0001 §4.3 范围锁死：直接 SQL 域**只准**这两张业务状态表
     check("号源域业务状态表恰为 2（${BOOKING_DOMAIN_TABLES.size}）", BOOKING_DOMAIN_TABLES.size == 2)
-    check("号源域幂等基础设施表恰为 1", BOOKING_INFRA_TABLES.size == 1)
     check("schedule 属号源域", isBookingDomainTable(TABLE_SCHEDULE))
     check("appointment 属号源域", isBookingDomainTable(TABLE_APPOINTMENT))
     check("department 不属号源域", !isBookingDomainTable(TABLE_DEPARTMENT))
     check("doctor 不属号源域", !isBookingDomainTable(TABLE_DOCTOR))
     check("patient 不属号源域", !isBookingDomainTable(TABLE_PATIENT))
     check("medical_record 不属号源域", !isBookingDomainTable(TABLE_MEDICAL_RECORD))
-    check("booking_idem 不是业务状态表", !isBookingDomainTable(TABLE_BOOKING_IDEM))
-    check("booking_idem 是幂等基础设施表", isBookingInfraTable(TABLE_BOOKING_IDEM))
-    check("booking_idem 由 BookingRepo 拥有", isBookingOwnedTable(TABLE_BOOKING_IDEM))
+    check("schedule 由 BookingRepo 拥有", isBookingOwnedTable(TABLE_SCHEDULE))
+    check("appointment 由 BookingRepo 拥有", isBookingOwnedTable(TABLE_APPOINTMENT))
     check("department 不由 BookingRepo 拥有", !isBookingOwnedTable(TABLE_DEPARTMENT))
+    // ★ 表集里不得有 idem 命名的表（防止死代码复活）
+    var idemLike = 0
+    for (t in ALL_TABLES) {
+        if (t.contains("idem")) {
+            idemLike = idemLike + 1
+        }
+    }
+    check("表集里没有以 idem 命名的表", idemLike == 0)
 
     // 5b) ★ 与基线内存 Store 的表名**零交集**（P1 整库刷盘不会争表）
     //     基线表名见 baseline/server/src/mysql_store.cj:309-311
@@ -248,9 +263,7 @@ func selftest(): Int64 {
             }
         }
     }
-    check("本侧 ${ALL_TABLES.size} 张表与基线内存 Store 表名零交集（含 idem/tokens 改名生效）",
-          clash == 0)
-    check("本侧不再有裸 'idem' 表", !isBookingOwnedTable("idem"))
+    check("本侧 ${ALL_TABLES.size} 张表与基线内存 Store 表名零交集", clash == 0)
 
     // 6) ★ 防超卖两支柱必须在 DDL 里（ADR AC-2 / AC-1）
     var hasVersion = false

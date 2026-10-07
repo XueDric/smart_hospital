@@ -31,19 +31,20 @@ package qingzhou
 /*
  * 表名集中在此，避免各处字符串拼写漂移。
  *
- * ★ 两条域划分（ADR-0001 §4.2 修订）：
- *   `BOOKING_DOMAIN_TABLES` = 号源/挂号**业务状态**表，走直接 SQL（仅此两张）；
- *   `BOOKING_INFRA_TABLES`  = 号源域的**幂等基础设施**表，不是业务状态，
- *                             但同样只能由 BookingRepo 写（不散落）。
+ * ★ 域划分（ADR-0001 §4.2/§4.3）：
+ *   `BOOKING_DOMAIN_TABLES` = 号源/挂号**业务状态**表，走直接 SQL（**仅此两张**）。
  *
- * ⚠ 为什么叫 `booking_idem` 而不是 `idem`（P1 口径隐患，已修）：
- *   基线内存 Store 自己也有一张 `idem` 表（`baseline/server/src/mysql_store.cj:892`
- *   的 `PersistedState.idem`，DDL 同名，见该文件 §309-311「表名与 store.cj 的逻辑表名
- *   一一同名」）。两张表**语义与列定义都不同**：
- *     · 基线：`IdemRecord`（社团业务幂等）
- *     · 本侧：`idem_key` + `created_at`（挂号幂等）
- *   P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与本侧的挂号幂等
- *   记录**争同一张表**。改名后两侧彻底隔离。
+ * ⚠ **表名必须避开基线的内存 Store 表名**（P1 口径隐患；这条纪律**长期有效**）：
+ *   基线内存 Store 占用了一批表名（`idem`、`tokens` 等，见
+ *   `baseline/server/src/mysql_store.cj:891-892` 的 `PersistedState`，DDL 同名）。
+ *   P1 引入内存 Store 后，整库刷盘会 `replaceBatched(<表名>, …)` ——
+ *   本侧若用了同名表，就会与基线**争同一张表**。
+ *   所以本侧一律另起名字：`auth_token`（不是 `tokens`）。
+ *
+ *   📌 历史上本侧曾有一张 `booking_idem`（挂号幂等登记表）。它在 2026-10-07
+ *   **连同实现一起删除**：幂等已由「`(patient_id, client_token)` 唯一索引」完整保证，
+ *   那张表在生产路径上从未被调用（属死代码）。详细取舍见 ADR-0001 §7 第 7 条。
+ *   → 因此现在**没有任何**以 `idem` 命名的表，但上面的命名纪律仍然适用。
  */
 public let TABLE_DEPARTMENT: String = "department"
 public let TABLE_DOCTOR: String = "doctor"
@@ -51,15 +52,13 @@ public let TABLE_SCHEDULE: String = "schedule"
 public let TABLE_APPOINTMENT: String = "appointment"
 public let TABLE_PATIENT: String = "patient"
 public let TABLE_MEDICAL_RECORD: String = "medical_record"
-public let TABLE_BOOKING_IDEM: String = "booking_idem"
 
 /*
  * 鉴权表（P1 令牌体系）。
  *
- * ⚠ 命名同样避开基线：基线内存 Store 占用了 `tokens`（`mysql_store.cj:891`
- *   的 `PersistedState.tokens`，DDL 同名）。所以本侧叫 **`auth_token`**。
- *   账号表叫 `auth_user`（基线没有同名表，但加 auth_ 前缀是为了让"这是鉴权域"
- *   一眼可辨，与业务表 `patient`/`doctor` 区分开）。
+ * ⚠ 命名同样避开基线：基线内存 Store 占用了 `tokens`（`mysql_store.cj:891`）。
+ *   所以本侧叫 **`auth_token`**；账号表叫 `auth_user`（基线没有同名表，
+ *   但加 auth_ 前缀是为了让"这是鉴权域"一眼可辨）。
  */
 public let TABLE_AUTH_USER: String = "auth_user"
 public let TABLE_AUTH_TOKEN: String = "auth_token"
@@ -68,18 +67,12 @@ public let TABLE_AUTH_TOKEN: String = "auth_token"
 public let BOOKING_DOMAIN_TABLES: Array<String> = [TABLE_SCHEDULE, TABLE_APPOINTMENT]
 
 /*
- * 号源域**幂等基础设施**表 —— 不是业务状态，但写它也只能经由 BookingRepo。
- * 与业务状态表分开列，是为了让「业务状态」与「基础设施」的口径不含糊（见 ADR §4.3）。
- */
-public let BOOKING_INFRA_TABLES: Array<String> = [TABLE_BOOKING_IDEM]
-
-/*
  * 全部业务表。
- * ⚠ 与 `BOOKING_DOMAIN_TABLES ∪ BOOKING_INFRA_TABLES` 的差集就是"走内存 Store 范式"的表。
+ * ⚠ 与 `BOOKING_DOMAIN_TABLES` 的差集就是"走内存 Store 范式"的表。
  */
 public let ALL_TABLES: Array<String> = [
     TABLE_DEPARTMENT, TABLE_DOCTOR, TABLE_SCHEDULE,
-    TABLE_APPOINTMENT, TABLE_PATIENT, TABLE_MEDICAL_RECORD, TABLE_BOOKING_IDEM,
+    TABLE_APPOINTMENT, TABLE_PATIENT, TABLE_MEDICAL_RECORD,
     TABLE_AUTH_USER, TABLE_AUTH_TOKEN
 ]
 
@@ -232,16 +225,12 @@ public let SCHEMA_DDL: Array<String> = [
     "UNIQUE KEY uk_record_appointment (appointment_id)" +
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 
-    // ── 幂等记录（**挂号专用**，故加 booking_ 前缀）─────────────────────────
-    // ⚠ 刻意**不叫** `idem`：基线内存 Store 已占用该表名（mysql_store.cj:892），
-    //   且列定义不同（基线是 IdemRecord）。P1 引入内存 Store 后整库刷盘
-    //   `replaceBatched("idem", …)` 会与本表争同一张表。见文件头说明。
-    "CREATE TABLE IF NOT EXISTS booking_idem (" +
-    "idem_key VARCHAR(160) NOT NULL, " +
-    "created_at BIGINT NOT NULL DEFAULT 0, " +
-    "PRIMARY KEY (idem_key), " +
-    "KEY idx_booking_idem_created (created_at)" +
-    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    // ⚠ 这里曾有一张 `booking_idem`（挂号幂等登记表）—— 2026-10-07 **连表带实现一起删除**。
+    //   理由：幂等已由 `appointment` 上的 `(patient_id, client_token)` 唯一索引
+    //   完整保证（**数据库级**保证，比应用级登记表更硬），而该表在生产路径上
+    //   从未被调用过（只有验收测试在测它 ⇒ 测的是一条生产不走的路）。
+    //   详细取舍见 ADR-0001 §7 第 7 条。
+    //   📌 迁移注意：若目标库是旧库，`migrateSchema()` 会 DROP 掉这张遗留表。
 
     // ── 鉴权账号（P1 令牌体系）───────────────────────────────────────────
     // 一个账号 = 一个登录身份。三端角色（patient/doctor/admin）共用本表，
@@ -305,22 +294,9 @@ public func ensureSchema(db: DbBackend): Int64 {
 /*
  * 判定某表是否属于「号源/挂号的**业务状态**」，即走直接 SQL 的那两张。
  * 用途：ADR-0001 §4.3 的范围检查 —— 新增业务表若误入此域，测试应报错。
- *
- * ⚠ 幂等表（booking_idem）**不算**业务状态，故本函数对它返回 false；
- *   它由 `isBookingInfraTable()` 判定。两条口径分开，避免"域"这个词含混。
  */
 public func isBookingDomainTable(name: String): Bool {
     for (t in BOOKING_DOMAIN_TABLES) {
-        if (t == name) {
-            return true
-        }
-    }
-    return false
-}
-
-/* 判定某表是否属于号源域的**幂等基础设施**（booking_idem）。 */
-public func isBookingInfraTable(name: String): Bool {
-    for (t in BOOKING_INFRA_TABLES) {
         if (t == name) {
             return true
         }
@@ -332,7 +308,7 @@ public func isBookingInfraTable(name: String): Bool {
  * 判定某表是否属于**鉴权域**（auth_user / auth_token）。
  *
  * 与号源域同理：鉴权表也走直接 SQL（见 auth_repo.cj），
- * 但它们是**基础设施**而非业务状态，所以与 BOOKING_* 分开列 ——
+ * 但它们不是号源/挂号业务状态，所以与 BOOKING_* 分开列 ——
  * 这样"某张表归谁管"永远能从一个函数问出来，而不是靠读代码猜。
  */
 public func isAuthTable(name: String): Bool {
@@ -340,11 +316,17 @@ public func isAuthTable(name: String): Bool {
 }
 
 /*
- * 判定某表是否由 `BookingRepo` 写入（业务状态 + 幂等基础设施）。
- * 用途：ADR-0001 §4.3「范围锁死」的**完整**口径 —— 直接 SQL 只准落在这三张表上。
+ * 判定某表是否由 `BookingRepo` 写入（= 号源/挂号**业务状态**表）。
+ * 用途：ADR-0001 §4.3「范围锁死」的口径 —— 直接 SQL 只准落在这**两张**表上。
+ *
+ * ⚠ 2026-10-07 起本函数等价于 `isBookingDomainTable`：原先它还要
+ *   `|| isBookingInfraTable(name)`（那一层对应已删除的 `booking_idem` 表），
+ *   而该表已连同实现一起删除（见文件头 / ADR §7 第 7 条）。
+ *   函数名保留，是因为"谁拥有这张表"这个**问题**与调用点都还在 ——
+ *   将来若真需要第二层幂等基础设施，仍然从这里扩。
  */
 public func isBookingOwnedTable(name: String): Bool {
-    return isBookingDomainTable(name) || isBookingInfraTable(name)
+    return isBookingDomainTable(name)
 }
 
 /* ===================== 迁移 ===================== */
@@ -451,6 +433,27 @@ public func migrateSchema(db: DbBackend): Int64 {
         "WHERE status = 'cancelled' AND client_token IS NOT NULL",
         Array<DbValue>())
     if (staleCancelled > 0) {
+        done = done + 1
+    }
+
+    /*
+     * ⑥ ★ DROP 掉遗留的 `booking_idem` 表（2026-10-07，随"删死代码"决策）。
+     *
+     * 同样地：`CREATE TABLE IF NOT EXISTS` 只管"建"，**不管"删"** ——
+     * 老库里那张表不会因为我们把 DDL 删了而消失。不显式 DROP 的话：
+     *   · `selftest` 断言"ALL_TABLES 与实际表零差集"会**失败**（库里多一张）；
+     *   · 更糟的是留下一个"看起来还在用"的表，下一个人会以为幂等还走它。
+     *
+     * ⚠ 这是**唯一**一处 `DROP TABLE`。它删的是一张**从不存业务数据**的
+     *   幂等登记表，且其功能已由 `(patient_id, client_token)` 唯一索引覆盖
+     *   （见 ADR-0001 §7 第 7 条），所以不丢任何业务事实。
+     */
+    let staleIdem = db.query(
+        "SELECT COUNT(*) FROM information_schema.tables " +
+        "WHERE table_schema = DATABASE() AND table_name = 'booking_idem'",
+        Array<DbValue>())
+    if (staleIdem.rowCount() > 0 && staleIdem.getInt(0, 0) > 0) {
+        db.exec("DROP TABLE booking_idem", Array<DbValue>())
         done = done + 1
     }
 

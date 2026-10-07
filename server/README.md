@@ -1,4 +1,4 @@
-﻿# 智慧医院服务端（仓颉 + 轻舟）
+# 智慧医院服务端（仓颉 + 轻舟）
 
 > P0 阶段交付：**号源/挂号域的独立 MySQL 路径** + 构建链 + 验收测试。
 > 架构决策见 [../docs/adr/ADR-0001-号源与挂号独立MySQL路径.md](../docs/adr/ADR-0001-号源与挂号独立MySQL路径.md)。
@@ -157,7 +157,7 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/schema.cj` | 最小表集 DDL（9 张：7 业务 + 2 鉴权）+ 分域范围锁死 |
+| `src/schema.cj` | 最小表集 DDL（8 张：6 业务 + 2 鉴权）+ 范围锁死 + 幂等迁移 |
 | `src/domain_booking.cj` | ★ 号源/挂号域：原子扣减、幂等、取消归还（三态 `CancelOutcome`）、`visit_date` 快照 |
 | `src/auth_crypto.cj` | PBKDF2-HMAC-SHA256（100k）+ 令牌原语 + **3 个公开测试向量自检** |
 | `src/auth_repo.cj` | 鉴权仓储：账号、按登录名查、登录（防枚举）、令牌签发/校验/续期/吊销 |
@@ -169,19 +169,23 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
 | `new-tls-cert.ps1` | 生成带 SAN 的自签证书 + ASCII 运行副本 + ACL 收紧 |
 | `tests/tls-check.ps1` | TLS 验证（SslStream 真校验、反向验证、HTTPS 业务链路） |
 
-**最小表集（9 张）**：
+**最小表集（8 张）**：
 
 | 表 | 层 | 数据访问 |
 | --- | --- | --- |
 | `schedule` | 号源域 · **业务状态** | 直接 SQL |
 | `appointment` | 挂号域 · **业务状态** | 直接 SQL |
-| `booking_idem` | 号源域 · **幂等基础设施** | 直接 SQL（仅 `BookingRepo` 写） |
 | `auth_user` `auth_token` | **鉴权域** | 直接 SQL（仅 `AuthRepo` 写） |
 | `department` `doctor` `patient` `medical_record` | 业务 | 内存 Store 范式（P1+ 落地） |
 
-> ⚠ `booking_idem` 与 `auth_token` **刻意不叫** `idem` / `tokens`：
-> 基线内存 Store 已占用这两个表名（`mysql_store.cj:891-892`），列定义也不同。
-> 现「本侧 9 张表 ∩ 基线 10 张表 = ∅」，由 `selftest` + AC-4 钉住。
+> ⚠ `auth_token` **刻意不叫** `tokens`：基线内存 Store 已占用该表名
+> （`mysql_store.cj:891`），列定义也不同。
+> 现「本侧 8 张表 ∩ 基线 10 张表 = ∅」，由 `selftest` + AC-4 钉住，
+> 并额外断言"表集里没有任何以 `idem` 命名的表"（防止已删除的死代码被复活）。
+>
+> 📌 本表集曾含一张 `booking_idem`（幂等登记），**2026-10-07 连同实现与 AC-8 删除**
+> —— 幂等已由 `(patient_id, client_token)` 唯一索引完整保证，那张表从未进入生产路径。
+> 见 [../docs/adr/ADR-0001](../docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) rev.4 §7 第 7 条。
 
 ---
 

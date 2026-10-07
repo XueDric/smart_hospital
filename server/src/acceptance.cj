@@ -47,7 +47,6 @@ func hResetAll(db: DbBackend): Unit {
     db.exec("DELETE FROM doctor", Array<DbValue>())
     db.exec("DELETE FROM department", Array<DbValue>())
     db.exec("DELETE FROM patient", Array<DbValue>())
-    db.exec("DELETE FROM booking_idem", Array<DbValue>())
 }
 
 /*
@@ -299,11 +298,16 @@ public class TestRunner {
              */
             /*
              * ⚠ 2026-10-07 复查修正：原来只比 `BOOKING_DOMAIN_TABLES`（2 张）与基线
-             *   表名的交集 —— 那**恰好**是 0，但 `booking_idem`（旧名 `idem`）与基线
-             *   的 `idem` 是**真撞名**，只是没被这个断言覆盖到。
-             *   现在比**全部 7 张业务表**与基线**全部**表名的交集，并把基线完整表名
-             *   列全（含 meta / meta_str / schema_version —— 它们也要一起比对，
+             *   表名的交集 —— 那**恰好**是 0，但那时本侧另有一张 `booking_idem`
+             *   （旧名 `idem`）与基线的 `idem` 是**真撞名**，只是没被这个断言覆盖到。
+             *   现在比**全部业务表**与基线**全部**表名的交集，并把基线完整表名列全
+             *   （含 meta / meta_str / schema_version —— 也要一起比对，
              *   否则将来本侧新建同名表会漏检）。
+             *
+             * 📌 该撞名已通过**删除**那张表彻底消除（2026-10-07，见 ADR §7 第 7 条）。
+             *   但本断言**必须保留** —— 它守的是一条**长期纪律**：
+             *   "本侧的每张表名都不得与基线内存 Store 撞名"（P1 引入整库刷盘后
+             *   同名表会争同一张表）。把断言删掉等于把纪律也删了。
              */
             let baselineTables: Array<String> = ["departments", "members", "plans", "tasks",
                                                  "invite_links", "tokens", "idem",
@@ -319,8 +323,18 @@ public class TestRunner {
             }
             check("全部 ${ALL_TABLES.size} 张业务表与基线表名零交集", overlap == 0)
             check("号源域业务状态表恰为 schedule/appointment", BOOKING_DOMAIN_TABLES.size == 2)
-            check("booking_idem 已不在基线表名集合内（改名生效）",
-                  !baselineTables.contains(TABLE_BOOKING_IDEM))
+            /*
+             * ★ 钉住"表集里不再有任何以 idem 命名的表"。
+             *   这不是在测已删除的代码，而是**防止它被复活**：
+             *   死代码被删掉后，最怕的是下一个人又加回来一张同义表。
+             */
+            var idemLike = 0
+            for (t in ALL_TABLES) {
+                if (t.contains("idem")) {
+                    idemLike = idemLike + 1
+                }
+            }
+            check("表集中不再有以 idem 命名的表（遗留给删干净了）", idemLike == 0)
             println("  [NOTE] AC-4 完整回归（真跑一次整库刷盘后断言逐值不变）需 P1 引入内存 Store 后进行")
         })
     }
@@ -363,24 +377,19 @@ public class TestRunner {
         })
     }
 
-    /* ---------- AC-8：booking_idem 表可正常读写（改名后端到端可用）---------- */
-    public func ac8(): Unit {
-        println("=== AC-8 booking_idem 改名后端到端可用 ===")
-        section("AC-8", { =>
-            hResetAll(db)
-            let key = repo.idemKey("booking", 1, "tok-ac8")
-            let first = repo.putIdem(key, hNowEpoch())
-            let second = repo.putIdem(key, hNowEpoch())      // 同键 → INSERT IGNORE 影响 0 行
-            check("首次登记幂等键成功", first)
-            check("同键再次登记返回 false（已存在）", !second)
-            let cnt = db.query("SELECT COUNT(*) FROM booking_idem",
-                               Array<DbValue>()).getInt(0, 0)
-            check("booking_idem 中恰有 1 行", cnt == 1)
-            // 清理窗口：用一个"很久以前"的 now 让该键过期
-            let pruned = repo.pruneIdem(hNowEpoch() + 90000)
-            check("过期清理删除了该行", pruned >= 1)
-        })
-    }
+    /*
+     * ⚠ 原先这里是 **AC-8：`booking_idem` 表可正常读写**。
+     *   **2026-10-07 连同表与实现一起删除**（决策见 ADR-0001 §7 第 7 条）。
+     *
+     * 为什么删掉这个"通过的测试"而不是留着：它测的是一条**生产路径根本不走**的代码 ——
+     * `book()` / `cancel()` 从不调用 `putIdem`/`pruneIdem`。一个永远绿色的测试
+     * 会让人以为幂等由那张表保证，从而**看不见真正的保证**（唯一索引）。
+     * 这种"假保证"比没有测试更危险。
+     *
+     * 📌 幂等的真实保证在哪：`appointment` 上的
+     *   `UNIQUE KEY uk_appointment_patient_token (patient_id, client_token)`
+     *   + `book()` 的事务内先查。测试覆盖：AC-3（重复提交同一 token）。
+     */
 }
 
 /* 结果判定小工具（避免在多处重复写 match）。 */
@@ -433,7 +442,6 @@ public func runAcceptance(db: DbBackend): Int64 {
     runner.ac6()
     runner.ac4()
     runner.ac7()
-    runner.ac8()
     runner.ac10()
     println("")
     println("通过 ${runner.passed} 项，失败 ${runner.failed} 项")

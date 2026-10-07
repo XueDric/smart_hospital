@@ -74,7 +74,7 @@
 | # | 问题 | 状态 |
 | --- | --- | --- |
 | Q1 | fork 本仓库，还是新建空仓再选择性搬运？ | ✅ **已决**：新建工作区 + 选择性搬运 → 基线落在 `baseline/`，不带 `.git` 历史 |
-| Q2 | 数据模型范围：先建哪几张表？ | ✅ **已决（P0）**：最小 7 张 —— `department` `doctor` `schedule`★ `appointment`★ `patient` `medical_record` `booking_idem`◆ |
+| Q2 | 数据模型范围：先建哪几张表？ | ✅ **已决（P0）**：最小 **8 张** = 业务 6（`department` `doctor` `schedule`★ `appointment`★ `patient` `medical_record`）+ 鉴权 2（`auth_user` `auth_token`）。★ = 走直接 SQL。**原有一张 `booking_idem`（幂等登记）已于 2026-10-07 删除**（死代码，见 [ADR-0001 rev.4 §7](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md)） |
 | Q3 | 患者端页面范围：复用哪些既有页面？ | ⏳ 未决 |
 | Q4 | 管理端是否复用 `baseline/server/admin-web`（Vue3）？ | ⏳ 未决 |
 | Q5 | **单院区量级**：日门诊量？号源放出峰值并发？ | ⏳ 未决 —— **影响 P0 扣号路径是否要加重试/排队**（ADR-0001 §3 方案 C 的后手条件） |

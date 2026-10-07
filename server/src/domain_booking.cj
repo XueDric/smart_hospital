@@ -364,37 +364,26 @@ public class BookingRepo {
              DbInt(totalNum), DbInt(totalNum), DbInt(now)])
     }
 
-    /* ---------- 写：幂等记录 ---------- */
-
     /*
-     * 幂等键：`idemKey("booking", patientId, clientToken)`。
-     * 口径沿用基线（baseline/server/src/store.cj:136 的 IdemRecord、
-     * store_queries.cj:373 的 idemKey），但**落在本侧自己的 `booking_idem` 表** ——
-     * 基线内存 Store 已占用 `idem` 表名且列定义不同（见 schema.cj 文件头）。
+     * ⚠ 这里原先有 `idemKey()` / `putIdem()` / `pruneIdem()` 三个方法，
+     *   操作 `booking_idem` 表做"应用级幂等登记"。**2026-10-07 删除**（含表）。
+     *
+     * 为什么删（完整论证见 ADR-0001 §7 第 7 条）：
+     *   1. **已被更硬的机制覆盖**：幂等由 `book()` 的"先查 + `(patient_id, client_token)`
+     *      唯一索引兜底"保证，而唯一索引是**数据库级**约束 ——
+     *      比"应用先 INSERT IGNORE 登记、再决定要不要写业务表"更强，
+     *      因为应用级登记与业务写入之间仍有窗口。
+     *   2. **它从未在生产路径上被调用**：`book()`/`cancel()` 全程不碰它，
+     *      只有验收测试 AC-8 在测 ⇒ **AC-8 测的是一条生产不走的路**，
+     *      这种"绿色的假保证"比没有测试更坏。
+     *   3. 它存在的理论价值是"操作本身不幂等"的场景（如支付：需要独立记下
+     *      "这笔请求处理过"，因为支付没有天然唯一键）。挂号**有**天然唯一键
+     *      （患者 + client_token），用不上这一层。
+     *
+     * ✅ 代价（如实记录）：失去"登记与业务写入解耦"的能力。
+     *   若将来真的接入了**无天然唯一键**的写操作（支付/出站调用），
+     *   需要重新引入幂等登记表 —— 那时也应重新开 ADR，而不是复活这张表。
      */
-    public func idemKey(kind: String, actorId: Int64, token: String): String {
-        return "${kind}:${actorId}:${token}"
-    }
-
-    /*
-     * 登记幂等键。已存在则返回 false（调用方据此判定重复提交）。
-     * 24h 窗口由调用方按 now 清理（见 pruneIdem）。
-     */
-    public func putIdem(key: String, now: Int64): Bool {
-        if (key.size == 0) {
-            return true
-        }
-        let n = db.exec(
-            "INSERT IGNORE INTO booking_idem (idem_key, created_at) VALUES (?, ?)",
-            [DbStr(key), DbInt(now)])
-        return n == 1
-    }
-
-    /* 清理过期幂等键，返回删除行数。窗口默认 24h。 */
-    public func pruneIdem(now: Int64, windowSeconds!: Int64 = 86400): Int64 {
-        return db.exec("DELETE FROM booking_idem WHERE created_at < ?",
-                       [DbInt(now - windowSeconds)])
-    }
 
     /* ---------- 主流程：挂号 ---------- */
 
