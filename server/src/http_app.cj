@@ -334,6 +334,76 @@ func bookingJson(r: BookingResult): JsonObject {
  * ⚠ 三端业务接口的**身份来源**是 `principalOf(ctx, gate, auth)` ——
  *   从开发态头切到令牌，这里只改了这一个调用点的实参，业务逻辑一行未动。
  */
+/*
+ * 从请求头取"设备标识"（P1 收尾项 ②）。
+ *
+ * 约定（客户端在登录与后续请求里带上；都是**可选**的）：
+ *     X-Device-Id    —— 稳定标识（设备安装 id / 浏览器指纹）
+ *     X-Device-Name  —— 给人看的名字（"iPhone 15" / "Chrome on Windows"）
+ *
+ * ⚠⚠ **这两个值一律不可信**：它们是客户端自报的。
+ *   用途仅限"会话列表的展示与区分"，**绝不参与授权判定** ——
+ *   否则伪造一个 X-Device-Id 就能冒充别人的会话。
+ *   授权依据始终是 Bearer token（见 principalOf）。
+ *
+ * ⚠ 长度截断到 64（与 DDL 一致）：不截断会让超长头直接撞 MySQL 的
+ *   "Data too long" 报 500 —— 一个请求头把接口打成 500 是很容易被用来刷错误日志的。
+ */
+func deviceOf(ctx: Context): (String, String) {
+    let id = match (ctx.requestHeader("x-device-id")) {
+        case Some(v) => v.trimAscii()
+        case None => ""
+    }
+    let name = match (ctx.requestHeader("x-device-name")) {
+        case Some(v) => v.trimAscii()
+        case None => ""
+    }
+    return (truncate64(id), truncate64(name))
+}
+
+/*
+ * 校验 `YYYY-MM-DD` 形状（P1 收尾项 ④ 的入参校验）。
+ *
+ * ⚠ 只做**形状**校验（4-2-2 数字 + 分隔符），不校验"2026-02-30 是否真实存在"：
+ *   后者需要日历逻辑，而它的收益只是把一条空列表换成一条 400 —— 不值。
+ *   形状校验挡住的是**手误**（`2026-13-99`、`2026/10/08`、漏一位），
+ *   这才是实际会发生的错。
+ *
+ * ⚠ 不要为了省事用 `parseInt64Or` 去解日期 —— 它会把 `2026-13-99` 解析成
+ *   2026 然后静默丢掉其余部分，那比不校验更坏。
+ */
+func isDateLike(s: String): Bool {
+    if (s.size != 10) {
+        return false
+    }
+    /*
+     * ⚠ 用 `Int64(a[i])` 与 **ASCII 码**比，不要写 `a[i] != r'-'` ——
+     *   实测报 `invalid binary operator '!=' on type 'UInt8' and 'Rune'`：
+     *   `s.toArray()` 给的是 UInt8，而 `r'-'` 是 Rune，两者不能直接比。
+     *   统一转 Int64 再比（0x2D = '-'，0x30..0x39 = '0'..'9'）。
+     */
+    let a = s.toArray()
+    var i: Int64 = 0
+    while (i < 10) {
+        let c = Int64(a[i])
+        if (i == 4 || i == 7) {
+            if (c != 0x2D) {
+                return false
+            }
+        } else if (!(c >= 0x30 && c <= 0x39)) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+func truncate64(s: String): String {
+    if (s.size <= 64) {
+        return s
+    }
+    return s[0..64]
+}
 public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate): Router {
     let r = Router()
 
@@ -355,7 +425,9 @@ public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuth
         let loginName = requireStr(ctx, "login_name")
         let password = requireStr(ctx, "password")
         let now = hNowEpoch()
-        let res = auth.login(loginName, password, now)
+        // 设备标识（可选、不可信，仅用于会话列表展示 —— 见 deviceOf 注释）
+        let (devId, devName) = deviceOf(ctx)
+        let res = auth.login(loginName, password, now, deviceId: devId, deviceName: devName)
         if (res.succeeded()) {
             let o = JsonObject()
             o.put("token", JsonString(res.token))
@@ -367,6 +439,13 @@ public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuth
                     o.put("role", JsonString(roleName(u.role)))
                     o.put("ref_id", JsonInt(u.refId))
                     o.put("display_name", JsonString(u.displayName))
+                    /*
+                     * ★ 顺手回 `patient_id`（2026-10-07，写 P1 收尾项测试时发现）：
+                     *   患者登录后最需要它来调 `/api/v1/appointments`（"我的挂号"），
+                     *   而此前只有 `/auth/me` 才给 —— 等于每次登录后都要多一次往返。
+                     *   与 `/auth/me` 的口径保持一致（role=patient 时 = ref_id）。
+                     */
+                    o.put("patient_id", JsonInt(u.refId))
                 case None => ()
             }
             sendOk(ctx, o)
@@ -406,7 +485,71 @@ public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuth
         sendOk(ctx, o)
     })
 
-    /* ---------- GET /api/v1/auth/me —— 当前身份 ---------- */
+    
+/* ---------- GET /api/v1/auth/sessions —— 我的活跃会话（按设备）---------- */
+/*
+ * P1 收尾项 ②：令牌按设备管理。
+ *
+ * 只看**自己的**会话（`p.userId`）—— 没有"管理员看别人会话"的入口，
+ * 因为那会把"谁在哪台设备登录过"变成可查询信息（隐私面）。
+ * 管理员要踢人应走"重置口令"（那会吊销该账号全部令牌）。
+ *
+ * ⚠ 返回里**不含 token**：列出会话只需能区分是哪一台（见 SessionInfo 注释）。
+ */
+r.get("/api/v1/auth/sessions", { ctx: Context, _: () -> Unit =>
+    let p = principalOf(ctx, gate, auth)
+    let now = hNowEpoch()
+    let list = auth.listSessions(p.userId, now)
+    let arr = ArrayList<JsonValue>()
+    for (s in list) {
+        let o = JsonObject()
+        o.put("device_id", JsonString(s.deviceId))
+        o.put("device_name", JsonString(s.deviceName))
+        o.put("created_at", JsonInt(s.createdAt))
+        o.put("last_seen_at", JsonInt(s.lastSeenAt))
+        o.put("expires_at", JsonInt(s.expiresAt))
+        arr.add(o)
+    }
+    let o = JsonObject()
+    o.put("sessions", JsonArray(arr.toArray()))
+    o.put("count", JsonInt(list.size))
+    sendOk(ctx, o)
+})
+
+/* ---------- POST /api/v1/auth/sessions/revoke —— 踢掉指定设备的会话 ---------- */
+/*
+ * ★ 两条安全设计（都写在 auth_repo.revokeSessionsByDevice 的注释里）：
+ *   ① **只作用于自己**（`p.userId`）：不信任请求体里的任何 user_id；
+ *   ② `device_id` 为空 → **明确拒绝 400**，而不是"删掉所有空 device_id 的会话"
+ *      （那等于踢全部，而调用方以为自己只踢一台）。
+ *      要踢全部请显式调 `POST /auth/logout-all`。
+ */
+r.post("/api/v1/auth/sessions/revoke", { ctx: Context, _: () -> Unit =>
+    let p = principalOf(ctx, gate, auth)
+    let body = bodyObj(ctx)
+    let deviceId = match (requireStr(ctx, "device_id")) {
+        case s => s
+    }
+    if (deviceId.size == 0) {
+        throw apiErrorMsg("VALIDATION_FAILED", "device_id 不能为空（踢全部会话请用 /auth/logout-all）")
+    }
+    let n = auth.revokeSessionsByDevice(p.userId, deviceId)
+    let o = JsonObject()
+    o.put("revoked", JsonInt(n))
+    o.put("device_id", JsonString(deviceId))
+    sendOk(ctx, o)
+})
+
+/* ---------- POST /api/v1/auth/logout-all —— 踢掉自己全部会话 ---------- */
+r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
+    let p = principalOf(ctx, gate, auth)
+    let n = auth.revokeAllTokens(p.userId)
+    let o = JsonObject()
+    o.put("revoked", JsonInt(n))
+    sendOk(ctx, o)
+})
+
+/* ---------- GET /api/v1/auth/me —— 当前身份 ---------- */
     r.get("/api/v1/auth/me", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
         let o = JsonObject()
@@ -414,6 +557,9 @@ public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuth
         o.put("role", JsonString(roleName(p.role)))
         o.put("patient_id", JsonInt(p.patientId))
         o.put("doctor_id", JsonInt(p.doctorId))
+        // 回显本次请求的设备标识：客户端据此在会话列表里标出"这台设备"
+        let (devId, _devName) = deviceOf(ctx)
+        o.put("device_id", JsonString(devId))
         sendOk(ctx, o)
     })
 
@@ -535,6 +681,87 @@ public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuth
     })
 
     /* ===================== 业务接口 ===================== */
+
+    /* ---------- GET /api/v1/schedules —— 排班列表（按科室/日期，P1 收尾项 ④）---------- */
+    /*
+     * 之前只有 `GET /schedules/:id`（按 id 查单个）。患者端要"看某科室某天有哪些号"
+     * 只能靠猜 id —— 那是不可用的，所以补上列表。
+     *
+     * 查询参数（都可选）：`department_id`、`work_date`（YYYY-MM-DD）、`limit`
+     * 三端可读（与查单个同一权限 Action.ViewSchedule）。
+     *
+     * ⚠ 含"已约满"（remain_num = 0）的排班 —— 藏起来会让患者以为"这天没排班"。
+     *   是否可挂由客户端看 remain_num 自己判断。
+     */
+    r.get("/api/v1/schedules", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ViewSchedule)
+        let depId = parseInt64Or(ctx.queryParamOr("department_id", "0"), 0)
+        let date = ctx.queryParamOr("work_date", "").trimAscii()
+        let lim = parseInt64Or(ctx.queryParamOr("limit", "100"), 100)
+        /*
+         * ⚠ 日期格式先校验再进 SQL：`work_date` 走**参数化**绑定（不会被注入），
+         *   但格式检查仍有价值 —— 它把"typo 成 2026-13-99 却返回空列表"
+         *   变成一条明确的 400，而不是让调用方以为"那天真没排班"。
+         */
+        if (date.size > 0 && !isDateLike(date)) {
+            throw apiErrorMsg("VALIDATION_FAILED", "work_date 格式应为 YYYY-MM-DD")
+        }
+        let list = repo.listSchedules(departmentId: depId, workDate: date, limit: lim)
+        let arr = ArrayList<JsonValue>()
+        for (s in list) {
+            let o = JsonObject()
+            o.put("id", JsonInt(s.id))
+            o.put("doctor_id", JsonInt(s.doctorId))
+            o.put("department_id", JsonInt(s.departmentId))
+            o.put("work_date", JsonString(s.workDate))
+            o.put("period", JsonString(s.period))
+            o.put("total_num", JsonInt(s.totalNum))
+            o.put("remain_num", JsonInt(s.remainNum))
+            o.put("enabled", JsonBool(s.enabled))
+            arr.add(o)
+        }
+        let o = JsonObject()
+        o.put("schedules", JsonArray(arr.toArray()))
+        o.put("count", JsonInt(list.size))
+        sendOk(ctx, o)
+    })
+
+    /* ---------- GET /api/v1/appointments —— 我的挂号（P1 收尾项 ③）---------- */
+    /*
+     * ★ **只看自己的**：patientId 一律取自**令牌**（`p.patientId`），
+     *   **绝不**从查询参数取 —— 否则就是一个"改个参数读别人挂号"的越权接口。
+     *   管理员/医生要看别人的挂号属 P4 运营看板，需另开接口并单独定权限。
+     *
+     * 查询参数：`include_cancelled=true` 才带上已取消的单（默认只看有效的）。
+     */
+    r.get("/api/v1/appointments", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        /*
+         * ⚠ 判断角色要用 `match`/`roleName()`，**不能**写 `p.role != Role.Patient` ——
+         *   仓颉的 enum 没有 `!=`（实测报
+         *   `invalid binary operator '!=' on type 'Enum-Role' and 'Enum-Role'`）。
+         *   本项目已多次踩到这个（见 http_app.cj 里其它角色判定）。
+         */
+        let isPatient = match (p.role) {
+            case Patient => true
+            case _ => false
+        }
+        if (!isPatient || p.patientId <= 0) {
+            throw apiErrorMsg("FORBIDDEN_ROLE", "该接口只对患者开放（它返回的是\"我的挂号\"）")
+        }
+        let inc = ctx.queryParamOr("include_cancelled", "") == "true"
+        let lim = parseInt64Or(ctx.queryParamOr("limit", "50"), 50)
+        let list = repo.listAppointmentsByPatient(p.patientId, includeCancelled: inc, limit: lim)
+        let arr = ArrayList<JsonValue>()
+        for (a in list) {
+            arr.add(bookingJson(a))
+        }
+        let o = JsonObject()
+        o.put("appointments", JsonArray(arr.toArray()))
+        o.put("count", JsonInt(list.size))
+        sendOk(ctx, o)
+    })
 
     /* ---------- GET /api/v1/schedules/:id —— 查排班（三端可读）---------- */
     r.get("/api/v1/schedules/:id", { ctx: Context, _: () -> Unit =>

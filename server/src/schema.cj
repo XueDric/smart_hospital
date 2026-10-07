@@ -286,6 +286,24 @@ public let SCHEMA_DDL: Array<String> = [
     "created_at BIGINT NOT NULL DEFAULT 0, " +
     "expires_at BIGINT NOT NULL DEFAULT 0, " +
     "last_renew_at BIGINT NOT NULL DEFAULT 0, " +  // 滑动续期节流用
+    /*
+     * ★ 设备标识（P1 收尾项 ②：令牌按设备管理）。
+     *
+     * `device_id` 是**客户端自报**的稳定标识（如设备安装 id / 浏览器指纹）；
+     * `device_name` 是给人看的（如 "iPhone 15" / "Chrome on Windows"）。
+     * 两者都由客户端在登录时通过请求头带上（见 http_app.cj 的 deviceOf()）。
+     *
+     * ⚠ 安全边界（必须写明）：**这两个字段是客户端自报的，不可信**。
+     *   它们只用做"会话列表的展示与区分"，**绝不**用于授权判定 ——
+     *   否则伪造一个 device_id 就能冒充别人的会话。
+     *   真正的授权依据始终是 `token` 本身（见 principalByToken）。
+     *
+     * 为什么落库而不是内存：令牌本来就是直接 SQL 持久化的（ADR §4.2），
+     *   设备信息跟着令牌走才能"重启服务后仍能列出会话"。
+     */
+    "device_id VARCHAR(64) NOT NULL DEFAULT '', " +
+    "device_name VARCHAR(64) NOT NULL DEFAULT '', " +
+    "last_seen_at BIGINT NOT NULL DEFAULT 0, " +   // 最近一次使用（列表排序用）
     "PRIMARY KEY (token), " +
     "KEY idx_auth_token_user (user_id), " +
     "KEY idx_auth_token_expires (expires_at)" +
@@ -480,7 +498,27 @@ public func migrateSchema(db: DbBackend): Int64 {
     }
 
     /*
-     * ⑥ ★ DROP 掉遗留的 `booking_idem` 表（2026-10-07，随"删死代码"决策）。
+     * ⑥ 给 `auth_token` 补设备字段（P1 收尾项 ②）。
+     *    同 ⑤ 的理由：`CREATE TABLE IF NOT EXISTS` 对**已有表**完全不生效，
+     *    所以加列必须显式 ALTER，否则老库上查这些列会报 Unknown column。
+     *    四列一起补；用 information_schema 判断，可重复执行。
+     */
+    let devCols = db.query(
+        "SELECT COUNT(*) FROM information_schema.columns " +
+        "WHERE table_schema = DATABASE() AND table_name = 'auth_token' " +
+        "AND column_name IN ('device_id', 'device_name', 'last_seen_at')",
+        Array<DbValue>())
+    if (devCols.rowCount() > 0 && devCols.getInt(0, 0) < 3) {
+        db.exec("ALTER TABLE auth_token " +
+                "ADD COLUMN device_id VARCHAR(64) NOT NULL DEFAULT '', " +
+                "ADD COLUMN device_name VARCHAR(64) NOT NULL DEFAULT '', " +
+                "ADD COLUMN last_seen_at BIGINT NOT NULL DEFAULT 0",
+                Array<DbValue>())
+        done = done + 1
+    }
+
+    /*
+     * ⑦ ★ DROP 掉遗留的 `booking_idem` 表（2026-10-07，随"删死代码"决策）。
      *
      * 同样地：`CREATE TABLE IF NOT EXISTS` 只管"建"，**不管"删"** ——
      * 老库里那张表不会因为我们把 DDL 删了而消失。不显式 DROP 的话：

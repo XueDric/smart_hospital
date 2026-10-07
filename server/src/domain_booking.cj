@@ -40,6 +40,12 @@
 package qingzhou
 
 /*
+ * ⚠ 必须显式 import：列表查询（listAppointmentsByPatient / listSchedules）
+ *   要用 ArrayList 收集结果。实测漏了它报 undeclared identifier 'ArrayList'。
+ */
+import std.collection.*
+
+/*
  * **瞬时错误**重试上限（ADR §6 调参项）。
  *
  * ⚠⚠ 语义在 2026-10-07 变了两次，注释必须跟着改（复查指出旧注释会误导）：
@@ -249,25 +255,122 @@ public class BookingRepo {
         if (rs.rowCount() < 1) {
             return None
         }
+        // 复用 fillFromRow：列顺序只有一处定义（见其注释）
+        return Some(fillFromRow(rs, 0))
+    }
+
+    /*
+     * ★ 某患者的挂号列表（P1 收尾项 ③："我的挂号"）。
+     *
+     * ── 口径（三条，都要说清否则容易各写各的）──────────────────────────────
+     *   ① **默认只返回有效单**（`status <> 'cancelled'`）：患者打开"我的挂号"
+     *      想看的是"我还剩哪些号"，把已取消的混在里面会让列表越用越乱。
+     *      要看历史就显式传 `includeCancelled = true`。
+     *   ② 排序 `created_at DESC, id DESC` —— 最近挂的在前；加 `id` 是为了
+     *      **同秒内也稳定**（否则同一个 created_at 的多条顺序随机，测试会抖）。
+     *   ③ **必须按 patientId 过滤**，由调用方从**令牌**取（见 http_app 的
+     *      `/api/v1/appointments`），绝不能从请求参数取 —— 否则就是越权读别人的挂号。
+     *
+     * `limit` 上限保护：不让一次查询把整表拖出来（默认 50，最大 200）。
+     */
+    public func listAppointmentsByPatient(patientId: Int64, includeCancelled!: Bool = false,
+                                          limit!: Int64 = 50): Array<BookingResult> {
+        let cap = if (limit <= 0) { 50 } else if (limit > 200) { 200 } else { limit }
+        let sql = "SELECT id, schedule_id, patient_id, doctor_id, department_id, " +
+                  "visit_date, period, seq_no, status, created_at, slot_restored " +
+                  "FROM appointment WHERE patient_id = ?" +
+                  (if (includeCancelled) { "" } else { " AND status <> 'cancelled'" }) +
+                  " ORDER BY created_at DESC, id DESC LIMIT ?"
+        let rs = db.query(sql, [DbInt(patientId), DbInt(cap)])
+        let out = ArrayList<BookingResult>()
+        var i: Int64 = 0
+        while (i < rs.rowCount()) {
+            out.add(fillFromRow(rs, i))
+            i = i + 1
+        }
+        return out.toArray()
+    }
+
+    /*
+     * ★ 排班列表（P1 收尾项 ④：按科室/日期筛选）。
+     *
+     * ── 为什么要有它 ────────────────────────────────────────────────────────
+     * 之前只有 `GET /schedules/:id`（按 id 查单个）。患者端要"看某科室某天有哪些号"
+     * 只能靠猜 id —— 那是不可用的。
+     *
+     * ── 筛选语义（都**可选**，给了才加条件）────────────────────────────────
+     *   · departmentId > 0 → 该科室
+     *   · workDate 非空    → 该就诊日（精确匹配；日期区间查询属 P4 排班视图）
+     *   一律 `enabled = 1`（停用的排班不该出现在患者端可挂列表里），
+     *   并在 SQL 层按 `work_date, period, id` 排序（稳定，不靠应用层再排）。
+     *
+     * ⚠ **不做"只显示有号"的过滤**：`remain_num = 0` 的排班也要返回，
+     *   让客户端能显示"已约满" —— 把满号的行藏起来会让患者以为"这天没排班"。
+     *   是否可挂由 `remain_num` 字段自行判断。
+     */
+    public func listSchedules(departmentId!: Int64 = 0, workDate!: String = "",
+                              limit!: Int64 = 100): Array<ScheduleRow> {
+        let cap = if (limit <= 0) { 100 } else if (limit > 500) { 500 } else { limit }
+        var sql = "SELECT id, doctor_id, department_id, work_date, period, total_num, " +
+                  "remain_num, version, enabled FROM schedule WHERE enabled = 1"
+        let params = ArrayList<DbValue>()
+        if (departmentId > 0) {
+            sql = sql + " AND department_id = ?"
+            params.add(DbInt(departmentId))
+        }
+        if (workDate.size > 0) {
+            sql = sql + " AND work_date = ?"
+            params.add(DbStr(workDate))
+        }
+        sql = sql + " ORDER BY work_date ASC, period ASC, id ASC LIMIT ?"
+        params.add(DbInt(cap))
+        let rs = db.query(sql, params.toArray())
+        let out = ArrayList<ScheduleRow>()
+        var i: Int64 = 0
+        while (i < rs.rowCount()) {
+            let r = ScheduleRow()
+            r.id = rs.getInt(i, 0)
+            r.doctorId = rs.getInt(i, 1)
+            r.departmentId = rs.getInt(i, 2)
+            r.workDate = rs.getString(i, 3)
+            r.period = rs.getString(i, 4)
+            r.totalNum = rs.getInt(i, 5)
+            r.remainNum = rs.getInt(i, 6)
+            r.version = rs.getInt(i, 7)
+            r.enabled = rs.getInt(i, 8) != 0
+            out.add(r)
+            i = i + 1
+        }
+        return out.toArray()
+    }
+
+    /*
+     * 把结果集的第 i 行装配成 BookingResult。
+     *
+     * ⚠ 抽出来是为了**让列顺序只有一处定义** —— 上面 findAppointment /
+     *   listAppointmentsByPatient / findAppointmentByToken 的 SELECT 列顺序
+     *   必须完全一致，各写一份 getInt(0, n) 下标就迟早会错位（而且错位后
+     *   类型恰好兼容时**不会报错**，只会读到隔壁列的值）。
+     */
+    func fillFromRow(rs: DbResultSet, i: Int64): BookingResult {
         let r = BookingResult()
-        r.appointmentId = rs.getInt(0, 0)
-        r.scheduleId = rs.getInt(0, 1)
-        r.patientId = rs.getInt(0, 2)
-        r.doctorId = rs.getInt(0, 3)
-        r.departmentId = rs.getInt(0, 4)
-        r.visitDate = rs.getString(0, 5)
-        r.period = rs.getString(0, 6)
-        r.seqNo = rs.getInt(0, 7)
-        r.status = rs.getString(0, 8)
-        r.createdAt = rs.getInt(0, 9)
-        r.slotRestored = rs.getInt(0, 10) != 0
+        r.appointmentId = rs.getInt(i, 0)
+        r.scheduleId = rs.getInt(i, 1)
+        r.patientId = rs.getInt(i, 2)
+        r.doctorId = rs.getInt(i, 3)
+        r.departmentId = rs.getInt(i, 4)
+        r.visitDate = rs.getString(i, 5)
+        r.period = rs.getString(i, 6)
+        r.seqNo = rs.getInt(i, 7)
+        r.status = rs.getString(i, 8)
+        r.createdAt = rs.getInt(i, 9)
+        r.slotRestored = rs.getInt(i, 10) != 0
         r.outcome = BookingOutcome.AlreadyBooked(r.appointmentId)
-        return Some(r)
+        return r
     }
 
     /* 某排班已占用的号数（用于生成就诊序号）。 */
-    public func countBooked(scheduleId: Int64): Int64 {
-        let rs = db.query(
+    public func countBooked(scheduleId: Int64): Int64 {        let rs = db.query(
             "SELECT COUNT(*) FROM appointment WHERE schedule_id = ? AND status <> 'cancelled'",
             [DbInt(scheduleId)])
         if (rs.rowCount() < 1) {

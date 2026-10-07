@@ -196,6 +196,136 @@ public class LoginOutcome {
     }
 }
 
+/* ===================== 口令强度（P1 收尾项 ①）===================== */
+
+/*
+ * 口令最小长度。
+ *
+ * 取值理由（为什么是 8，而不是"越长越好"）：
+ *   · 本项目口令用 **PBKDF2-HMAC-SHA256 / 10 万次迭代**（实测单次约 0.55s），
+ *     这个成本已让离线爆破很贵，长度不必靠 12/16 去堆；
+ *   · 8 是 NIST SP 800-63B 的下限口径，也是"用户不会写在便签上"的经验平衡点；
+ *   · ⚠ 配合"失败 5 次锁 15 分钟"的限流，在线爆破空间已被压得很小。
+ * 换句话说：**长度下限 + 迭代成本 + 限流** 是一套组合，不是各自拍脑袋。
+ */
+public let PW_MIN_LEN: Int64 = 8
+
+/*
+ * 常见弱口令（小写比对）。
+ *
+ * ⚠ 这是**示例级**清单，不是完整的泄露口令库 —— 如实标注：
+ *   它拦的是"随手敲的"弱口令，不能替代专业字典。
+ *   要更强需引入外部字典文件（属发布/运维范畴，见 P1-HANDOFF §9）。
+ */
+private let WEAK_PASSWORDS: Array<String> = [
+    "password", "passw0rd", "12345678", "123456789", "1234567890",
+    "qwertyui", "qwerty123", "abc12345", "11111111", "00000000",
+    "iloveyou", "admin123", "administrator", "letmein1", "welcome1",
+    "hospital", "hospital123", "test1234", "changeme", "p@ssw0rd"
+]
+
+/* 口令校验结果。 */
+public class PwCheck {
+    public var ok: Bool = true
+    /* 面向用户的理由（ok = false 时非空）。 */
+    public var reason: String = ""
+}
+
+/* ===================== 会话（令牌按设备管理，P1 收尾项 ②）=========== */
+
+/*
+ * 一条活跃会话（读模型）。
+ *
+ * ⚠ **刻意不含 token**：列出会话只需要"能区分是哪一台设备"，
+ *   把 token 回给客户端等于把凭据多复制一份（多一份就可能多泄露一处）。
+ *   需要区分"哪条是当前这条"时用 `deviceId` 比对（调用方自己的会话会带上它）。
+ *
+ * ⚠ `deviceId` / `deviceName` 都是**客户端自报**的，不可信：
+ *   仅用于展示与用户自行辨认，**绝不参与授权判定**。
+ */
+public class SessionInfo {
+    public var deviceId: String = ""
+    public var deviceName: String = ""
+    public var createdAt: Int64 = 0
+    public var lastSeenAt: Int64 = 0
+    public var expiresAt: Int64 = 0
+}
+
+/*
+ * ★ 口令强度校验，**在仓储层强制**（createUser / setPassword 都调它）。
+ *
+ * ── 为什么放在仓储层而不是 HTTP 层（本项最关键的决策）──────────────────
+ * 设置口令的入口不止一个：`POST /admin/users`（建号）、
+ * `POST /admin/users/:id/password`（重置）、`create-admin`（CLI 引导）。
+ * 放在 HTTP 层 ⇒ **CLI 那条路会漏**，将来再加入口还会漏。
+ * 放在仓储层 ⇒ 只有一个必经点，**谁都无法绕过**。
+ *
+ * 📌 这正是前几轮反复吃的教训："同一件事有两处实现，迟早漏一处"。
+ *   所以这里刻意**不给**上层留"可选的强度检查开关"。
+ *
+ * ── 规则（四条，每条都能解释）──────────────────────────────────────────
+ *   ① 长度 ≥ 8
+ *   ② 同时含**字母**与**数字**
+ *   ③ 不在常见弱口令表内
+ *   ④ 不等于登录名，也不是"登录名 + 前后缀"（最常见的弱化写法）
+ *
+ *   **刻意不要求特殊字符**：强制特殊字符会把用户推向 `Password1!` 这类
+ *   可预测写法（NIST 明确不建议），收益低、代价是用户改用便签。
+ */
+public func checkPasswordStrength(password: String, loginName: String): PwCheck {
+    let r = PwCheck()
+
+    if (password.size < PW_MIN_LEN) {
+        r.ok = false
+        r.reason = "口令至少 ${PW_MIN_LEN} 位（当前 ${password.size} 位）"
+        return r
+    }
+
+    // ② 字母 + 数字
+    var hasLetter = false
+    var hasDigit = false
+    for (ch in password.toArray()) {
+        let c = Int64(ch)
+        if ((c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A)) {
+            hasLetter = true
+        }
+        if (c >= 0x30 && c <= 0x39) {
+            hasDigit = true
+        }
+    }
+    if (!hasLetter || !hasDigit) {
+        r.ok = false
+        r.reason = "口令必须同时包含字母与数字"
+        return r
+    }
+
+    // ③ 弱口令表（小写比对）
+    let low = password.toAsciiLower()
+    for (w in WEAK_PASSWORDS) {
+        if (low == w) {
+            r.ok = false
+            r.reason = "口令太常见，请换一个"
+            return r
+        }
+    }
+
+    // ④ 不得等于登录名，也不要"登录名 + 数字"这种最常见弱化
+    let nlogin = normalizeLoginName(loginName)
+    if (nlogin.size > 0) {
+        if (low == nlogin) {
+            r.ok = false
+            r.reason = "口令不能与登录名相同"
+            return r
+        }
+        if (low.startsWith(nlogin) || low.endsWith(nlogin)) {
+            r.ok = false
+            r.reason = "口令不能是登录名加前后缀（如 ${loginName}123）"
+            return r
+        }
+    }
+    return r
+}
+
 public class AuthRepo {
     private let db: DbBackend
 
@@ -296,6 +426,30 @@ public class AuthRepo {
 
     /* ---------- 账号 ---------- */
 
+    /* 按 **id** 查账号（setPassword 需要拿登录名做"口令不等于登录名"校验）。 */
+    public func findUserById(userId: Int64): ?AuthUser {
+        let rs = db.query(
+            "SELECT id, login_name, role, ref_id, display_name, pw_salt, pw_hash, " +
+            "pw_iter, status FROM auth_user WHERE id = ?", [DbInt(userId)])
+        if (rs.rowCount() < 1) {
+            return None
+        }
+        let u = AuthUser()
+        u.id = rs.getInt(0, 0)
+        u.loginName = rs.getString(0, 1)
+        u.role = match (roleOf(rs.getString(0, 2))) {
+            case Some(r) => r
+            case None => Role.Patient
+        }
+        u.refId = rs.getInt(0, 3)
+        u.displayName = rs.getString(0, 4)
+        u.pwSalt = rs.getString(0, 5)
+        u.pwHash = rs.getString(0, 6)
+        u.pwIter = rs.getInt(0, 7)
+        u.status = rs.getString(0, 8)
+        return Some(u)
+    }
+
     /* 按登录名查账号；不存在返回 None。 */
     public func findUser(loginName: String): ?AuthUser {
         /*
@@ -343,6 +497,16 @@ public class AuthRepo {
         if (existing.isSome()) {
             return existing.getOrThrow().id
         }
+        /*
+         * ★ 建号也强制口令强度（不只是"重置口令"那条路）。
+         *   放在这里而不是 HTTP 层，是为了让 `create-admin` 这个 CLI 入口
+         *   走的是**同一道**校验 —— 见 checkPasswordStrength 的注释。
+         */
+        let pwOk = checkPasswordStrength(password, loginName)
+        if (!pwOk.ok) {
+            // ★ 用 UserFacingError：它会被映射成 400 VALIDATION_FAILED，而不是 500
+            throw UserFacingError("口令强度不足：${pwOk.reason}")
+        }
         let rec = newPasswordRecord(password)
         db.exec(
             "INSERT INTO auth_user " +
@@ -366,8 +530,32 @@ public class AuthRepo {
         return rs.getInt(0, 0) > 0
     }
 
-    /* 改口令（同时吊销该账号**全部**令牌 —— 改密码必须踢下线）。 */
+    /*
+     * 改口令（同时吊销该账号**全部**令牌 —— 改密码必须踢下线）。
+     *
+     * ⚠ 顺序很关键：**先校验强度，再落库 + 吊销令牌**。
+     *   若先吊销再校验失败，会出现"口令没改但用户被踢下线"的副作用 ——
+     *   攻击者只要拿管理员令牌发一次弱口令请求，就能把目标用户踢下线。
+     *
+     * ⚠ 还有一个**新发现**（2026-10-07，读代码时发现，已修）：
+     *   原实现是"UPDATE 之后再 revokeAllTokens"，**没检查 UPDATE 是否真的影响了一行**。
+     *   于是对**不存在的 userId** 重置口令时：UPDATE 影响 0 行，
+     *   但 `revokeAllTokens` 照样执行 —— 对已删除/不存在的账号是空操作所以看不出问题，
+     *   但语义上"改密成功"与"改密未生效"被混在一起了。
+     *   现在先确认账号存在，不存在则抛异常（HTTP 层映射 404 USER_NOT_FOUND），
+     *   与 http_app.cj 里已有的 userExists() 前置检查口径一致、不再两处各判一次。
+     */
     public func setPassword(userId: Int64, password: String, now: Int64): Unit {
+        let who = findUserById(userId)
+        if (who.isNone()) {
+            // 同理：这是"请求的账号不存在"，属 4xx，不是服务端故障
+            throw UserFacingError("账号不存在：${userId}")
+        }
+        let pwOk = checkPasswordStrength(password, who.getOrThrow().loginName)
+        if (!pwOk.ok) {
+            // ★ 用 UserFacingError：它会被映射成 400 VALIDATION_FAILED，而不是 500
+            throw UserFacingError("口令强度不足：${pwOk.reason}")
+        }
         let rec = newPasswordRecord(password)
         db.exec("UPDATE auth_user SET pw_salt = ?, pw_hash = ?, pw_iter = ? WHERE id = ?",
                 [DbStr(rec[0]), DbStr(rec[1]), DbInt(rec[2]), DbInt(userId)])
@@ -393,7 +581,8 @@ public class AuthRepo {
      *      Some 之外的第三种...  → 用 LoginOutcome 表达"已锁定"，见下方类型
      */
     public func login(loginName: String, password: String,
-                      now: Int64): LoginOutcome {
+                      now: Int64,
+                      deviceId!: String = "", deviceName!: String = ""): LoginOutcome {
         let out = LoginOutcome()
 
         // 0) 限流闸门：已锁定 → 直接拒绝，**不跑 PBKDF2**
@@ -436,19 +625,88 @@ public class AuthRepo {
         let _ = pruneTokens(now)
         let _ = pruneAttempts(now)
 
-        // 2) 签发令牌
+        // 2) 签发令牌（记录设备信息，供"会话列表 / 踢单台设备"使用）
         let tok = newToken()
         let expires = now + TOKEN_TTL
         db.exec(
-            "INSERT INTO auth_token (token, user_id, created_at, expires_at, last_renew_at) " +
-            "VALUES (?, ?, ?, ?, ?)",
-            [DbStr(tok), DbInt(out.userId), DbInt(now), DbInt(expires), DbInt(now)])
+            "INSERT INTO auth_token (token, user_id, created_at, expires_at, last_renew_at, " +
+            " device_id, device_name, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [DbStr(tok), DbInt(out.userId), DbInt(now), DbInt(expires), DbInt(now),
+             DbStr(deviceId), DbStr(deviceName), DbInt(now)])
         out.token = tok
         out.expiresAt = expires
         return out
     }
 
     /* ---------- 令牌 ---------- */
+
+    /*
+     * ★ 列某账号的**活跃会话**（P1 收尾项 ②：令牌按设备管理）。
+     *
+     * 只返回**未过期**的会话 —— 过期令牌由 pruneTokens 清理，但两次清理之间
+     * 可能还有残留，所以这里也过滤 expires_at，避免列表里出现
+     * "看着还在、其实已经不能用"的僵尸会话。
+     *
+     * 排序：`last_seen_at DESC`（最近用过的在前），同刻按 device_id 定序保证**稳定**
+     *   —— 列表要可复现，否则测试与人工核对都会被顺序抖动干扰。
+     *
+     * ⚠ 返回结构里**不含 token 本身**（见 SessionInfo 注释）：列出会话只需
+     *   "能区分是哪一台"，把 token 回给客户端等于把凭据多复制一份。
+     */
+    public func listSessions(userId: Int64, now: Int64): Array<SessionInfo> {
+        let rs = db.query(
+            "SELECT device_id, device_name, created_at, last_seen_at, expires_at " +
+            "FROM auth_token WHERE user_id = ? AND expires_at > ? " +
+            "ORDER BY last_seen_at DESC, device_id ASC",
+            [DbInt(userId), DbInt(now)])
+        let out = ArrayList<SessionInfo>()
+        var i: Int64 = 0
+        while (i < rs.rowCount()) {
+            let s = SessionInfo()
+            s.deviceId = rs.getString(i, 0)
+            s.deviceName = rs.getString(i, 1)
+            s.createdAt = rs.getInt(i, 2)
+            s.lastSeenAt = rs.getInt(i, 3)
+            s.expiresAt = rs.getInt(i, 4)
+            out.add(s)
+            i = i + 1
+        }
+        return out.toArray()
+    }
+
+    /*
+     * ★ 踢掉某账号在**指定设备**上的全部会话（返回删除行数）。
+     *
+     * ⚠ 两条安全要点：
+     *   ① **必须带 userId 条件**（`AND user_id = ?`）—— 只按 device_id 删会让
+     *      A 用户能踢掉 B 用户**在同型号设备**上的会话（device_id 是客户端自报的，
+     *      不同人完全可能撞上同一个值，甚至被故意伪造成别人的）。
+     *      加上 userId 后，"能踢谁"由**服务端已知的身份**决定，不信客户端。
+     *   ② `deviceId` 为空串时**拒绝执行**并返回 0：空串是"客户端没报设备"的默认值，
+     *      按它删会**一次踢掉所有未报设备的会话** —— 那等于"踢全部"，
+     *      而调用方以为自己只踢了一台。要踢全部请走 revokeAllTokens（语义清楚）。
+     */
+    public func revokeSessionsByDevice(userId: Int64, deviceId: String): Int64 {
+        if (deviceId.size == 0) {
+            return 0
+        }
+        return db.exec("DELETE FROM auth_token WHERE user_id = ? AND device_id = ?",
+                       [DbInt(userId), DbStr(deviceId)])
+    }
+
+    /*
+     * 刷新会话的"最近使用"时间（节流，避免每个请求都写库）。
+     *
+     * ⚠ 为什么需要：会话列表按 last_seen_at 排序。若从不更新，顺序永远是
+     *   "登录顺序"而不是"最近使用顺序"，用户分不清哪台是自己正在用的那台。
+     *   节流默认 300s —— 与续期（每天一次）不同，它只是展示用，不需要更勤。
+     */
+    public func touchSession(token: String, now: Int64, throttleSeconds!: Int64 = 300): Unit {
+        let _ = db.exec(
+            "UPDATE auth_token SET last_seen_at = ? WHERE token = ? AND last_seen_at < ?",
+            [DbInt(now), DbStr(token), DbInt(now - throttleSeconds)])
+    }
+
 
     /*
      * 回收全部已过期令牌（返回删除行数）。

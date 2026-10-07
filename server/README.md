@@ -1,4 +1,4 @@
-# 智慧医院服务端（仓颉 + 轻舟）
+﻿# 智慧医院服务端（仓颉 + 轻舟）
 
 > P0 阶段交付：**号源/挂号域的独立 MySQL 路径** + 构建链 + 验收测试。
 > 架构决策见 [../docs/adr/ADR-0001-号源与挂号独立MySQL路径.md](../docs/adr/ADR-0001-号源与挂号独立MySQL路径.md)。
@@ -135,6 +135,15 @@ cd server     # ⚠ cwd 必须是 server/，见下
 # TLS/HTTPS 验证（SslStream 真校验；需 HTTPS 已启动）
 $env:HOSP_ADMIN_PW = "<管理员口令>"
 .\tests\tls-check.ps1      -Cert "C:\ProgramData\smart-hospital\tls\cert.pem" -Port 8443
+
+# 登录限流 / 失败锁定（9 节，含"归一变体不得绕过锁定"）
+.\tests\rate-limit-check.ps1 -Base http://127.0.0.1:8091 -AdminPw <管理员口令>
+
+# P1 收尾 4 项：口令强度 / 会话按设备 / 我的挂号 / 排班列表
+.\tests\p1-extra-check.ps1   -Base http://127.0.0.1:8091 -AdminPw <管理员口令>
+
+# 文档数字对账（防"文档与实测漂移"；-Fix 自动改写）
+.\tests\doc-counts.ps1
 ```
 
 三个脚本**互不依赖执行顺序**（自建夹具、自清数据）。
@@ -165,7 +174,8 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
 | `src/auth_repo.cj` | 鉴权仓储：账号、按登录名查、登录（防枚举）、令牌签发/校验/续期/吊销 |
 | `src/db_bootstrap.cj` | MySQL 建连 + `SET NAMES utf8mb4` + DSN 解析 + 驱动注册 |
 | `src/http_common.cj` | 统一响应/错误码表（`{ok,data}` / `{ok:false,error}`） |
-| `src/http_app.cj` | HTTP 装配 + 三端权限矩阵 + `principalOf()`（令牌优先，开发态头可选）+ **登录限流闸门** |
+| `src/http_app.cj` | HTTP 装配 + 三端权限矩阵 + `principalOf()`（令牌优先，开发态头可选）+ **登录限流闸门** + **会话/列表端点** |
+| `src/auth_repo.cj` | 鉴权仓储：**口令强度校验（仓储层强制）** + 登录名归一 + 限流计数 + 会话按设备 |
 | `src/acceptance.cj` | AC-1…AC-12 验收测试（含异常兜底与变异测试记录） |
 | `src/main.cj` | 进程入口与子命令分发（含 TLS 分支与 fail-closed） |
 | `new-tls-cert.ps1` | 生成带 SAN 的自签证书 + ASCII 运行副本 + ACL 收紧 |
@@ -234,6 +244,22 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
     HTTP 层用 6。**别靠无限加重试解决高并发**，那是把失败换成延迟。
 
 ---
+
+### ★ 追加 A–I（2026-10-07 P1 收尾时又踩到 / 新踩到的）
+
+> ⚠ 用**字母**编号而不是接着上面的数字：两段是不同时间记的，数字接续容易在增删时错位。
+
+| # | 坑 | 现象 | 处置 |
+| --- | --- | --- | --- |
+| A | **`cjc` 报 `undeclared identifier` 时，先怀疑"是不是方法写成了自由函数"** | `trimAscii(raw)` 报未声明 —— 而 `raw.trimAscii()` 正常。错误信息**不提示"你可能漏了接收者"** | 改成 `raw.trimAscii()`。排查时白试了几轮 import（`std.convert` / `std.collection`） |
+| B | **仓颉没有全局提升（no hoisting）** | 把 `deviceOf` / `MEM_TABLES` 定义在**使用之后** → 直接报未声明 | 定义移到使用之前。⚠ 这条已记过一次，本次又犯 —— 写新函数时**先放前面** |
+| C | **enum 不能 `!=`** | `p.role != Role.Patient` → `invalid binary operator '!=' on type 'Enum-Role' and 'Enum-Role'` | 用 `match`，或比 `roleName()`。⚠ 本项目**第四次**踩到，务必一次记住 |
+| D | **`s.toArray()` 给 UInt8，`r'-'` 是 Rune，不能直接比** | `a[i] != r'-'` → 类型不匹配 | 统一 `Int64(a[i])` 与 ASCII 码比（`0x2D` = `-`） |
+| E | **`cjc` 报 `generics type arguments do not match the constraint`** | 想写泛型 `sortedKeys<K,V>(m: HashMap<K,V>) where K <: Comparable<K>` —— `HashMap` 的类型参数带约束，接不上 | 退成"收 ArrayList 再排序"的具化写法 |
+| F | **`Array<T>` 没有 `sort()`** | `arr.sort()` → `'sort' is not a member of struct 'Array<Int64>'`；也找不到可用的 `std.sort` | 自己写插入排序（只需"确定顺序"，量级几十~几百） |
+| G | **跨行 `&&` / `+` 串联触发 `possibly confusing line terminator`** | 仓颉把行尾当语句终结符候选 | 拆行写，或把运算符留在行尾 |
+| H | **`build.ps1` 看不到完整编译诊断** | 它只抛 `编译失败 (exit N)`，没有文件:行:列 | 直接调 `cjc`（带 `--import-path` / `-L` / `-l:` 那一串）才能拿到全部错误与 `==> 文件:行:列`。**排查编译错时优先这么做** |
+| I | **PowerShell 的 `MatchEvaluator` scriptblock 里必须用 `#` 注释** | 写 C 风格 `/* */` → `无法将"/*"项识别为 cmdlet` | 改 `#`。（同类：`.ps1` 文件本身也是 PowerShell 上下文） |
 
 ## 六、明确**未**做
 

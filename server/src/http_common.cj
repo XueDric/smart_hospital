@@ -173,11 +173,44 @@ public func sendError(ctx: Context, e: ApiError): Unit {
  *   框架那个输出的是它自己的 `{"error":...}` 形状，与我们 `{ok:false,error:{...}}`
  *   的统一口径不一致；混用会让客户端遇到两套错误格式。
  */
+/*
+ * ★ 可直接回给客户端的异常（2026-10-07 加）。
+ *
+ * ── 为什么需要它 ─────────────────────────────────────────────────────────
+ * 仓储层（auth_repo / domain_booking）会在**校验失败**时抛异常，
+ * 例如口令强度不足、账号不存在。这些异常默认会被 hospitalErrorHandler
+ * 归为 `INTERNAL` ⇒ **回 500**，但它们的性质是"你的请求不对"（4xx）。
+ *
+ * 两条路都不可取：
+ *   · 全部当 500 ⇒ 客户端以为服务端坏了，而实际是它自己该改请求；
+ *   · 在 handler 里**按消息字符串** contains("口令强度不足") 匹配 ⇒
+ *     改一个字就静默失效（这正是本项目反复吃过的"两处口径"坑）。
+ *
+ * 所以用**类型**表达：仓储层抛 `UserFacingError(message)`，
+ * handler 认出这个类型后回 400 `VALIDATION_FAILED` 并把 message 带给客户端。
+ *
+ * ⚠ 安全边界：只有**我们自己的代码**能构造这个类型，且 message 是我们写的文案，
+ *   所以回给客户端是安全的。**绝不要**用外部输入（如 SQL 报错原文）构造它 ——
+ *   那会把内部细节泄露出去。真·内部异常仍然只进日志（见 handler 的 else 分支）。
+ */
+public class UserFacingError <: Exception {
+    public UserFacingError(message: String) {
+        super(message)
+    }
+}
+
 public func hospitalErrorHandler(ctx: Context): Unit {
     match (ctx.err()) {
         case Some(e: ApiError) => sendError(ctx, e)
+        case Some(e: UserFacingError) =>
+            /*
+             * 仓储层明确标记"这是给用户看的校验失败" ⇒ 400，且**保留原因**。
+             * 原因文案由我们自己的代码写（不含内部细节），所以可以回。
+             */
+            let spec = apiErrorSpec("VALIDATION_FAILED")
+            sendError(ctx, ApiError("VALIDATION_FAILED", spec[0], e.message, None))
         case Some(e) =>
-            // 细节只进服务端日志，不回给客户端
+            // 其它异常：细节只进服务端日志，不回给客户端
             println("[ERROR] ${ctx.method()} ${ctx.path()} -> ${e.message}")
             let spec = apiErrorSpec("INTERNAL")
             sendError(ctx, ApiError("INTERNAL", spec[0], spec[1], None))

@@ -46,6 +46,12 @@ $acMax = ([regex]::Matches($accSrc, 'runner\.ac(\d+)\(\)') | ForEach-Object { [i
 foreach ($k in $actual.Keys) { Write-Host ("  {0,-9} = {1}" -f $k, $actual[$k]) }
 Write-Host "  AC 编号上限 = AC-$acMax"
 
+# ★ REST 端点数（从 http_app.cj 数出来）—— 这个数字最容易漂：
+#   每加一个端点都得回头改 README，而"加了但忘了改文档"正是本项目漂过两次的病。
+$appSrc = [System.IO.File]::ReadAllText((Join-Path $serverDir "src\http_app.cj"), [System.Text.UTF8Encoding]::new($false))
+$epCount = ([regex]::Matches($appSrc, 'r\.(get|post|put|del)\("/api/')).Count
+Write-Host "  REST 端点数 = $epCount"
+
 # ── 2) 文档里"应该"写的值（想加新位置就往这里加一行）───────────────────
 #    每项：文件、匹配的正则（含一个捕获组）、期望值来源
 $checks = @(
@@ -53,6 +59,7 @@ $checks = @(
     @{ File = "server\README.md";     Pattern = '`accept <dsn>` \| 验收测试 AC-1…AC-(?<ac>\d+)（\*\*(?<n>\d+) 项断言\*\*'; Want = 'accept' },
     @{ File = "server\README.md";     Pattern = '`src/acceptance\.cj` \| AC-1…AC-(?<ac>\d+) 验收测试'; Want = 'accept' },
     @{ File = "docs\P1-HANDOFF.md";   Pattern = 'schema 自检（无需库） \| `hospital-server\.exe selftest` \| ✅ \*\*(?<n>\d+) 项\*\*'; Want = 'selftest' },
+    @{ File = "README.md";            Pattern = '\*\*(?<ep>\d+) 个 REST\*\*'; Want = 'endpoints' },
     @{ File = "docs\P1-HANDOFF.md";   Pattern = '验收（AC-1…AC-(?<ac>\d+)） \| `hospital-server\.exe accept <dsn>` \| ✅ \*\*(?<n>\d+) 项\*\*'; Want = 'accept' },
     @{ File = "docs\adr\ADR-0001-号源与挂号独立MySQL路径.md"; Pattern = '`hospital-server\.exe selftest` \| ✅ \*\*(?<n>\d+) 项\*\*'; Want = 'selftest' },
     @{ File = "docs\adr\ADR-0001-号源与挂号独立MySQL路径.md"; Pattern = '`hospital-server\.exe accept <dsn>` \| ✅ \*\*(?<n>\d+) 项 / 失败 0\*\*'; Want = 'accept' }
@@ -71,13 +78,24 @@ foreach ($c in $checks) {
         $bad++
         continue
     }
-    $want = $actual[$c.Want]
+    $want = if ($c.Want -eq "endpoints") { $epCount } else { $actual[$c.Want] }
     # ★ 用具名组取数 —— 不再靠"捕获组顺序"（那东西一改正则就错，实测被坑过）
     #
     # 两种检查形态（用哪个看正则里有哪些具名组）：
     #   · 有 `n`  → 检查"项数"是否等于实测 PASS 数；
     #   · 只有 `ac` → 检查"AC 编号上限"是否等于源码里 runner.acN() 的最大 N。
     #     （这类检查没有"项数"可比，不能要求它必须有 n 组。）
+    # 端点数检查（只有 ep 具名组）
+    if ($m.Groups['ep'].Success) {
+        $gotEp = [int]$m.Groups['ep'].Value
+        if ($gotEp -eq $epCount) {
+            Write-Host "  [OK]   $($c.File) —— REST 端点数 = $gotEp"
+        } else {
+            Write-Host "  [DRIFT] $($c.File) —— 文档写 $gotEp 个端点，实测 $epCount 个"
+            $bad++
+        }
+        continue
+    }
     $hasN  = $m.Groups['n'].Success
     $hasAc = $m.Groups['ac'].Success
     if (-not ($hasN -or $hasAc)) {
@@ -117,7 +135,7 @@ if ($Fix) {
         $path = Join-Path $repoDir $c.File
         if (-not (Test-Path $path)) { continue }
         $text = [System.IO.File]::ReadAllText($path, [System.Text.UTF8Encoding]::new($false))
-        $want = $actual[$c.Want]
+        $want = if ($c.Want -eq "endpoints") { $epCount } else { $actual[$c.Want] }
         $n = 0
         $new = [regex]::Replace($text, $c.Pattern, {
             param($mm)
@@ -133,6 +151,10 @@ if ($Fix) {
             $out = $mm.Value
             if ($mm.Groups['ac'].Success) {
                 $out = $out.Replace("AC-" + $mm.Groups['ac'].Value, "AC-" + "$acMax")
+            }
+            # 端点数（ep 组）也要能 -Fix
+            if ($mm.Groups['ep'].Success) {
+                $out = $out.Replace($mm.Groups['ep'].Value, "$epCount")
             }
             if ($mm.Groups['n'].Success) {
                 $out = $out.Replace($mm.Groups['n'].Value, "$want")
