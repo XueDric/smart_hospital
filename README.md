@@ -27,7 +27,8 @@
 | [smart-hospital-project-brief.md](smart-hospital-project-brief.md) | **唯一上下文入口** —— 项目定位、已确认决策、可复用资产盘点、5 个硬骨头、里程碑、风险、待决问题 | ✏️ 本项目文档 |
 | [docs/adr/](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) | **架构决策记录** —— ADR-0001 号源/挂号独立 MySQL 路径（P0 唯一架构级决策） | ✏️ 本项目文档 |
 | [docs/P0-HANDOFF.md](docs/P0-HANDOFF.md) | P0 收尾说明：交付物、验收结果与边界、本机联调环境、P0 踩过的 12 个坑 | ✏️ 本项目文档 |
-| [docs/P1-HANDOFF.md](docs/P1-HANDOFF.md) | **P1 说明**：HTTP 接口清单、权限矩阵、并发压测结果、压测抓出的 3 个真缺陷、临时形态与未完成项 | ✏️ 本项目文档 |
+| [docs/P1-HANDOFF.md](docs/P1-HANDOFF.md) | **P1 说明**：HTTP 接口清单、权限矩阵、令牌鉴权口径与公开测试向量、并发压测结果、抓出的缺陷、未完成项 | ✏️ 本项目文档 |
+| [docs/PUSH-NOTES.md](docs/PUSH-NOTES.md) | 推送备忘：本机 DNS 返回了一个连不通的 GitHub IP，以及绕过办法（实测有效） | ✏️ 本项目文档 |
 | [server/](server/README.md) | **智慧医院服务端**（仓颉 + 轻舟）：`src/` 5 个 `.cj` + 构建脚本 + README | ✏️ 本项目代码 |
 | [baseline/](baseline/SNAPSHOT.md) | **只读参考基线** —— 复制自 `cangjie_web`，**352 文件 / 7.53 MB**，基线提交 `07a0922`（上传前已剔除机密材料，见其 §二·补） | 🚫 **只读，勿就地改** |
 | [baseline/SNAPSHOT.md](baseline/SNAPSHOT.md) | 基线说明：来源/提交/排除清单/路径映射表/复用风险 | ✏️ 复制说明 |
