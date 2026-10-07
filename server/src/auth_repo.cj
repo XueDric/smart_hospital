@@ -216,12 +216,32 @@ public let PW_MIN_LEN: Int64 = 8
  * ⚠ 这是**示例级**清单，不是完整的泄露口令库 —— 如实标注：
  *   它拦的是"随手敲的"弱口令，不能替代专业字典。
  *   要更强需引入外部字典文件（属发布/运维范畴，见 P1-HANDOFF §9）。
+ *
+ * ⚠ 2026-10-07 补充（第四份复查实测指出）：原表**漏了"常见词 + 数字"这一整类** ——
+ *   实测 `password1` / `password123` **都能通过**。而"密码+数字"恰恰是
+ *   强制"字母+数字"之后用户**最可能**写出的形态（规则把人往这条路上推，
+ *   就得在这条路上设卡）。已补一批高频道变体。
+ *   仍**不追求完备**：真正的解法是外部字典；这里只堵"最可能被随手敲出的"。
  */
 private let WEAK_PASSWORDS: Array<String> = [
-    "password", "passw0rd", "12345678", "123456789", "1234567890",
-    "qwertyui", "qwerty123", "abc12345", "11111111", "00000000",
-    "iloveyou", "admin123", "administrator", "letmein1", "welcome1",
-    "hospital", "hospital123", "test1234", "changeme", "p@ssw0rd"
+    // 纯常见词
+    "password", "passw0rd", "qwertyui", "iloveyou", "administrator",
+    "letmein1", "welcome1", "changeme", "hospital", "monkey12",
+    // ★ 常见词 + 数字（2026-10-07 补：强制"字母+数字"之后最可能的形态）
+    "password1", "password12", "password123", "password1234", "password2024",
+    "password2025", "password2026", "qwerty123", "qwerty1234", "qwerty12345",
+    "abc12345", "abcd1234", "iloveyou1", "welcome123",
+    // ⚠ `admin123` 等"短词+短数字"必须**留着**：我 2026-10-07 重写这张表时
+    //   只加了 `admin1234` 却**漏掉了 `admin123`** —— 是测试用例当场抓出来的
+    //   （那条用例期望 400 却拿到 201）。**改写清单/白名单时最容易漏的就是"原本有的项"**，
+    //   所以补回并加齐同类短数字变体。
+    "admin123", "admin12345", "root1234", "test123", "test123456",
+    "hospital2026", "qwerty12", "abcdef12", "aa123456", "abc123456",
+    "administrator1", "hospital1", "hospital123", "test1234", "test12345",
+    "letmein123", "changeme1", "changeme123", "monkey123",
+    // 纯数字 / 顺序键
+    "12345678", "123456789", "1234567890", "11111111", "00000000",
+    "12341234", "87654321", "11223344", "123123123"
 ]
 
 /* 口令校验结果。 */

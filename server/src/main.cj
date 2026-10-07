@@ -632,13 +632,51 @@ func createAdmin(args: Array<String>): Int64 {
         return 1
     }
     let auth = AuthRepo(db)
-    // 生成可读口令：用去混淆字符表（与基线 CODE_ALPHABET 同思路），便于人工抄录
-    let pw = randCode(12)
-    let existed = auth.findUser(loginName).isSome()
-    let uid = auth.createUser(loginName, Role.Admin, 0, "管理员", pw, hNowEpoch())
-    if (existed) {
-        // 已存在 → 改口令（setPassword 会顺带吊销其全部令牌）
-        auth.setPassword(uid, pw, hNowEpoch())
+    /*
+     * ★★ 口令生成 + 建号，**整体包在 try/catch 里**（2026-10-07 修）。
+     *
+     * ── 原缺陷（第四份复查发现；我实测复现：70 次失败 6 次 = 8.6%）──────────
+     * `randCode(12)` 不保证成分 ⇒ 约 7.7% 概率生成"全字母"口令 ⇒ 被本项目
+     * **自己**的口令强度规则②（必须含字母与数字）拒 ⇒ 抛 `UserFacingError`。
+     * 而原来的 try/catch **只包了建库那段**，于是异常直冒到顶层，
+     * 用户看到的是**堆栈**（`An exception has occurred: … at qingzhou::UserFacingError::init`），
+     * 而不是其它地方统一的 `❌ 清晰提示`。
+     *
+     * `randCode` 已改为**保证成分**，正常不再触发；但这里仍然要：
+     *   ① 兜住可提示失败 → `❌` + 退出码 1（**不冒堆栈**：CLI 是给人用的，
+     *      堆栈对使用者无意义，也会淹没真正的原因）；
+     *   ② ★ 加一次**重试**：万一将来又出现"生成器与校验器不一致"，重试能自愈，
+     *      而不是让约 1/12 的引导操作直接失败。
+     *      —— `create-admin` 是**唯一的引导入口**（第一个管理员 + 口令找回），
+     *      失败一次代价很高，值得这层保险。
+     */
+    var pw = ""
+    var uid: Int64 = 0
+    var existed = false
+    var attempt: Int64 = 0
+    while (attempt < 2) {
+        pw = randCode(12)
+        try {
+            existed = auth.findUser(loginName).isSome()
+            uid = auth.createUser(loginName, Role.Admin, 0, "管理员", pw, hNowEpoch())
+            if (existed) {
+                // 已存在 → 改口令（setPassword 会顺带吊销其全部令牌）
+                auth.setPassword(uid, pw, hNowEpoch())
+            }
+            attempt = 2      // 成功，跳出循环
+        } catch (e: Exception) {
+            attempt = attempt + 1
+            if (attempt >= 2) {
+                // 重试也用完了 → 明确报错，不冒堆栈
+                println("❌ 创建管理员失败：${e.message}")
+                println("  处置：① 确认库可写、账号未被锁定；")
+                println("        ② 这是引导入口，失败**不影响**已有账号；")
+                println("        ③ 若反复失败请把上面这行信息报给开发（**不要贴口令**）。")
+                db.close()
+                return 1
+            }
+            println("⚠ 生成的口令未通过强度校验，正在重试一次…")
+        }
     }
     println("")
     println("管理员账号：")

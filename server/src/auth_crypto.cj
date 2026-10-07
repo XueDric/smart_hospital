@@ -106,14 +106,74 @@ public func randBelow(bound: Int64): Int64 {
  */
 public let CODE_ALPHABET: String = "ACDEFGHJKLMNPQRTUVWXY34679"
 
-/* 生成 length 位的可读口令。 */
+/* 字母表里的**数字**字符（用于保证生成物含数字）。 */
+private let CODE_DIGITS: String = "34679"
+
+/*
+ * 生成 length 位的可读口令。
+ *
+ * ── ★★ 为什么必须**保证成分**（2026-10-07 修，第四份复查发现的真缺陷）──────
+ * 原实现是"从 26 个字符里独立均匀取 length 个"，**不保证**结果里既有字母又有数字。
+ * 而 `CODE_ALPHABET` 是 **21 字母 + 5 数字**，于是：
+ *
+ *     P(12 位全是字母) = (21/26)^12 ≈ **7.71%**
+ *
+ * 实测 70 次 `create-admin` 失败 **6** 次（**8.6%**），与理论值吻合。
+ *
+ * 失败原因是**自己定的规则拒了自己的产物**：本项目的口令强度规则②要求
+ * "同时含字母与数字"，而 `createAdmin` 拿 `randCode(12)` 当口令 ——
+ * 约 1/12 的概率直接抛 `口令强度不足`。
+ * 更糟的是它不是"口令不合法"这种可提示的失败，而是**异常直冒到顶层打堆栈**
+ * （`createAdmin` 只 catch 了建库那段）。
+ *
+ * 📌 教训：**"生成器"与"校验器"必须在同一个契约下**。
+ *   加了强度校验却没回头看"我们自己的口令生成器满不满足它" ——
+ *   这与前几轮"修一处忘同类位置"是同一类病。
+ *
+ * ── 修法：强制成分，但**不牺牲随机性** ──────────────────────────────────
+ *   ① 前两位置放 1 个随机字母 + 1 个随机数字（保证成分成立）；
+ *   ② 其余位照旧均匀随机；
+ *   ③ ★ **整体洗牌**（Fisher–Yates）—— 否则"必有一个字母在首位、一个数字在次位"
+ *      会变成可预测的结构（攻击者知道前两位的成分，等价于少了几位熵）。
+ *   洗牌用 `randBelow`（与取字符同一随机源），不引入新的随机性假设。
+ *
+ * ⚠ length < 2 时无法同时放字母与数字 ⇒ 退化为纯随机（并由调用方保证长度）。
+ */
 public func randCode(length: Int64): String {
     let alpha = CODE_ALPHABET.toArray()
+    let letters = ArrayList<UInt8>()
+    let digits = ArrayList<UInt8>()
+    for (c in alpha) {
+        if (CODE_DIGITS.toArray().indexOf(c).isSome()) {
+            digits.add(c)
+        } else {
+            letters.add(c)
+        }
+    }
     let out = ArrayList<UInt8>()
-    var i: Int64 = 0
-    while (i < length) {
-        out.add(alpha[randBelow(alpha.size)])
-        i += 1
+    if (length >= 2 && letters.size > 0 && digits.size > 0) {
+        // ① 先各放一个，保证成分
+        out.add(letters[randBelow(letters.size)])
+        out.add(digits[randBelow(digits.size)])
+        // ② 其余位均匀随机
+        while (out.size < length) {
+            out.add(alpha[randBelow(alpha.size)])
+        }
+        // ③ Fisher–Yates 洗牌（从后往前换），打散"前两位固定成分"的结构
+        var i = out.size - 1
+        while (i > 0) {
+            let j = randBelow(i + 1)
+            let tmp = out[i]
+            out[i] = out[j]
+            out[j] = tmp
+            i = i - 1
+        }
+    } else {
+        var i: Int64 = 0
+        while (i < length) {
+            out.add(alpha[randBelow(alpha.size)])
+            i = i + 1
+        }
     }
     return String.fromUtf8(out.toArray())
 }

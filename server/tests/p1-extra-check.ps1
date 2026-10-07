@@ -4,6 +4,18 @@
 # ⚠ header/body 走 curl **config 文件**（-K）：含空格的 -H 会被拆坏。
 #
 # 用法：.\p1-extra-check.ps1 -Base http://127.0.0.1:8091 -AdminPw <口令>
+#
+# ⚠⚠ 第 [5] 节**必须在最后跑**，且它会**把 admin 口令改成随机值**：
+#   · 它用 CLI `create-admin` 跑 40 次端到端回归，每次都会重置 admin 口令并吊销其令牌；
+#   · 所以本脚本开头拿到的 `$admTok` 在那一节之后**必然失效**（这是**正确行为**，
+#     不是缺陷 —— "改口令必须踢下线"就是这么设计的）；
+#   · 副作用：脚本跑完后 **admin 口令不再是 -AdminPw 那个**。
+#   → 脚本结尾会把新口令打印出来（`▸ 新管理员口令`），请记下来；
+#     或者直接重跑 `hospital-server.exe create-admin <dsn>` 再拿一个。
+#
+#   📌 为什么不把第 [5] 节挪到单独脚本：它验的是"生成器与校验器一致"，
+#     而那个缺陷的表现一半在 CLI 层（异常直冒堆栈）—— 放在这里才能顺带覆盖
+#     "CLI 失败是否给清晰提示"。分开会让这半边没人守。
 
 param(
     [string]$Base = "http://127.0.0.1:8091",
@@ -81,7 +93,7 @@ $weak = @(
     @{ pw = 'abcdefgh';  why = '只有字母、无数字' },
     @{ pw = '12345678';  why = '只有数字' },
     @{ pw = 'password';  why = '常见弱口令' },
-    @{ pw = 'admin123';  why = '常见弱口令 + 含登录名' }
+    @{ pw = 'admin123';  why = '常见弱口令（在弱口令表里；注意"含登录名"那一条由下面单独用例覆盖）' }
 )
 foreach ($w in $weak) {
     $r = DoReq ('w' + [Guid]::NewGuid().ToString('N').Substring(0, 6)) 'POST' '/api/v1/admin/users' `
@@ -280,6 +292,80 @@ Check "形状合法但日历无效（2026-13-99）→ 200 空列表（已知边�
 
 $r = DoReq 'l7' 'GET' '/api/v1/schedules' @() $null
 Check "无令牌查排班列表 → 401" ($r.Http -eq 401) ("HTTP $($r.Http)")
+
+# ===================== ①b 口令生成器 × 强度校验（第四份复查缺陷）=====================
+Write-Host ""
+Write-Host "[5] ★ 口令生成器必须满足自己定的强度规则（CLI 端到端）"
+# ── 这一节守的是第四份复查发现的**真缺陷** ────────────────────────────────
+# `randCode(12)` 从 26 个字符（21 字母 + 5 数字）里独立均匀取 12 个，
+# **不保证**成分 ⇒ P(全字母) = (21/26)^12 ≈ **7.71%** ⇒ 生成的口令被本项目
+# **自己**的强度规则②（必须含字母与数字）拒 ⇒ `create-admin` 抛异常直冒堆栈。
+# 复查实测 70 次失败 6 次（8.6%）；我也复现到同样的数。
+#
+# 修法：randCode 强制"1 字母 + 1 数字"再整体洗牌。
+# 本节就是那个修复的回归闸门 —— **没有它，将来有人"简化"掉成分保证就又漏了**。
+#
+# ⚠ 这里必须真的调 CLI（端到端），不能只在代码里单测 randCode：
+#   原缺陷的一半伤害在于"异常直冒堆栈"，那是 CLI 层的表现，单测看不见。
+$exe = Join-Path (Split-Path $PSScriptRoot -Parent) "build\hospital-server.exe"
+if (-not (Test-Path $exe)) {
+    Check "找得到 hospital-server.exe（跑 CLI 回归）" $false $exe
+} else {
+    $runs = 40      # 原缺陷下期望失败 ≈ 40×7.7% ≈ 3 次，40 次足以让回归可靠地红
+    $cliFail = 0; $stackFail = 0; $genPws = @()
+    foreach ($i in 1..$runs) {
+        $o = (& $exe create-admin $Dsn 2>&1 | Out-String)
+        if ($o -match '口  令：') {
+            $genPws += (($o -split "`n" | Select-String '口  令：').Line -replace '.*口  令：','').Trim()
+        } else {
+            $cliFail++
+        }
+        # ★ 单独数"以堆栈形式失败"：原缺陷下失败信息是
+        #   `An exception has occurred: ... at qingzhou::UserFacingError::init`
+        if ($o -match 'An exception has occurred|at qingzhou::') { $stackFail++ }
+    }
+    Check "$runs 次 create-admin 全部成功（原缺陷下约 8% 失败）" ($cliFail -eq 0) ("失败 $cliFail 次")
+    Check "★ 没有任何一次以**堆栈**形式失败（CLI 失败应给 ❌ 清晰提示）" ($stackFail -eq 0) ("堆栈 $stackFail 次")
+    # 成分：生成的口令必须都含字母与数字（这正是它们能通过校验的原因）
+    $noDigit = @($genPws | Where-Object { $_ -notmatch '[0-9]' }).Count
+    $noLetter = @($genPws | Where-Object { $_ -notmatch '[A-Z]' }).Count
+    Check "生成的口令都含数字（全字母 $noDigit 个）" ($noDigit -eq 0)
+    Check "生成的口令都含字母（全数字 $noLetter 个）" ($noLetter -eq 0)
+    # 这些口令必须真的能通过强度校验（否则上面"成功"另有原因）
+    #
+    # ⚠ 这里必须**重新登录**：`create-admin` 每次都会把 admin 口令改成新的随机值
+    #   （并吊销旧令牌），所以脚本开头那个 `$admTok` 到这一步**已经失效**。
+    #   我第一版就漏了这一步 —— 40 次校验全部 401（看起来"全部不通过"），
+    #   而那其实是"没登录"而不是"口令不合法"。
+    #   📌 与前面 [1] 节同一个教训的另一个面孔：**破坏性操作之后要重建会话**。
+    $null = Invoke-MySqlScalar -My $My -Sql "DELETE FROM auth_login_attempt" -Label "清计数"
+    $lastPw = $genPws[$genPws.Count - 1]      # create-admin 最后一次设的口令
+    $relog = DoReq 'relog5' 'POST' '/api/v1/auth/login' @() ('{"login_name":"admin","password":"' + $lastPw + '"}')
+    Check "用 create-admin 生成的口令能登录（自证它合法）" ($relog.Http -eq 200) ("HTTP $($relog.Http)")
+    $freshTok = if ($relog.Json -and $relog.Json.data) { $relog.Json.data.token } else { "" }
+    $okCount = 0
+    if ($freshTok.Length -gt 0) {
+        foreach ($p in $genPws) {
+            $r = DoReq ('gen' + [Guid]::NewGuid().ToString('N').Substring(0,6)) 'POST' `
+                 "/api/v1/admin/users/$ptUid/password" @("Authorization: Bearer $freshTok") ('{"password":"' + $p + '"}')
+            if ($r.Http -eq 200) { $okCount++ }
+        }
+    }
+    Check "★ 生成的口令全部通过强度校验（$okCount / $($genPws.Count)）" ($okCount -eq $genPws.Count)
+
+    # ★ 洗牌生效：数字出现在**首位**的比例不应为 0
+    #   （若只"前两位放字母+数字"而不洗牌，首位是数字的概率恒为 0 —— 那就成结构可预测了）
+    $firstDigit = @($genPws | Where-Object { $_ -match '^[0-9]' }).Count
+    Check "★ 洗牌生效：首位出现数字（$firstDigit / $($genPws.Count)，未洗牌则恒为 0）" ($firstDigit -gt 0)
+}
+
+
+# ★ 如实在结尾交代：第 [5] 节已把 admin 口令轮换掉（见文件头说明）
+if ($genPws.Count -gt 0) {
+    Write-Host ""
+    Write-Host "▸ 注意：第 [5] 节跑过 create-admin，admin 口令已轮换为：$($genPws[$genPws.Count - 1])"
+    Write-Host "  （这是该节 40 次端到端回归的必然副作用；要恢复成已知值请重跑 create-admin）"
+}
 
 Remove-Item $tmp -Recurse -Force
 $null = Invoke-MySqlScalar -My $My -Sql "DELETE FROM auth_login_attempt" -Label "收尾清计数"
