@@ -42,11 +42,33 @@ git -c "url.https://20.27.177.113/.insteadOf=https://github.com/" -c http.sslVer
    校验会对不上。它**只作用于这一条命令**（`-c` 不写配置）。
    副作用是这条连接不做证书校验 —— 因为目标是我们自己核对过的 GitHub 地址、
    且网络路径可信，才接受这个折中。**不要把 `http.sslVerify=false` 写进配置长期生效。**
-2. **用完检查没有残留**（本次已确认干净）：
+2. **用完检查没有残留**（已确认干净）：
    ```powershell
    git remote get-url origin                    # 应仍是 https://github.com/...
    git config --local --get http.sslVerify      # 应「未设置」
    ```
+
+### ⚠ 这个绕过本身也不稳：要**轮着试 IP**
+
+2026-10-07 后续实测：同一条 push 在不同时刻会**随机**落到
+`Failed to connect`（21 秒超时）或 `Recv failure: Connection was reset`。
+**同一个 IP（`20.27.177.113`）上一轮成功、下一轮就失败** —— 所以不要认定"某个 IP 是好的"。
+
+可用的做法是**轮询 + 重试**：
+
+```powershell
+$ips = @('20.27.177.113','140.82.112.3','140.82.113.3','140.82.114.3','140.82.121.3','20.201.28.151')
+foreach($round in 1..3){
+  foreach($ip in $ips){
+    git -c "url.https://$ip/.insteadOf=https://github.com/" -c http.sslVerify=false push origin main
+    if($LASTEXITCODE -eq 0){ Write-Host "✅ 经 $ip 推送成功"; break }
+  }
+  if($LASTEXITCODE -eq 0){ break }
+}
+```
+
+实测就是靠这个在第 2 轮的第 3 个 IP（`140.82.113.3`）推上去的。
+**结论：这个网络环境下的推送是"重试到成功"，不是"一次就成"。**
 
 ---
 
