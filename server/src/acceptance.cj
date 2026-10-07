@@ -30,6 +30,8 @@
 package qingzhou
 
 import std.time.*
+// AC-4 的逐值比对要用 ArrayList（hDumpTable）；实测漏了它报 `undeclared identifier 'ArrayList'`
+import std.collection.*
 
 /* 测试用当前时间（epoch 秒）。用 h_ 前缀避免与框架顶层名冲突。 */
 func hNowEpoch(): Int64 {
@@ -92,6 +94,91 @@ func hAppointmentCount(db: DbBackend, scheduleId: Int64): Int64 {
         return 0
     }
     return rs.getInt(0, 0)
+}
+
+/*
+ * ★ 把一张表**全列全行**导成"规范化文本数组"（AC-4 的逐值比对用）。
+ *
+ * ── 为什么必须"全列"而不是只查几列 ──────────────────────────────────────
+ * AC-4 要证的是"刷盘**没有**碰到号源域"。只比对 `remain_num` 之类的少数列是**弱**的：
+ * 刷盘完全可能改了 `version` / `created_at` / 某个快照列，而断言照样绿。
+ * 所以这里从 `information_schema` **动态取全列**，逐行逐列拼成文本。
+ *
+ * ── 为什么要排序 ────────────────────────────────────────────────────────
+ * SQL 不保证返回顺序（没有 ORDER BY 时尤其如此）。不排序的话，
+ * "顺序变了"会被误报成"值变了"，把测试变成偶发红。
+ * 排序的是**规范化后的行文本**，所以与列的物理顺序无关。
+ */
+func hDumpTable(db: DbBackend, table: String): Array<String> {
+    let cols = db.query(
+        "SELECT column_name FROM information_schema.columns " +
+        "WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ordinal_position",
+        [DbStr(table)])
+    let names = ArrayList<String>()
+    var i: Int64 = 0
+    while (i < cols.rowCount()) {
+        names.add(cols.getString(i, 0))
+        i = i + 1
+    }
+    if (names.size == 0) {
+        return Array<String>()      // 表不存在：返回空数组，由调用方判定
+    }
+    var collist = ""
+    var first = true
+    for (n in names) {
+        if (!first) {
+            collist = collist + ", "
+        }
+        collist = collist + n
+        first = false
+    }
+    let rs = db.query("SELECT " + collist + " FROM " + table, Array<DbValue>())
+    let rows = ArrayList<String>()
+    var r: Int64 = 0
+    while (r < rs.rowCount()) {
+        var line = ""
+        var c: Int64 = 0
+        while (c < names.size) {
+            // 用 \u0001 当列分隔符：正常数据里不会出现，避免"值里含分隔符"造成假一致
+            line = line + names[c] + "=" + rs.cell(r, c) + "\u{0001}"
+            c = c + 1
+        }
+        rows.add(line)
+        r = r + 1
+    }
+    let arr = rows.toArray()
+    // 插入排序（Array<String> 没有 sort 成员，同 mem_store.sortedIds 的理由）
+    var a: Int64 = 1
+    while (a < arr.size) {
+        let cur = arr[a]
+        var b = a - 1
+        while (b >= 0 && arr[b] > cur) {
+            arr[b + 1] = arr[b]
+            b = b - 1
+        }
+        arr[b + 1] = cur
+        a = a + 1
+    }
+    return arr
+}
+
+/* 两份表导出是否逐值一致（含行数）。不一致时打印第一处差异，省得再手工查库。 */
+func hDumpEquals(a: Array<String>, b: Array<String>): Bool {
+    if (a.size != b.size) {
+        println("    行数不同：刷盘前 ${a.size} 行 / 刷盘后 ${b.size} 行")
+        return false
+    }
+    var i: Int64 = 0
+    while (i < a.size) {
+        if (a[i] != b[i]) {
+            println("    差异 @ 第 ${i} 行：")
+            println("      刷盘前: ${a[i]}")
+            println("      刷盘后: ${b[i]}")
+            return false
+        }
+        i = i + 1
+    }
+    return true
 }
 
 /*
@@ -297,6 +384,142 @@ public class TestRunner {
         })
     }
 
+    /* ---------- AC-4：整体替换刷盘后号源域不变（P1 补完）---------- */
+    public func ac4(): Unit {
+        println("=== AC-4 内存 Store 整体替换刷盘**不波及**号源域 ===")
+        section("AC-4", { =>
+            /*
+             * ⚠ 本用例在 2026-10-07 被**重写**。P0 时它只做**结构性**断言
+             *   （表名零交集），因为那时压根没有内存 Store 可刷 —— 那条边界写在
+             *   ADR §5 的"验证边界"里，一直挂到 P1。
+             *
+             * 现在 `mem_store.cj` 补上了配套域的 Store（照基线 store.cj / writeDbToMysql
+             * 的本质：一次事务内整体替换清单里的表），所以本用例可以**真跑一次刷盘**。
+             *
+             * 四层验证（逐层加强，只做前两层是**弱**的）：
+             *   ① **机制**：`MEM_TABLES ∩ BOOKING_DOMAIN_TABLES == ∅`
+             *      —— 刷盘的遍历源里就没有号源域，这是根因层的保证；
+             *   ② **SQL 痕迹**：把刷盘实际发出的 SQL 全录下来，断言 `schedule` /
+             *      `appointment` **从未出现**在**任何一条**语句里
+             *      —— 这是"根本没碰"，比"碰了但值没变"强得多；
+             *   ③ **逐值比对**：刷盘前后把 schedule / appointment 两表全列读出来比对
+             *      —— 防"SQL 里没提但通过别的路径改了"；
+             *   ④ **反向**：刷盘**确实**改了它该管的表
+             *      —— 否则前三层可能是"因为什么都没做"而假绿（这正是复查反复强调的
+             *      "永远绿色的假保证"）。
+             */
+            hResetAll(db)
+
+            // ① 机制层：两套范式的表集不相交
+            let overlap = paradigmOverlap()
+            check("① 两套范式表集无交集（MEM_TABLES ∩ BOOKING_DOMAIN_TABLES = ∅）",
+                  overlap.size == 0)
+            check("① 内存 Store 负责 4 张表", MEM_TABLES.size == 4)
+            check("① schedule 不由内存 Store 负责", !isMemStoreTable(TABLE_SCHEDULE))
+            check("① appointment 不由内存 Store 负责", !isMemStoreTable(TABLE_APPOINTMENT))
+            check("① department 由内存 Store 负责", isMemStoreTable(TABLE_DEPARTMENT))
+
+            /*
+             * ★ 从**旧 AC-4** 保留下来的一条断言（2026-10-07 重写时特意没丢）：
+             *   全部业务表与基线内存 Store 的**表名零交集**。
+             * 旧 AC-4 主体已被"真跑一次刷盘"取代，但这条守的是另一件事 ——
+             * P1 引入整库刷盘后，本侧若与基线撞名就会**争同一张表**
+             * （`auth_token` 不叫 `tokens` 就是为此）。
+             * 表集变了（现 9 张）也要继续守，所以跟着搬过来。
+             */
+            let baselineTables: Array<String> = ["departments", "members", "plans", "tasks",
+                                                 "invite_links", "tokens", "idem",
+                                                 "meta", "meta_str", "schema_version"]
+            var clash = 0
+            for (t in ALL_TABLES) {
+                for (bt in baselineTables) {
+                    if (t == bt) {
+                        clash = clash + 1
+                        println("  [FAIL] 表 ${t} 与基线内存 Store 撞名")
+                    }
+                }
+            }
+            check("① 全部 ${ALL_TABLES.size} 张表与基线表名零交集", clash == 0)
+
+            /*
+             * 造"号源域 + 配套域"同时存在的真实场景：
+             * 挂号会产生 appointment/schedule 行，同时我们往内存表里放数据。
+             */
+            hSeedSchedule(db, 9011, 3, "2026-10-08")
+            let a = repo.book(1, 9011, "tok-ac4", hNowEpoch())
+            check("造出一张挂号单（号源域有真实数据）", isBooked(a))
+
+            // ③ 的前置：刷盘前把号源域两表**全列**读出来
+            let beforeSchedule = hDumpTable(db, "schedule")
+            let beforeAppointment = hDumpTable(db, "appointment")
+            check("号源域快照非空（否则断言是空比空）",
+                  beforeSchedule.size > 0 && beforeAppointment.size > 0)
+
+            // ② 的前置：用录制器包一层，捕获刷盘发出的全部 SQL
+            let rec = SqlRecorder(db)
+            let mem = MemStore(rec)
+            let _ = mem.loadAll()
+
+            // 往内存表里放/改数据，让这次刷盘**确实有活干**
+            let dp = MemDepartment()
+            dp.id = 9011
+            dp.name = "AC4 测试科室"
+            dp.code = "AC4"
+            dp.location = "测试楼"
+            dp.sort = 1
+            dp.enabled = true
+            dp.createdAt = hNowEpoch()
+            mem.departments[dp.id] = dp
+
+            let dc = MemDoctor()
+            dc.id = 9011
+            dc.name = "AC4 测试医生"
+            dc.departmentId = 9011
+            dc.title = "医师"
+            dc.createdAt = hNowEpoch()
+            mem.doctors[dc.id] = dc
+
+            rec.clear()
+            let written = mem.flushToMysql()
+            check("② 刷盘确实写了行（written = ${written} > 0）", written > 0)
+
+            // ② SQL 痕迹：号源域**从未出现**
+            check("② ★ 刷盘 SQL 里从未出现 schedule（含 schedule_id 这类列名不算）",
+                  !rec.mentionsTable(TABLE_SCHEDULE))
+            check("② ★ 刷盘 SQL 里从未出现 appointment",
+                  !rec.mentionsTable(TABLE_APPOINTMENT))
+            // ② 反向：该碰的表确实碰了
+            let touched = rec.mentionedMemTables()
+            check("② 反向：刷盘确实碰了全部 4 张内存表（实碰 ${touched.size} 张）",
+                  touched.size == MEM_TABLES.size)
+
+            // ③ 逐值比对：号源域**一个字节都没变**
+            let afterSchedule = hDumpTable(db, "schedule")
+            let afterAppointment = hDumpTable(db, "appointment")
+            check("③ ★ schedule 刷盘前后逐值一致",
+                  hDumpEquals(beforeSchedule, afterSchedule))
+            check("③ ★ appointment 刷盘前后逐值一致",
+                  hDumpEquals(beforeAppointment, afterAppointment))
+
+            // ④ 反向：内存表确实被刷进去了（否则可能"什么都没做"而假绿）
+            let cnt = db.query("SELECT COUNT(*) FROM department WHERE id = 9011",
+                               Array<DbValue>()).getInt(0, 0)
+            check("④ 反向：内存表数据确实落库（department id=9011 存在）", cnt == 1)
+            let dcn = db.query("SELECT COUNT(*) FROM doctor WHERE id = 9011",
+                               Array<DbValue>()).getInt(0, 0)
+            check("④ 反向：doctor id=9011 存在", dcn == 1)
+
+            /*
+             * 还剩下的那条边界（如实标注，不冒充已验）：
+             * 本 Store 的刷盘是**整表替换**（简化），基线是**脏行裁剪**。
+             * 两边都不碰号源域，所以 AC-4 的不变量已验；
+             * 但"脏行裁剪的性能收益"没验，也没必要在此验。
+             */
+            println("  [NOTE] 本 Store 用整表替换（较基线脏行裁剪是**更强**的写放大）——")
+            println("         连它都不波及号源域 ⇒ 脏行裁剪版更不会。性能差异不在 AC-4 范围。")
+        })
+    }
+
     /* ---------- AC-12：响应里的 seq_no 必须等于落库值 ---------- */
     public func ac12(): Unit {
         println("=== AC-12 就诊序号：响应值 == 落库值 ===")
@@ -390,62 +613,6 @@ public class TestRunner {
         })
     }
 
-    /* ---------- AC-4 ---------- */
-    public func ac4(): Unit {
-        println("=== AC-4 号源域表独立于内存 Store 整体替换 ===")
-        section("AC-4", { =>
-            /*
-             * 验证方式（两层，如实说明）：
-             *  (a) **结构性**：断言号源域表名与基线内存 Store 的表名集合**零交集** ——
-             *      整体替换只遍历 `PersistedState.entities`（baseline mysql_store.cj:1097
-             *      `writeDbToMysql(s, cur)`），零交集即"整体替换不会碰号源域"。
-             *  (b) **完整回归**：要在 P1 引入内存 Store（科室/医生/病历）之后，
-             *      执行一次整库刷盘并断言 schedule/appointment 逐值不变。
-             *
-             *  所以本项在 P0 只完成 (a)，判为「部分验证」，**不冒充已完成**。
-             */
-            /*
-             * ⚠ 2026-10-07 复查修正：原来只比 `BOOKING_DOMAIN_TABLES`（2 张）与基线
-             *   表名的交集 —— 那**恰好**是 0，但那时本侧另有一张 `booking_idem`
-             *   （旧名 `idem`）与基线的 `idem` 是**真撞名**，只是没被这个断言覆盖到。
-             *   现在比**全部业务表**与基线**全部**表名的交集，并把基线完整表名列全
-             *   （含 meta / meta_str / schema_version —— 也要一起比对，
-             *   否则将来本侧新建同名表会漏检）。
-             *
-             * 📌 该撞名已通过**删除**那张表彻底消除（2026-10-07，见 ADR §7 第 7 条）。
-             *   但本断言**必须保留** —— 它守的是一条**长期纪律**：
-             *   "本侧的每张表名都不得与基线内存 Store 撞名"（P1 引入整库刷盘后
-             *   同名表会争同一张表）。把断言删掉等于把纪律也删了。
-             */
-            let baselineTables: Array<String> = ["departments", "members", "plans", "tasks",
-                                                 "invite_links", "tokens", "idem",
-                                                 "meta", "meta_str", "schema_version"]
-            var overlap = 0
-            for (t in ALL_TABLES) {
-                for (b in baselineTables) {
-                    if (t == b) {
-                        overlap = overlap + 1
-                        println("  [FAIL] 表 ${t} 与基线内存 Store 撞名 —— 整库刷盘会争同一张表")
-                    }
-                }
-            }
-            check("全部 ${ALL_TABLES.size} 张业务表与基线表名零交集", overlap == 0)
-            check("号源域业务状态表恰为 schedule/appointment", BOOKING_DOMAIN_TABLES.size == 2)
-            /*
-             * ★ 钉住"表集里不再有任何以 idem 命名的表"。
-             *   这不是在测已删除的代码，而是**防止它被复活**：
-             *   死代码被删掉后，最怕的是下一个人又加回来一张同义表。
-             */
-            var idemLike = 0
-            for (t in ALL_TABLES) {
-                if (t.contains("idem")) {
-                    idemLike = idemLike + 1
-                }
-            }
-            check("表集中不再有以 idem 命名的表（遗留给删干净了）", idemLike == 0)
-            println("  [NOTE] AC-4 完整回归（真跑一次整库刷盘后断言逐值不变）需 P1 引入内存 Store 后进行")
-        })
-    }
 
     /* ---------- AC-7：退号归还的边界（P0 复查发现的缺陷）---------- */
     public func ac7(): Unit {

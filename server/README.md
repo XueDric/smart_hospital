@@ -1,4 +1,4 @@
-﻿# 智慧医院服务端（仓颉 + 轻舟）
+# 智慧医院服务端（仓颉 + 轻舟）
 
 > P0 阶段交付：**号源/挂号域的独立 MySQL 路径** + 构建链 + 验收测试。
 > 架构决策见 [../docs/adr/ADR-0001-号源与挂号独立MySQL路径.md](../docs/adr/ADR-0001-号源与挂号独立MySQL路径.md)。
@@ -65,10 +65,10 @@ cd server     # ⚠ cwd 必须是 server/，见下
 
 | 子命令 | 作用 | 需要 MySQL |
 | --- | --- | --- |
-| `selftest` | schema 与 ADR 不变量的**纯本地**自检（**30 项**断言） | ❌ |
+| `selftest` | schema 与 ADR 不变量的**纯本地**自检（**31 项**断言） | ❌ |
 | `authtest` | **口令/令牌原语自检**（含 3 个公开测试向量，**17 项**） | ❌ |
 | `check-db <dsn>` | 连库 + 幂等建表 + 打印表清单（★ 标记号源域） | ✅ |
-| `accept <dsn>` | 验收测试 AC-1…AC-12（**43 项断言**；⚠ 只允许库名含 `test` 的测试库） | ✅ |
+| `accept <dsn>` | 验收测试 AC-1…AC-12（**56 项断言**；⚠ 只允许库名含 `test` 的测试库） | ✅ |
 | `create-db <dsn>` | 幂等建库（utf8mb4）—— 测试库靠它 | ✅ |
 | `create-admin <dsn>` | 建/重置管理员并打印口令（**引导入口**） | ✅ |
 | `serve <dsn>` | **P1**：启动 HTTP / HTTPS 服务（默认只绑 `127.0.0.1`） | ✅ |
@@ -157,13 +157,15 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/schema.cj` | 最小表集 DDL（8 张：6 业务 + 2 鉴权）+ 范围锁死 + 幂等迁移 |
+| `src/schema.cj` | 最小表集 DDL（9 张：6 业务 + 3 鉴权）+ 范围锁死 + 幂等迁移 |
+| `src/mem_store.cj` | **内存 Store 范式**（配套域：department/doctor/patient/medical_record）—— 一次事务整体替换 `MEM_TABLES` |
+| `src/sql_recorder.cj` | `DbBackend` 录制装饰器（**测试工具**）：录下实际发出的 SQL，供 AC-4 断言"没碰号源域" |
 | `src/domain_booking.cj` | ★ 号源/挂号域：原子扣减、幂等、取消归还（三态 `CancelOutcome`）、`visit_date` 快照 |
 | `src/auth_crypto.cj` | PBKDF2-HMAC-SHA256（100k）+ 令牌原语 + **3 个公开测试向量自检** |
 | `src/auth_repo.cj` | 鉴权仓储：账号、按登录名查、登录（防枚举）、令牌签发/校验/续期/吊销 |
 | `src/db_bootstrap.cj` | MySQL 建连 + `SET NAMES utf8mb4` + DSN 解析 + 驱动注册 |
 | `src/http_common.cj` | 统一响应/错误码表（`{ok,data}` / `{ok:false,error}`） |
-| `src/http_app.cj` | HTTP 装配 + 三端权限矩阵 + `principalOf()`（令牌优先，开发态头可选） |
+| `src/http_app.cj` | HTTP 装配 + 三端权限矩阵 + `principalOf()`（令牌优先，开发态头可选）+ **登录限流闸门** |
 | `src/acceptance.cj` | AC-1…AC-12 验收测试（含异常兜底与变异测试记录） |
 | `src/main.cj` | 进程入口与子命令分发（含 TLS 分支与 fail-closed） |
 | `new-tls-cert.ps1` | 生成带 SAN 的自签证书 + ASCII 运行副本 + ACL 收紧 |

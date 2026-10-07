@@ -6,7 +6,7 @@
 | **日期** | 2026-10-07（创建）｜ 2026-10-07（复查修订 rev.2） |
 | **阶段** | P0 —— 架构决策落定 |
 | **决策者** | 项目组（依据 `smart-hospital-project-brief.md` §5.1） |
-| **影响面** | `server/src/` 数据访问层；新增 `schedule` / `appointment`（`booking_idem` 已于 rev.4 删除） |
+| **影响面** | `server/src/` 数据访问层；号源域 `schedule`/`appointment`（rev.4 删除 `booking_idem`）+ 配套域 `department`/`doctor`/`patient`/`medical_record`（rev.5 落地内存 Store） |
 | **关联** | `smart-hospital-project-brief.md` §4 复用映射、§5.1、§7；基线 `mysql_store.cj:30-37` |
 
 ### 修订记录
@@ -15,6 +15,7 @@
 | --- | --- | --- | --- |
 | rev.1 | 2026-10-07 | 初版 | P0 立项 |
 | **rev.2** | 2026-10-07 | ①§4.3 口径矛盾修订（拆「业务状态」/「幂等基础设施」两层）；②§4.3.2 新增并修掉与基线 `idem` 撞名（→ `booking_idem`）；③§5 补 AC-7/AC-8，AC-4 扩大到全表比对；④§5.1 新增「源码哈希而非产物哈希」；⑤§7 修正验收测试落点笔误（`server/tests/` → `server/src/acceptance.cj`）；⑥§8 补第 5 条复审触发条件 | 用户复查提出的 5 项发现（口径打架、撞名、`cancel()` 边界缺陷、文档笔误、产物不可复现） |
+| **rev.5** | 2026-10-07 | ★ **落地配套域的内存 Store**（`mem_store.cj` + `sql_recorder.cj`），**AC-4 从"结构性"升级为"真跑一次刷盘"**（四层断言 + 两道变异测试）；§4.2 范式表补上"内存 Store 范式"的实现落点 | 用户决策：做「内存 Store + AC-4 完整回归」，还掉 P0 挂到 P1 的验证边界 |
 | **rev.4** | 2026-10-07 | ★ **删除 `booking_idem` 表与 `idemKey`/`putIdem`/`pruneIdem` 实现**（含 AC-8）；表集 9→8（业务 7→6）；新增迁移步骤 DROP 遗留表；`isBookingInfraTable`/`BOOKING_INFRA_TABLES` 一并移除 | 用户决策：该表在生产路径上是死代码，幂等已由 `(patient_id, client_token)` 唯一索引完整保证（见 §7 第 7 条） |
 | **rev.3** | 2026-10-07 | ★ **扣号策略变更**：去掉 `version = ?` 乐观锁前置条件，改为**一次成功的原子自减**（§2.2 改写 + §8 触发条件已命中）；幂等键改为**按患者隔离**并**退号时释放**；`cancel()` 幂等路径改为按落库状态如实回报；§6 调参项与实际代码对齐；§7 落地清单更新 | 第三方复查：①`client_token` 跨患者泄露；②最穷工况少卖 15%~50%（**命中 §8 第 1 条复审阈值**）；③`--tls-files` 静默降级；④`cancel()` 重试路径吞告警；⑤`accept` 守卫漏洞 |
 
@@ -162,7 +163,7 @@ if (n == 1) {
 
 | 范式 | 适用域 | 权威 | 一致性手段 |
 | --- | --- | --- | --- |
-| **内存 Store**（原范式） | 科室、医生、患者档案、病历…… | 内存 → 定期整体刷 MySQL | 全局锁 |
+| **内存 Store**（原范式） | 科室、医生、患者档案、病历 —— ★ rev.5 起落点在 `server/src/mem_store.cj`（`MemStore.flushToMysql`，一个事务内整体替换 `MEM_TABLES`） | 内存 → 定期整体刷 MySQL | 全局锁 |
 | **直接 SQL**（本 ADR） | **仅**号源/挂号（`schedule`/`appointment`）两张 | MySQL | **原子自减 + 事务**（rev.3；原为乐观锁，已因少卖废弃） |
 
 **这是明确的架构债**（`smart-hospital-project-brief.md` §9 **R-2**）。代价：
@@ -176,7 +177,7 @@ if (n == 1) {
 | 控制 | 做法 |
 | --- | --- |
 | **范围锁死** | 直接 SQL **仅限** `BookingRepo` 拥有的 **2 张表**：`schedule` / `appointment`。（rev.4 起不再有幂等基础设施表）新增表必须再开 ADR |
-| **测试钉住** | AC-4 结构性断言（全部业务表与基线表名零交集）+ `selftest` 断言"表集里无 idem 命名表"；完整回归待 P1 |
+| **测试钉住** | AC-4 **四层**断言（机制/ SQL 痕迹 / 逐值比对 / 反向）+ `selftest` 断言"表集里无 idem 命名表"。★ **2026-10-07 补完**：配套域的内存 Store 已落地，AC-4 从"结构性"升级为"真跑一次刷盘" —— 见下方 §5 的说明 |
 | **文档标注** | `server/src/` 中走直接 SQL 的文件，文件头注释必须指向本 ADR |
 | **禁止跨范式事务** | Code review 检查项：不得出现"内存 Store 变更 + 直接 SQL 变更"同一业务事务 |
 
@@ -246,9 +247,9 @@ P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与
 
 | 套件 | 结果 |
 | --- | --- |
-| `hospital-server.exe selftest` | ✅ **30 项** |
+| `hospital-server.exe selftest` | ✅ **31 项** |
 | `hospital-server.exe authtest` | ✅ **17 项**（含 3 个公开测试向量） |
-| `hospital-server.exe accept <dsn>` | ✅ **43 项 / 失败 0**（原 32，新增 AC-10） |
+| `hospital-server.exe accept <dsn>` | ✅ **56 项 / 失败 0**（原 32，新增 AC-10） |
 | `tests\stress-booking.ps1` | ✅ **20/30/40/50 并发抢同数号源 → 全部恰好卖光、零 409、零少卖** |
 | `tests\auth-check.ps1` | ✅ 全绿 |
 | `tests\tls-check.ps1` | ✅ 全绿 |
@@ -262,9 +263,29 @@ P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与
 > ⚠ rev.3 之前，AC-1 的措辞是"同一 version 的第二次 UPDATE 必返回 0 行" ——
 > 那是**乐观锁时代**的断言；扣号策略改了（见顶部 rev.3），该措辞已随之改写。
 >
-> **AC-4 的验证边界**：P0 尚未引入内存 Store，故只完成**结构性**验证
+> **AC-4 的验证边界（2026-10-07 已闭合）**：P0 时尚未引入内存 Store，故只完成**结构性**验证
 > （**全部 7 张业务表**与基线**全部 10 张表**名零交集 ⇒ 整体替换不会遍历到它们）。
-> 完整回归（真的跑一次整库刷盘再断言逐值不变）排在 P1。
+> 完整回归（真的跑一次整库刷盘再断言逐值不变）**已于 2026-10-07 在 P1 完成**。
+>
+> ### ★ AC-4 现在做到了什么（四层，逐层加强）
+>
+> `mem_store.cj` 落地了配套域的内存 Store（照基线 `store.cj` + `writeDbToMysql` 的本质：
+> **一个事务内整体替换清单里的表**），于是 AC-4 可以真跑一次刷盘。四层断言：
+>
+> | 层 | 验什么 | 为什么必须有这一层 |
+> | --- | --- | --- |
+> | ① 机制 | `MEM_TABLES ∩ BOOKING_DOMAIN_TABLES = ∅`，且 schedule/appointment 不在 Store 清单里 | 根因层：刷盘的**遍历源**里就没有号源域 |
+> | ② **SQL 痕迹** | 用 `SqlRecorder` 把刷盘实际发出的 SQL 全录下来，断言 `schedule`/`appointment` **从未出现在任何一条语句里** | ★ 这是"**根本没碰**"，比"碰了但值没变"强。**实测证据**：故意让刷盘只**读**一下 schedule（不改值）→ 本层 FAIL 而逐值比对仍 PASS —— 恰好证明少了这层就漏检 |
+> | ③ 逐值比对 | 从 `information_schema` 取**全列**，刷盘前后逐行逐列比对 | 防"SQL 里没提但通过别的路径改了"；只比 `remain_num` 之类少数列是**弱**的 |
+> | ④ 反向 | 刷盘**确实**改了它该管的 4 张表（行数 > 0、数据落库） | 防"因为什么都没做"而**假绿** —— 这正是本项目反复踩到的"永远绿色的假保证" |
+>
+> **变异测试**（两道，都实测过）：
+>   · 把 `TABLE_SCHEDULE` 混进 `MEM_TABLES` → ① 层 4 项 FAIL；
+>   · 让刷盘顺手 `SELECT COUNT(*) FROM schedule` → ② 层 FAIL。
+>
+> ⚠ 仍如实标注的差异：本 Store 的刷盘是**整表替换**（简化），基线是**脏行裁剪**。
+> 两边都不碰号源域 ⇒ AC-4 的不变量成立；且整表替换是**更强**的写放大，
+> 连它都不波及号源域，脏行裁剪版更不会。性能差异不在 AC-4 范围。
 >
 > **AC-7 的由来**：这是 2026-10-07 复查发现并修掉的**真缺陷**。原 `cancel()` 返回
 > `tx.cancelDone && tx.released`，当 `releaseSlotFor` 失败（如管理员重置过号源使

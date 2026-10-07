@@ -122,13 +122,20 @@ if ($Fix) {
         $new = [regex]::Replace($text, $c.Pattern, {
             param($mm)
             $script:n++
-            # 把具名组 n（项数）换成实测值；顺带把 AC 编号也推到实际最大值
-            $g = $mm.Groups['n']
-            $out = $mm.Value.Remove($g.Index - $mm.Index, $g.Length).Insert($g.Index - $mm.Index, "$want")
+            # ⚠⚠ 用"按组值替换"而不是"按下标 Remove/Insert"。
+            # 第一版按下标改（`$mm.Value.Remove($g.Index - $mm.Index, …)`）实测报
+            # `StartIndex 不能小于 0` —— MatchEvaluator 收到的 Match 里
+            # `Group.Index` 的基准与当时假设不一致（匹配不在串首时变负数）。
+            # 按值替换没这个问题，且**天然幂等**：值本来就对时不产生变化。
+            #
+            # ⚠ 这里必须用 PowerShell 的 `#` 注释：整个 scriptblock 是 **PowerShell 上下文**，
+            #   写 C 风格 `/* */` 会被当命令执行（实测报 "无法将 /* 项识别为 cmdlet"）。
+            $out = $mm.Value
             if ($mm.Groups['ac'].Success) {
-                $ga = $mm.Groups['ac']
-                # 注意：上面的 Remove/Insert 改了长度，ac 组在 n 组**之前**，索引不受影响
-                $out = $out.Remove($ga.Index - $mm.Index, $ga.Length).Insert($ga.Index - $mm.Index, "$acMax")
+                $out = $out.Replace("AC-" + $mm.Groups['ac'].Value, "AC-" + "$acMax")
+            }
+            if ($mm.Groups['n'].Success) {
+                $out = $out.Replace($mm.Groups['n'].Value, "$want")
             }
             return $out
         })
