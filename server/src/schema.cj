@@ -65,6 +65,22 @@ public let TABLE_MEDICAL_RECORD: String = "medical_record"
  */
 public let TABLE_AUTH_USER: String = "auth_user"
 public let TABLE_AUTH_TOKEN: String = "auth_token"
+/*
+ * ★ 登录失败计数 / 锁定（2026-10-07 增，P1 安全加固）。
+ *
+ * ── 为什么**单独一张表**，而不是在 auth_user 上加两列 ─────────────────────
+ * 关键在于：**账号不存在时也必须计入限流**。
+ *   若把计数放在 `auth_user` 行上，那么"对不存在的登录名狂试"就**完全不受限** ——
+ *   而这恰好是攻击者试用户名的手法（也能把 PBKDF2 当 CPU 放大器打）。
+ *   单独建表后，任何登录名（存在与否）都能有一行计数。
+ *
+ * ── 为什么键是**哈希**而不是登录名原文 ───────────────────────────────────
+ *   ① 防的是"库被读走后拿到一份'谁被撞过库'的名单"；
+ *   ② 让"不存在的登录名"与"存在的登录名"在**存储层**也无法区分（口径统一）。
+ *
+ * ⚠ 表名同样避开基线内存 Store 的表名（见文件头纪律）—— 基线没有这张表。
+ */
+public let TABLE_AUTH_ATTEMPT: String = "auth_login_attempt"
 
 /* 号源/挂号**业务状态**表 —— 唯二走直接 SQL 的业务表（ADR-0001 §4.3）。 */
 public let BOOKING_DOMAIN_TABLES: Array<String> = [TABLE_SCHEDULE, TABLE_APPOINTMENT]
@@ -76,7 +92,7 @@ public let BOOKING_DOMAIN_TABLES: Array<String> = [TABLE_SCHEDULE, TABLE_APPOINT
 public let ALL_TABLES: Array<String> = [
     TABLE_DEPARTMENT, TABLE_DOCTOR, TABLE_SCHEDULE,
     TABLE_APPOINTMENT, TABLE_PATIENT, TABLE_MEDICAL_RECORD,
-    TABLE_AUTH_USER, TABLE_AUTH_TOKEN
+    TABLE_AUTH_USER, TABLE_AUTH_TOKEN, TABLE_AUTH_ATTEMPT
 ]
 
 /* ===================== DDL ===================== */
@@ -271,6 +287,28 @@ public let SCHEMA_DDL: Array<String> = [
     "PRIMARY KEY (token), " +
     "KEY idx_auth_token_user (user_id), " +
     "KEY idx_auth_token_expires (expires_at)" +
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+
+    // ── 登录失败计数 / 锁定（P1 安全加固）────────────────────────────────
+    /*
+     * 一行 = 一个登录名（**哈希后**）的连续失败状态。
+     *
+     * 列语义：
+     *   login_hash   登录名的 SHA-256 十六进制（见 auth_repo.loginNameHash）
+     *   fail_count   观察窗口内的**连续**失败次数（成功登录即清零）
+     *   window_start 本轮观察窗口起点
+     *   last_fail_at 最近一次失败时刻（锁定从这里起算）
+     *
+     * ⚠ 为何开 `idx_auth_attempt_lastfail`：清理过期行按 last_fail_at 扫，
+     *   否则表只增不减（基线 tokens 表"只增不减"就是这个坑，见 auth_repo.pruneTokens）。
+     */
+    "CREATE TABLE IF NOT EXISTS auth_login_attempt (" +
+    "login_hash VARCHAR(64) NOT NULL, " +
+    "fail_count BIGINT NOT NULL DEFAULT 0, " +
+    "window_start BIGINT NOT NULL DEFAULT 0, " +
+    "last_fail_at BIGINT NOT NULL DEFAULT 0, " +
+    "PRIMARY KEY (login_hash), " +
+    "KEY idx_auth_attempt_lastfail (last_fail_at)" +
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
 ]
 
@@ -315,7 +353,7 @@ public func isBookingDomainTable(name: String): Bool {
  * 这样"某张表归谁管"永远能从一个函数问出来，而不是靠读代码猜。
  */
 public func isAuthTable(name: String): Bool {
-    return name == TABLE_AUTH_USER || name == TABLE_AUTH_TOKEN
+    return name == TABLE_AUTH_USER || name == TABLE_AUTH_TOKEN || name == TABLE_AUTH_ATTEMPT
 }
 
 /*

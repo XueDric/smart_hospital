@@ -169,13 +169,18 @@ func selftest(): Int64 {
     // 1) 最小表集：brief §10 Q2 的 7 张**业务**表 + P1 令牌体系的 2 张**鉴权**表 = 9。
     //    ⚠ 用"业务表数 + 鉴权表数"两个分项断言，而不是硬编码总数 ——
     //      硬编码数字在加表时必然要手改，而漏改就变成"测试说没事、其实漂移了"。
-    //      （加鉴权表时触发过一次；2026-10-07 删掉 booking_idem 时又触发了一次
-    //        —— 两次都证明这条断言**有用**，它确实拦住了一次静默漂移。）
+    //      （加鉴权表时触发过一次；删掉 booking_idem 时一次；
+    //        2026-10-07 加 auth_login_attempt 时又一次 —— **三次都证明它有用**。）
     let bizTables = 6
-    let authTables = 2
+    let authTables = 3
     check("业务表为 ${bizTables} 张 + 鉴权表 ${authTables} 张", ALL_TABLES.size == bizTables + authTables)
-    check("鉴权表恰好 2 张（auth_user / auth_token）",
-          isAuthTable(TABLE_AUTH_USER) && isAuthTable(TABLE_AUTH_TOKEN))
+    /*
+     * ⚠ 写成"3 张表各判一次"而不是跨行 `&&` 串联 ——
+     *   实测跨行时 cjc 报 `warning: possibly confusing line terminator`
+     *   （仓颉把行尾当作语句终结符的候选，续行不明确）。分次 check 更清楚，也消掉警告。
+     */
+    check("鉴权表恰好 ${authTables} 张（auth_user / auth_token / auth_login_attempt）",
+          isAuthTable(TABLE_AUTH_USER) && isAuthTable(TABLE_AUTH_TOKEN) && isAuthTable(TABLE_AUTH_ATTEMPT))
     check("业务表不误入鉴权域", !isAuthTable(TABLE_PATIENT) && !isAuthTable(TABLE_SCHEDULE))
 
     // 2) 每张**业务表**都有对应 DDL。

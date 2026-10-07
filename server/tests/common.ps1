@@ -64,10 +64,17 @@ function Get-MySqlClientArgs {
     }
 }
 
-# 跑一条 SQL，返回标量字符串；**无返回行时明确告警**而不是静默返回空。
+# 跑一条 SQL，返回标量字符串；**SELECT 无返回行时明确告警**而不是静默返回空。
 # ⚠ `(& native ...)` 在查询无行时得到 $null，直接 .Trim() 会报
 #   「不能对 Null 值表达式调用方法」—— 那个报错完全没提"SQL 没查到行"，
 #   很容易被带去查错方向。这里统一包一层。
+#
+# ⚠⚠ 但 **DELETE / UPDATE / INSERT 本来就不返回行集**（它们返回受影响行数，
+#   而客户端默认不回显）—— 对它们告警是**假警报**。实测踩到：
+#   限流测试脚本里每清一次计数就打一行"SQL 未返回任何行"，把真正的输出淹了。
+#   所以这里按语句类型分流：
+#     · SELECT → 无行 = 异常，告警
+#     · 其它   → 无行 = 正常，静默返回 ""
 function Invoke-MySqlScalar {
     param(
         [Parameter(Mandatory=$true)]$My,
@@ -76,7 +83,9 @@ function Invoke-MySqlScalar {
     )
     $raw = & $My.Client -h $My.DbHost -P $My.Port -u $My.User "-p$($My.Pass)" --skip-ssl $My.Db -N -B -e $Sql 2>&1
     if ($null -eq $raw -or "$raw".Trim().Length -eq 0) {
-        Write-Warning "  SQL 未返回任何行（$Label，库 $($My.Db)）：$Sql"
+        if ($Sql.TrimStart().ToUpper().StartsWith("SELECT")) {
+            Write-Warning "  SQL 未返回任何行（$Label，库 $($My.Db)）：$Sql"
+        }
         return ""
     }
     return "$raw".Trim()

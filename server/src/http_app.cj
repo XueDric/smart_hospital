@@ -352,33 +352,44 @@ public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuth
 
     /* ---------- POST /api/v1/auth/login —— 登录换令牌 ---------- */
     r.post("/api/v1/auth/login", { ctx: Context, _: () -> Unit =>
-        let body = bodyObj(ctx)
         let loginName = requireStr(ctx, "login_name")
         let password = requireStr(ctx, "password")
         let now = hNowEpoch()
-        match (auth.login(loginName, password, now)) {
-            case Some(x) =>
-                let o = JsonObject()
-                o.put("token", JsonString(x[1]))
-                o.put("expires_at", JsonInt(x[2]))
-                // 顺带回身份摘要，省一次 /me 往返
-                match (auth.findUser(loginName)) {
-                    case Some(u) =>
-                        o.put("user_id", JsonInt(u.id))
-                        o.put("role", JsonString(roleName(u.role)))
-                        o.put("ref_id", JsonInt(u.refId))
-                        o.put("display_name", JsonString(u.displayName))
-                    case None => ()
-                }
-                sendOk(ctx, o)
-            case None =>
-                /*
-                 * ⚠ 账号不存在与口令错误**返回同一个错误码**（AUTH_BAD_CREDENTIALS）。
-                 *   分开回就是在告诉攻击者"这个手机号注册过" ——
-                 *   而"谁在本院看过病"正是最该保护的信息（见 auth_crypto.cj loginCreds）。
-                 */
-                throw apiError("AUTH_BAD_CREDENTIALS")
+        let res = auth.login(loginName, password, now)
+        if (res.succeeded()) {
+            let o = JsonObject()
+            o.put("token", JsonString(res.token))
+            o.put("expires_at", JsonInt(res.expiresAt))
+            // 顺带回身份摘要，省一次 /me 往返
+            match (auth.findUser(loginName)) {
+                case Some(u) =>
+                    o.put("user_id", JsonInt(u.id))
+                    o.put("role", JsonString(roleName(u.role)))
+                    o.put("ref_id", JsonInt(u.refId))
+                    o.put("display_name", JsonString(u.displayName))
+                case None => ()
+            }
+            sendOk(ctx, o)
+            return
         }
+        if (res.locked) {
+            /*
+             * ★ 被限流（P1 安全加固，2026-10-07）。返回 429 + `Retry-After`。
+             *
+             * ⚠ 这个分支**对"账号存在"与"账号不存在"一视同仁** ——
+             *   因为限流按登录名记，且计数表 `auth_login_attempt` 与 `auth_user`
+             *   **没有外键**（见 schema.cj 的说明）。所以它**不是**账号枚举的 oracle：
+             *   连续输错 5 次后，存在的名字与不存在的名字都在第 6 次拿到 429。
+             */
+            ctx.header("retry-after", res.retryAfterSeconds.toString())
+            throw apiError("AUTH_RATE_LIMITED")
+        }
+        /*
+         * ⚠ 账号不存在与口令错误**返回同一个错误码**（AUTH_BAD_CREDENTIALS）。
+         *   分开回就是在告诉攻击者"这个手机号注册过" ——
+         *   而"谁在本院看过病"正是最该保护的信息（见 auth_crypto.cj loginCreds）。
+         */
+        throw apiError("AUTH_BAD_CREDENTIALS")
     })
 
     /* ---------- POST /api/v1/auth/logout —— 登出（吊销当前令牌）---------- */

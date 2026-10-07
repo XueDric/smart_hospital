@@ -9,14 +9,19 @@
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
 | 准备 | 读取文档 + 从 `cangjie_web` 搬运只读基线到 `baseline/` | ✅ 完成 |
-| **P0** | **号源/挂号独立 MySQL 路径**：ADR + 服务端骨架 + 表集 + 原子扣减/幂等/退号 + 验收测试 | ✅ **完成**（经 rev.2 / rev.3 两轮复查修订；**rev.3 推翻了 P0 的乐观锁扣号策略**） |
-| **P1** | **挂号闭环 + 令牌鉴权 + HTTPS**：中间件装配 + 三端权限矩阵 + 11 个 REST + 不透明令牌（PBKDF2 100k，3 个公开向量验过）+ **HTTPS（TLS 1.2/1.3，带 SAN 自签）** + **多进程并发压测**（20/30/40/50 抢同数号源全部卖光） | 🟡 **主要增量完成**（内存 Store 待做） |
+| **P0** | **号源/挂号独立 MySQL 路径**：ADR + 服务端骨架 + 表集 + 原子扣减/幂等/退号 + 验收测试 | ✅ **完成**（经 rev.2 / rev.3 / rev.4 三轮复查修订；**rev.3 推翻了 P0 的乐观锁扣号策略**，rev.4 删掉死代码 `booking_idem`） |
+| **P1** | **挂号闭环 + 令牌鉴权 + HTTPS + 安全加固**：中间件装配 + 三端权限矩阵 + 11 个 REST + 不透明令牌（PBKDF2 100k，3 个公开向量验过）+ **HTTPS（TLS 1.2/1.3，带 SAN 自签）** + **登录限流/失败锁定** + **多进程并发压测**（20/30/40/50 抢同数号源全部卖光；并发退号零丢号） | 🟡 **主要增量完成**（内存 Store 待做） |
 | P2 | AI 分诊（加工具条目 + `verify_recommendation()` + 危急关键词兜底） | ⏳ |
 | P3 | AI 能力中心（配置/Prompt/工具开关落 MySQL） | ⏳ |
 | P4 | 预问诊 SSE + 电子病历 + 运营看板 | ⏳ |
 | P5 | RAG 知识库 | ⏳ |
 
-> P0 的完整说明（交付物 / 验收边界 / 本机环境 / 踩坑）见 **[docs/P0-HANDOFF.md](docs/P0-HANDOFF.md)**。
+> **交付说明**：
+> - P0 → **[docs/P0-HANDOFF.md](docs/P0-HANDOFF.md)**（⚠ 内含"本文档为 P0 时点快照 + 勘误表"声明，部分结论已被后续推翻）
+> - P1 → **[docs/P1-HANDOFF.md](docs/P1-HANDOFF.md)**（**最新**；含两轮外部复查的逐条修复记录）
+> - 架构决策 → **[docs/adr/ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md)**（已到 **rev.4**）
+> - 本机环境 / 数据库 → **[docs/DEV-DB.md](docs/DEV-DB.md)**（仓库自管，端口 3317）
+> - ⚠ **文档里的测试项数以 `server/tests/doc-counts.ps1` 的实测输出为准** —— 这个数字漂移过两次，现已机制化对账，不再靠人记。
 
 ---
 
@@ -30,7 +35,7 @@
 | [docs/P1-HANDOFF.md](docs/P1-HANDOFF.md) | **P1 说明**：HTTP 接口清单、权限矩阵、令牌鉴权口径与公开测试向量、并发压测结果、抓出的缺陷、未完成项 | ✏️ 本项目文档 |
 | [docs/PUSH-NOTES.md](docs/PUSH-NOTES.md) | 推送备忘：本机 DNS 返回了一个连不通的 GitHub IP，以及绕过办法（实测有效） | ✏️ 本项目文档 |
 | [docs/DEV-DB.md](docs/DEV-DB.md) | **仓库自管开发数据库**（端口 3317，与社团那台彻底隔离）：启停、连接、DSN、重置 | ✏️ 本项目文档 |
-| [server/](server/README.md) | **智慧医院服务端**（仓颉 + 轻舟）：`src/` 5 个 `.cj` + 构建脚本 + README | ✏️ 本项目代码 |
+| [server/](server/README.md) | **智慧医院服务端**（仓颉 + 轻舟）：`src/` **9 个 `.cj` / ~3.2k 行** + 5 个构建/运维脚本 + `tests/` **5 个测试脚本** + README | ✏️ 本项目代码 |
 | [baseline/](baseline/SNAPSHOT.md) | **只读参考基线** —— 复制自 `cangjie_web`，**352 文件 / 7.53 MB**，基线提交 `07a0922`（上传前已剔除机密材料，见其 §二·补） | 🚫 **只读，勿就地改** |
 | [baseline/SNAPSHOT.md](baseline/SNAPSHOT.md) | 基线说明：来源/提交/排除清单/路径映射表/复用风险 | ✏️ 复制说明 |
 | `entry/` | ⚠️ **目前尚不存在** —— 鸿蒙患者端将来落这里，取用 `baseline/entry/` 作模板 | — |
@@ -45,11 +50,13 @@
 1. **[smart-hospital-project-brief.md](smart-hospital-project-brief.md)** —— 整份读完即可接续，不需要回读原对话
    - ⚠️ §1 是**已决事项**，除非有新的外部约束，**不要重新讨论**
    - ⚠️ 标注「**推断**」的数字（尤其工期）都是**未实测的粗估**，落地前请自行验证
-2. **[docs/P0-HANDOFF.md](docs/P0-HANDOFF.md)** —— 当前进度在哪、怎么跑起来、环境是什么
-3. **[docs/adr/ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md)** —— 为什么号源/挂号要脱离内存 Store
-4. [baseline/SNAPSHOT.md](baseline/SNAPSHOT.md) —— 基线里有什么、缺什么、链接怎么对上
-5. [baseline/docs/qingzhou-api-fact-sheet.md](baseline/docs/qingzhou-api-fact-sheet.md) —— **轻舟 API 事实清单**（每条带 file:line，写接口前必读）
-6. [baseline/docs/API-NOTES.md](baseline/docs/API-NOTES.md) —— 编译期 API 事实 + 45 条踩坑（**写仓颉前必读**）
+2. **[docs/P1-HANDOFF.md](docs/P1-HANDOFF.md)** —— **当前进度在这里**：接口清单、权限矩阵、令牌口径、HTTPS、两轮外部复查的逐条修复
+3. **[docs/P0-HANDOFF.md](docs/P0-HANDOFF.md)** —— P0 时点快照（⚠ 文首有勘误表：部分结论已被推翻，对照着看）
+4. **[docs/adr/ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md)** —— 为什么号源/挂号要脱离内存 Store（**rev.4**，含扣号/归还策略的两次修订论证）
+5. **[docs/DEV-DB.md](docs/DEV-DB.md)** —— 怎么把本机数据库跑起来（仓库自管 devdb，与社团隔离）
+6. [baseline/SNAPSHOT.md](baseline/SNAPSHOT.md) —— 基线里有什么、缺什么、链接怎么对上
+7. [baseline/docs/qingzhou-api-fact-sheet.md](baseline/docs/qingzhou-api-fact-sheet.md) —— **轻舟 API 事实清单**（每条带 file:line，写接口前必读）
+8. [baseline/docs/API-NOTES.md](baseline/docs/API-NOTES.md) —— 编译期 API 事实 + 45 条踩坑（**写仓颉前必读**）
 
 ---
 

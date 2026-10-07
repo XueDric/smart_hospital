@@ -60,6 +60,21 @@ public func apiErrorSpec(code: String): (Int64, String) {
     if (code == "AUTH_BAD_CREDENTIALS") {
         return (401, "账号或密码错误")
     }
+    /*
+     * 登录被限流（P1 安全加固，2026-10-07 增）。
+     *
+     * ⚠ 用 **429 Too Many Requests** 而不是 401：语义上是"你被限流了"，
+     *   而不是"凭据不对"；客户端据此提示"请 N 分钟后再试"并读 `Retry-After` 头。
+     *
+     * ⚠⚠ 关于"会不会成为账号枚举的 oracle"——**不会**，但理由必须写清：
+     *   限流是**按登录名**记的，而**不存在的登录名同样会被限流**
+     *   （计数表 auth_login_attempt 与 auth_user 无外键，见 schema.cj 的说明）。
+     *   所以"连续输错 5 次"这个动作对存在/不存在的名字**结果完全一样**：
+     *   都是第 6 次拿到 429。攻击者无法据此判断账号是否存在。
+     */
+    if (code == "AUTH_RATE_LIMITED") {
+        return (429, "登录失败次数过多，请稍后再试")
+    }
     if (code == "AUTH_TOKEN_EXPIRED") {
         return (401, "登录已过期，请重新登录")
     }

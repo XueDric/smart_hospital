@@ -24,6 +24,17 @@
 
 package qingzhou
 
+/*
+ * ⚠ 本文件原先**没有 import**（它只用 String/Int64 与 db.exec/query）。
+ *   2026-10-07 引入"登录名哈希"后需要两个 stdx 模块，必须显式 import ——
+ *   否则报 `undeclared identifier 'toHexString'`（实测踩到）。
+ *   · stdx.crypto.digest  → HMAC / SHA256（经 auth_crypto.hmacSha256 间接用）
+ *   · stdx.encoding.hex   → toHexString
+ *   与 auth_crypto.cj 的 import 口径保持一致。
+ */
+import stdx.crypto.digest.*
+import stdx.encoding.hex.*
+
 /* ===================== 账号 ===================== */
 
 /* 鉴权账号（读模型）。 */
@@ -39,13 +50,177 @@ public class AuthUser {
     public var status: String = "active"
 }
 
-/* ===================== 鉴权仓储 ===================== */
+/* ===================== 登录限流 / 锁定（P1 安全加固）===================== */
+
+/*
+ * 登录失败限流参数。
+ *
+ * ★ 为什么必须有它：没有限流时，攻击者可以**无限次**尝试口令。
+ *   本项目的口令用 PBKDF2（10 万次迭代）确实让单次尝试很贵（约百毫秒），
+ *   但那只把"离线爆破"变贵，**在线爆破只需要一个循环** ——
+ *   而且能把服务端的 PBKDF2 当 **CPU 放大器**打（每次尝试都烧 100ms CPU）。
+ *
+ * 取值口径（三个数字都要能解释，不能拍脑袋）：
+ *   · FAIL_LIMIT = 5        —— 正常人手误 1~2 次；5 次足够容错，又不给爆破留空间。
+ *   · FAIL_WINDOW = 900s    —— 15 分钟窗口内的失败才累计；零散的手误不会累积成锁定。
+ *   · LOCK_SECONDS = 900s   —— 锁 15 分钟。**刻意不用"永久锁定"**：
+ *       永久锁会让攻击者用"故意输错"来**拒绝服务**真实用户（而且解锁要人工）。
+ *       有限窗口下，攻击者最多拖慢自己，用户等一会儿即可自愈。
+ */
+public let LOGIN_FAIL_LIMIT: Int64 = 5
+public let LOGIN_FAIL_WINDOW: Int64 = 900
+public let LOGIN_LOCK_SECONDS: Int64 = 900
+
+/*
+ * 登录名的哈希（十六进制）。
+ *
+ * 为什么键用哈希而不是原文：
+ *   ① 库被读走后不会直接得到一份"谁被撞过库"的名单；
+ *   ② 让"不存在的登录名"与"存在的登录名"在**存储层**也长得一样 ——
+ *      这是本项目"防枚举"口径的一部分（与 auth_crypto 的假材料同一思路）。
+ *
+ * ⚠ 实现说明（避免下次又写错）：本项目的 crypto 层**只暴露了 HMAC-SHA256**
+ *   （`hmacSha256`，见 auth_crypto.cj:162），没有裸的 `sha256(bytes)`。
+ *   所以这里用 **HMAC-SHA256 + 固定密钥** 当带密钥的摘要 —— 语义上更合适
+ *   （它本质就是"用固定 key 做哈希"），不是将就。
+ *
+ * ⚠ 这个 key 是**公开常量**，不是机密：它的作用只是"把登录名映射成定长键"，
+ *   不是抗离线爆破（登录名不是口令）。**不要**把它当成安全参数去轮换 ——
+ *   轮换会让所有历史计数行失配（等价于清空限流状态）。
+ */
+private let LOGIN_HASH_KEY: String = "smart-hospital/login-attempt/v1"
+
+public func loginNameHash(loginName: String): String {
+    return toHexString(hmacSha256(LOGIN_HASH_KEY.toArray(), loginName.toArray()))
+}
+
+/* 登录锁定状态。 */
+public class LockState {
+    public var locked: Bool = false
+    public var failCount: Int64 = 0
+    public var retryAfterSeconds: Int64 = 0
+}
+
+/*
+ * 登录结果。
+ *
+ * ── 为什么从 `?(Int64, String, Int64)` 换成这个类（2026-10-07）
+ * 引入限流后，登录有**三种**结局，而元组 + Option 只能表达两种：
+ *     ① 成功（有 token）
+ *     ② 凭据不对（口令错 / 账号不存在 / 停用 —— 三者刻意不区分，防枚举）
+ *     ③ **被限流锁定**（与凭据对不对无关，所以不能混进 ②）
+ * 用 Option 硬塞会把③伪装成②，于是客户端拿不到"等多久再来"，
+ * 而且 ② 的"不区分"口径也会被破坏。
+ */
+public class LoginOutcome {
+    public var userId: Int64 = 0
+    public var token: String = ""
+    public var expiresAt: Int64 = 0
+    public var locked: Bool = false
+    public var retryAfterSeconds: Int64 = 0
+
+    /* 成功 = 拿到令牌。 */
+    public func succeeded(): Bool {
+        return token.size > 0
+    }
+}
 
 public class AuthRepo {
     private let db: DbBackend
 
     public init(db: DbBackend) {
         this.db = db
+    }
+
+    /* ---------- 登录限流：读 / 记 / 清 ---------- */
+
+    /*
+     * 查某登录名当前的锁定状态（**只读，不改状态**）。
+     *
+     * 锁定判据（两条都要满足）：
+     *   · `fail_count >= LOGIN_FAIL_LIMIT`     —— 失败次数够多
+     *   · `now - last_fail_at < LOGIN_LOCK_SECONDS` —— 且最近一次失败还在锁定期内
+     * 第二条让锁定**自动过期**（无需后台任务），也避免"永久锁定"被用来对真实用户做拒绝服务。
+     *
+     * ⚠ 观察窗口（LOGIN_FAIL_WINDOW）在这里**不**参与判定，而是由 recordFailure
+     *   在写入时用它决定"是继续累计还是重新起一轮"。这样判定逻辑只有一处，
+     *   不会出现"读的时候按窗口、写的时候按次数"这种两套口径。
+     */
+    public func lockState(loginName: String, now: Int64): LockState {
+        let st = LockState()
+        let rs = db.query(
+            "SELECT fail_count, last_fail_at FROM auth_login_attempt WHERE login_hash = ?",
+            [DbStr(loginNameHash(loginName))])
+        if (rs.rowCount() < 1) {
+            return st                      // 没有记录 = 从未失败过
+        }
+        let cnt = rs.getInt(0, 0)
+        let lastFail = rs.getInt(0, 1)
+        st.failCount = cnt
+        if (cnt >= LOGIN_FAIL_LIMIT && now - lastFail < LOGIN_LOCK_SECONDS) {
+            st.locked = true
+            // 还要多久解锁（至少 1 秒，避免返回 0 让客户端立刻重试）
+            let left = LOGIN_LOCK_SECONDS - (now - lastFail)
+            st.retryAfterSeconds = if (left < 1) { 1 } else { left }
+        }
+        return st
+    }
+
+    /*
+     * 记一次登录失败。返回记完之后的锁定状态（调用方据此决定要不要返回"已锁定"）。
+     *
+     * 累计规则（刻意只有一条）：**距上次失败超过观察窗口就重新起一轮**。
+     *   · 连续失败（间隔 < 15 分钟）→ fail_count 递增 ⇒ 够 5 次就锁；
+     *   · 零散手误（间隔 > 15 分钟）→ 从 1 重新数 ⇒ **不会攒成锁定**。
+     * 这正是"正常人手误不该被锁"与"爆破必须被挡"的平衡点。
+     *
+     * ⚠ 用 INSERT ... ON DUPLICATE KEY UPDATE 一条语句完成"插入或累计"，
+     *   避免"先查再写"的跨语句窗口（并发爆破时那个窗口会让计数偏少）。
+     */
+    public func recordFailure(loginName: String, now: Int64): LockState {
+        let h = loginNameHash(loginName)
+        /*
+         * ⚠ 这条 SQL 的 `window_start` 更新有讲究：
+         *   `IF(window_start = 0 OR ? - window_start > 窗口, ?, window_start)`
+         *   —— 新窗口就把 window_start 推到 now，否则保持。
+         *   而 fail_count 用同样的条件决定"重置为 1"还是"加 1"。
+         *   两个字段的条件必须一致，否则窗口与计数会错位。
+         */
+        db.exec(
+            "INSERT INTO auth_login_attempt (login_hash, fail_count, window_start, last_fail_at) " +
+            "VALUES (?, 1, ?, ?) " +
+            "ON DUPLICATE KEY UPDATE " +
+            "  fail_count = IF(window_start = 0 OR ? - window_start > ?, 1, fail_count + 1), " +
+            "  window_start = IF(window_start = 0 OR ? - window_start > ?, ?, window_start), " +
+            "  last_fail_at = ?",
+            [DbStr(h), DbInt(now), DbInt(now),
+             DbInt(now), DbInt(LOGIN_FAIL_WINDOW),
+             DbInt(now), DbInt(LOGIN_FAIL_WINDOW), DbInt(now),
+             DbInt(now)])
+        return lockState(loginName, now)
+    }
+
+    /*
+     * 登录成功后清掉失败计数。
+     * ★ 必须清：否则"之前失败 4 次 + 这次成功"会留下 4 次，
+     *   下次再失败 1 次就被锁 —— 而用户其实一直登录正常。
+     */
+    public func clearFailures(loginName: String): Int64 {
+        return db.exec("DELETE FROM auth_login_attempt WHERE login_hash = ?",
+                       [DbStr(loginNameHash(loginName))])
+    }
+
+    /*
+     * 清理长期未失败的计数行（返回删除行数）。
+     *
+     * 为什么要有：否则任何被尝试过一次的登录名都会**永久留一行**
+     *   —— 攻击者可以拿随机登录名刷爆这张表（表只增不减，基线 tokens 表就是这么踩的）。
+     * 保留期取 **10 倍观察窗口**（2.5 小时）：远超判定所需，又能让表自动收敛。
+     * 在登录成功时顺手清一次（与 pruneTokens 同一"低频一趟"策略）。
+     */
+    public func pruneAttempts(now: Int64): Int64 {
+        return db.exec("DELETE FROM auth_login_attempt WHERE last_fail_at < ?",
+                       [DbInt(now - LOGIN_FAIL_WINDOW * 10)])
     }
 
     /* ---------- 账号 ---------- */
@@ -124,35 +299,69 @@ public class AuthRepo {
      *   让两条路径的耗时一致。否则"登录响应快 = 账号不存在"就成了枚举器，
      *   而"谁在本院看过病"正是最该保护的信息。
      *
-     * 返回 (userId, token, expiresAt) 或 None（口令错/账号停用）。
+     * ★ 限流（2026-10-07 增）：连续失败 LOGIN_FAIL_LIMIT 次后锁定一段时间。
+     *   ⚠ **顺序很重要**：锁定检查放在 PBKDF2 **之前**（锁定时不必再烧 100ms CPU
+     *   —— 否则限流反而成了攻击者放大 CPU 消耗的工具）。
+     *
+     * ⚠ 返回值的语义（调用方 http_app.cj 必须照此映射）：
+     *      Some(...)            → 登录成功
+     *      None                 → 口令错 / 账号不存在 / 账号停用（**统一不区分**，防枚举）
+     *      Some 之外的第三种...  → 用 LoginOutcome 表达"已锁定"，见下方类型
      */
     public func login(loginName: String, password: String,
-                      now: Int64): ?(Int64, String, Int64) {
+                      now: Int64): LoginOutcome {
+        let out = LoginOutcome()
+
+        // 0) 限流闸门：已锁定 → 直接拒绝，**不跑 PBKDF2**
+        let st = lockState(loginName, now)
+        if (st.locked) {
+            out.locked = true
+            out.retryAfterSeconds = st.retryAfterSeconds
+            return out
+        }
+
         let found = findUser(loginName)
-        let u = match (found) {
-            case Some(x) => x
+        let ok: Bool
+        match (found) {
+            case Some(u) =>
+                let creds = loginCreds(true, u.pwSalt, u.pwHash, u.pwIter)
+                ok = verifyPw(password, creds[0], creds[1], creds[2])
+                if (ok && u.status != "active") {
+                    return out                 // 账号停用：既不计失败也不签发
+                }
+                if (ok) {
+                    out.userId = u.id
+                }
             case None =>
-                // 账号不存在：仍跑 PBKDF2（假材料），然后失败
+                // 账号不存在：仍跑 PBKDF2（假材料），然后失败 —— 耗时与"口令错"一致
                 let creds = loginCreds(false, "", "", 0)
                 let _ = verifyPw(password, creds[0], creds[1], creds[2])
-                return None
+                ok = false
         }
-        let creds = loginCreds(true, u.pwSalt, u.pwHash, u.pwIter)
-        if (!verifyPw(password, creds[0], creds[1], creds[2])) {
-            return None
+
+        if (!ok) {
+            // 记一次失败，并把"记完是否已锁定"回给调用方
+            let after = recordFailure(loginName, now)
+            out.locked = after.locked
+            out.retryAfterSeconds = after.retryAfterSeconds
+            return out
         }
-        if (u.status != "active") {
-            return None
-        }
-        // 签发令牌：顺手回收过期令牌（照基线 issueToken 的"低频 O(n) 一趟"）
+
+        // 1) 成功：清失败计数 + 顺手回收过期令牌与陈旧计数（各一趟）
+        let _ = clearFailures(loginName)
         let _ = pruneTokens(now)
+        let _ = pruneAttempts(now)
+
+        // 2) 签发令牌
         let tok = newToken()
         let expires = now + TOKEN_TTL
         db.exec(
             "INSERT INTO auth_token (token, user_id, created_at, expires_at, last_renew_at) " +
             "VALUES (?, ?, ?, ?, ?)",
-            [DbStr(tok), DbInt(u.id), DbInt(now), DbInt(expires), DbInt(now)])
-        return Some((u.id, tok, expires))
+            [DbStr(tok), DbInt(out.userId), DbInt(now), DbInt(expires), DbInt(now)])
+        out.token = tok
+        out.expiresAt = expires
+        return out
     }
 
     /* ---------- 令牌 ---------- */
