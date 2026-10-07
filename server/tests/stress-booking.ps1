@@ -19,7 +19,9 @@ param(
     [int]$Tokens = 20,
     [int]$ScheduleTotal = 0,     # 0 = 用 Tokens 作为号源数
     [int]$SetupPort = 0,
-    [string]$Dsn = "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital",
+    # ⚠ 默认指向**仓库自管 devdb**（server\devdb，端口 3317）——
+    #   与社团那台（3307）隔离，见 docs\DEV-DB.md。
+    [string]$Dsn = "mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital_test",
     [string]$AdminLogin = "admin",
     [string]$AdminPw = "",
     [string]$PatientLogin = "13800000001",
@@ -32,8 +34,13 @@ if (-not $UseDevAuth -and [string]::IsNullOrEmpty($AdminPw)) {
     throw "默认走**令牌鉴权**，需要 -AdminPw（先跑 hospital-server.exe create-admin <dsn>）。`n  或显式加 -UseDevAuth 用开发态身份头（需服务端 --dev-auth 启动）。"
 }
 
-$mysql = "E:\cangjie\mariadb\mariadb-11.4.13-winx64\bin\mariadb.exe"
-if (-not (Test-Path $mysql)) { throw "找不到 mariadb 客户端：$mysql" }
+# ★ 连接参数**从 DSN 派生**（唯一事实来源）—— 见 common.ps1 顶部说明：
+#   原先 DSN 与 MySql* 是两份独立参数，极易"服务端写 A 库、脚本查 B 库"，
+#   实测踩过（断言一直读到空结果，看起来像 SQL 坏了）。
+. "$PSScriptRoot\common.ps1"
+$My = Get-MySqlClientArgs -Dsn $Dsn
+$mysql = $My.Client
+if (-not (Test-Path $mysql)) { throw "找不到 mariadb 客户端：$mysql（可用 `$env:HOSP_MYSQL_CLIENT 覆盖）" }
 
 if ($ScheduleTotal -le 0) { $ScheduleTotal = $Tokens }
 
@@ -107,7 +114,7 @@ INSERT INTO patient (id,phone,name,created_at) VALUES (1,'13800000001','王小�
 "@
 $tmp = Join-Path $env:TEMP "stress-setup.sql"
 [System.IO.File]::WriteAllText($tmp, $sql, (New-Object System.Text.UTF8Encoding($false)))
-& $mysql -h 127.0.0.1 -P 3307 -u hospital "-phospital_dev_2026" --skip-ssl hospital -e "source $tmp" | Out-Null
+Invoke-MySqlFile -My $My -Path $tmp
 Remove-Item $tmp -Force
 
 # 建排班（走管理员接口，顺带验证写接口）
@@ -207,10 +214,11 @@ function Check($name, $ok) {
     else { Write-Host "  [FAIL] $name"; $script:fail++ }
 }
 
-# 号源真实余量
-$remain = (& $mysql -h 127.0.0.1 -P 3307 -u hospital "-phospital_dev_2026" --skip-ssl hospital -N -B -e "SELECT remain_num FROM schedule WHERE id=$sid").Trim()
-$apptCount = (& $mysql -h 127.0.0.1 -P 3307 -u hospital "-phospital_dev_2026" --skip-ssl hospital -N -B -e "SELECT COUNT(*) FROM appointment WHERE schedule_id=$sid AND status<>'cancelled'").Trim()
-$total = (& $mysql -h 127.0.0.1 -P 3307 -u hospital "-phospital_dev_2026" --skip-ssl hospital -N -B -e "SELECT total_num FROM schedule WHERE id=$sid").Trim()
+# 号源真实余量（标量读取统一走 common.ps1 的 Invoke-MySqlScalar）
+
+$remain = Invoke-MySqlScalar -My $My -Sql "SELECT remain_num FROM schedule WHERE id=$sid" -Label "remain_num"
+$apptCount = Invoke-MySqlScalar -My $My -Sql "SELECT COUNT(*) FROM appointment WHERE schedule_id=$sid AND status<>'cancelled'" -Label "有效挂号单数"
+$total = Invoke-MySqlScalar -My $My -Sql "SELECT total_num FROM schedule WHERE id=$sid" -Label "total_num"
 
 Write-Host "  库中：total_num=$total remain_num=$remain 有效挂号单=$apptCount"
 Write-Host ""

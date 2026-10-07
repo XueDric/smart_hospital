@@ -171,12 +171,43 @@ public let SCHEMA_DDL: Array<String> = [
     "period VARCHAR(16) NOT NULL DEFAULT 'AM', " +
     "seq_no BIGINT NOT NULL DEFAULT 0, " +         // 就诊序号
     "status VARCHAR(16) NOT NULL DEFAULT 'booked', " + // booked / cancelled / done
-    "client_token VARCHAR(64) NOT NULL DEFAULT '', " + // ← 幂等键
+    /*
+     * ★ 幂等键。**可空**，且退号时会被置为 NULL（2026-10-07 修）。
+     *
+     * 为什么必须可空：`client_token` 是**客户端自己**生成的字符串，
+     *   单一旦被取消，那个 token 就该**释放掉**、允许下一次挂号再用（见 book/cancel 注释）。
+     *   但唯一索引 (patient_id, client_token) 会一直占着已取消那行 ⇒
+     *   重挂时 INSERT 撞唯一键 → **500**（实测复现）。
+     *
+     * 为什么用 NULL 而不是空串：**MySQL 的唯一索引允许多个 NULL**（NULL != NULL），
+     *   于是"置 NULL 即释放"天然成立，可以有多张已取消的单。
+     *   若用空串，第二个被取消的单就会撞 (patient_id, '') —— 空串在唯一索引里是**相等**的。
+     */
+    "client_token VARCHAR(64) NULL DEFAULT NULL, " + // ← 幂等键（退号置 NULL）
+    /*
+     * ★ 退号时**号源是否已归还**（2026-10-07 增）。
+     *
+     * 为什么要落库：`cancel()` 是幂等的，第二次调用要走"已取消则直接返回"的快路径。
+     * 原实现在那条路径上**无条件返回 `Cancelled`** —— 而 `Cancelled` 的语义是
+     * "已取消 **且号已归还**"。于是当第一次退号因 `remain_num == total_num`
+     * （管理员重置过号源）而没能归还时：
+     *   · 第 1 次退号 → `SlotNotRestored` + 告警（诚实）
+     *   · 第 2 次退号（用户重试）→ `Cancelled`，**告警消失**
+     * 实测复现。运维告警被一次无关的重试抹掉，而号源确实还挂着。
+     * 落库后，幂等路径就能**如实**返回上次的真实结果。
+     *
+     * 默认 1（已归还）：历史数据与"挂号但未退号"的单都不涉及归还问题。
+     */
+    "slot_restored TINYINT NOT NULL DEFAULT 1, " +
     "created_at BIGINT NOT NULL DEFAULT 0, " +
     "cancelled_at BIGINT NOT NULL DEFAULT 0, " +
     "PRIMARY KEY (id), " +
-    // 幂等由数据库兜底：同一 client_token 不可能落两行（AC-3）
-    "UNIQUE KEY uk_appointment_client_token (client_token), " +
+    // 幂等由数据库兜底，但**必须按患者隔离**：
+    // ⚠ 原先是 `UNIQUE (client_token)`（全局）—— 而 client_token 是**客户端自己**生成的
+    //   字符串（客户端契约就是 "booking-1" 这类），于是不同患者用同一个 token 会互相
+    //   撞车：患者 B 提交 A 用过的 token 会命中 A 的单（跨患者数据泄露）。
+    //   实测复现过。改成 (patient_id, client_token)：同患者不可重复，跨患者互不影响。
+    "UNIQUE KEY uk_appointment_patient_token (patient_id, client_token), " +
     "KEY idx_appointment_patient (patient_id, status), " +
     "KEY idx_appointment_schedule (schedule_id)" +
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
@@ -314,4 +345,114 @@ public func isAuthTable(name: String): Bool {
  */
 public func isBookingOwnedTable(name: String): Bool {
     return isBookingDomainTable(name) || isBookingInfraTable(name)
+}
+
+/* ===================== 迁移 ===================== */
+
+/*
+ * 幂等迁移：把旧库里的 `uk_appointment_client_token`（全局唯一）换成
+ * `uk_appointment_patient_token`（按患者唯一）。
+ *
+ * ★ 为什么必须有这一步：`SCHEMA_DDL` 全是 `CREATE TABLE IF NOT EXISTS` ——
+ *   表**已经存在**时 DDL 整体被跳过，所以**改了 DDL 对存量库没有任何效果**。
+ *   开发期我就是这样漏掉了几张表的口径更新（改完 DDL 以为生效了）。
+ *   凡是"改了既有表结构"都必须配一段显式迁移，否则新库对、老库错。
+ *
+ * 做法（先查 information_schema 再动手，可重复执行）：
+ *   ① 旧索引存在 → DROP；
+ *   ② 新索引不存在 → CREATE UNIQUE。
+ *
+ * ⚠ 顺序很关键：**先**加新索引再删旧的会更安全（避免中间窗口无约束），
+ *   但 `(patient_id, client_token)` 在有历史重复数据时会建失败；
+ *   所以这里保持"先删后加"，并把失败**明确抛出来**而不是静默忽略 ——
+ *   静默失败会留下一个"没有唯一约束"的库，幂等就断了一半。
+ */
+public func migrateSchema(db: DbBackend): Int64 {
+    var done: Int64 = 0
+
+    let oldIdx = db.query(
+        "SELECT COUNT(*) FROM information_schema.statistics " +
+        "WHERE table_schema = DATABASE() AND table_name = 'appointment' " +
+        "AND index_name = 'uk_appointment_client_token'",
+        Array<DbValue>())
+    if (oldIdx.rowCount() > 0 && oldIdx.getInt(0, 0) > 0) {
+        db.exec("ALTER TABLE appointment DROP INDEX uk_appointment_client_token",
+                Array<DbValue>())
+        done = done + 1
+    }
+
+    let newIdx = db.query(
+        "SELECT COUNT(*) FROM information_schema.statistics " +
+        "WHERE table_schema = DATABASE() AND table_name = 'appointment' " +
+        "AND index_name = 'uk_appointment_patient_token'",
+        Array<DbValue>())
+    if (newIdx.rowCount() > 0 && newIdx.getInt(0, 0) == 0) {
+        db.exec("ALTER TABLE appointment " +
+                "ADD UNIQUE KEY uk_appointment_patient_token (patient_id, client_token)",
+                Array<DbValue>())
+        done = done + 1
+    }
+
+    /*
+     * ③ 补 `appointment.slot_restored` 列（2026-10-07 增）。
+     *    `CREATE TABLE IF NOT EXISTS` 对已有表**完全不生效**，
+     *    所以新增列必须显式 ALTER，否则老库上这一列永远不存在，
+     *    而查询它就会报 Unknown column —— 那比静默降级更"响"，但同样是坏掉。
+     */
+    let hasCol = db.query(
+        "SELECT COUNT(*) FROM information_schema.columns " +
+        "WHERE table_schema = DATABASE() AND table_name = 'appointment' " +
+        "AND column_name = 'slot_restored'",
+        Array<DbValue>())
+    if (hasCol.rowCount() > 0 && hasCol.getInt(0, 0) == 0) {
+        db.exec("ALTER TABLE appointment " +
+                "ADD COLUMN slot_restored TINYINT NOT NULL DEFAULT 1",
+                Array<DbValue>())
+        done = done + 1
+    }
+
+    /*
+     * ④ `client_token` 改为可空（2026-10-07 增）。
+     *    两个动作、顺序不能反：
+     *      ① 先把历史的空串归一成 NULL（否则 NULL 与 '' 两种"空"混在一起）
+     *      ② 再把列改成 NULL 可空
+     *    ⚠ 只改 DDL 不改历史数据的话，"空串"行仍会在唯一索引里互相冲突 ——
+     *      这正是本轮修的那个 500 的同一类原因，别在新库上重新引入一遍。
+     */
+    let colNullable = db.query(
+        "SELECT IS_NULLABLE FROM information_schema.columns " +
+        "WHERE table_schema = DATABASE() AND table_name = 'appointment' " +
+        "AND column_name = 'client_token'",
+        Array<DbValue>())
+    if (colNullable.rowCount() > 0 && colNullable.getString(0, 0) == "NO") {
+        db.exec("UPDATE appointment SET client_token = NULL WHERE client_token = ''",
+                Array<DbValue>())
+        db.exec("ALTER TABLE appointment " +
+                "MODIFY COLUMN client_token VARCHAR(64) NULL DEFAULT NULL",
+                Array<DbValue>())
+        done = done + 1
+    }
+
+    /*
+     * ⑤ ★ 释放**已取消**单占用的幂等键（2026-10-07 增）。
+     *
+     * 这是上面 ④ 的**补齐**，漏了它就会留下一个很隐蔽的坑：
+     *   "退号时置 NULL" 只对**迁移之后**发生的退号生效；
+     *   迁移**之前**就已经取消的单，其 client_token 仍是原值。
+     *   于是 (patient_id, client_token) 唯一索引仍被那张老单占着，
+     *   患者用同一个 token 重挂 ⇒ INSERT 撞唯一键 ⇒ **500**。
+     *   实测复现（库里能看到 status='cancelled' 且 client_token='reuse-me' 的老行）。
+     *
+     * ⚠ 教训：改语义时不能只管"以后"，**已经躺在库里的数据也要一起归位** ——
+     *   否则新代码 + 老数据 = 只在特定历史路径上炸，最难查。
+     */
+    let staleCancelled = db.exec(
+        "UPDATE appointment SET client_token = NULL " +
+        "WHERE status = 'cancelled' AND client_token IS NOT NULL",
+        Array<DbValue>())
+    if (staleCancelled > 0) {
+        done = done + 1
+    }
+
+    return done
 }

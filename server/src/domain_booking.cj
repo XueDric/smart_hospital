@@ -109,6 +109,12 @@ public class BookingResult {
     public var seqNo: Int64 = 0
     public var status: String = "booked"
     public var createdAt: Int64 = 0
+    /*
+     * ★ 退号时号源是否已归还（默认 true）。
+     * 幂等路径要靠它如实回报 —— 见 `cancel()` 的注释：
+     * 否则第二次退号会把第一次的 `SlotNotRestored` 告警吞成 `Cancelled`。
+     */
+    public var slotRestored: Bool = true
 }
 
 /* ===================== 事务回传载体 ===================== */
@@ -167,13 +173,39 @@ public class BookingRepo {
         return Some(row)
     }
 
-    /* 按 client_token 查既有挂号单 id；不存在返回 None（幂等快路径）。 */
-    public func findAppointmentByToken(clientToken: String): ?Int64 {
+    /*
+     * 按 (患者, client_token) 查**仍然有效**的既有挂号单 id；不存在返回 None（幂等快路径）。
+     *
+     * ── ★ 为什么必须按患者隔离（2026-10-07 修，第三方复查发现的严重缺陷）──
+     * 原实现是 `WHERE client_token = ?`（**全局**查），而 `client_token` 是**客户端自己**
+     * 生成的字符串（客户端契约里就是 `"booking-1"` 这类）。于是：
+     *   · 患者 B 提交患者 A 用过的 client_token → 命中 A 的单并**原样返回**，
+     *     既不扣号、也不报错 ⇒ **跨患者数据泄露**（B 拿到了 A 的挂号单内容），
+     *     同时 B 以为自己挂上了（"成功了但没有票"）。
+     *   · 有人退号后，同 token 重挂 → 命中那张**已取消**的单并返回，
+     *     患者拿到一张 cancelled 的单却以为挂上了。
+     *
+     * 这两条都不是理论问题：复查方实测复现了两连击。
+     *
+     * ── 修法（两条一起）──────────────────────────────────────────────────
+     *   1. **按 (patient_id, client_token) 查**，唯一索引也改成这个组合
+     *      ⇒ 不同患者用同一个 token 字符串**互不影响**；
+     *   2. **只把 `status <> 'cancelled'` 的单当作幂等命中**
+     *      ⇒ 已取消的单不再被复用；退号后同 token 可以正常重挂。
+     *
+     * ⚠ 幂等的语义边界（写清楚，免得下次又改错）：
+     *   幂等要防的是"**同一次挂号意图**被重复提交"。所以它以
+     *   **"该患者当前是否已有一张有效单"** 为准 —— 单一旦被取消，
+     *   那次意图已经了结，token 就该可以再用。
+     */
+    public func findAppointmentByToken(patientId: Int64, clientToken: String): ?Int64 {
         if (clientToken.size == 0) {
             return None
         }
         let rs = db.query(
-            "SELECT id FROM appointment WHERE client_token = ?", [DbStr(clientToken)])
+            "SELECT id FROM appointment " +
+            "WHERE patient_id = ? AND client_token = ? AND status <> 'cancelled'",
+            [DbInt(patientId), DbStr(clientToken)])
         if (rs.rowCount() < 1) {
             return None
         }
@@ -184,7 +216,8 @@ public class BookingRepo {
     public func findAppointment(appointmentId: Int64): ?BookingResult {
         let rs = db.query(
             "SELECT id, schedule_id, patient_id, doctor_id, department_id, " +
-            "visit_date, period, seq_no, status, created_at FROM appointment WHERE id = ?",
+            "visit_date, period, seq_no, status, created_at, slot_restored " +
+            "FROM appointment WHERE id = ?",
             [DbInt(appointmentId)])
         if (rs.rowCount() < 1) {
             return None
@@ -200,6 +233,7 @@ public class BookingRepo {
         r.seqNo = rs.getInt(0, 7)
         r.status = rs.getString(0, 8)
         r.createdAt = rs.getInt(0, 9)
+        r.slotRestored = rs.getInt(0, 10) != 0
         r.outcome = BookingOutcome.AlreadyBooked(r.appointmentId)
         return Some(r)
     }
@@ -218,23 +252,40 @@ public class BookingRepo {
     /* ---------- 写：原子扣号 ---------- */
 
     /*
-     * ★ 核心：带乐观锁的原子扣减。
+     * ★ 核心：**一次成功**的原子扣减（不带 version 条件）。
      *
-     * 返回 true = 扣号成功（受影响行数 1）；false = 号源已变或已满。
+     * 返回 true = 扣号成功（受影响行数 1）；false = 号已放完（`remain_num > 0` 不成立）。
      *
-     * 为什么这一条 SQL 就是并发安全的全部：
-     *   InnoDB 对该行的 UPDATE 会加行锁，`version = ?` 与 `remain_num > 0`
-     *   在**同一个语句**里被求值 —— 两个并发请求里只有一个能满足 version 条件，
-     *   另一个受影响行数为 0。不存在"检查与修改之间"的窗口。
+     * ── 为什么去掉 `version = ?`（2026-10-07 修，第三方复查发现的严重少卖）────
+     * 原实现是乐观锁：`WHERE id = ? AND version = ? AND remain_num > 0`，
+     * 调用方拿着**读到的** version 去扣，失败就重读重试。
      *
-     * ⚠ 必须有 `remain_num > 0`：只靠 version 无法阻止"号已放完但 version 未变"
-     *   （例如管理员手工把 remain_num 改成 0）。这条条件保证**永不出现负数**（AC-2）。
+     * 实测它在**最穷工况**（请求数 ≈ 号源数）下严重少卖：
+     *     20 并发抢 20 号 → 只卖出 15~17     （少卖 15~25%）
+     *     30 并发抢 30 号 → 只卖出 22~23     （少卖 23~27%）
+     *     40 并发抢 40 号 → 只卖出 25~26     （少卖 35~38%）
+     * 原因：N 个请求同时读到同一个 version，只有一个能成功，其余全部作废；
+     * 重试时它们又读到同一个新 version、再次互撞 —— 重试预算（3~6 次）迅速耗尽。
+     * 这直接触发了 ADR §8 的复审阈值（耗尽率 > 1% → 重估方案 C），实测耗竭率高达 **50%**。
+     *
+     * ── 为什么去掉 version 是**更正确**而不是更冒险 ──────────────────────────
+     * 防超卖真正依赖的只有两件事，**都在同一条 UPDATE 里由 InnoDB 原子求值**：
+     *   · `remain_num = remain_num - 1` —— 原子自减，不会丢更新；
+     *   · `remain_num > 0`             —— 永不减成负数（AC-2）。
+     * version 是**乐观锁**手段，而乐观锁解决的问题是"**跨语句**的检查-后-写"
+     * （读出来判断、隔一会儿再写回去）。这里的判定与写入**在同一条语句内**完成，
+     * 根本不存在那个窗口 —— 所以 version 条件不提供任何额外保护，
+     * 只贡献了"并发请求互相作废"。去掉它，N 个请求就能**一次成功 N 个**。
+     *
+     * ⚠ `version` 列**保留并在成功时 +1**：它是给**管理端并发编辑**用的
+     *   （管理员改排班时防止覆盖别人的改动），不再是扣号路径的前置条件。
+     *   语义变化已记入 ADR-0001（rev.3）。
      */
-    public func tryDeductSlot(scheduleId: Int64, expectedVersion: Int64): Bool {
+    public func tryDeductSlot(scheduleId: Int64): Bool {
         let n = db.exec(
             "UPDATE schedule SET remain_num = remain_num - 1, version = version + 1 " +
-            "WHERE id = ? AND version = ? AND remain_num > 0 AND enabled = 1",
-            [DbInt(scheduleId), DbInt(expectedVersion)])
+            "WHERE id = ? AND remain_num > 0 AND enabled = 1",
+            [DbInt(scheduleId)])
         return n == 1
     }
 
@@ -356,24 +407,27 @@ public class BookingRepo {
      *   3. 【事务】原子扣号 + INSERT 挂号单
      *   4. 唯一索引冲突（并发同 token）→ 回读既有单 → AlreadyBooked
      *
-     * ⚠ 失败重试是**重读 version 后重试**，不是盲目重发同一条 SQL
-     *   （盲目重发只会用同一个过期 version 再失败一次）。
+     * ⚠ 重试预算（`MAX_BOOKING_RETRY`）现在只用于**真正的瞬时错误**
+     *   （死锁 / 锁等待超时这类 InnoDB 异常），**不再用于 version 冲突** ——
+     *   因为扣号已经没有 version 前置条件，正常争抢下**一次就能成功**
+     *   （见 tryDeductSlot 的注释）。
      *
-     * ⚠ 重试上限 MAX_BOOKING_RETRY 默认 2（ADR §6 安全范围 1–3）。
-     *   超过上限说明热点冲突严重，应改方案 C（悲观锁）或加排队 ——
-     *   **不要靠加大重试次数掩盖**（那只是把失败换成更长的延迟）。
+     * ⚠ 还要注意**不能对"重试"这件事本身抱有幻想**：
+     *   本函数原先把 version 冲突也当可重试，结果在最穷工况（请求数≈号源数）
+     *   下少卖 15%~50%。**凡是被判为"可重试"的失败，都会在高并发下累积成丢单**，
+     *   所以判据必须严格 —— 只retry 那些"下次大概率会不同"的错误。
      */
     public func book(patientId: Int64, scheduleId: Int64, clientToken: String,
                      now: Int64, maxRetry!: Int64 = MAX_BOOKING_RETRY): BookingResult {
         let r = BookingResult()
 
-        // 1) 幂等快路径：同 token 已有单 → 直接返回既有单（只读，不开事务）
-        let dup = findAppointmentByToken(clientToken)
+        // 1) 幂等快路径：该患者**当前有效**的单 → 直接返回（只读，不开事务）
+        let dup = findAppointmentByToken(patientId, clientToken)
         if (dup.isSome()) {
             return fillFromAppointment(dup.getOrThrow())
         }
 
-        // 2) 扣号 + 写单，失败则**重读 version** 后重试
+        // 2) 读一次排班（拿 doctor/department/就诊日快照；**version 不再参与扣号**）
         var attempt: Int64 = 0
         while (attempt <= maxRetry) {
             let cur = findSchedule(scheduleId)
@@ -392,8 +446,8 @@ public class BookingRepo {
             let tx = TxResult()
             try {
                 db.withTransaction({ =>
-                    if (tryDeductSlot(scheduleId, s.version)) {
-                        let seq = countBooked(scheduleId) + 1
+                    if (tryDeductSlot(scheduleId)) {
+                        let seq = nextSeqNo(scheduleId)
                         tx.newId = insertAppointment(scheduleId, patientId, s.doctorId,
                                                      s.departmentId, s.workDate, s.period,
                                                      seq, clientToken, now)
@@ -401,13 +455,22 @@ public class BookingRepo {
                     }
                 })
             } catch (e: Exception) {
-                // 唯一索引冲突 = 并发重复提交（另一条同 token 的单刚插进去）
-                // → 回读既有单返回幂等结果；**不是**幂等冲突就原样抛出，不吞
-                let again = findAppointmentByToken(clientToken)
+                /*
+                 * 两种可能，必须分开处理：
+                 *   ① 唯一索引冲突 = 并发重复提交（同患者同 token 的单刚插进去）
+                 *      → 回读既有单，返回幂等结果（**这不是错误**）；
+                 *   ② 其它（死锁 / 锁等待超时 / 连接问题）→ 值得重试；
+                 *      重试仍失败则**原样抛出，绝不吞**（吞掉就变成"静默丢单"）。
+                 */
+                let again = findAppointmentByToken(patientId, clientToken)
                 if (again.isSome()) {
                     return fillFromAppointment(again.getOrThrow())
                 }
-                throw e
+                attempt = attempt + 1
+                if (attempt > maxRetry) {
+                    throw e
+                }
+                continue
             }
 
             if (tx.booked) {
@@ -425,21 +488,41 @@ public class BookingRepo {
                 return r
             }
 
-            // 扣号失败：号满则重试无意义，直接判 SlotGone；否则重读 version 再试
-            let re = findSchedule(scheduleId)
-            if (re.isNone()) {
-                r.outcome = BookingOutcome.ScheduleNotFound
-                return r
-            }
-            if (re.getOrThrow().remainNum <= 0) {
-                r.outcome = BookingOutcome.SlotGone
-                return r
-            }
-            attempt = attempt + 1
+            /*
+             * 扣号返回 0 行 = **号真的放完了**（`remain_num > 0` 不成立）。
+             * ⚠ 这里**不能重试**：重试只会再拿到 0 行，却把"号已售完"这个
+             *   明确结论拖成"重试耗尽后的 SlotGone"—— 结果一样，但白烧预算，
+             *   而且在高并发下会掩盖真正的问题（少卖就是被这个掩盖出来的）。
+             */
+            r.outcome = BookingOutcome.SlotGone
+            return r
         }
 
         r.outcome = BookingOutcome.SlotGone
         return r
+    }
+
+    /*
+     * 下一个就诊序号 = 当前最大 seq_no + 1。
+     *
+     * ⚠ 原实现是 `COUNT(*) + 1`：退号后会**复用**已释放的序号
+     *   （1,2,3 → 退掉 2 → 下一个又拿到 3，与在座的 3 号撞号）。
+     *   改用 `MAX(seq_no) + 1` 保证单调递增、不重号。
+     *
+     * ⚠ 已知限制（如实标注）：本方法 + INSERT 之间**没有**唯一约束兜底，
+     *   极端并发下仍可能取到相同的 seq_no（两条都在 MAX 之后取到同一个值）。
+     *   就诊序号只是"排队叫号"的展示信息、不是业务主键，因此当前接受这一点；
+     *   真要严格需要单独一个计数器行或对 (schedule_id, seq_no) 加唯一索引 +
+     *   捕获冲突重取 —— 那属于 P4 叫号功能范围。
+     */
+    public func nextSeqNo(scheduleId: Int64): Int64 {
+        let rs = db.query(
+            "SELECT COALESCE(MAX(seq_no), 0) + 1 FROM appointment WHERE schedule_id = ?",
+            [DbInt(scheduleId)])
+        if (rs.rowCount() < 1) {
+            return 1
+        }
+        return rs.getInt(0, 0)
     }
 
     /*
@@ -469,17 +552,54 @@ public class BookingRepo {
         }
         let a = found.getOrThrow()
         if (a.status == "cancelled") {
-            return CancelOutcome.Cancelled       // 幂等
+            /*
+             * ★ 幂等路径也必须**如实**回报上次的结果（2026-10-07 修）。
+             *
+             * 原实现这里无条件 `return Cancelled` —— 而 `Cancelled` 的语义是
+             * "已取消 **且号已归还**"。于是第一次退号因 `remain_num == total_num`
+             * 没能归还时：
+             *     第 1 次 → SlotNotRestored + 告警（诚实）
+             *     第 2 次（用户重试）→ Cancelled，**告警被抹掉**
+             * 实测复现。运维告警不该被一次无关的重试消掉。
+             * 现在按落库的 `slot_restored` 返回真实状态。
+             */
+            if (!a.slotRestored) {
+                return CancelOutcome.SlotNotRestored
+            }
+            return CancelOutcome.Cancelled
         }
         let tx = TxResult()
         db.withTransaction({ =>
+            /*
+             * ★ 退号时**释放幂等键**：把 client_token 置 NULL。
+             *
+             * 为什么必须做（2026-10-07 修，实测 500）：
+             *   唯一索引是 (patient_id, client_token)。已取消的单如果继续占着那个 token，
+             *   患者想用同一个 token 重挂时 INSERT 就撞唯一键 → **500**。
+             *   只在查询侧过滤 cancelled 是不够的 —— 索引不管你查不查。
+             *
+             * 为什么置 NULL 而不是空串：MySQL 唯一索引**允许多个 NULL**（NULL != NULL），
+             *   所以"置 NULL = 释放"天然成立，且同一患者可以有多张已取消的单。
+             *   空串不行：第二个被取消的单会撞 (patient_id, '')。
+             *
+             * 代价（如实记录）：退号后我们就**不再保留**"当初是哪个 token 建的"这条信息。
+             *   挂号单的 id / 时间 / 就诊日都还在，业务上不需要 token 做回溯。
+             */
             let n = db.exec(
-                "UPDATE appointment SET status = 'cancelled', cancelled_at = ? " +
-                "WHERE id = ? AND status <> 'cancelled'",
+                "UPDATE appointment SET status = 'cancelled', cancelled_at = ?, " +
+                "client_token = NULL WHERE id = ? AND status <> 'cancelled'",
                 [DbInt(now), DbInt(appointmentId)])
             if (n == 1) {
                 tx.cancelDone = true
                 tx.released = releaseSlotFor(a.scheduleId)
+                /*
+                 * ★ 把"号是否已归还"落库 —— 幂等路径要靠它如实回报。
+                 * ⚠ 必须与 status 的更新在**同一个事务**里，否则会出现
+                 *   "单已取消、slot_restored 还是旧值"的中间态被后续请求读到。
+                 */
+                let flag: Int64 = if (tx.released) { 1 } else { 0 }
+                db.exec("UPDATE appointment SET slot_restored = ? WHERE id = ?",
+                        [DbInt(flag), DbInt(appointmentId)])
             }
         })
         // 单没取消成功（并发下别人先取消了）：复查后按幂等处理
@@ -488,7 +608,12 @@ public class BookingRepo {
             if (again.isNone()) {
                 return CancelOutcome.NotFound
             }
-            if (again.getOrThrow().status == "cancelled") {
+            let b = again.getOrThrow()
+            if (b.status == "cancelled") {
+                // 同上：如实回报，不要吞掉别人的 SlotNotRestored
+                if (!b.slotRestored) {
+                    return CancelOutcome.SlotNotRestored
+                }
                 return CancelOutcome.Cancelled
             }
             return CancelOutcome.NotFound
@@ -502,8 +627,11 @@ public class BookingRepo {
 
     /*
      * 归还某排班的号源（读当前 version 后再还）。
-     * ⚠ 必须在事务内调用：读 version 与归还之间不能有其它写方插进来，
-     *   否则会拿着过期 version 归还失败。
+     *
+     * ⚠ 这里的 version 条件**保留**且是必要的：`releaseSlot` 要满足
+     *   `remain_num < total_num`（防止把号源加到超过放出量），
+     *   而"读 version → 归还"之间若被别的写方插进来就会拿到过期 version 失败。
+     *   归还路径的并发强度远低于挂号（退号是低频操作），重试代价可接受。
      */
     func releaseSlotFor(scheduleId: Int64): Bool {
         let s = findSchedule(scheduleId)

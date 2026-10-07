@@ -44,6 +44,7 @@ func usage(): Unit {
     println("  hospital-server.exe version               打印版本")
     println("  hospital-server.exe create-admin <dsn> [登录名]")
     println("                                            创建/重置管理员并打印口令（引导用）")
+    println("  hospital-server.exe create-db <dsn>       幂等建库（utf8mb4）")
     println("")
     println("DSN 格式：mysql://user:pass@host:port/db")
     println("  本机联调示例：mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital")
@@ -68,6 +69,11 @@ func checkDb(dsn: String): Int64 {
         return 1
     }
     let n = ensureSchema(db)
+    // 存量库靠 DDL 改不动，必须显式迁移（见 migrateSchema 注释）
+    let migrated = migrateSchema(db)
+    if (migrated > 0) {
+        println("迁移：执行了 ${migrated} 条结构变更")
+    }
     println("建表：执行 ${n} 条 DDL（IF NOT EXISTS，幂等）")
     println("")
     println("表清单：")
@@ -89,21 +95,44 @@ func checkDb(dsn: String): Int64 {
 }
 
 /*
- * accept：跑 P0 验收测试。
- * ⚠ 会**清空业务表**，只能对着专用测试库跑，绝不可指向有数据的库。
+ * accept：跑验收测试。
+ *
+ * ⚠ 会**清空业务表**（appointment / schedule / doctor / department / patient / booking_idem），
+ *   所以只允许对**显式标记为测试用**的库名跑。
+ *
+ * ★ 2026-10-07 修（第三方复查发现的守卫漏洞）：
+ *   原判据是 `!db.contains("test") && db != "hospital"` —— 把 **`hospital`（唯一的
+ *   生产库名）放进了白名单**。也就是说：守卫挡住了 `hospital_x`（退出 2），
+ *   却**恰好对那个真会丢数据的库名放行**，而 `accept` 一跑就 DELETE 六张表。
+ *   这不是"宽松"，是**反着的**：最该拦的那一个被放过了。
+ *
+ * 现在只认 `*_test` / `test_*` / `*_test_*` 这类**显式测试库**，
+ * 并要求库名里带 `test`；`hospital` 本身**不再例外**。
+ * 要跑验收请用专用测试库（如 `hospital_test`）——
+ * `tests\*` 里的脚本本来就是这么造的。
  */
+func isTestDatabase(dbName: String): Bool {
+    return dbName.contains("test")
+}
+
 func accept(dsn: String): Int64 {
     var db: DbBackend
     try {
         let cfg = parseDsn(dsn)
-        if (!cfg.db.contains("test") && cfg.db != "hospital") {
-            println("⚠ 警告：目标库是 '${cfg.db}'，看起来不是专用测试库。")
-            println("  验收测试会清空业务表。中止。")
+        if (!isTestDatabase(cfg.db)) {
+            println("❌ 拒绝执行：目标库 '${cfg.db}' 不是显式测试库。")
+            println("   accept 会**清空 6 张业务表**，所以只允许库名含 `test` 的库。")
+            println("   例：mysql://.../<your>_test  （或先建一个 hospital_test 库）")
             return 2
         }
         println("连接：${cfg.describe()}")
         db = openDatabase(cfg)
         ensureSchema(db)
+        // ★ 存量库靠 DDL 是改不动的（CREATE TABLE IF NOT EXISTS 对已有表无效），必须显式迁移
+        let migrated = migrateSchema(db)
+        if (migrated > 0) {
+            println("迁移：执行了 ${migrated} 条结构变更")
+        }
     } catch (e: Exception) {
         println("❌ ${e.message}")
         return 1
@@ -291,10 +320,24 @@ func serve(args: Array<String>): Int64 {
     var prod = false
     var tlsCert = ""
     var tlsKey = ""
+    var tlsFilesGiven = false
     var i = 1
     while (i < args.size) {
         if (args[i] == "--port" && i + 1 < args.size) {
-            port = parseUInt16Or(args[i + 1], 8080)
+            // ⚠ 严格解析：原先用 `parseUInt16Or(x, 8080)` —— 传个非数字（如 `--port abc`）
+            //   会**静默退回 8080** 并照常启动，运维以为换端口了其实没换。
+            //   `--port 0` 也是陷阱：parse 成功但 0 不是合法监听端口。
+            let parsedOk = parseUInt16OrNone(args[i + 1])
+            if (parsedOk.isNone()) {
+                println("❌ --port 的值不是合法端口号：'${args[i + 1]}'（期望 1~65535）")
+                return 2
+            }
+            let pv = parsedOk.getOrThrow()
+            if (pv == 0) {
+                println("❌ --port 不能为 0")
+                return 2
+            }
+            port = pv
             i = i + 2
         } else if (args[i] == "--bind" && i + 1 < args.size) {
             bindAddr = args[i + 1]
@@ -322,6 +365,7 @@ func serve(args: Array<String>): Int64 {
              *     key=E:\...\certs\key.pem
              */
             let cfgPath = args[i + 1]
+            tlsFilesGiven = true          // ★ 记下"用户确实要求 TLS"，供后面严格校验用
             if (!exists(cfgPath)) {
                 println("❌ 找不到 TLS 配置文件：${cfgPath}")
                 return 2
@@ -343,6 +387,36 @@ func serve(args: Array<String>): Int64 {
                 } else if (s.startsWith("key=")) {
                     tlsKey = unquoteTlsPath(s[4..].trimAscii())
                 }
+            }
+            /*
+             * ★★ 严格校验：给了 --tls-files 就必须真的解析出 cert 与 key。
+             *
+             * 为什么必须在这里挡（2026-10-07 修，第三方复查发现的**静默降级**）：
+             *   原实现解析完就不管了，而后面用的是
+             *       `let wantTls = tlsCert.size > 0 || tlsKey.size > 0`
+             *   —— 于是只要配置文件**没被解析出有效条目**（文件内容为空、
+             *   只有注释、键名大小写不符如 `Cert=`、值留空），
+             *   `wantTls` 就是 false ⇒ **静默按明文 HTTP 启动**。
+             *   实测：给一个只有注释的 tls.env，服务照样以明文起在 8092 且 /health 返回 200。
+             *
+             *   这恰好违反本文件自己承诺的"绝不静默降级"，而且正是文档警告过的
+             *   "变成一台看起来正常的明文服务" —— **承诺与实现脱节，比没有承诺更危险**
+             *   （运维会相信那个承诺）。
+             */
+            if (tlsCert.size == 0) {
+                println("❌ --tls-files 里没有解析到 cert=（文件：${cfgPath}）")
+                println("   期望每行形如 `cert=<证书路径>`；当前文件内容为：")
+                for (line in text.split("\n")) {
+                    println("     | ${line}")
+                }
+                println("   **拒绝启动**：不静默降级为明文 HTTP。")
+                return 2
+            }
+            if (tlsKey.size == 0) {
+                println("❌ --tls-files 里没有解析到 key=（文件：${cfgPath}）")
+                println("   期望每行形如 `key=<私钥路径>`。")
+                println("   **拒绝启动**：不静默降级为明文 HTTP。")
+                return 2
             }
             i = i + 2
         } else if (args[i] == "--dev-auth") {
@@ -377,6 +451,12 @@ func serve(args: Array<String>): Int64 {
         println("连接：${cfg.describe()}")
         db = openDatabase(cfg)
         ensureSchema(db)
+        // ★ serve 也必须迁移：否则老库上 appointment.slot_restored 不存在，
+        //   退号路径会直接报 Unknown column（比静默降级"响"，但同样是坏掉）。
+        let migrated = migrateSchema(db)
+        if (migrated > 0) {
+            println("迁移：执行了 ${migrated} 条结构变更（存量库补结构）")
+        }
     } catch (e: Exception) {
         println("❌ ${e.message}")
         return 1
@@ -430,11 +510,17 @@ func serve(args: Array<String>): Int64 {
      *
      * 只给其中一个（只有 cert 没有 key，或反之）也直接拒绝 ——
      * 那多半是命令行打漏了，静默按明文起会让人以为 TLS 生效了。
+     *
+     * ⚠ `tlsFilesGiven` 也参与判定（2026-10-07 修）：只有"**用户表达了要 TLS**"
+     *   （给了 --tls-cert/--tls-key/--tls-files 三者之一）而最终没凑齐 cert+key 时，
+     *   **一律拒绝启动**。不能只看"解析出来的字符串是否非空" ——
+     *   那正是静默降级的入口。
      */
-    let wantTls = tlsCert.size > 0 || tlsKey.size > 0
+    let wantTls = tlsCert.size > 0 || tlsKey.size > 0 || tlsFilesGiven
     if (wantTls && (tlsCert.size == 0 || tlsKey.size == 0)) {
-        println("❌ 只给了 --tls-cert / --tls-key 中的一个，无法启用 TLS。")
-        println("   要么两个都给，要么都不给（不给则跑明文 HTTP）。")
+        println("❌ 要求了 TLS，但没有凑齐证书与私钥（cert='${tlsCert}' key='${tlsKey}'）。")
+        println("   请两个都给：--tls-cert <pem> --tls-key <pem>，或用 --tls-files <env>。")
+        println("   **拒绝启动**：不静默降级为明文 HTTP。")
         return 2
     }
     if (wantTls) {
@@ -521,6 +607,7 @@ func createAdmin(args: Array<String>): Int64 {
         cfg = parseDsn(dsn)
         db = openDatabase(cfg)
         ensureSchema(db)
+        let _ = migrateSchema(db)
     } catch (e: Exception) {
         println("❌ ${e.message}")
         return 1
@@ -542,6 +629,40 @@ func createAdmin(args: Array<String>): Int64 {
     println("")
     println("⚠ 口令只显示这一次（未落盘）；请立即用 POST /api/v1/auth/login 换令牌。")
     db.close()
+    return 0
+}
+
+/*
+ * create-db：幂等建库（CREATE DATABASE IF NOT EXISTS <db> CHARACTER SET utf8mb4）。
+ *
+ * 为什么需要：`accept` 现在**只允许对显式测试库跑**（库名含 `test`），
+ * 而测试库得先存在。很多业务账号（本项目的 `hospital`）建连时就带库名，
+ * 库不存在直接连不上 —— 于是"先建库"成了一个绕不开的动作。
+ * 这里提供一个显式入口，而不是让服务每次启动都尝试建库
+ * （建库通常需要比业务账号更高的权限，不该由服务进程长期持有）。
+ *
+ * ⚠ 账号必须**有建库权限**（或不带库名也能连）。没权限时会明确报错并给出
+ *   `CREATE DATABASE ...` 手工命令，而不是含糊地说"建库失败"。
+ */
+func createDb(dsn: String): Int64 {
+    var cfg: MySqlConfig
+    try {
+        cfg = parseDsn(dsn)
+    } catch (e: Exception) {
+        println("❌ ${e.message}")
+        return 1
+    }
+    if (cfg.db.size == 0) {
+        println("❌ DSN 里没有库名")
+        return 2
+    }
+    try {
+        ensureDatabase(cfg)
+    } catch (e: Exception) {
+        println("❌ ${e.message}")
+        return 1
+    }
+    println("✅ 库已就绪：${cfg.db}（CHARACTER SET utf8mb4）")
     return 0
 }
 
@@ -585,6 +706,13 @@ main(args: Array<String>): Int64 {
     }
     if (cmd == "create-admin") {
         return createAdmin(args[1..])
+    }
+    if (cmd == "create-db") {
+        if (args.size < 2) {
+            println("用法：hospital-server.exe create-db <dsn>")
+            return 2
+        }
+        return createDb(args[1])
     }
     println("未知子命令：${cmd}")
     println("")

@@ -1,5 +1,19 @@
 # P0 收尾说明 · 号源/挂号独立 MySQL 路径
 
+> ## ⚠️ 本文档为 **P0 时点快照**，部分结论已被后续轮次推翻 —— 引以为戒
+>
+> | 本文档的写法 | 现状（2026-10-07 rev.3） |
+> | --- | --- |
+> | §2 验收「通过 21 项」 | 现为 **35 项**（AC-9/AC-10 新增） |
+> | §2「AC-1 同一 version 的第二次扣减必然 0 行」 | **扣号策略已改**：去掉 version 乐观锁前置条件，改为一次成功的原子自减 —— 该断言**不再成立也不该成立**（见 [ADR-0001 rev.3](adr/ADR-0001-号源与挂号独立MySQL路径.md)） |
+> | §1 最小表集 7 张 | 现为 **9 张**（新增鉴权域 `auth_user` / `auth_token`） |
+> | §5 「P1 的入口」 | P1 已推进多轮：HTTP 层 + 令牌鉴权 + HTTPS |
+>
+> **为什么保留原文**：这份文档记录了"当时是怎么判断的"，而其中两处正是后来被证伪的
+> （版本的乐观锁前提、以及"少卖已修复"的结论）。**留着对照比删掉有价值。**
+> 现状请看 [P1-HANDOFF.md](P1-HANDOFF.md)。
+
+
 > **日期**：2026-10-07 ｜ **阶段**：P0（架构决策落定）— **已完成**
 > **前置**：[ADR-0001](adr/ADR-0001-号源与挂号独立MySQL路径.md) ｜ **下一步**：P1 挂号闭环
 
@@ -29,7 +43,7 @@ $env:DSN = "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
 | --- | --- | --- | --- |
 | 1 | **架构决策记录**（唯一架构级决策） | [docs/adr/ADR-0001-号源与挂号独立MySQL路径.md](adr/ADR-0001-号源与挂号独立MySQL路径.md) | ✅ Accepted |
 | 2 | 仓颉服务端骨架 + 构建链 | [server/build.ps1](../server/build.ps1) | ✅ 编译通过 |
-| 3 | 最小表集 DDL（7 张） | [server/src/schema.cj](../server/src/schema.cj) | ✅ 建表实测通过 |
+| 3 | 最小表集 DDL（当时 7 张；现为 9 张 —— 见文首说明） | [server/src/schema.cj](../server/src/schema.cj) | ✅ 建表实测通过 |
 | 4 | ★ 号源/挂号域（原子扣减 + 幂等） | [server/src/domain_booking.cj](../server/src/domain_booking.cj) | ✅ 实现并验证 |
 | 5 | MySQL 建连与会话初始化 | [server/src/db_bootstrap.cj](../server/src/db_bootstrap.cj) | ✅ 实测连库 |
 | 6 | 验收测试 AC-1…AC-6 | [server/src/acceptance.cj](../server/src/acceptance.cj) | ✅ 21/21 通过 |
@@ -146,7 +160,7 @@ AC-1 当场报 **3 条 `[FAIL]`**；恢复源码后重新全绿。
 
 ## 4. ADR 里那些"必须记住"的约束
 
-1. **范围锁死**：直接 SQL **只准** `schedule` / `appointment` 两张表。
+1. **范围锁死**：直接 SQL **只准** `BookingRepo` 拥有的 3 张表（`schedule`/`appointment` + `booking_idem`）—— rev.2 已把口径拆成"业务状态 / 幂等基础设施"两层，见 [ADR §4.3.1](adr/ADR-0001-号源与挂号独立MySQL路径.md)。
 2. **事务内禁止出站网络**（AI/HTTP）—— 所以"调 AI 判断挂哪个科"再扣号是**禁止**的设计。
 3. **绝不先 SELECT 再 UPDATE**：成败只看 `exec()` 的受影响行数。
 4. **`remain_num > 0` 条件不能省**：只靠 version 挡不住"号放完了但 version 没变"（如管理员手工置 0）。

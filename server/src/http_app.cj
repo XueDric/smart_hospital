@@ -261,6 +261,32 @@ public func bearerToken(ctx: Context): ?String {
     }
 }
 
+/*
+ * ★ 取消退号是否被允许 —— 把"归属"纳入权限口径（2026-10-07 修）。
+ *
+ * 为什么单独抽出来：原先 handler 里是
+ *     `if (can(role, CancelAny)) {放行} else { requireCan(role, CancelOwn); if (归属不符) throw }`
+ * —— 权限判定**被拆成了两处**，这就违反了本项目"权限收敛到单一函数"的纪律
+ * （第三方复查指出：这是"禁止 handler 手写 if"被绕过的例子）。
+ * 更实际的问题是：**同一条规则会被复制到下一个需要归属判定的接口上**
+ * （比如"查看自己的病历"），迟早出现两处实现不一致。
+ *
+ * 现在的口径是**一个函数、两段都覆盖**：角色能不能退 且 这张单归不归他。
+ */
+public func canCancel(role: Role, actorPatientId: Int64, appointmentPatientId: Int64,
+                      actorUserId: Int64, appointmentOwnerUserId: Int64): Bool {
+    // 管理员：可退任意单
+    if (can(role, Action.CancelAny)) {
+        return true
+    }
+    // 患者：只能退自己的单。**按 patient 归属判定**（业务身份），
+    // 不按 user 归属 —— 一个患者理论上可以有多个登录账号，但病历/挂号只认 patient。
+    if (can(role, Action.CancelOwn)) {
+        return actorPatientId > 0 && actorPatientId == appointmentPatientId
+    }
+    return false
+}
+
 /* ===================== 入参读取 ===================== */
 
 /* 请求体必须是 JSON 对象；否则 400（而不是让框架抛 500）。 */
@@ -292,6 +318,9 @@ func bookingJson(r: BookingResult): JsonObject {
     o.put("period", JsonString(r.period))
     o.put("seq_no", JsonInt(r.seqNo))
     o.put("status", JsonString(r.status))
+    // ★ 退号时"号源是否已归还"必须回给客户端：否则客户端无从知道
+    //   上一次那个 SlotNotRestored 告警还在不在（见 domain_booking.cj cancel 注释）。
+    o.put("slot_restored", JsonBool(r.slotRestored))
     return o
 }
 
@@ -561,19 +590,15 @@ public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuth
         }
         let appt = found.getOrThrow()
         /*
-         * 谁能退这张单：管理员可退任意单；患者只能退**自己的**单。
-         * ⚠ 这里不是"先判 can()"就完事 —— 必须再比对归属，否则患者能退别人的单。
-         *   两个判定的顺序：先看有没有 cancel_any（管理员），再走 cancel_own + 归属校验。
+         * 谁能退这张单：**单一判定函数**（见 canCancel）——
+         * 管理员退任意；患者只退自己的。角色权限与归属判定都收敛在那里，
+         * handler 不再手写 if（本项目纪律，也是第三方复查要求修的点）。
          */
-        if (can(p.role, Action.CancelAny)) {
-            // 管理员：放行
-        } else {
-            requireCan(p.role, Action.CancelOwn)
-            if (appt.patientId != p.patientId) {
-                // 用 FORBIDDEN 而不是 NOT_FOUND：单子确实存在（避免信息泄露的两种取舍里，
-                // 这里选"明确拒绝"，因为患者退错单需要看到明确原因才能自查）
-                throw apiErrorMsg("FORBIDDEN_ROLE", "只能取消自己的挂号单")
-            }
+        if (!canCancel(p.role, p.patientId, appt.patientId, p.userId, 0)) {
+            // ⚠ 是否泄露"这张单存在"？这里有取舍：明确 403 便于患者自查"退错单了"；
+            //   若要严格防枚举应改回 404。当前选 403，并在此显式记录这个取舍。
+            throw apiErrorMsg("FORBIDDEN_ROLE",
+                              "无权取消该挂号单（管理员可退任意单；患者只能退自己的）")
         }
         match (repo.cancel(id, hNowEpoch())) {
             case Cancelled =>
@@ -648,8 +673,33 @@ public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGat
         //   不在框架里；这里用框架原生的 `contentLengthLimit(maxBytes)`（bodyparser.cj:168）。
         //   上限 64 KiB —— 与基线 MAX_BODY_BYTES 同口径（limits.cj:47）。
         .use(contentLengthLimit(64 * 1024))
+        /*
+         * ⚠ bodyParser() 的真实上限是**框架默认的 1 MiB**（bodyparser.cj:36
+         *   `maxBytes = 1024 * 1024`），**不是**上面那个 64 KiB。
+         *   两者关系是：
+         *     · `contentLengthLimit(64 KiB)` —— 外层闸门，按 **Content-Length** 拦，
+         *       所以声明了长度的大 body 在进内存**之前**就被挡掉（在 bodyParser 之前 use）；
+         *     · `bodyParser()` 的 1 MiB —— 内层兜底，用于**没有 Content-Length** 的
+         *       请求（chunked 编码时外层闸门看不出来，只能靠它）。
+         *   实测：发 100 KiB 的 body → 413（外层闸门生效）。
+         *   （复查指出"文档说 64 KiB、注释说 1 MiB"的口径不一致，根因就是把
+         *     两个不同层的限额混着说了。这里把关系写清楚，数字不再打架。）
+         */
         .use(bodyParser())
         .use(cors())
+        /*
+         * ⚠ `timeout(15000)` **不能中断**已经进入的同步 handler —— 这是实测确认的
+         *   框架语义，不是配置问题：timeout.cj:64-83 的实现是
+         *       `next()`（**同步跑完整个下游**）→ 再比较 elapsed → 超时才补一个 408。
+         *   所以它只能"事后补告警"（handler 没写响应时给 408；
+         *   已经写了响应就只加一个 `x-timeout-ms` 响应头），
+         *   **不会**把慢 handler 掐掉、也不会释放它占的线程。
+         *
+         *   对本项目意味着什么：挂号/退号路径里**不能有慢操作**
+         *   （这也是"事务内禁止出站网络调用"那条纪律的另一面 —— 见 ADR-0001 §6）。
+         *   真正的超时保护要靠：① 单条 SQL 的 `innodb_lock_wait_timeout`；
+         *   ② 未来若引入 AI/HTTP 出站，必须在**事务外**做并自带超时。
+         */
         .use(timeout(15000))
         .use(router.middleware())
         .onError({ ctx: Context, _: () -> Unit => hospitalErrorHandler(ctx) })

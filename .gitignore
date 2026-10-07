@@ -27,6 +27,11 @@ baseline/server/dist/
 #   这里同时有目录级与 *.pem 扩展名级两层 —— 防的是"把 key 放到别处"。
 server/certs/
 
+# ★ 仓库自管的开发数据库（server\devdb，端口 3317）—— 见 docs/DEV-DB.md
+# 数据目录约几十 MB 且是本机态，不入库；启停脚本 devdb.ps1 **要**入库。
+server/devdb/data/
+server/devdb/*.log
+
 # ── 分发制品（二进制，每次重签都会变）──────────────────────────────────
 社团管理工具-*.zip
 安装说明.txt

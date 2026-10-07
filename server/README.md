@@ -1,4 +1,4 @@
-# 智慧医院服务端（仓颉 + 轻舟）
+﻿# 智慧医院服务端（仓颉 + 轻舟）
 
 > P0 阶段交付：**号源/挂号域的独立 MySQL 路径** + 构建链 + 验收测试。
 > 架构决策见 [../docs/adr/ADR-0001-号源与挂号独立MySQL路径.md](../docs/adr/ADR-0001-号源与挂号独立MySQL路径.md)。
@@ -12,8 +12,8 @@
 | 编译器 | **cjc 1.2.0** | `C:\Users\ASUS\.cjenv\sdks\1.2.0\cangjie` |
 | ⚠ PATH 上的 cjc | **1.1.3**（`D:\Cangjie`） | **是旧版、不可用**。版本串台症状 = 编译中途 `LLVM ERROR: Broken module found` |
 | stdx | **1.1.3.1 静态** | `E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx` |
-| 数据库 | **MariaDB 11.4.13**（便携版）@ `127.0.0.1:3307` | `E:\cangjie\mariadb\mariadb-11.4.13-winx64` |
-| 业务库 / 账号 | `hospital` / `hospital` 口令 `hospital_dev_2026` | ⚠ 开发口令，**上生产必须换** |
+| 数据库 | **仓库自管 MariaDB 11.4.13** @ `127.0.0.1:3317` | `server\devdb`（见 [../docs/DEV-DB.md](../docs/DEV-DB.md)）；启停 `.\devdb.ps1 start` |
+| 业务库 / 账号 | `hospital`（开发）/ `hospital_test`（**测试**，`accept` 只认它）/ 账号 `hospital` 口令 `hospital_dev_2026` | ⚠ 开发口令，**上生产必须换** |
 | Shell | **Windows PowerShell 5.1** | ⚠ 含中文的 `.ps1` **必须 UTF-8 with BOM**，否则 PS 5.1 按 ANSI 解析会**语法报错** |
 
 > `build.ps1` 会**按版本挑 1.2.0**，不盲信 PATH —— 这一点很重要，见上表第 2 行。
@@ -53,22 +53,23 @@ cd server
 cd server     # ⚠ cwd 必须是 server/，见下
 .\build\hospital-server.exe selftest
 .\build\hospital-server.exe authtest
-.\build\hospital-server.exe check-db "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
-.\build\hospital-server.exe accept   "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
+.\build\hospital-server.exe check-db "mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital_test"
+.\build\hospital-server.exe accept   "mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital_test"
 
 # 建第一个管理员（引导入口，不经 HTTP；口令只打印一次）
-.\build\hospital-server.exe create-admin "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
+.\build\hospital-server.exe create-admin "mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital_test"
 
 # P1：启动 HTTP 服务（阻塞）—— 默认只绑 127.0.0.1
-.\build\hospital-server.exe serve "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital" --port 8091
+.\build\hospital-server.exe serve "mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital_test" --port 8091
 ```
 
 | 子命令 | 作用 | 需要 MySQL |
 | --- | --- | --- |
-| `selftest` | schema 与 ADR 不变量的**纯本地**自检（32 项断言） | ❌ |
-| `authtest` | **口令/令牌原语自检**（含 3 个公开测试向量，17 项） | ❌ |
+| `selftest` | schema 与 ADR 不变量的**纯本地**自检（33 项断言） | ❌ |
+| `authtest` | **口令/令牌原语自检**（含 3 个公开测试向量，**17 项**） | ❌ |
 | `check-db <dsn>` | 连库 + 幂等建表 + 打印表清单（★ 标记号源域） | ✅ |
-| `accept <dsn>` | P0 验收测试 AC-1…AC-8（32 项断言） | ✅ |
+| `accept <dsn>` | 验收测试 AC-1…AC-10（**35 项断言**；⚠ 只允许库名含 `test` 的测试库） | ✅ |
+| `create-db <dsn>` | 幂等建库（utf8mb4）—— 测试库靠它 | ✅ |
 | `create-admin <dsn>` | 建/重置管理员并打印口令（**引导入口**） | ✅ |
 | `serve <dsn>` | **P1**：启动 HTTP / HTTPS 服务（默认只绑 `127.0.0.1`） | ✅ |
 

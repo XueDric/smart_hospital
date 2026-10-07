@@ -120,14 +120,89 @@ public func parseDsn(dsn: String): MySqlConfig {
 }
 
 /*
+ * 库名白名单校验（标识符）。
+ *
+ * 库名是**唯一**会进 SQL 文本（DDL/DML 都拼不了参数的地方）的外部输入，
+ * 所以必须先过白名单再拼。照基线 mysql_store.cj 的 dbNameChecked 口径：
+ *   只允许 [A-Za-z0-9_]，且首字符不能是数字，长度 1~64。
+ */
+public func dbNameChecked(name: String): String {
+    if (name.size == 0 || name.size > 64) {
+        throw Exception("库名长度非法（1~64）：'${name}'")
+    }
+    var i = 0
+    for (ch in name.toArray()) {
+        let c = Int64(ch)
+        let isDigit = (c >= 0x30 && c <= 0x39)
+        let isUpper = (c >= 0x41 && c <= 0x5A)
+        let isLower = (c >= 0x61 && c <= 0x7A)
+        let isUnder = (c == 0x5F)
+        if (!(isDigit || isUpper || isLower || isUnder)) {
+            throw Exception("库名含非法字符（只允许字母/数字/下划线）：'${name}'")
+        }
+        if (i == 0 && isDigit) {
+            throw Exception("库名不能以数字开头：'${name}'")
+        }
+        i = i + 1
+    }
+    return name
+}
+
+/*
+ * 幂等建库：`CREATE DATABASE IF NOT EXISTS <db> CHARACTER SET utf8mb4`。
+ *
+ * ── 为什么需要它（照基线 mysql_store.cj:248 的同一考量）──────────────────
+ * `MySqlBackend` 的 URL 里带 database，**库不存在时建连就会失败**。
+ * 于是"先手工建库"成了部署门槛。但很多账号（例如本项目的 `hospital`）
+ * **没有全局权限**，即使先建库也未必能建 —— 所以这个入口只在有权限时有用，
+ * 没权限时必须在报错里说清"要去手工建库"，而不是让人以为代码坏了。
+ *
+ * 做法：先用**空库名**连一次（驱动允许 database 为空），建库、断开。
+ */
+public func ensureDatabase(cfg: MySqlConfig): Unit {
+    let name = dbNameChecked(cfg.db)
+    let boot = MySqlConfig()
+    boot.host = cfg.host
+    boot.port = cfg.port
+    boot.user = cfg.user
+    boot.pass = cfg.pass
+    boot.db = ""
+    var probe: ?DbBackend = None
+    try {
+        probe = Some(openDatabase(boot))
+    } catch (e: Exception) {
+        /*
+         * ⚠ 这里**不能**只说"建库失败"。最常见的原因恰恰不是"没权限"，
+         *   而是**端口/主机不对**或**DSN 是空的**（PowerShell 引用未定义变量 = 空串，
+         *   会静默退回默认值）。基线专门为此写过一版把原因按可能性排序的报错，
+         *   这里沿用同一口径 —— 错误信息本身就是排障文档。
+         */
+        throw Exception("连不上 MySQL（${cfg.describe()}）：${e.message}\n" +
+            "  处置（按可能性排序）：\n" +
+            "   ① **端口/主机不对**：本机联调的便携版 MariaDB 是 127.0.0.1:**3307**" +
+            "（MySQL 出厂默认 3306）\n" +
+            "   ② **这条命令压根没拿到 DSN**：PowerShell 里引用未定义的变量不报错、只是空串\n" +
+            "   ③ 账号/口令不对\n" +
+            "   ④ 账号**不允许不带库名连接**（没有全局权限）—— 只有这一种才需要手工建库：\n" +
+            "      CREATE DATABASE " + name + " CHARACTER SET utf8mb4;")
+    }
+    let p = probe.getOrThrow()
+    try {
+        p.exec("CREATE DATABASE IF NOT EXISTS " + name + " CHARACTER SET utf8mb4",
+               Array<DbValue>())
+    } finally {
+        p.close()
+    }
+}
+/*
  * 建连 + 初始化会话。
  *
  * 返回可用的 DbBackend。调用方通常紧接着 ensureSchema(db) 建表。
  *
  * ⚠ 建库（CREATE DATABASE）不在这里做：MySqlBackend 的 URL 里带 database，
- *   库不存在时**建连就会失败**。基线专门写了 ensureDatabase() 绕开（mysql_store.cj:248）。
- *   本项目 P0 阶段要求库**预先建好**（并把它写进 README），
- *   因为建库需要比业务账号更高的权限，不该由服务进程持有。
+ *   库不存在时**建连就会失败**。要建库请用 `ensureDatabase()`（上面）——
+ *   它先用空库名连、建库、断开。建库通常需要比业务账号更高的权限，
+ *   所以**不该由服务进程在每次启动时持有**，故与建连分开。
  */
 public func openDatabase(cfg: MySqlConfig): DbBackend {
     var backend: DbBackend

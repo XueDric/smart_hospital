@@ -155,7 +155,7 @@ public class TestRunner {
         println("=== AC-2 号满不超卖 ===")
         section("AC-2", { =>
             hSeedSchedule(db, 9001, 0, "2026-10-08")     // total=0, remain=0
-            let deducted = repo.tryDeductSlot(9001, 0)
+            let deducted = repo.tryDeductSlot(9001)
             let (remain, ver) = hScheduleState(db, 9001)
             check("remain_num=0 时扣减返回 false", !deducted)
             check("扣减失败后 remain_num 仍为 0（未变负）", remain == 0)
@@ -165,18 +165,65 @@ public class TestRunner {
 
     /* ---------- AC-1 ---------- */
     public func ac1(): Unit {
-        println("=== AC-1 原子性：同一 version 恰一次成功 ===")
+        println("=== AC-1 原子扣减：每单位号源恰被扣一次 ===")
         section("AC-1", { =>
             hResetAll(db)
             hSeedSchedule(db, 9002, 5, "2026-10-08")
-            let (_, v0) = hScheduleState(db, 9002)
-            let first = repo.tryDeductSlot(9002, v0)
-            let second = repo.tryDeductSlot(9002, v0)    // version 已 +1 → 必然 0 行
+            /*
+             * ⚠ 本用例在 2026-10-07 被**改写**，因为扣号策略本身改了：
+             *   原先用 `version = ?` 乐观锁，断言是"同一 version 的第二次扣减必失败"。
+             *   实测那个策略在"请求数≈号源数"时少卖 15%~50%（见 tryDeductSlot 注释），
+             *   已改成**无 version 条件的原子自减** —— 于是"同一 version 第二次也成功"
+             *   成为**正确行为**，旧断言反而会挡住修复。
+             *
+             * 现在的断言聚焦真正的不变量：**扣减次数恰好等于号源数，且永不为负**。
+             */
+            var ok: Int64 = 0
+            var i: Int64 = 0
+            while (i < 5) {
+                if (repo.tryDeductSlot(9002)) {
+                    ok = ok + 1
+                }
+                i = i + 1
+            }
             let (remain, ver) = hScheduleState(db, 9002)
-            check("第一次扣减成功（受影响行数 1）", first)
-            check("同一 version 的第二次扣减失败（受影响行数 0）", !second)
-            check("remain_num 恰好减 1（5 → 4，未减 2）", remain == 4)
-            check("version 恰好加 1（0 → 1）", ver == v0 + 1)
+            check("5 次扣减全部成功（恰好等于号源数）", ok == 5)
+            check("remain_num 归零（5 → 0）", remain == 0)
+            check("version 随每次成功 +1（0 → 5）", ver == 5)
+            // 第 6 次必须失败（号已售完）
+            check("第 6 次扣减失败（号已售完，不超卖）", !repo.tryDeductSlot(9002))
+            let (remain2, _) = hScheduleState(db, 9002)
+            check("售完后 remain_num 仍为 0（未变负）", remain2 == 0)
+        })
+    }
+
+    /* ---------- AC-10：最穷工况不少卖（第三方复查发现的严重缺陷）---------- */
+    public func ac10(): Unit {
+        println("=== AC-10 请求数 == 号源数时**不得少卖** ===")
+        section("AC-10", { =>
+            /*
+             * 这是 2026-10-07 复查复现出来的**严重缺陷**的回归闸门：
+             * 原乐观锁策略在 N 并发抢 N 号时只卖出 15%~50%（20→15、40→26）。
+             *
+             * ⚠ 本用例是**单线程顺序**模拟（Cangjie 侧无 spawn，真并发由
+             *   tests\stress-booking.ps1 用独立进程覆盖）。它守的是
+             *   「扣号策略本身不再自我作废」这条不变量 ——
+             *   乐观锁时代这条断言**必然失败**（第二次带旧 version 就 0 行）。
+             */
+            hResetAll(db)
+            let n: Int64 = 20
+            hSeedSchedule(db, 9008, n, "2026-10-08")
+            var ok: Int64 = 0
+            var i: Int64 = 0
+            while (i < n) {
+                if (repo.tryDeductSlot(9008)) {
+                    ok = ok + 1
+                }
+                i = i + 1
+            }
+            let (remain, _) = hScheduleState(db, 9008)
+            check("N 次扣减全部成功（无自我作废）", ok == n)
+            check("余量为 0（卖光）", remain == 0)
         })
     }
 
@@ -387,6 +434,7 @@ public func runAcceptance(db: DbBackend): Int64 {
     runner.ac4()
     runner.ac7()
     runner.ac8()
+    runner.ac10()
     println("")
     println("通过 ${runner.passed} 项，失败 ${runner.failed} 项")
     if (runner.failed == 0) {

@@ -47,6 +47,20 @@ public let RENEW_AFTER: Int64 = 86400
  * 取 n 字节随机数。
  * ⚠ std.random 的 `nextBytes` 是**填充已有缓冲区**的形态（框架 requestid.cj 也这么用），
  *   不要写成 `nextBytes(n)` 取返回值 —— 那是另一套语义。
+ *
+ * ⚠⚠ **已知限制，必须写明（复查项）**：这里用的是 `std.random.Random()`，
+ *   本工具链**没有任何文档或 API 能证明它由 OS CSPRNG（CryptGenRandom / RtlGenRandom）**
+ *   播种或驱动。也就是说：**会话令牌的随机性强度目前无法证实**。
+ *
+ *   当前处置（明确决策，不是"忘了"）：
+ *     · 令牌是 32 字节（256 bit），即使 RNG 只是"高质量 PRNG"，
+ *       在没有同进程观测能力的前提下爆破仍不现实；
+ *     · 但**不宣称**它是密码学安全的 —— 不把没验证的东西写成保证。
+ *
+ *   要真正确认/加固的两条路（留给后续）：
+ *     ① 查明 cjc 1.2.0 的 `std.random` 底层实现（是否走 BCryptGenRandom）；
+ *     ② 若不确定，则改用 OpenSSL 的 `RAND_bytes` —— 运行时已经依赖
+ *        OpenSSL 3 的 DLL（`libcrypto-3-x64.dll`），加一层 CFFI 即可。
  */
 public func randBytes(n: Int64): Array<UInt8> {
     let r = Random()
