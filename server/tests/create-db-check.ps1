@@ -182,8 +182,21 @@ if (-not $AdminDsn) {
     Check "不带库名的管理员 DSN 也能一步到位" ($LASTEXITCODE -eq 0) `
           ("admin-dsn='$admNoDb' exit=$LASTEXITCODE")
 
-    # ── 清理
-    $null = Invoke-MySqlScalar -My $adminMy -Sql "DROP DATABASE IF EXISTS $DbName" -Label "清理测试库"
+    # ── 清理：★ 必须**既撤权又删库**，并自检不留孤儿授权
+    #
+    # ⚠ 这一步是给自己上的闸门：我第一版只 DROP 库 ⇒ 授权留在 `mysql.db` 里
+    #   成了**孤儿授权**（库都没了、权限还在）—— 连我自己复现时都留下了两条。
+    #   `GRANT` 独立于库存在，所以清理必须两步都做。
+    $savedEap2 = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    foreach ($acct in @("'${MySqlUser}'@'localhost'", "'${MySqlUser}'@'%'")) {
+        try { $null = Invoke-MySqlScalar -My $adminMy -Label "撤权" -Sql "REVOKE ALL PRIVILEGES ON ``$DbName``.* FROM $acct" } catch { }
+    }
+    try { $null = Invoke-MySqlScalar -My $adminMy -Sql "DROP DATABASE IF EXISTS $DbName" -Label "清理测试库" } catch { }
+    $ErrorActionPreference = $savedEap2
+    $orphan = Invoke-MySqlScalar -My $adminMy -Label "孤儿授权计数" `
+        -Sql "SELECT COUNT(*) FROM mysql.db WHERE Db='$DbName'"
+    Check "★ 清理后不留孤儿授权（残留 $orphan 条）" ("$orphan".Trim() -eq "0")
 }
 
 Write-Host ""
