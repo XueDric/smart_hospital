@@ -14,6 +14,8 @@
 
 package qingzhou
 
+import std.collection.*
+
 /* 清 AI 配置表（测试用）。 */
 func hResetAiSettings(db: DbBackend): Unit {
     db.exec("DELETE FROM ai_setting", Array<DbValue>())
@@ -223,16 +225,132 @@ public func acP3_3(runner: TestRunner, db: DbBackend): Unit {
             (SET_AI_MAX_TOKENS, "63", "max_tokens 63（过小会截断输出）"),
             (SET_AI_MAX_TOKENS, "8193", "max_tokens 8193（超过上界）")
         ]
+        // 每个数值项的"合法值"（写越界值前先恢复它）
+        let okVals = HashMap<String, String>()
+        okVals[SET_AI_TIMEOUT] = "30"
+        okVals[SET_AI_MAX_CONCURRENT] = "4"
+        okVals[SET_AI_MAX_TOKENS] = "2048"
         var allBad = true
         for ((k, v, why) in bounds) {
-            let _w = repo.put(k, v, now)
-            if (repo.options(now).enabled) {
-                allBad = false
-                println("        ★ 未拦住：${why}")
+            /*
+             * ★★ 复查第 1 条之后这里变了：越界值现在**写入即被拒**，
+             *   所以"它会写进库并把 AI 变成不可用"这个旧前提**不再成立**。
+             *   ⇒ 每次先把该值设回合法，再尝试写越界值：
+             *     · 若写入被拒（400 语义）⇒ 后续仍可用 ⇒ 正确；
+             *     · 若写入被接受 ⇒ 库里有越界值 ⇒ AI 应变成不可用（旧行为）。
+             *   两种都对，但**不能**让它"既写进去又报可用"。
+             */
+            let _restore = repo.put(k, okVals[k], now)
+            let w = repo.put(k, v, now)
+            if (!w.ok) {
+                // 写入即被拒 ⇒ 好；再确认库里的值仍是合法的
+                if (!repo.options(now).enabled) {
+                    allBad = false
+                    println("        ★ 写越界值被拒，但 AI 反而不可用了（库被污染？）：${why}")
+                }
+            } else {
+                // 被接受 ⇒ 必须表现为不可用
+                if (repo.options(now).enabled) {
+                    allBad = false
+                    println("        ★ 未拦住：${why}")
+                }
+                let _fix = repo.put(k, okVals[k], now)
             }
         }
-        runner.check("★ ⑤ 6 个越界值全部使 AI 不可用（不是「静默接受」）", allBad)
-        runner.check("⑤ 且不可用时理由非空", repo.options(now).disabledReason.size > 0)
+        let _restoreAll1 = repo.put(SET_AI_TIMEOUT, "30", now)
+        runner.check("★ ⑤ 6 个越界值要么写入即被拒、要么使 AI 不可用（都不允许「静默接受」）", allBad)
+
+        /*
+         * ★★ ⑥ 数值项必须**写入即校验**（第七份复查第 1 条，我已复现）。
+         *
+         * 原来只校验 `key_ref`，数值项**完全不校验**：
+         *     PUT ai.timeout_secs = abc  -> 200，回显 value=abc
+         * 而运行期 `parseInt64Or` 把它**静默换成默认值 30**
+         * ⇒ **回显的值 ≠ 生效的值**，而且系统报"配置有效"。
+         *
+         * 更能说明危害的是复查探到的真实时序：库里原来是越界的 9999
+         * （正确地给出 enabled=false + 明确理由），把它"改成" abc 之后
+         * **enabled 反而翻成了 true** —— 一个写错的编辑把报警变成了绿灯。
+         *
+         * ⚠ 本用例是**回归闸门**：没有它，将来"优化"掉 put() 里的校验就又漏了。
+         */
+        hResetAiSettings(db)
+        let repo2 = AiSettingsRepo(db)
+        // 先建立"配置齐全 + 总开关开"的可用状态
+        let _e1 = repo2.put(SET_AI_ENDPOINT, "https://api.example.com/v1", now)
+        let _e2 = repo2.put(SET_AI_MODEL, "m", now)
+        let _e3 = repo2.put(SET_AI_KEY_REF, "env:AIKEY", now)
+        let _e4 = repo2.put(SET_AI_ENABLED, "1", now)
+        runner.check("⑥ 前置：配置齐全后 enabled=true", repo2.options(now).enabled)
+        // ★ 非数字必须被拒（而不是写成 abc 后静默回落成 30）
+        let numericBads: Array<(String, String)> = [
+            (SET_AI_TIMEOUT, "abc"),
+            (SET_AI_TIMEOUT, "30秒"),
+            (SET_AI_TIMEOUT, ""),
+            (SET_AI_MAX_TOKENS, "abc"),
+            (SET_AI_MAX_CONCURRENT, "abc"),
+            (SET_AI_MAX_CONCURRENT, "1.5"),
+            (SET_AI_TIMEOUT, "9999"),          // 越界（复查探到的那个值）
+            (SET_AI_TIMEOUT, "-1"),
+            (SET_AI_MAX_TOKENS, "100000")
+        ]
+        var allRejected2 = true
+        for ((k, v) in numericBads) {
+            let r = repo2.put(k, v, now)
+            // 空值是"回到默认值"的显式例外，允许
+            if (v.trimAscii().size == 0) {
+                continue
+            }
+            if (r.ok) {
+                allRejected2 = false
+                println("        ★ 未拒绝：${k} = '${v}'")
+            }
+        }
+        runner.check("★★ ⑥ 8 个非数字/越界值全部**写入即被拒**（不再静默回落）", allRejected2)
+        /*
+         * ★★ ⑥b 真正的回归闸门：**回显值必须等于生效值**。
+         *
+         * 原缺陷破坏的就是这条不变量：回显 `abc`（库里存的）、生效 30（回落后的）。
+         *
+         * ⚠ 注意"空值"这条路径**不属于**不一致 —— 空值是"删掉该行"的等价写法，
+         *   此时 `get` 返回**默认值字符串**（"30"），而生效值也是 30 ⇒ **仍然一致**。
+         *   我第一版断言写成"库里必须有非空合法值"，于是空值那条把断言弄红了 ——
+         *   那是**断言写错了**（把"一致"错写成"非空"），不是实现有问题。
+         */
+        let repo3 = AiSettingsRepo(db)
+        let _t0 = repo3.put(SET_AI_TIMEOUT, "45", now)
+        let shown = repo3.get(SET_AI_TIMEOUT, now)
+        let effective = repo3.options(now).timeoutSecs
+        runner.check("★★ ⑥b 非空值时：回显值与生效值一致（'${shown}' vs ${effective}）",
+                     aiIsAllDigits(shown) && parseInt64Or(shown, -1) == effective)
+        runner.check("★★ ⑥b 且生效值就是写入的 45（没有被静默回落）", effective == 45)
+        // ★ 空值被接受＝回默认值（显式例外，不能变成 400）
+        let blankOk = repo3.put(SET_AI_TIMEOUT, "   ", now)
+        runner.check("★ ⑥b 空值被接受（表示回到默认值），不是 400", blankOk.ok)
+        /*
+         * ⚠ 这里断言的是**接口回显**，不是 `repo.get()` 的原始值 —— 两者语义不同：
+         *   · `repo.get()` = "库里的原始值"（为空表示"没设"）
+         *   · 接口回显 = "**生效值**"（为空则显示默认值）
+         *   我第一版拿 `repo.get()` 的原始值去比，于是"空值 ⇒ 回显默认"这条正确的
+         *   行为被我的断言判成了不一致 —— **断言写错了对象**。
+         *   📌 教训：断言"回显 == 生效"时，要断言**回显接口的输出**，不是内部 getter。
+         */
+        let effective2 = repo3.options(now).timeoutSecs
+        let view2 = aiSettingsJson(repo3, now)
+        var timeoutShown = ""
+        let items = view2.get("items").getOrThrow().asArray()
+        var k: Int64 = 0
+        let itemCount = items.size()
+        while (k < itemCount) {
+            let it = items[k].asObject()
+            if (it.get("key").getOrThrow().asString().getValue() == SET_AI_TIMEOUT) {
+                timeoutShown = it.get("value").getOrThrow().asString().getValue()
+            }
+            k = k + 1
+        }
+        runner.check("★★ ⑥b 空值（=回默认）时**接口回显值 == 生效值**（'${timeoutShown}' vs ${effective2}）",
+                     aiIsAllDigits(timeoutShown) && parseInt64Or(timeoutShown, -1) == effective2)
+        runner.check("★ ⑥b 且确实回到了默认值 30", effective2 == 30)
     })
 }
 

@@ -294,6 +294,25 @@ $null = DoReq 'aidel' 'DELETE' '/api/v1/admin/ai/settings/ai.model' @("Authoriza
 $r = DoReq 'airead2' 'GET' '/api/v1/admin/ai/settings' @("Authorization: Bearer $admTok") $null
 Check "删除后回到默认值（回显里不再有该值）" (-not ($r.Body -match 'zero-restart-probe-model'))
 
+# 8.6b ★★ 数值项必须**写入即校验**（第七份复查第 1 条）
+#      原来 PUT ai.timeout_secs=abc 返回 200、回显 abc，而运行期静默回落成 30
+#      ⇒ 回显值 ≠ 生效值，且系统报"配置有效"。
+foreach ($bad in @('abc', '30秒', '9999', '-1', '1.5')) {
+    $r = DoReq ('ainum' + [Guid]::NewGuid().ToString('N').Substring(0,6)) 'PUT' `
+         '/api/v1/admin/ai/settings/ai.timeout_secs' @("Authorization: Bearer $admTok") ('{"value":"' + $bad + '"}')
+    Check "★★ 非数字/越界 timeout='$bad' → 400（不再静默回落）" ($r.Http -eq 400) ("HTTP $($r.Http)")
+}
+# ★ 合法值可写，且回显值 == 生效的展示值
+$r = DoReq 'ainumok' 'PUT' '/api/v1/admin/ai/settings/ai.timeout_secs' @("Authorization: Bearer $admTok") '{"value":"45"}'
+Check "合法 timeout=45 被接受" ($r.Http -eq 200) ("HTTP $($r.Http)")
+$r = DoReq 'ainumread' 'GET' '/api/v1/admin/ai/settings' @("Authorization: Bearer $admTok") $null
+Check "★★ 回显里 timeout = 45（回显值 == 生效值）" ($r.Body -match '"value":"45"') ("体含 45 = $($r.Body -match '"value":"45"')")
+# ★ 空值被接受（表示回到默认值），且回显给出默认值 30（而非空串 —— 否则管理员以为没配）
+$r = DoReq 'ainumblank' 'PUT' '/api/v1/admin/ai/settings/ai.timeout_secs' @("Authorization: Bearer $admTok") '{"value":"   "}'
+Check "★ 空值被接受（=回默认值），不是 400" ($r.Http -eq 200) ("HTTP $($r.Http)")
+Check "★★ 空值后回显是**默认值 30**，不是空串（回显 == 生效）" ($r.Body -match '"value":"30"')
+Check "★ 并标记 is_default=true" ($r.Body -match '"is_default":true')
+
 # 8.7 ★ 未登记的配置项必须被拒（否则 KV 表变垃圾场）
 $r = DoReq 'aiunk' 'PUT' '/api/v1/admin/ai/settings/ai.garbage' @("Authorization: Bearer $admTok") '{"value":"x"}'
 Check "★ 未登记的配置项被拒 400" ($r.Http -eq 400) ("HTTP $($r.Http)")

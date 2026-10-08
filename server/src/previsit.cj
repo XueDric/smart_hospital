@@ -58,17 +58,49 @@ import stdx.encoding.json.*
  *   ③ 片段由 `intakeSlots()` 生成 ⇒ 加槽位只改一处（"口径只留一处"）。
  */
 func previsitSlotCountSql(): String {
-    var s = "("
-    var first = true
-    for (sl in intakeSlots()) {
-        if (!first) {
-            s = s + " + "
-        }
-        // LIKE 的 % 是通配符；key 由我们自己的表定义，不含 % 或 _
-        s = s + "(form_json LIKE '%${sl.key}%')"
-        first = false
-    }
-    return s + ")"
+    /*
+     * ★★ 判据的**两次**修正（都记下来，因为这是"判据被内容影响"的典型）：
+     *
+     * ── 第一版（错）：`form_json = ''` ────────────────────────────────────
+     *   我以为"被放弃的会话"就是空表单。**错** ——
+     *   `GET /previsit/stream?chief_complaint=...` 会**立刻把主诉写进表单**，
+     *   所以刚开的会话 `form_json` 已经是 `{"chief":"咳嗽"}`（非空）。
+     *   实测连开 42 次 ⇒ 42 行全 `form_json <> ''`，那条 DELETE 一行都匹配不到。
+     *
+     * ── 第二版（也错）：`LIKE '%槽位名%'` 计数 ────────────────────────────
+     *   我用"六个 key 两两不是彼此的子串"论证 LIKE 计数安全。那个前提**成立**，
+     *   但它**不足** —— 第七份复查指出：**答案文本里可以出现槽位名**。
+     *   我实测复现：
+     *       `{"chief":"咳嗽 duration severity associated history allergy"}`
+     *       ⇒ 真实键数 = **1**，LIKE 计数 = **6** ⇒ 被判成"已完成"
+     *   ⇒ 一个只答 1 项、内容里塞了 5 个槽位名的会话**永远不被压实**，
+     *     存储上限可被**对抗性绕过**。（业务正确性不受影响：HTTP 层读的是
+     *     内存里解析后的表单，仍正确地报 complete=false / filled=1。）
+     *
+     * ── 第三版（当前）：`JSON_LENGTH(JSON_KEYS(form_json))` ──────────────
+     *   数的是**真实的 JSON 键个数**，与**值的内容完全无关**。
+     *
+     *   ⚠ 为什么用 `JSON_KEYS` 而不是直接 `JSON_LENGTH(form_json)`：
+     *     我实测确认 `JSON_LENGTH` 对**空串与非法 JSON 返回 NULL**。
+     *     NULL 参与 `<` / `>=` 比较得 NULL ⇒ 条件为假 ⇒
+     *     **一条坏 JSON 的会话会被当成"已完成"而永不清理**（静默的正确性洞）。
+     *     `JSON_KEYS` 对同样输入返回 **0**（也已实测），是干净的整数比较。
+     *
+     *   ⚠ 这引入了对 MySQL/MariaDB **JSON 函数**的依赖 —— 与之前"不依赖 DB
+     *     高级特性"的偏好在方向上相反。这是**权衡后的选择**：正确性 > 可移植性，
+     *     而且我们本来就用 JSON 语义存 `form_json`，依赖 JSON 函数不新增约束面。
+     *
+     *   ★ `IFNULL(..., 0)` 不是装饰 —— 它修掉一个**实测炸出来的**洞：
+     *     `JSON_KEYS('{坏 JSON')` 返回 **NULL**（我实测确认），于是
+     *     `NULL >= 6` 得 NULL ⇒ 该列是 NULL ⇒ 驱动层 `getInt` 抛
+     *     `The part of value convert failed.` ⇒ **整个验收用例崩掉**。
+     *     ⇒ 而且这不只是测试问题：**生产里一条坏 JSON 就能让"清理陈旧会话"
+     *       这条路径抛异常**，而它跑在 `create()` 里 —— **于是新会话也建不出来**。
+     *       那是一条坏数据升级成"整个预问诊不可用"的路径。
+     *     加 `IFNULL` 后：坏 JSON ⇒ 键数 0 ⇒ 判为"未采完" ⇒ **会被正常清理**
+     *       （坏数据该被清掉，而不是把功能拖死）。
+     */
+    return "IFNULL(JSON_LENGTH(JSON_KEYS(form_json)), 0)"
 }
 
 /* "问诊单**未采完**"（槽位没齐）。 */

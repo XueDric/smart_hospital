@@ -56,12 +56,37 @@ public class AiSettingSpec {
     public let defaultVal: String
     /* 是否敏感：敏感项的**值**永不出现在任何响应里，只回显"是否已设置"。 */
     public let secret: Bool
+    /*
+     * ★ 数值范围（min 与 max 同时 > 0 才启用校验）。
+     *
+     * ⚠⚠ 为什么必须有这两列（第七份复查第 1 条，我已复现）：
+     *   原来**只校验 `key_ref`，数值项完全不校验** —— 于是
+     *       PUT ai.timeout_secs = abc   -> 200，回显 value=abc
+     *   而运行期 `parseInt64Or` 把它**静默换成默认值 30**。
+     *   结果：**回显的值 ≠ 生效的值**，而且系统报"配置有效"。
+     *   更糟的是它能**掩盖真实故障**：复查实测库里原来是越界的 9999
+     *   （正确地给出 enabled=false + 明确理由），把它"改成" abc 之后
+     *   **enabled 反而翻成了 true** —— 一个写错的编辑把报警变成了绿灯。
+     *
+     *   同一张表里 `ai.key_ref` 是**写入即校验**、数值项却"读了才回落"——
+     *   **口径不一致**。现在两者都在 `put()` 校验（同一道闸门）。
+     */
+    public let numMin: Int64
+    public let numMax: Int64
 
-    public init(key: String, label: String, defaultVal: String, secret!: Bool = false) {
+    public init(key: String, label: String, defaultVal: String, secret!: Bool = false,
+                numMin!: Int64 = 0, numMax!: Int64 = 0) {
         this.key = key
         this.label = label
         this.defaultVal = defaultVal
         this.secret = secret
+        this.numMin = numMin
+        this.numMax = numMax
+    }
+
+    /* 是否是数值项（需要范围校验）。 */
+    public func numeric(): Bool {
+        return numMin > 0 && numMax > 0
     }
 }
 
@@ -91,9 +116,9 @@ public func aiSettingSpecs(): Array<AiSettingSpec> {
         AiSettingSpec(SET_AI_ENABLED, "AI 功能总开关（1/0）", "0"),
         AiSettingSpec(SET_AI_ENDPOINT, "OpenAI 兼容的完整 URL（必须 https://）", ""),
         AiSettingSpec(SET_AI_MODEL, "模型名", ""),
-        AiSettingSpec(SET_AI_TIMEOUT, "读/写超时（秒，1..300）", "30"),
-        AiSettingSpec(SET_AI_MAX_CONCURRENT, "出站并发上限（1..64）", "4"),
-        AiSettingSpec(SET_AI_MAX_TOKENS, "max_tokens（64..8192）", "2048"),
+        AiSettingSpec(SET_AI_TIMEOUT, "读/写超时（秒，1..300）", "30", numMin: 1, numMax: 300),
+        AiSettingSpec(SET_AI_MAX_CONCURRENT, "出站并发上限（1..64）", "4", numMin: 1, numMax: 64),
+        AiSettingSpec(SET_AI_MAX_TOKENS, "max_tokens（64..8192）", "2048", numMin: 64, numMax: 8192),
         /*
          * ★★ 密钥**引用**（不是密钥本身）。secret=true 让它在响应里只回显"是否已设置"。
          *   值必须是 `env:` 或 `file:` 开头 —— 由 validateKeyRef 机制性保证。
@@ -320,7 +345,37 @@ public func aiRuntimeValidate(o: AiRuntimeOptions): Unit {
     o.disabledReason = ""
 }
 
-/* ===================== 写入结果 ===================== */
+/*
+ * 字符串是否是**纯十进制整数**（可带一个前导负号）。
+ *
+ * ⚠ 为什么不直接用 `parseInt64Or`：它对垃圾输入返回**兜底值**，
+ *   于是 `abc` 与 `-1` 无法区分 —— 而"非数字"与"越界"要给**不同的**拒绝理由
+ *   （前者是写错了类型，后者是范围不对）。
+ *   基线的 `parseInt64Or` 语义是"尽力解析 + 兜底"，那是**读取**路径该有的宽容；
+ *   **写入**路径要的是严格 —— 这正是第七份复查第 1 条的根因。
+ */
+func aiIsAllDigits(s: String): Bool {
+    if (s.size == 0) {
+        return false
+    }
+    let chars = s.toArray()
+    var i: Int64 = 0
+    /* 允许一个前导负号（范围校验会挡住负数，但"是不是数字"与"在不在范围内"要分开判）。 */
+    if (Int64(chars[0]) == 0x2D) {
+        i = 1
+        if (chars.size == 1) {
+            return false      /* 只有一个负号，不是数字 */
+        }
+    }
+    while (i < chars.size) {
+        let c = Int64(chars[i])
+        if (c < 0x30 || c > 0x39) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
 
 public class AiSettingPutResult {
     public var ok: Bool = false
@@ -360,6 +415,18 @@ public class AiSettingsRepo {
      * ⚠ "库里没有该行"与"库里存了空串"是**两回事**：
      *   前者 ⇒ 用默认值；后者 ⇒ 就是空（例如把 endpoint 清空 = 停用 AI）。
      *   混起来会让"想清空某项"做不到（一清空就回落到默认值）。
+     *
+     * ⚠⚠ **但这个区分只对"字符串项"成立，对"数值项"不成立**（第七份复查补充，
+     *   我认同并已加断言）：
+     *   · 对 `ai.endpoint`：空串是**有意义的取值**（= 停用 AI）⇒ 区分成立；
+     *   · 对 `ai.timeout_secs` 这类：空串经 `parseInt64Or` 又会**变回默认值**
+     *     ⇒ "存了空串"与"没这一行"**在效果上无法区分**（都落到默认值）。
+     *   所以对数值项，"清空"只能理解为"回到默认值"，不存在"空值"这个第三态。
+     *   这不算缺陷（数值项本来就没有"空"这个合法取值），但**口径要说清** ——
+     *   否则会有人以为"清空 timeout 就能让它无效"。
+     *
+     *   另：`put()` 现在把值 **trim 后入库**，所以 `"   "` 与 `""` 等价，
+     *   两者都落回默认值，回显也一致（见 `aiSettingsJson` 里回显生效值的说明）。
      */
     public func get(key: String, now: Int64): String {
         if (cacheAt == 0 || now - cacheAt > AI_SETTINGS_CACHE_TTL_SECS) {
@@ -369,7 +436,8 @@ public class AiSettingsRepo {
             return cache[key]
         }
         match (aiSettingDefault(key)) {
-            case Some(d) => return d
+            // ⚠ 默认值也 trim：与"写入时 trim"配套，保证任何路径都不带首尾空白
+            case Some(d) => return d.trimAscii()
             case None => return ""
         }
     }
@@ -414,9 +482,52 @@ public class AiSettingsRepo {
                 return r
             }
         }
+        /*
+         * 闸门③：★ 数值项必须**写入即校验**（第七份复查第 1 条）。
+         *
+         * 与闸门② 同一条纪律：**能在写入时判定的错，就不要留到读取时静默回落**。
+         * 回落会让"回显的值"与"生效的值"不一致，而且系统报"配置有效" ——
+         * 那种不一致比直接报错难查得多。
+         *
+         * ⚠ 空值（或全空白）是**例外，且被明确接受**：它表示"回到默认值"
+         *   （与 `remove` 等价的效果）。这个例外必须显式写出来 ——
+         *   否则"想清空某项"会变成一个 400，用户只能删行才能清空。
+         */
+        let trimmed = value.trimAscii()
+        var spec: ?AiSettingSpec = None
+        for (s in aiSettingSpecs()) {
+            if (s.key == key) {
+                spec = Some(s)
+            }
+        }
+        let sp = spec.getOrThrow()
+        if (sp.numeric() && trimmed.size > 0) {
+            if (!aiIsAllDigits(trimmed)) {
+                r.rejected = "${key} 必须是整数（收到的是非数字；" +
+                             "允许范围 ${sp.numMin}..${sp.numMax}）"
+                return r
+            }
+            let n = parseInt64Or(trimmed, -1)
+            if (n < sp.numMin || n > sp.numMax) {
+                r.rejected = "${key} 必须在 ${sp.numMin}..${sp.numMax} 之间（收到 ${n}）"
+                return r
+            }
+        }
+        /*
+         * ★ 存**trim 后**的值（第七份复查第 1 条的连带修正）。
+         *
+         * 原实现把原始值（可能是 "   "）原样写库，于是：
+         *   回显 "   "（3 个空格），而生效值是默认值 30
+         *   ⇒ **又一次"回显 ≠ 生效"** —— 与复查指出的那个缺陷同一个病，
+         *     只是入口从"非数字"换成了"全空白"。
+         *   我是被自己写的断言（"回显与生效仍一致"）抓出来的。
+         *
+         * trim 后：`"   "` 与 `""` 等价 ⇒ 老实回到默认值，两边一致。
+         */
+        let stored = trimmed
         db.exec("INSERT INTO ai_setting (k, v, updated_at) VALUES (?, ?, ?) " +
                 "ON DUPLICATE KEY UPDATE v = VALUES(v), updated_at = VALUES(updated_at)",
-                [DbStr(key), DbStr(value), DbInt(now)])
+                [DbStr(key), DbStr(stored), DbInt(now)])
         invalidate()
         r.ok = true
         return r
@@ -515,8 +626,24 @@ public func aiSettingsJson(repo: AiSettingsRepo, now: Int64): JsonObject {
             /* 告知"是否被脱敏过"，避免管理员以为配置里真的只存了 host */
             e.put("redacted", JsonBool(full.size > 0 && aiSafeHost(full) != full))
         } else {
-            e.put("value", JsonString(repo.get(s.key, now)))
+            /*
+             * ★★ 回显的 value 必须是"**生效值**"，不是"原始存储值"（第七份复查第 1 条）。
+             *
+             * 原来回显的是 `repo.get()` 的原始值。对**数值项**它与生效值不一致：
+             *   · 库里没该行 ⇒ get 返回空串，而生效值是默认值（30）
+             *   · 库里是垃圾值 ⇒ 曾出现"回显 abc、生效 30"（现已写入即拒，但空值这条路仍在）
+             * ⇒ 回显空串会让管理员以为"这一项没配"，而实际生效的是 30。
+             *
+             * 现在：**原始值非空就回原始值，为空就回默认值** ——
+             * 于是"回显 == 生效"对两种情况都成立。
+             * `default` 字段仍然单独给出，方便管理员区分"我设的"与"默认的"。
+             */
+            let raw = repo.get(s.key, now)
+            let shown = if (raw.size > 0) { raw } else { s.defaultVal }
+            e.put("value", JsonString(shown))
             e.put("default", JsonString(s.defaultVal))
+            /* 告知"这个值是默认来的"（而不是管理员设的） */
+            e.put("is_default", JsonBool(raw.size == 0))
         }
         items.add(e)
     }

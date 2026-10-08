@@ -552,17 +552,53 @@ public func acP2_6(runner: TestRunner, db: DbBackend): Unit {
         runner.check("★★ TTL 不删**已采完**的问诊单（即使很旧 —— 它属数据保留策略，不归 prune 管）",
                      repo.find(sidDone2, 9705).isSome())
 
-        // ★ 槽位计数的前提：六个 key 两两不是彼此的子串（否则 LIKE 计数会偏大）
-        let slots = intakeSlots()
-        var sub = 0
-        for (a in slots) {
-            for (b in slots) {
-                if (a.key != b.key && b.key.contains(a.key)) {
-                    sub = sub + 1
-                }
-            }
+        /*
+         * ★★ 第七份复查第 2 条：**判据不得被答案内容影响**。
+         *
+         * 原来的判据是 `LIKE '%槽位名%'` 计数，我论证过"六个 key 两两不是彼此的子串"
+         * —— 那个前提**成立但不充分**：答案**文本**里可以出现槽位名。
+         * 我实测复现：
+         *     `{"chief":"咳嗽 duration severity associated history allergy"}`
+         *     ⇒ 真实键数 = 1，LIKE 计数 = 6 ⇒ 被判成"已完成" ⇒ 永不被压实。
+         *
+         * 现在判据是 `JSON_LENGTH(JSON_KEYS(form_json))`（数真实键，与值无关）。
+         * 本用例**用 SQL 层直接验证**它不受内容影响 —— 这是唯一能守住这条的地方
+         * （纯逻辑测试走的是内存表单，压根碰不到这段 SQL）。
+         */
+        db.exec("DELETE FROM previsit_session", Array<DbValue>())
+        // 手工插一条"只答 1 项、但答案里塞了另外 5 个槽位名"的会话（**绕过 repo**，
+        // 因为 repo.answer 会拒绝未知槽位；而这条攻击面正是"直接写库/未来别的写路径"）
+        db.exec("INSERT INTO previsit_session (id, patient_id, turn, form_json, created_at, updated_at) " +
+                "VALUES (?, ?, 1, ?, ?, ?)",
+                [DbStr("probe-1slot-5names"), DbInt(9706), DbStr(""), DbInt(now), DbInt(now)])
+        db.exec("UPDATE previsit_session SET form_json = ? WHERE id = ?",
+                [DbStr("{\"chief\":\"咳嗽 duration severity associated history allergy\"}"),
+                 DbStr("probe-1slot-5names")])
+        // 它**不应该**被算作已完成 ⇒ 属于"未采完" ⇒ 会被压实逻辑处理
+        let probe = db.query("SELECT " + previsitCompleteSql() + " FROM previsit_session WHERE id = ?",
+                             [DbStr("probe-1slot-5names")])
+        let judgedComplete = if (probe.rowCount() > 0) { probe.getInt(0, 0) != 0 } else { false }
+        runner.check("★★ 答案文本里塞满槽位名**不能**让它被判成已完成（判据与内容无关）",
+                     !judgedComplete)
+        // 反向：真正答满的必须被判成已完成（防止"一律判未完成"这种过度修正）
+        let sidFull = repo.create(9707, now)
+        for (sl in intakeSlots()) {
+            let _x = repo.answer(sidFull, 9707, sl.key, "x", now)
         }
-        runner.check("★ 六个槽位 key 两两不是彼此的子串（LIKE 计数规则的前提，实得 ${sub} 对）",
-                     sub == 0)
+        let full2 = db.query("SELECT " + previsitCompleteSql() + " FROM previsit_session WHERE id = ?",
+                             [DbStr(sidFull)])
+        let judgedFull = if (full2.rowCount() > 0) { full2.getInt(0, 0) != 0 } else { false }
+        runner.check("★★ 反向：真正答满 6 项的仍被判成已完成", judgedFull)
+        // ★ 坏 JSON 不得被当成"已完成"（否则它会永不清理）
+        db.exec("INSERT INTO previsit_session (id, patient_id, turn, form_json, created_at, updated_at) " +
+                "VALUES (?, ?, 1, ?, ?, ?)",
+                [DbStr("probe-badjson"), DbInt(9706), DbStr(""), DbInt(now), DbInt(now)])
+        db.exec("UPDATE previsit_session SET form_json = ? WHERE id = ?",
+                [DbStr("{坏 JSON"), DbStr("probe-badjson")])
+        let badRs = db.query("SELECT " + previsitCompleteSql() + " FROM previsit_session WHERE id = ?",
+                             [DbStr("probe-badjson")])
+        let badComplete = if (badRs.rowCount() > 0) { badRs.getInt(0, 0) != 0 } else { true }
+        runner.check("★★ 坏 JSON 会话**不得**被判成已完成（否则它永不清理；JSON_LENGTH 会返回 NULL 就是这个洞）",
+                     !badComplete)
     })
 }
