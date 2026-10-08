@@ -575,9 +575,17 @@ public func acP2_6(runner: TestRunner, db: DbBackend): Unit {
                 [DbStr("{\"chief\":\"咳嗽 duration severity associated history allergy\"}"),
                  DbStr("probe-1slot-5names")])
         // 它**不应该**被算作已完成 ⇒ 属于"未采完" ⇒ 会被压实逻辑处理
-        let probe = db.query("SELECT " + previsitCompleteSql() + " FROM previsit_session WHERE id = ?",
-                             [DbStr("probe-1slot-5names")])
-        let judgedComplete = if (probe.rowCount() > 0) { probe.getInt(0, 0) != 0 } else { false }
+        /*
+         * ⚠ 用 `COUNT(*)` 包一层，而不是直接 `SELECT 判据`：
+         *   判据含 `JSON_KEYS`，对坏 JSON 会给 NULL；直接 `getInt` 会**抛异常**，
+         *   而异常会让**整轮 accept 中断** —— 后续用例一条都不跑。
+         *   📌 我实测踩到过：注入旧 LIKE 判据做变异时，"数值闸门"那条断言本该一起报红
+         *     却没报，因为本轮早在 AC-P2-6 就中断了。
+         *     **测试"抛异常"与测试"报失败"是两回事 —— 前者会掩盖后者。**
+         */
+        let probe = db.query("SELECT COUNT(*) FROM previsit_session WHERE id = ? AND " +
+                             previsitCompleteSql(), [DbStr("probe-1slot-5names")])
+        let judgedComplete = (probe.rowCount() > 0) && (probe.getInt(0, 0) != 0)
         runner.check("★★ 答案文本里塞满槽位名**不能**让它被判成已完成（判据与内容无关）",
                      !judgedComplete)
         // 反向：真正答满的必须被判成已完成（防止"一律判未完成"这种过度修正）
@@ -585,9 +593,9 @@ public func acP2_6(runner: TestRunner, db: DbBackend): Unit {
         for (sl in intakeSlots()) {
             let _x = repo.answer(sidFull, 9707, sl.key, "x", now)
         }
-        let full2 = db.query("SELECT " + previsitCompleteSql() + " FROM previsit_session WHERE id = ?",
-                             [DbStr(sidFull)])
-        let judgedFull = if (full2.rowCount() > 0) { full2.getInt(0, 0) != 0 } else { false }
+        let full2 = db.query("SELECT COUNT(*) FROM previsit_session WHERE id = ? AND " +
+                             previsitCompleteSql(), [DbStr(sidFull)])
+        let judgedFull = (full2.rowCount() > 0) && (full2.getInt(0, 0) != 0)
         runner.check("★★ 反向：真正答满 6 项的仍被判成已完成", judgedFull)
         // ★ 坏 JSON 不得被当成"已完成"（否则它会永不清理）
         db.exec("INSERT INTO previsit_session (id, patient_id, turn, form_json, created_at, updated_at) " +
@@ -595,9 +603,9 @@ public func acP2_6(runner: TestRunner, db: DbBackend): Unit {
                 [DbStr("probe-badjson"), DbInt(9706), DbStr(""), DbInt(now), DbInt(now)])
         db.exec("UPDATE previsit_session SET form_json = ? WHERE id = ?",
                 [DbStr("{坏 JSON"), DbStr("probe-badjson")])
-        let badRs = db.query("SELECT " + previsitCompleteSql() + " FROM previsit_session WHERE id = ?",
-                             [DbStr("probe-badjson")])
-        let badComplete = if (badRs.rowCount() > 0) { badRs.getInt(0, 0) != 0 } else { true }
+        let badRs = db.query("SELECT COUNT(*) FROM previsit_session WHERE id = ? AND " +
+                             previsitCompleteSql(), [DbStr("probe-badjson")])
+        let badComplete = (badRs.rowCount() > 0) && (badRs.getInt(0, 0) != 0)
         runner.check("★★ 坏 JSON 会话**不得**被判成已完成（否则它永不清理；JSON_LENGTH 会返回 NULL 就是这个洞）",
                      !badComplete)
     })
