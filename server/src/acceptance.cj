@@ -732,6 +732,11 @@ public func runAcceptance(db: DbBackend): Int64 {
     acP2_4(runner, db)
     acP2_5(runner, db)
     acP2_6(runner, db)
+    // P3 AI 能力中心（定义在 acceptance_ai.cj）
+    acP3_1(runner, db)
+    acP3_2(runner, db)
+    acP3_3(runner, db)
+    acP3_4(runner, db)
     println("")
     println("通过 ${runner.passed} 项，失败 ${runner.failed} 项")
     if (runner.failed == 0) {

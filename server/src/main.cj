@@ -191,8 +191,9 @@ func selftest(): Int64 {
     let memTables = 4
     let authTables = 3
     let previsitTables = 1
-    let totalTables = bookingTables + memTables + authTables + previsitTables
-    check("表集共 ${totalTables} 张 = 号源域 ${bookingTables} + 配套域 ${memTables} + 鉴权域 ${authTables} + 预问诊域 ${previsitTables}",
+    let aiTables = 1        // ai_setting（P3 AI 能力中心；直接 SQL、非号源域、非医疗数据）
+    let totalTables = bookingTables + memTables + authTables + previsitTables + aiTables
+    check("表集共 ${totalTables} 张 = 号源域 ${bookingTables} + 配套域 ${memTables} + 鉴权域 ${authTables} + 预问诊域 ${previsitTables} + AI 配置域 ${aiTables}",
           ALL_TABLES.size == totalTables)
     check("号源/挂号域恰好 ${bookingTables} 张（schedule / appointment）",
           BOOKING_DOMAIN_TABLES.size == bookingTables)
@@ -200,6 +201,10 @@ func selftest(): Int64 {
           !BOOKING_DOMAIN_TABLES.contains(TABLE_PREVISIT))
     check("★ 预问诊表**不**属内存 Store 负责的表（它是医疗数据，必须立刻持久化）",
           !MEM_TABLES.contains(TABLE_PREVISIT))
+    check("★ AI 配置表**不**属号源域（它是配置，不是可扣号路径）",
+          !BOOKING_DOMAIN_TABLES.contains(TABLE_AI_SETTING))
+    check("★ AI 配置表**不**属内存 Store 负责的表（配置要立刻持久化，不能进整表替换范式）",
+          !MEM_TABLES.contains(TABLE_AI_SETTING))
     /*
      * ⚠ 写成"3 张表各判一次"而不是跨行 `&&` 串联 ——
      *   实测跨行时 cjc 报 `warning: possibly confusing line terminator`
@@ -568,7 +573,9 @@ func serve(args: Array<String>): Int64 {
     let triage = TriageRepo(db)
     // P2 预问诊会话仓储（直接 SQL；不属号源域，也不进内存 Store —— 见 schema.cj TABLE_PREVISIT）
     let previsit = PrevisitRepo(db)
-    let app = buildHospitalApp(repo, auth, gate, triage, previsit)
+    // P3 AI 能力中心配置仓储（DB 驱动 + 缓存失效；密钥只存引用，见 ai_settings.cj）
+    let aiSettings = AiSettingsRepo(db)
+    let app = buildHospitalApp(repo, auth, gate, triage, previsit, aiSettings)
     let box = HandleBox()
 
     println("")

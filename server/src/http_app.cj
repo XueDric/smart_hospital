@@ -581,7 +581,7 @@ func previsitSessionJson(s: PrevisitSession): JsonObject {
     }
     return o
 }
-public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate, triage: TriageRepo, previsit: PrevisitRepo): Router {
+public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate, triage: TriageRepo, previsit: PrevisitRepo, aiSettings: AiSettingsRepo): Router {
     let r = Router()
 
     /* ---------- 健康检查（无需认证，供压测与探活）---------- */
@@ -857,6 +857,68 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         sendOk(ctx, o)
     })
 
+    /* ===================== AI 能力中心（P3）===================== */
+
+    /*
+     * ★★ 三条设计要点（P3 的核心）：
+     *
+     *   ① **改配置零重启**：写库 → `invalidate()` → 下次读拿到新值。
+     *      没有"重启服务"这一步（那是参考系统创新点①要解决的痛点）。
+     *
+     *   ② ★★ **密钥绝不落库、也绝不回显**：
+     *      · 库里的 `ai.key_ref` 只存**引用**（`env:名` / `file:路径`），
+     *        形状由 `validateKeyRef()` 机制性把关；
+     *      · 回显时 `secret` 项**只给"是否已设置 + 引用类型"**，
+     *        连变量名/路径都不回（路径会泄露部署结构）。
+     *      即使是管理员也不回明文 —— 与"账号接口绝不回 pw_hash"同一条纪律。
+     *
+     *   ③ **写操作仅管理员**（`Action.ManageSchedule`），读也是 ——
+     *      AI 配置包含 endpoint 与部署路径信息，不该对患者/医生开放。
+     */
+
+    /* ---------- GET /api/v1/admin/ai/settings —— 读配置（仅管理员，秘密项脱敏）---------- */
+    r.get("/api/v1/admin/ai/settings", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        sendOk(ctx, aiSettingsJson(aiSettings, hNowEpoch()))
+    })
+
+    /* ---------- PUT /api/v1/admin/ai/settings/:key —— 改一项配置（仅管理员）---------- */
+    /*
+     * ⚠ 用 PUT + 路径参数（而不是 POST 一个 JSON 体）：配置项是**幂等的键值写**，
+     *   PUT 的语义正好；而且这样"改了哪一项"在访问日志里一眼可见（便于审计）。
+     */
+    r.put("/api/v1/admin/ai/settings/:key", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        let key = ctx.paramOr("key", "")
+        let body = bodyObj(ctx)
+        let value = match (bodyStr(ctx, "value")) {
+            case Some(v) => v
+            case None => ""
+        }
+        let res = aiSettings.put(key, value, hNowEpoch())
+        if (!res.ok) {
+            /*
+             * ⚠ 拒绝原因**如实回给调用方**（它是给运维看的话，不含敏感信息）——
+             *   但**不回显被拒的值**：如果那是一个误写成裸密钥的值，
+             *   回显它就等于把密钥写进了响应体与访问日志。
+             */
+            throw apiErrorMsg("VALIDATION_FAILED", res.rejected)
+        }
+        sendOk(ctx, aiSettingsJson(aiSettings, hNowEpoch()))
+    })
+
+    /* ---------- DELETE /api/v1/admin/ai/settings/:key —— 删一项（回到默认值）---------- */
+    r.delete("/api/v1/admin/ai/settings/:key", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        let key = ctx.paramOr("key", "")
+        if (!aiSettings.remove(key, hNowEpoch())) {
+            throw apiErrorMsg("VALIDATION_FAILED", "未知的配置项：${key}")
+        }
+        sendOk(ctx, aiSettingsJson(aiSettings, hNowEpoch()))
+    })
     /* ===================== 业务接口 ===================== */
 
     /* ---------- POST /api/v1/triage —— 智能分诊（P2）---------- */
@@ -1247,8 +1309,9 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
  *   "分诊不会改号源"在**类型层面**成立，而不是靠约定。
  */
 public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate,
-                             triage: TriageRepo, previsit: PrevisitRepo): QingZhouApp {
-    let router = buildHospitalRouter(repo, auth, gate, triage, previsit)
+                             triage: TriageRepo, previsit: PrevisitRepo,
+                             aiSettings: AiSettingsRepo): QingZhouApp {
+    let router = buildHospitalRouter(repo, auth, gate, triage, previsit, aiSettings)
     return QingZhouApp()
         .use(requestId())
         .use(logger())

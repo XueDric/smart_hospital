@@ -109,13 +109,33 @@ public let BOOKING_DOMAIN_TABLES: Array<String> = [TABLE_SCHEDULE, TABLE_APPOINT
 public let TABLE_PREVISIT: String = "previsit_session"
 
 /*
+ * ★ AI 配置表（P3 AI 能力中心）。
+ *
+ * ── 为什么是 KV 表而不是"一个字段一列" ──────────────────────────────────
+ *   AI 配置项会随模型协议演进而增删（超时/并发/max_tokens/新参数…）。
+ *   一列一项 ⇒ 每次加参数都要 DDL 变更 + 迁移。KV 表让"加配置项"
+ *   只是往 `aiSettingSpecs()` 加一行（与 previsit 的 form_json 同一理由）。
+ *
+ * ── ★★ 为什么这张表里**不会有密钥** ─────────────────────────────────────
+ *   brief §5.3 明确警告"把密钥写进库是倒退"。本设计里
+ *   `ai.key_ref` 存的是**引用**（`env:名` / `file:路径`），
+ *   由 `validateKeyRef()` **机制性**拒绝任何其它形状 ——
+ *   所以即使有人误操作，也不可能把裸密钥写进这张表。
+ *   该约束的验收断言在 AC-P2-7 / AC-P3-*（见 acceptance_ai.cj）。
+ *
+ * ⚠ `k` 是主键（配置项名唯一）；`v` 用 TEXT（endpoint/路径可能较长）。
+ */
+public let TABLE_AI_SETTING: String = "ai_setting"
+
+/*
  * 全部业务表。
  * ⚠ 与 `BOOKING_DOMAIN_TABLES` 的差集就是"走内存 Store 范式"的表。
  */
 public let ALL_TABLES: Array<String> = [
     TABLE_DEPARTMENT, TABLE_DOCTOR, TABLE_SCHEDULE,
     TABLE_APPOINTMENT, TABLE_PATIENT, TABLE_MEDICAL_RECORD,
-    TABLE_AUTH_USER, TABLE_AUTH_TOKEN, TABLE_AUTH_ATTEMPT, TABLE_PREVISIT
+    TABLE_AUTH_USER, TABLE_AUTH_TOKEN, TABLE_AUTH_ATTEMPT, TABLE_PREVISIT,
+    TABLE_AI_SETTING
 ]
 
 /* ===================== DDL ===================== */
@@ -362,6 +382,13 @@ public let SCHEMA_DDL: Array<String> = [
      * ⚠ **不建**指向 `patient` 的外键：与本 schema 其它表一致（见 hResetAll 的说明），
      *   让测试可以独立清表。
      */
+    "CREATE TABLE IF NOT EXISTS ai_setting (" +
+    "k VARCHAR(64) NOT NULL, " +
+    "v TEXT NOT NULL, " +
+    "updated_at BIGINT NOT NULL DEFAULT 0, " +
+    "PRIMARY KEY (k)" +
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+
     "CREATE TABLE IF NOT EXISTS previsit_session (" +
     "id VARCHAR(64) NOT NULL, " +
     "patient_id BIGINT NOT NULL, " +

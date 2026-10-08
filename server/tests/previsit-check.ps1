@@ -1,4 +1,4 @@
-﻿# P2 预问诊 HTTP / SSE 端到端验证
+﻿# P2 预问诊 HTTP / SSE + P3 AI 配置 端到端验证
 #
 # 与其它测试的分工：
 #   · triagetest 的 rp* 用例 —— **纯逻辑**（SSE 帧格式、业务值完整性、字符截断）
@@ -7,6 +7,10 @@
 # ⚠ 含中文的 PowerShell 脚本必须 UTF-8 with BOM。
 #
 # 用法：.\previsit-check.ps1 -Base http://127.0.0.1:8091 -AdminPw <口令>
+#
+# 覆盖两块：
+#   [1]-[7]  P2 预问诊：SSE 帧 / 多轮状态机 / 业务值非流式 / 会话隔离
+#   [8]      P3 AI 能力中心：权限、改配置零重启、★ 密钥不落库且不回显
 
 param(
     [string]$Base = "http://127.0.0.1:8091",
@@ -232,7 +236,76 @@ Check "★ 空主诉不报错，而是照常开流并问第 1 项（流式前不
       (($sse2.Body -match '"event":"meta"') -and ($sse2.Body -match 'main哪里不舒服|主要哪里不舒服')) `
       "（这是刻意设计：流式响应无法在开始后再改为错误码）"
 
+# ── 8) P3 AI 能力中心 ────────────────────────────────────────────────────
+Write-Host ""
+Write-Host "[8] ★★ P3 AI 能力中心（权限 / 零重启 / 密钥不落库与不回显）"
+$null = Invoke-MySqlScalar -My $My -Sql "DELETE FROM ai_setting" -Label "清 AI 配置"
+
+# 8.1 权限：只有管理员能读写
+$r = DoReq 'ainoauth' 'GET' '/api/v1/admin/ai/settings' @() $null
+Check "无令牌读配置 → 401" ($r.Http -eq 401) ("HTTP $($r.Http)")
+$r = DoReq 'aipat' 'GET' '/api/v1/admin/ai/settings' @("Authorization: Bearer $patTok") $null
+Check "★ 患者读配置 → 403（AI 配置含 endpoint 与部署路径，不该对患者开放）" `
+      ($r.Http -eq 403) ("HTTP $($r.Http)")
+
+# 8.2 管理员能读，且含脱敏标记
+$r = DoReq 'aiadm' 'GET' '/api/v1/admin/ai/settings' @("Authorization: Bearer $admTok") $null
+Check "管理员读配置 → 200" ($r.Http -eq 200) ("HTTP $($r.Http)")
+Check "响应含 items 与 enabled/disabled_reason" `
+      (($null -ne $r.Json.data.items) -and ($null -ne $r.Json.data.enabled)) `
+      ("enabled=$($r.Json.data.enabled)")
+Check "未配置时 enabled=false 且理由非空" `
+      ($r.Json.data.enabled -eq $false -and $r.Json.data.disabled_reason.Length -gt 0)
+
+# 8.3 ★★ 密钥不落库：裸密钥必须被拒（HTTP 层）
+foreach ($bad in @('sk-abcdefghijklmnopqrstuvwxyz012345', 'env:sk-abcdefghijklmnopqrstuvwxyz', 'https://api.x/v1?key=sk-xxx')) {
+    $r = DoReq ('aibad' + [Guid]::NewGuid().ToString('N').Substring(0,6)) 'PUT' `
+         '/api/v1/admin/ai/settings/ai.key_ref' @("Authorization: Bearer $admTok") ('{"value":"' + $bad + '"}')
+    Check "★★ 裸密钥被拒 400（$($bad.Substring(0,[Math]::Min(20,$bad.Length)))…）" ($r.Http -eq 400) ("HTTP $($r.Http)")
+}
+# ★ 并且**整个响应体里不得回显被拒的值**（否则日志/响应就成了泄露渠道）
+$r = DoReq 'aiecho' 'PUT' '/api/v1/admin/ai/settings/ai.key_ref' @("Authorization: Bearer $admTok") `
+     '{"value":"sk-SUPERSECRETVALUE1234567890abcdef"}'
+Check "★ 拒绝响应里**不回显**被拒的值" (-not ($r.Body -match 'SUPERSECRETVALUE')) ("体=$($r.Body.Substring(0,[Math]::Min(80,$r.Body.Length)))")
+
+# 8.4 合法引用可写；回显只给"设置了没有 + 引用类型"
+$r = DoReq 'aiok' 'PUT' '/api/v1/admin/ai/settings/ai.key_ref' @("Authorization: Bearer $admTok") `
+     '{"value":"env:MY_SECRET_ENV_NAME"}'
+Check "合法引用 env:NAME 被接受 200" ($r.Http -eq 200) ("HTTP $($r.Http)")
+Check "★★ 回显**不含**变量名（连名都不回）" (-not ($r.Body -match 'MY_SECRET_ENV_NAME'))
+Check "★ 回显给出 ref_kind=env" ($r.Body -match '"ref_kind":"env"') ("$($r.Body.Substring(0,[Math]::Min(100,$r.Body.Length)))")
+
+# 8.5 ★ endpoint 回显必须脱敏（查询串可能含凭据）
+$r = DoReq 'aiep' 'PUT' '/api/v1/admin/ai/settings/ai.endpoint' @("Authorization: Bearer $admTok") `
+     '{"value":"https://api.example.com/v1/chat?api-key=SECRET_IN_QUERY"}'
+Check "endpoint 写入 200" ($r.Http -eq 200) ("HTTP $($r.Http)")
+Check "★★ 回显不含 endpoint 的查询串（可能含凭据）" (-not ($r.Body -match 'SECRET_IN_QUERY'))
+Check "★ 回显只给 host" ($r.Body -match 'api\.example\.com')
+Check "★ 并标记 redacted=true（告知被脱敏过）" ($r.Body -match '"redacted":true')
+
+# 8.6 ★★ 改配置零重启：写入后**立刻**读到新值（无重启步骤）
+$r = DoReq 'aimodel' 'PUT' '/api/v1/admin/ai/settings/ai.model' @("Authorization: Bearer $admTok") `
+     '{"value":"zero-restart-probe-model"}'
+Check "写 model 200" ($r.Http -eq 200)
+$r = DoReq 'airead' 'GET' '/api/v1/admin/ai/settings' @("Authorization: Bearer $admTok") $null
+Check "★★ 同一进程立刻读到新值（**零重启**）" ($r.Body -match 'zero-restart-probe-model')
+# 删除 → 回到默认（空）
+$null = DoReq 'aidel' 'DELETE' '/api/v1/admin/ai/settings/ai.model' @("Authorization: Bearer $admTok") $null
+$r = DoReq 'airead2' 'GET' '/api/v1/admin/ai/settings' @("Authorization: Bearer $admTok") $null
+Check "删除后回到默认值（回显里不再有该值）" (-not ($r.Body -match 'zero-restart-probe-model'))
+
+# 8.7 ★ 未登记的配置项必须被拒（否则 KV 表变垃圾场）
+$r = DoReq 'aiunk' 'PUT' '/api/v1/admin/ai/settings/ai.garbage' @("Authorization: Bearer $admTok") '{"value":"x"}'
+Check "★ 未登记的配置项被拒 400" ($r.Http -eq 400) ("HTTP $($r.Http)")
+Check "★ 且确实没进库（$(& $My.Client -h $My.DbHost -P $My.Port -u $My.User "-p$($My.Pass)" --skip-ssl $My.Db -N -B -e "SELECT COUNT(*) FROM ai_setting WHERE k='ai.garbage'" 2>$null) 行）" `
+      ("$(& $My.Client -h $My.DbHost -P $My.Port -u $My.User "-p$($My.Pass)" --skip-ssl $My.Db -N -B -e "SELECT COUNT(*) FROM ai_setting WHERE k='ai.garbage'" 2>$null)".Trim() -eq '0')
+
+# 8.8 ★★ 全表兜底扫描：库里不得出现"像密钥"的长随机串
+$rows = Invoke-MySqlScalar -My $My -Sql "SELECT COUNT(*) FROM ai_setting WHERE CHAR_LENGTH(v) >= 32 AND v NOT LIKE '%:%' AND v NOT LIKE '%/%' AND v NOT LIKE '% %'" -Label "可疑行数"
+Check "★★ 全表扫描：没有任何一行的值像裸密钥（可疑 $rows 行）" ("$rows".Trim() -eq '0')
+
 # 清理
+$null = Invoke-MySqlScalar -My $My -Sql "DELETE FROM ai_setting" -Label "清 AI 配置"
 $null = Invoke-MySqlScalar -My $My -Sql "DELETE FROM previsit_session" -Label "清预问诊会话"
 $null = Invoke-MySqlScalar -My $My -Sql "DELETE FROM auth_login_attempt" -Label "收尾清计数"
 Remove-Item $tmp -Recurse -Force
