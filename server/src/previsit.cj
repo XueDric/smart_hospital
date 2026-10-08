@@ -35,6 +35,81 @@ package qingzhou
 import std.collection.*
 import stdx.encoding.json.*
 
+/*
+ * "问诊单**未采完**"的 SQL 片段 —— 由 `intakeSlots()` **生成**，不手写。
+ *
+ * ⚠⚠ 为什么必须生成、且判据不是"表单空不空"（我第一版写 `form_json = ''`，实测无效）：
+ *
+ *   我原以为"被放弃的会话"就是 `form_json = ''`。**错** ——
+ *   `GET /previsit/stream?chief_complaint=...` 会**立刻把主诉写进表单**，
+ *   于是刚开的会话 `form_json` 就已经是 `{"chief":"咳嗽"}`（非空）。
+ *   实测连开 42 次 ⇒ 42 行全都 `form_json <> ''`，那条 DELETE 一行都匹配不到。
+ *
+ *   ⇒ 真正的判据是"**六个槽位齐不齐**"，不是"表单空不空"。
+ *
+ * ── 为什么用字符串包含来数槽位（而不是 JSON 函数）──────────────────────
+ *   ① 本项目起步就定"不依赖 DB 高级特性"的路线（brief §5.1）；
+ *      用 `JSON_CONTAINS_PATH` 会把"能不能跑"绑在 MySQL 的 JSON 支持上。
+ *   ② 六个 key 都是英文字段名，且**两两不是彼此的子串**
+ *      （chief / duration / severity / associated / history / allergy）
+ *      ⇒ 用 `LIKE '%key%'` 数出现次数是安全的。
+ *      ⚠ 这个前提必须成立：加新槽位时若取了别人的子串（如加 `chief2`），
+ *      计数会偏大 ⇒ **`rpIncompleteRule` 用例会变红**（按类别扫，不靠人记）。
+ *   ③ 片段由 `intakeSlots()` 生成 ⇒ 加槽位只改一处（"口径只留一处"）。
+ */
+func previsitSlotCountSql(): String {
+    var s = "("
+    var first = true
+    for (sl in intakeSlots()) {
+        if (!first) {
+            s = s + " + "
+        }
+        // LIKE 的 % 是通配符；key 由我们自己的表定义，不含 % 或 _
+        s = s + "(form_json LIKE '%${sl.key}%')"
+        first = false
+    }
+    return s + ")"
+}
+
+/* "问诊单**未采完**"（槽位没齐）。 */
+func previsitIncompleteSql(): String {
+    return previsitSlotCountSql() + " < ${intakeSlots().size}"
+}
+
+/* "问诊单**已采完**"（槽位齐了）—— 与上面互补。 */
+func previsitCompleteSql(): String {
+    return previsitSlotCountSql() + " >= ${intakeSlots().size}"
+}
+
+/* ===================== 卫生阈值（会话清理）===================== */
+
+/*
+ * 被放弃会话的 TTL（秒）：30 分钟。
+ *
+ * 取值理由：患者中途离开后**不会再回来接着答**（他没有可恢复的入口，
+ * 会话 id 只在当次前端的流里），所以未完成会话的"追问价值"很快归零。
+ * 30 分钟与"一次门诊候诊"同量级，足够覆盖"答到一半去缴费再回来"。
+ */
+public let PREVISIT_ABANDONED_TTL: Int64 = 1800
+
+/*
+ * 同一患者**未完成**会话的保留上限。
+ *
+ * ⚠ 这个上限防的是**滥用**：反复 `GET /previsit/stream` 但不作答
+ *   （复查实测连续 12 次就新增 12 行）。取 5 —— 正常患者不会有 5 个
+ *   同时进行中的问诊；而连开 5 次以上的基本是脚本。
+ */
+public let PREVISIT_MAX_OPEN: Int64 = 5
+
+/*
+ * 同一患者**已完成**问诊单的保留上限。
+ *
+ * ⚠ 这是**安全阀**，不是保留策略：真实归档属 P4 病历域（要有明确的
+ *   数据保留期与审计要求）。这里只保证"不会无界增长"。
+ *   取 50：覆盖一个患者相当长一段时间的就诊记录。
+ */
+public let PREVISIT_MAX_DONE: Int64 = 50
+
 /* ===================== 问诊槽位（静态表）===================== */
 
 /*
@@ -190,13 +265,94 @@ public class PrevisitRepo {
         this.db = db
     }
 
-    /* 建会话。返回会话 id（32 字节随机 = 64 hex，与令牌同强度，猜不到别人的会话）。 */
+    /*
+     * 建会话。返回会话 id（32 字节随机 = 64 hex，与令牌同强度，猜不到别人的会话）。
+     *
+     * ★ 顺手做两件**卫生**工作（2026-10-07 按第六份复查补）：
+     *   ① `pruneStale()` —— 清理陈旧会话；
+     *   ② 限制同一患者的**未完成**会话数，超出则丢掉最旧的。
+     *
+     * ── 原缺陷（复查实测，我也复现了）────────────────────────────────────────
+     *   连续 12 次 `GET /previsit/stream` ⇒ `previsit_session` **新增 12 行**，
+     *   而全仓**没有任何地方**清理它（唯一的 DELETE 在测试夹具里）。
+     *   反复开流但不作答的客户端会让这张表**永久堆积**。
+     *
+     *   ⚠ 与本仓既有的卫生习惯不一致：`pruneTokens`（签发令牌时顺手清过期）
+     *     与 `pruneAttempts`（登录成功时顺手清陈旧计数）都是这么做的。
+     *     **同一类问题在别处已有解法，新表就该照做** —— 这正是"按类别扫"该覆盖到的。
+     *
+     * ── 为什么阈值分两档（可解释，不是拍脑袋）──────────────────────────────
+     *   · **未采完**会话（槽位没齐，见 previsitIncompleteSql）：患者中途放弃的，30 分钟后没有任何
+     *     追问价值（他不会再回来接着答），且它们数量最大 ⇒ TTL 短。
+     *   · **已完成**会话（有表单）：是**患者档案素材**，要留得久 ⇒ TTL 长，
+     *     且**由保留上限**约束（不是无限留）。真实归档属 P4 病历域，这里只防无界增长。
+     */
     public func create(patientId: Int64, now: Int64): String {
+        let _p = pruneStale(now)
+        let _c = capSessions(patientId, now)
         let sid = newToken()
         db.exec("INSERT INTO previsit_session (id, patient_id, turn, form_json, created_at, updated_at) " +
                 "VALUES (?, ?, 0, '', ?, ?)",
                 [DbStr(sid), DbInt(patientId), DbInt(now), DbInt(now)])
         return sid
+    }
+
+    /*
+     * 清理陈旧会话（返回删除行数）。
+     *
+     * ⚠ 只删**未采完**的（判据见 `previsitIncompleteSql`）：已完成的问诊单
+     *   **不在这里删** —— 它是医疗记录素材，删除属于"数据保留策略"，
+     *   不该由一个顺手 prune 决定。已完成会话的增长由 `capSessions` 的上限约束。
+     */
+    public func pruneStale(now: Int64): Int64 {
+        return db.exec(
+            "DELETE FROM previsit_session WHERE " + previsitIncompleteSql() + " AND updated_at < ?",
+            [DbInt(now - PREVISIT_ABANDONED_TTL)])
+    }
+
+    /*
+     * 把某患者的会话数压到上限内（返回删除行数）。
+     *
+     * ⚠ 只压**未采完**会话：已完成的问诊单是医疗记录，不能因为"开了太多新会话"
+     *   而被顶掉。所以两个上限是**分开**的：
+     *     · 未采完：`PREVISIT_MAX_OPEN`（防滥用：反复开流）
+     *     · 已完成：`PREVISIT_MAX_DONE`（防无界增长；安全阀，不是保留策略）
+     */
+    public func capSessions(patientId: Int64, now: Int64): Int64 {
+        var removed: Int64 = 0
+        // ① 未采完会话：超出上限时丢最旧的
+        let openRows = db.query(
+            "SELECT COUNT(*) FROM previsit_session WHERE patient_id = ? AND " + previsitIncompleteSql(),
+            [DbInt(patientId)])
+        if (openRows.rowCount() > 0 && openRows.getInt(0, 0) >= PREVISIT_MAX_OPEN) {
+            /*
+             * 删掉"除了最新 N-1 条之外"的未采完会话。
+             *
+             * ⚠ `LIMIT` 不能直接用在带子查询的 DELETE 里（MySQL 限制），
+             *   所以用 `id NOT IN (子查询取最新 N-1 条)` 的写法。
+             *   子查询按 `updated_at DESC, id DESC` 排序 —— 加 `id` 是为了
+             *   **同秒内也确定**（否则同一时间戳的多条顺序随机，测试会抖）。
+             */
+            removed = removed + db.exec(
+                "DELETE FROM previsit_session WHERE patient_id = ? AND " + previsitIncompleteSql() + " " +
+                "AND id NOT IN (SELECT id FROM (SELECT id FROM previsit_session " +
+                "WHERE patient_id = ? AND " + previsitIncompleteSql() + " " +
+                "ORDER BY updated_at DESC, id DESC LIMIT ?) t)",
+                [DbInt(patientId), DbInt(patientId), DbInt(PREVISIT_MAX_OPEN - 1)])
+        }
+        // ② 已完成会话：安全阀（超出则丢最旧的）
+        let doneRows = db.query(
+            "SELECT COUNT(*) FROM previsit_session WHERE patient_id = ? AND " + previsitCompleteSql(),
+            [DbInt(patientId)])
+        if (doneRows.rowCount() > 0 && doneRows.getInt(0, 0) >= PREVISIT_MAX_DONE) {
+            removed = removed + db.exec(
+                "DELETE FROM previsit_session WHERE patient_id = ? AND " + previsitCompleteSql() + " " +
+                "AND id NOT IN (SELECT id FROM (SELECT id FROM previsit_session " +
+                "WHERE patient_id = ? AND " + previsitCompleteSql() + " " +
+                "ORDER BY updated_at DESC, id DESC LIMIT ?) t)",
+                [DbInt(patientId), DbInt(patientId), DbInt(PREVISIT_MAX_DONE - 1)])
+        }
+        return removed
     }
 
     /* 取会话。⚠ **必须带 patientId** —— 只按 id 取会让患者 A 读到 B 的问诊单。 */
@@ -272,8 +428,18 @@ public class PrevisitRepo {
         }
         s.form.answers[key] = v
         s.turn = s.turn + 1
-        db.exec("UPDATE previsit_session SET form_json = ?, turn = ?, updated_at = ? WHERE id = ?",
-                [DbStr(previsitFormJson(s.form)), DbInt(s.turn), DbInt(now), DbStr(sid)])
+        /*
+         * ★ 复查第 6 份第 4 条：`WHERE` 原来只带 `id`，靠前一步 `find(sid, patientId)`
+         *   把关。会话归属**不可变**（`patient_id` 建表后从不更新），所以那一步之后
+         *   `sid` 确实属于该患者 —— **不可利用**。但"安全性依赖两步之间的隐含前提"
+         *   是脆的：将来谁把 `find` 换成别的查询、或加了"会话可转移"的功能，
+         *   这里就会变成一个**真正的越权写**。
+         *   ⇒ 补上 `patient_id` 条件，让这条 UPDATE **自己**就是安全的。
+         */
+        db.exec("UPDATE previsit_session SET form_json = ?, turn = ?, updated_at = ? " +
+                "WHERE id = ? AND patient_id = ?",
+                [DbStr(previsitFormJson(s.form)), DbInt(s.turn), DbInt(now), DbStr(sid),
+                 DbInt(patientId)])
         out.ok = true
         return out
     }
@@ -322,7 +488,21 @@ public func previsitParseForm(json: String): PrevisitForm {
             }
         }
     } catch (e: Exception) {
-        // 坏数据 → 空表单（见上面说明）
+        /*
+         * ★ 坏数据 → 空表单（见上面说明：这是**有意**的，避免只读操作 500）。
+         *
+         * ⚠ 复查第 6 份第 5 条指出：**静默**返回空表单会丢审计留痕 ——
+         *   患者说"我明明答了，怎么是空的"时，运维查不出原因。
+         *   ⇒ 保留"不抛异常"的行为（那是对的），但**留下日志**：
+         *     谁（哪条会话）的 form_json 坏了、坏成什么样（截断到 200 字符）。
+         *
+         * ⚠ 日志里**不放完整原文**：`form_json` 含既往史/过敏史 —— 那是敏感医疗数据，
+         *   打全量等于把病历抄进日志文件（日志的访问控制通常比库弱）。
+         *   200 字符 + 明显截断标记足够定位问题，且不足以泄露一份完整病史。
+         */
+        let head = if (json.size > 200) { previsitTruncateChars(json, 200) + "…(已截断)" } else { json }
+        println("[WARN] previsit form_json 解析失败，已退化为空表单（患者会看到未作答）。" +
+                " 原因=${e.message} 原文前 200 字符=${head}")
     }
     return f
 }

@@ -731,6 +731,7 @@ public func runAcceptance(db: DbBackend): Int64 {
     acP2_3(runner, db)
     acP2_4(runner, db)
     acP2_5(runner, db)
+    acP2_6(runner, db)
     println("")
     println("通过 ${runner.passed} 项，失败 ${runner.failed} 项")
     if (runner.failed == 0) {

@@ -470,3 +470,99 @@ func hRepeatChar(c: String, n: Int64): String {
     }
     return s
 }
+/*
+ * AC-P2-6 ★ 预问诊会话**不会无界增长**（第六份复查第 1 条）。
+ *
+ * 复查实测：连续 12 次 `GET /previsit/stream` ⇒ 表新增 12 行，
+ * 而全仓**没有任何地方**清理它。我也复现了（连开 42 次 ⇒ 42 行）。
+ *
+ * ⚠⚠ 修的过程中我踩了一个**认知错误**，值得记下来：
+ *   我第一版把"被放弃的会话"判成 `form_json = ''` —— **错**。
+ *   `GET /previsit/stream?chief_complaint=...` 会**立刻把主诉写进表单**，
+ *   所以刚开的会话 `form_json` 就已经是 `{"chief":"咳嗽"}`（非空）。
+ *   实测连开 42 次，那条 DELETE **一行都匹配不到**（"修了"但没生效）。
+ *   真正的判据是"**六个槽位齐不齐**"。
+ *   ⇒ 本用例里**必须**故意带上 `chief_complaint`（复刻真实调用），
+ *     否则测的是"空表单"这条**不存在的**路径，缺陷会再次漏过。
+ */
+public func acP2_6(runner: TestRunner, db: DbBackend): Unit {
+    println("=== AC-P2-6 ★ 预问诊会话不会无界增长 ===")
+    runner.section("AC-P2-6", { =>
+        hResetAll(db)
+        db.exec("DELETE FROM previsit_session", Array<DbValue>())
+        let now = hNowEpoch()
+        let repo = PrevisitRepo(db)
+
+        // ★ 每次开流都带上主诉（复刻真实调用 —— 这是上面那个认知错误的关键）
+        var i: Int64 = 0
+        while (i < 20) {
+            let sid = repo.create(9701, now)
+            let _a = repo.answer(sid, 9701, "chief", "咳嗽", now)
+            i = i + 1
+        }
+        let rs = db.query("SELECT COUNT(*) FROM previsit_session WHERE patient_id = 9701",
+                          Array<DbValue>())
+        let n = if (rs.rowCount() > 0) { rs.getInt(0, 0) } else { 0 }
+        runner.check("★ 连开 20 次未采完的会话后，行数被压到上限 ${PREVISIT_MAX_OPEN}（实得 ${n}）",
+                     n <= PREVISIT_MAX_OPEN)
+        runner.check("★ 且不是「全删了」（保留最新几条，实得 ${n}）", n > 0)
+
+        // ★ 已完成的问诊单**不得**被"开新会话"顶掉（那是医疗记录）
+        db.exec("DELETE FROM previsit_session", Array<DbValue>())
+        let sidDone = repo.create(9702, now)
+        for (sl in intakeSlots()) {
+            let _x = repo.answer(sidDone, 9702, sl.key, "x", now)
+        }
+        // 再开一堆未采完的会话，把未采完的挤爆
+        var j: Int64 = 0
+        while (j < 20) {
+            let s2 = repo.create(9702, now)
+            let _a2 = repo.answer(s2, 9702, "chief", "咳嗽", now)
+            j = j + 1
+        }
+        runner.check("★★ 已完成的问诊单**未被**新会话顶掉（医疗记录不能因开新会话而丢）",
+                     repo.find(sidDone, 9702).isSome())
+        let doneNow = repo.find(sidDone, 9702).getOrThrow()
+        runner.check("★★ 且它的表单内容仍完整", doneNow.form.complete())
+
+        // ★ TTL：未采完且已陈旧 ⇒ 被 pruneStale 清掉
+        db.exec("DELETE FROM previsit_session", Array<DbValue>())
+        let old = now - PREVISIT_ABANDONED_TTL - 60      // 超过 TTL
+        let sidOld = repo.create(9703, old)
+        let _ao = repo.answer(sidOld, 9703, "chief", "咳嗽", old)
+        let removed = repo.pruneStale(now)
+        runner.check("★ 陈旧的未采完会话被清理（删除 ${removed} 行）", removed >= 1)
+        runner.check("★ 清理后读不到它", repo.find(sidOld, 9703).isNone())
+
+        // ★ TTL **不得**误删：未采完但**还新**的会话必须留着
+        db.exec("DELETE FROM previsit_session", Array<DbValue>())
+        let sidFresh = repo.create(9704, now)
+        let _af = repo.answer(sidFresh, 9704, "chief", "咳嗽", now)
+        let _r2 = repo.pruneStale(now)
+        runner.check("★★ TTL 不误删「还新」的未采完会话（患者正在作答中）",
+                     repo.find(sidFresh, 9704).isSome())
+
+        // ★ TTL **不得**误删已完成的
+        db.exec("DELETE FROM previsit_session", Array<DbValue>())
+        let sidDone2 = repo.create(9705, old)
+        for (sl in intakeSlots()) {
+            let _x = repo.answer(sidDone2, 9705, sl.key, "x", old)
+        }
+        let _r3 = repo.pruneStale(now)
+        runner.check("★★ TTL 不删**已采完**的问诊单（即使很旧 —— 它属数据保留策略，不归 prune 管）",
+                     repo.find(sidDone2, 9705).isSome())
+
+        // ★ 槽位计数的前提：六个 key 两两不是彼此的子串（否则 LIKE 计数会偏大）
+        let slots = intakeSlots()
+        var sub = 0
+        for (a in slots) {
+            for (b in slots) {
+                if (a.key != b.key && b.key.contains(a.key)) {
+                    sub = sub + 1
+                }
+            }
+        }
+        runner.check("★ 六个槽位 key 两两不是彼此的子串（LIKE 计数规则的前提，实得 ${sub} 对）",
+                     sub == 0)
+    })
+}
