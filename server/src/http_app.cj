@@ -30,6 +30,7 @@
 package qingzhou
 
 import std.collection.*
+import std.time.*
 import stdx.encoding.json.*
 
 /* ===================== 角色与权限（单一判定函数） ===================== */
@@ -404,7 +405,148 @@ func truncate64(s: String): String {
     }
     return s[0..64]
 }
-public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate): Router {
+/*
+ * 把 epoch **天数**转成 (年, 月, 日)。
+ *
+ * ── 为什么自己写而不用库 ────────────────────────────────────────────────
+ * 仓颉 std 里没有可直接用的"epoch → 年月日"（`std.time` 给的是 `DateTime`
+ * 的字段访问，但它按**本地时区**解释，而我们要的是**稳定可比**的日期字符串）。
+ *
+ * 用的是 Howard Hinnant 的 `civil_from_days`（公有领域算法）：
+ * 它**不需要闰年表、不需要 13 个月的数组、不需要循环**，
+ * 只有整数除法 —— 所以"闰年判断"这类最容易写错的地方在这里根本不存在。
+ *
+ * ⚠ 已用 9 个已知日期**逐个核对**（含 `2000-02-29` 这个世纪闰日、
+ *   `2026-10-01`、`1970-01-01` 等），全部吻合 —— 见 triage 的测试记录。
+ *   这类"手写日期算法"必须这样验，不能只跑一个"今天"看着对就完事。
+ */
+func civilFromDays(z0: Int64): (Int64, Int64, Int64) {
+    var z = z0
+    z = z + 719468
+    var era: Int64 = 0
+    if (z >= 0) {
+        era = z / 146097
+    } else {
+        era = (z - 146096) / 146097
+    }
+    let doe = z - era * 146097
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    let y = yoe + era * 400
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp = (5 * doy + 2) / 153
+    let d = doy - (153 * mp + 2) / 5 + 1
+    var m: Int64 = 0
+    if (mp < 10) {
+        m = mp + 3
+    } else {
+        m = mp - 9
+    }
+    var yy = y
+    if (m <= 2) {
+        yy = y + 1
+    }
+    return (yy, m, d)
+}
+
+/*
+ * 两位补零（日期串必须是**固定宽度**，否则字符串比较 `"2026-9-1" >= "2026-10-01"`
+ * 会给出错误结果 —— 逐字符比时字符 `9` 大于 `1`，会让 9 月排在 10 月之后）。
+ *
+ * ⚠ 名字带 `triage` 前缀：本项目是**单 package**（全部 .cj 编成一个包），
+ *   而框架里已有一个 `pad2` —— 实测报 `function 'pad2' has overload conflicts`。
+ *   单包模式下**所有顶层名字共享一个命名空间**，加前缀是最省事的隔离方式。
+ */
+func triagePad2(n: Int64): String {
+    if (n < 10) {
+        return "0${n}"
+    }
+    return "${n}"
+}
+
+/*
+ * 今天的日期（UTC），格式 `YYYY-MM-DD`。
+ *
+ * ⚠ 用 **UTC** 而不是本地时区：这个值会参与 `work_date >= today` 的**字符串比较**，
+ *   而字符串比较隐含"格式固定宽度"（见 `pad2` 的注释）。
+ *   用 UTC 让同一份数据在任何时区的机器上给出相同结果 ——
+ *   测试因此可复现（本地时区会让 CI 与开发机在同一天的边界上产生不同结论）。
+ *   单院区场景下 UTC 与本地最多差几小时，"今天"的偏差对分诊无实质影响，
+ *   而**可复现性**的收益是实打实的。
+ */
+func hTodayDate(): String {
+    let ms = DateTime.now().toUnixTimeStamp().toMilliseconds()
+    var days = ms / 86400000
+    if (ms < 0 && ms % 86400000 != 0) {
+        days = days - 1
+    }
+    let (y, m, d) = civilFromDays(days)
+    return "${y}-${triagePad2(m)}-${triagePad2(d)}"
+}
+
+/*
+ * 主诉输入的**字符**上限与**字节**上限。
+ *
+ * 两个都要：字节上限防"用超长 UTF-8 刷日志/内存"，
+ * 字符上限是**实际裁剪**用的（见 `triageTruncateChars` 的说明）。
+ * 500 字符足够容纳一段完整主诉（正常主诉几十字），不会误伤真实用户。
+ */
+let TRIAGE_INPUT_MAX_CHARS: Int64 = 500
+/* 500 个字符最坏情况（中文 3 字节）= 1500 字节；留一点余量 */
+let TRIAGE_INPUT_MAX_BYTES: Int64 = 1500
+
+/*
+ * 按**字符**截取前 n 个字符。
+ *
+ * ⚠ 存在的唯一理由：`String` 的下标/切片是**字节**偏移，直接 `s[0..n]`
+ *   会在多字节字符中间切断 ⇒ 非法 UTF-8 ⇒ 下游抛 `Invalid utf8 byte sequence`。
+ *   逐 `Rune` 收集到第 n 个为止，天然落在字符边界上。
+ *   已用最小探针验证 `String("胸痛，呕血".runes() 收集)` 能正确往返。
+ */
+func triageTruncateChars(s: String, n: Int64): String {
+    let buf = ArrayList<Rune>()
+    for (r in s.runes()) {
+        if (buf.size >= n) {
+            break
+        }
+        buf.add(r)
+    }
+    return String(buf.toArray())
+}
+/*
+ * 把分诊结论序列化成响应体。
+ *
+ * ⚠ 字段命名与错误码一样用 **snake_case**（与既有接口一致）。
+ * ⚠ 刻意**不**把 `redFlagEvidence` 放进响应 —— 它是**内部依据**（命中哪些词），
+ *   给患者看会变成"你自己说你胸痛"式的复述，没有价值；给攻击者看则暴露了
+ *   词表结构（可用于试探绕过）。它只进服务端日志/审计。
+ */
+func triageJson(v: TriageVerdict, truncated: Bool): JsonObject {
+    let o = JsonObject()
+    o.put("red_flag", JsonBool(v.redFlag))
+    o.put("reason_code", JsonString(v.reasonCode))
+    o.put("source", JsonString(v.source))
+    o.put("patient_note", JsonString(v.patientNote))
+    o.put("truncated", JsonBool(truncated))
+    let arr = ArrayList<JsonValue>()
+    for (x in v.options) {
+        let e = JsonObject()
+        e.put("department_id", JsonInt(x.departmentId))
+        e.put("department_name", JsonString(x.departmentName))
+        e.put("doctor_id", JsonInt(x.doctorId))
+        e.put("doctor_name", JsonString(x.doctorName))
+        e.put("doctor_title", JsonString(x.doctorTitle))
+        e.put("schedule_id", JsonInt(x.scheduleId))
+        e.put("work_date", JsonString(x.workDate))
+        e.put("period", JsonString(x.period))
+        e.put("remain_num", JsonInt(x.remainNum))
+        e.put("total_remain", JsonInt(x.totalRemain))
+        arr.add(e)
+    }
+    o.put("options", JsonArray(arr.toArray()))
+    o.put("count", JsonInt(v.options.size))
+    return o
+}
+public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate, triage: TriageRepo): Router {
     let r = Router()
 
     /* ---------- 健康检查（无需认证，供压测与探活）---------- */
@@ -682,6 +824,58 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
 
     /* ===================== 业务接口 ===================== */
 
+    /* ---------- POST /api/v1/triage —— 智能分诊（P2）---------- */
+    /*
+     * ★★ 三条设计口径（brief §5.2 + baseline `ai_client.cj` 口径 2）：
+     *
+     *   ① **结论非流式**：本接口一次性返回**校验过**的结论，绝不流式吐分诊结果。
+     *      理由：这是**业务值**（要拿它去挂号）。流式会让客户端先拿到
+     *      "推荐心内科"再拿到"其实推荐呼吸科"，而它可能已经拿第一句去挂号了。
+     *   ② **先取证后结论**：`triageComplaint` 内部先跑危急征象保险丝，
+     *      再做科室判定，**最后必须过 `TriageRepo` 的真实号源校验** ——
+     *      返回的每个 option 都对应库里 `remain_num > 0` 的真实排班。
+     *      没有任何"模型说的"内容会直接进 `options`。
+     *   ③ **三态如实标注**：`source` 目前**只可能是 `rules`** —— 本轮不接真模型
+     *      （Q6「AI 模型选型与合规」仍是待决问题，主诉属敏感信息）。
+     *      刻意**不**把它标成 `model` 来显得"AI 已完成"。
+     *
+     * 权限：`Action.Book`（患者）。
+     * ⚠ 患者 id 从**令牌**取，不从请求体取 —— 与「我的挂号」同一纪律。
+     */
+    r.post("/api/v1/triage", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.Book)
+        let body = bodyObj(ctx)
+        let complaint = match (bodyStr(ctx, "chief_complaint")) {
+            case Some(v) => v
+            case None => throw apiErrorMsg("VALIDATION_FAILED", "缺少必填字段 chief_complaint")
+        }
+        /*
+         * 长度上限：主诉是**用户输入**，直接进词表匹配与日志。
+         * 不设上限等于让一个请求把日志刷爆（也顺带保护分词循环）。
+         * 这里不报错而是**截断**：患者多写几句不该被拒 —— 多出来的内容
+         * 对分诊无用，但拒掉会让体验变差。截断这个动作**如实上报**（truncated
+         * 字段），不静默。
+         *
+         * ⚠⚠ **必须按"字符"截断，不能按"字节"截断** —— 我第一版就是 `text[0..500]`，
+         *   实测**超长中文主诉直接 500**：`String` 的下标是**字节**偏移，
+         *   而一个汉字占 3 字节，500 不是 3 的倍数 ⇒ 切在汉字中间 ⇒
+         *   拼出**非法 UTF-8**（下游 `redFlagSegments` 抛 `Invalid utf8 byte sequence`）。
+         *
+         *   这个缺陷形态很典型：**只在"输入足够长且长度不是字符宽度的整数倍"时才炸**，
+         *   所以短输入的手工测试完全发现不了（我一开始用 12 字测是好的）。
+         *   已由 `triage-check.ps1` 的"超长主诉"用例守住。
+         */
+        var text = complaint
+        var truncated = false
+        if (text.size > TRIAGE_INPUT_MAX_BYTES) {
+            text = triageTruncateChars(complaint, TRIAGE_INPUT_MAX_CHARS)
+            truncated = true
+        }
+        let today = hTodayDate()
+        let v = triageComplaint(triage, text, today)
+        sendOk(ctx, triageJson(v, truncated))
+    })
     /* ---------- GET /api/v1/schedules —— 排班列表（按科室/日期，P1 收尾项 ④）---------- */
     /*
      * 之前只有 `GET /schedules/:id`（按 id 查单个）。患者端要"看某科室某天有哪些号"
@@ -899,8 +1093,18 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
 
 /* ===================== 应用装配 ===================== */
 
-public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate): QingZhouApp {
-    let router = buildHospitalRouter(repo, auth, gate)
+/*
+ * ⚠ `triage` 由**调用方**传入（而不是在这里 `TriageRepo(db)`）：
+ *   本函数拿不到 `db`（它只收仓储对象）。让调用方建好再传，
+ *   保证"谁持有 db、谁决定暴露哪些仓储"这件事只有一处。
+ *   分诊仓储是**只读**的：它只读 `schedule/doctor/department`，不做任何写 ——
+ *   与 ADR-0001 §4.3「号源域写操作只经 BookingRepo」一致。
+ *   拆成独立对象而不是把只读查询塞进 BookingRepo，是为了让
+ *   "分诊不会改号源"在**类型层面**成立，而不是靠约定。
+ */
+public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate,
+                             triage: TriageRepo): QingZhouApp {
+    let router = buildHospitalRouter(repo, auth, gate, triage)
     return QingZhouApp()
         .use(requestId())
         .use(logger())

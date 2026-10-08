@@ -40,11 +40,36 @@ $actual = [ordered]@{}
 $actual['selftest'] = Get-PassCount 'selftest'
 $actual['authtest'] = Get-PassCount 'authtest'
 $actual['accept']   = Get-PassCount "accept $Dsn"
+# ★ P2 分诊纯逻辑自检（triagetest）—— 与 selftest 同理：从**运行结果**数，不写死。
+#   ⚠ 必须在**这里**算（不能放到下面去）：`$actual['triagetest']` 当场就要用它，
+#     而 PowerShell 是顺序执行 —— 我第一版把计算放在文件下半部分，
+#     结果登记到的是**空值**，对账报"文档写 60，实测 <空>"，
+#     看起来像文档错，实际是脚本自己的赋值顺序错。
+
+$triOut = & $exe triagetest 2>&1 | Out-String
+$triPass = ([regex]::Matches($triOut, '\[PASS\]')).Count
+$triFail = ([regex]::Matches($triOut, '\[FAIL\]')).Count
+if ($triFail -gt 0) { Write-Warning "  triagetest 有 $triFail 项失败（对账仍继续，但请先修）" }
+$actual['triagetest'] = $triPass
 # accept 用例的最大编号（AC-1…AC-N 里的 N）——由源码里 runner.acN() 的调用推导
 $accSrc = [System.IO.File]::ReadAllText((Join-Path $serverDir "src\acceptance.cj"), [System.Text.UTF8Encoding]::new($false))
-$acMax = ([regex]::Matches($accSrc, 'runner\.ac(\d+)\(\)') | ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Maximum).Maximum
+# ★ AC 编号上限：既数 `runner.acN()`（AC-1…AC-12），也认 P2 的用例（AC-P2-N）。
+#   P2 的用例是**独立函数**（`acP2_N(runner, db)`），不是 runner 的成员，
+#   所以正则要同时覆盖两种调用形态 —— 否则"上限"会停留在 AC-12，
+#   而文档写 AC-P2-4 就会被误报成漂移（反之更糟：新用例加了没人发现）。
+$acNums = [regex]::Matches($accSrc, 'runner\.ac(\d+)\(\)') | ForEach-Object { [int]$_.Groups[1].Value }
+$acP2Nums = [regex]::Matches($accSrc, '\bacP2_(\d+)\(') | ForEach-Object { [int]$_.Groups[1].Value }
+$acMax = ($acNums | Measure-Object -Maximum).Maximum
+$acP2Max = 0
+if ($acP2Nums.Count -gt 0) { $acP2Max = ($acP2Nums | Measure-Object -Maximum).Maximum }
+# 展示用：有 P2 用例时上限写作 "AC-P2-<n>"
+$acMaxLabel = "AC-$acMax"
+if ($acP2Max -gt 0) { $acMaxLabel = "AC-P2-$acP2Max" }
+# ★ 对账用"**单一可比数字**"：AC-N 记 N，AC-P2-N 记 N（两套编号各自独立计数，
+#   所以文档里 `AC-1…AC-P2-4` 与 `AC-1…AC-12` 表达的是**同一个上限概念**）。
+#   正则接受两种写法，取到的数字都应等于对应体系的最大 N。
 foreach ($k in $actual.Keys) { Write-Host ("  {0,-9} = {1}" -f $k, $actual[$k]) }
-Write-Host "  AC 编号上限 = AC-$acMax"
+Write-Host "  AC 编号上限（两套体系各自）= AC-$acMax 与 AC-P2-$acP2Max"
 
 # ★ REST 端点数（从 http_app.cj 数出来）—— 这个数字最容易漂：
 #   每加一个端点都得回头改 README，而"加了但忘了改文档"正是本项目漂过两次的病。
@@ -52,15 +77,19 @@ $appSrc = [System.IO.File]::ReadAllText((Join-Path $serverDir "src\http_app.cj")
 $epCount = ([regex]::Matches($appSrc, 'r\.(get|post|put|del)\("/api/')).Count
 Write-Host "  REST 端点数 = $epCount"
 
+
+
+
 # ── 2) 文档里"应该"写的值（想加新位置就往这里加一行）───────────────────
 #    每项：文件、匹配的正则（含一个捕获组）、期望值来源
 $checks = @(
     @{ File = "server\README.md";     Pattern = '\| `selftest` \|[^\r\n]*自检（\*\*?(?<n>\d+) 项'; Want = 'selftest' },
-    @{ File = "server\README.md";     Pattern = '`accept <dsn>` \| 验收测试 AC-1…AC-(?<ac>\d+)（\*\*(?<n>\d+) 项断言\*\*'; Want = 'accept' },
-    @{ File = "server\README.md";     Pattern = '`src/acceptance\.cj` \| AC-1…AC-(?<ac>\d+) 验收测试'; Want = 'accept' },
+    @{ File = "server\README.md";     Pattern = '`accept <dsn>` \| 验收测试 AC-1…AC-(?:P2-)?(?<ac>\d+)（\*\*(?<n>\d+) 项断言\*\*'; Want = 'accept' },
+    @{ File = "server\README.md";     Pattern = '`src/acceptance\.cj` \| AC-1…AC-(?:P2-)?(?<ac>\d+) 验收测试'; Want = 'accept' },
     @{ File = "docs\P1-HANDOFF.md";   Pattern = 'schema 自检（无需库） \| `hospital-server\.exe selftest` \| ✅ \*\*(?<n>\d+) 项\*\*'; Want = 'selftest' },
     @{ File = "README.md";            Pattern = '\*\*(?<ep>\d+) 个 REST\*\*'; Want = 'endpoints' },
-    @{ File = "docs\P1-HANDOFF.md";   Pattern = '验收（AC-1…AC-(?<ac>\d+)） \| `hospital-server\.exe accept <dsn>` \| ✅ \*\*(?<n>\d+) 项\*\*'; Want = 'accept' },
+    @{ File = "server\README.md";     Pattern = '`triagetest` \| P2 分诊.*?自检（\*\*\s*(?<n>\d+) 项\*\*'; Want = 'triagetest' },
+    @{ File = "docs\P1-HANDOFF.md";   Pattern = '验收（AC-1…AC-(?:P2-)?(?<ac>\d+)） \| `hospital-server\.exe accept <dsn>` \| ✅ \*\*(?<n>\d+) 项\*\*'; Want = 'accept' },
     @{ File = "docs\adr\ADR-0001-号源与挂号独立MySQL路径.md"; Pattern = '`hospital-server\.exe selftest` \| ✅ \*\*(?<n>\d+) 项\*\*'; Want = 'selftest' },
     @{ File = "docs\adr\ADR-0001-号源与挂号独立MySQL路径.md"; Pattern = '`hospital-server\.exe accept <dsn>` \| ✅ \*\*(?<n>\d+) 项 / 失败 0\*\*'; Want = 'accept' }
 )
@@ -106,10 +135,13 @@ foreach ($c in $checks) {
     }
     if ($hasAc) {
         $gotAc = [int]$m.Groups['ac'].Value
-        if ($gotAc -eq $acMax) {
-            Write-Host "  [OK]   $($c.File) —— AC 编号上限 = AC-$gotAc"
+        # 文档里若是 `AC-…AC-P2-N`，该与 P2 用例的最大编号比；否则与 AC-N 的比
+        $isP2Label = $m.Value -match 'P2-'
+        $wantAc = if ($isP2Label) { $acP2Max } else { $acMax }
+        if ($gotAc -eq $wantAc) {
+            Write-Host "  [OK]   $($c.File) —— AC 编号上限 = AC-$gotAc（$(if ($isP2Label) { "P2 体系" } else { "主体系" })）"
         } else {
-            Write-Host "  [DRIFT] $($c.File) —— 文档写 AC-$gotAc，实测上限 AC-$acMax"
+            Write-Host "  [DRIFT] $($c.File) —— 文档写 AC-$gotAc，实测上限 $acMaxLabel"
             $bad++
         }
     }

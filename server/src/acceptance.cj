@@ -720,6 +720,16 @@ public func runAcceptance(db: DbBackend): Int64 {
     runner.ac10()
     runner.ac11()
     runner.ac12()
+    /*
+     * P2 分诊（定义在 acceptance_triage.cj）。
+     * ⚠ 这几个是**独立函数**（不是 TestRunner 的成员），所以要把 runner 与 db 传进去 ——
+     *   而它们内部的断言仍走 runner.check，计数照样并入总账。
+     *   排在最后：不改变既有 AC-1…AC-12 的执行顺序（那些用例之间有共享夹具的隐含顺序）。
+     */
+    acP2_1(runner, db)
+    acP2_2(runner, db)
+    acP2_3(runner, db)
+    acP2_4(runner, db)
     println("")
     println("通过 ${runner.passed} 项，失败 ${runner.failed} 项")
     if (runner.failed == 0) {

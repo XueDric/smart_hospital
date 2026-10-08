@@ -365,6 +365,8 @@ if ($genPws.Count -gt 0) {
     Write-Host ""
     Write-Host "▸ 注意：第 [5] 节跑过 create-admin，admin 口令已轮换为：$($genPws[$genPws.Count - 1])"
     Write-Host "  （这是该节 40 次端到端回归的必然副作用；要恢复成已知值请重跑 create-admin）"
+    Write-Host "  ⚠ 因此**后续脚本**（triage-check / stress 等用 -AdminPw 的）请先重跑一次 create-admin 取新口令，"
+    Write-Host "     否则它们会用旧口令登录 → 401，表现为假红（不是产品缺陷）。"
 }
 
 Remove-Item $tmp -Recurse -Force

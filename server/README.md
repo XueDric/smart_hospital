@@ -66,9 +66,10 @@ cd server     # ⚠ cwd 必须是 server/，见下
 | 子命令 | 作用 | 需要 MySQL |
 | --- | --- | --- |
 | `selftest` | schema 与 ADR 不变量的**纯本地**自检（**31 项**断言） | ❌ |
+| `triagetest` | P2 分诊**纯逻辑**自检（**60 项**断言），不碰库不调模型 | ❌ |
 | `authtest` | **口令/令牌原语自检**（含 3 个公开测试向量，**17 项**） | ❌ |
 | `check-db <dsn>` | 连库 + 幂等建表 + 打印表清单（★ 标记号源域） | ✅ |
-| `accept <dsn>` | 验收测试 AC-1…AC-12（**56 项断言**；⚠ 只允许库名含 `test` 的测试库） | ✅ |
+| `accept <dsn>` | 验收测试 AC-1…AC-P2-4（**94 项断言**；⚠ 只允许库名含 `test` 的测试库） | ✅ |
 | `create-db <dsn>` | 幂等建库（utf8mb4）—— 测试库靠它 | ✅ |
 | `create-admin <dsn>` | 建/重置管理员并打印口令（**引导入口**） | ✅ |
 | `serve <dsn>` | **P1**：启动 HTTP / HTTPS 服务（默认只绑 `127.0.0.1`） | ✅ |
@@ -176,7 +177,8 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
 | `src/http_common.cj` | 统一响应/错误码表（`{ok,data}` / `{ok:false,error}`） |
 | `src/http_app.cj` | HTTP 装配 + 三端权限矩阵 + `principalOf()`（令牌优先，开发态头可选）+ **登录限流闸门** + **会话/列表端点** |
 | `src/auth_repo.cj` | 鉴权仓储：**口令强度校验（仓储层强制）** + 登录名归一 + 限流计数 + 会话按设备 |
-| `src/acceptance.cj` | AC-1…AC-12 验收测试（含异常兜底与变异测试记录） |
+| `src/acceptance.cj` | AC-1…AC-P2-4 验收测试（含异常兜底与变异测试记录） |
+| `src/acceptance_triage.cj` | AC-P2-1…AC-P2-4：分诊**验证层**在库级成立（含变异测试记录） |
 | `src/main.cj` | 进程入口与子命令分发（含 TLS 分支与 fail-closed） |
 | `new-tls-cert.ps1` | 生成带 SAN 的自签证书 + ASCII 运行副本 + ACL 收紧 |
 | `tests/tls-check.ps1` | TLS 验证（SslStream 真校验、反向验证、HTTPS 业务链路） |
@@ -259,6 +261,9 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
 | F | **`Array<T>` 没有 `sort()`** | `arr.sort()` → `'sort' is not a member of struct 'Array<Int64>'`；也找不到可用的 `std.sort` | 自己写插入排序（只需"确定顺序"，量级几十~几百） |
 | G | **跨行 `&&` / `+` 串联触发 `possibly confusing line terminator`** | 仓颉把行尾当语句终结符候选 | 拆行写，或把运算符留在行尾 |
 | H | **`build.ps1` 看不到完整编译诊断** | 它只抛 `编译失败 (exit N)`，没有文件:行:列 | 直接调 `cjc`（带 `--import-path` / `-L` / `-l:` 那一串）才能拿到全部错误与 `==> 文件:行:列`。**排查编译错时优先这么做** |
+| L | ★★ **仓颉 `String` 的下标/切片/`indexOf` 都是「字节」语义，不是字符** | P2 里连踩三次：① 按字节截断主诉 → 超长中文直接 **500**；② `"没有胸痛".indexOf("胸痛")` = **6**（不是 2），否定窗口算错 ⇒ **误报红牌**；③ 逐字节拼回字符串撕裂汉字 ⇒ `Invalid utf8 byte sequence` | 只有 `runes()` 是字符语义。**要按字符就全程 `runes()` + `String(Rune[])`**；要按字节就别混用字符单位 |
+| M | **断言"没有 X"时，要让 X 真的存在过** | P2 变异测试：把 `remain_num > 0` 改成 `>= 0`（约满也推荐），**92 项断言全绿** —— 因为用例造的是"科室没有排班行"，诱惑源根本不在 | 改造成"排班存在但 `remain_num = 0`"后变异立刻 **2 FAIL**。否则测试验的是"列表是空的"，而不是"不该出现的项没出现" |
+| N | **`.ps1` 存盘必须带 UTF-8 BOM** | 我用 `UTF8Encoding($false)`（无 BOM）改写 `doc-counts.ps1`，PowerShell 按 ANSI 读 ⇒ 满屏乱码 + `意外的标记` 解析错 | 所有 `server/**/*.ps1` 统一 `UTF8Encoding($true)` |
 | J | ★★ **"生成器"与"校验器"必须在同一契约下**（2026-10-07 的真实缺陷） | `create-admin` 约 **8.6%** 概率失败且**冒堆栈** —— `randCode(12)` 从 21 字母 + 5 数字里独立取值，**不保证成分**，于是自己的口令被**自己的**强度规则拒 | `randCode` 强制 1 字母 + 1 数字再整体洗牌；`createAdmin` 整体 try/catch + 重试一次。**加校验规则时必问：我们自己的生成器 / 默认值 / 夹具满足它吗？** |
 | K | **改写"清单 / 白名单"时最容易漏掉"原本已有的项"** | 我扩容弱口令表（补 40 余条）时**漏掉了原有的 `admin123`** —— 是测试用例当场抓到（期望 400 拿到 201） | 补回并加齐同类变体。**改清单要"读原清单 → 增补"，不要"重写"** |
 | I | **PowerShell 的 `MatchEvaluator` scriptblock 里必须用 `#` 注释** | 写 C 风格 `/* */` → `无法将"/*"项识别为 cmdlet` | 改 `#`。（同类：`.ps1` 文件本身也是 PowerShell 上下文） |

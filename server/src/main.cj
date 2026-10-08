@@ -491,7 +491,9 @@ func serve(args: Array<String>): Int64 {
 
     let repo = BookingRepo(db)
     let auth = AuthRepo(db)
-    let app = buildHospitalApp(repo, auth, gate)
+    // P2 分诊的**只读**仓储：只读 schedule/doctor/department，不写（见 buildHospitalApp 注释）
+    let triage = TriageRepo(db)
+    let app = buildHospitalApp(repo, auth, gate, triage)
     let box = HandleBox()
 
     println("")
@@ -742,6 +744,10 @@ main(args: Array<String>): Int64 {
     if (cmd == "authtest") {
         // 口令/令牌原语自检（含 RFC 7914 公开测试向量），不需要数据库
         return authSelfTest()
+    }
+    if (cmd == "triagetest") {
+        // P2 分诊纯逻辑自检（不碰库 / 不调模型）
+        return runTriageTests()
     }
     if (cmd == "check-db") {
         if (args.size < 2) {
