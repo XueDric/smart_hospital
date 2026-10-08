@@ -8,8 +8,24 @@
  * ── 这个文件存在的理由（读之前先看这段）──────────────────────────────────
  * ADR-0001 §4.2 立了**两套数据访问范式**：
  *   · **直接 SQL**（号源域）：`schedule` / `appointment`，MySQL 权威，见 domain_booking.cj；
- *   · **内存 Store**（配套域）：`department` / `doctor` / `patient` / `medical_record`，
+ *   · **内存 Store**（配套域）：`department` / `doctor` / `patient`
+ *     （★ **2026-10-07（P4）把 `medical_record` 移出本范式**，改直接 SQL —— 理由见下）
  *     全量载入内存 + 全局锁 + 每次提交**整体替换**这些表。
+ *
+ * ── ★ 为什么 `medical_record` 在 P4 被移出（ADR-0001 rev.6）────────────────
+ *   两条理由，都很硬：
+ *   ① 本仓**自己已经为同类数据判过一次**（P2）：`previsit_session` 当初就特意
+ *      排除在内存 Store 之外，原话是「**它是医疗数据，必须立刻持久化**，
+ *      不能进"整表替换"范式」。而病历是最典型的医疗数据。
+ *      同一类数据两套处置，正是本项目反复点名的病。
+ *   ② **内存 Store 在生产路径上从未刷盘**：全仓 `flushToMysql()` 的调用点
+ *      **只有 `acceptance.cj`（测试）**；`main.cj` / `http_app.cj` 完全没引用 MemStore。
+ *      ⇒ 病历若走这条路 = 写病历只写内存 + **永不落库**。
+ *    ⇒ 现由 `domain_emr.cj` 的 `MedicalRecordRepo` 独占写入（直接 SQL）。
+ *
+ *   ⚠ **`department` / `doctor` / `patient` 仍在内存 Store 里** —— 它们同样
+ *     "生产不刷盘"，但处置它们属另一项决策（见 P4-HANDOFF 未做清单），
+ *     本轮**没有**顺手改（避免把一件没论证的事混进来）。
  *
  * P0/P1 一直只实现了前者，所以 ADR 的 **AC-4 无法完整验证** ——
  * 「整体替换刷盘后 schedule/appointment 数据不变」这条不变量**没有真正的刷盘可测**，
@@ -55,16 +71,28 @@ import std.collection.*
  *   定义在使用之后会报 `variable 'MEM_TABLES' is used before being defined`
  *   —— 实测就是在 `flushToMysql` 的错误信息里用到它才暴露的。
  */
+/*
+ * ★★ 内存 Store 负责的表（**显式清单**，不是"库里所有表"）。
+ *
+ * ⚠ **`medical_record` 刻意不在这里**（P4/ADR-0001 rev.6）——
+ *   它是医疗数据，必须立刻持久化，由 `domain_emr.cj` 直接 SQL 写入。
+ *   该否定事实由两道断言钉住（见 selftest 与 AC-P4-*）：
+ *     · `!MEM_TABLES.contains(TABLE_MEDICAL_RECORD)`
+ *     · 刷盘只碰这三张表（AC-4 的机制性保证仍旧成立）
+ */
 public let MEM_TABLES: Array<String> = [
-    TABLE_DEPARTMENT, TABLE_DOCTOR, TABLE_PATIENT, TABLE_MEDICAL_RECORD
+    TABLE_DEPARTMENT, TABLE_DOCTOR, TABLE_PATIENT
 ]
 
 /* ===================== 内存实体 ===================== */
 
 /*
- * 内存表条目（读模型）。
- * 字段与 `schema.cj` 的 DDL 一一对应 —— 这里是"内存里的那一份"，
- * 两边的列必须同步改（漂移了刷盘就会写错列）。
+ * ⚠ 每个实体类必须与它对应的表**逐列同序** ——
+ *   因为 `loadAll()` 按列下标装配、`replaceXxx()` 也按同一顺序写回。
+ *   两边的列必须同步改（漂移了刷盘就会写错列）。
+ *
+ * ⚠ **这里不再有 `MemMedicalRecord`**（P4 起病历改直接 SQL，见文件头）。
+ *   留一个内存副本等于留一个"两处数据模型"的口子，迟早不一致。
  */
 public class MemDepartment {
     public var id: Int64 = 0
@@ -95,22 +123,12 @@ public class MemPatient {
     public var createdAt: Int64 = 0
 }
 
-public class MemMedicalRecord {
-    public var id: Int64 = 0
-    public var appointmentId: Int64 = 0
-    public var patientId: Int64 = 0
-    public var doctorId: Int64 = 0
-    public var chiefComplaint: String = ""
-    public var presentIllness: String = ""
-    public var pastHistory: String = ""
-    public var allergyHistory: String = ""
-    public var physicalExam: String = ""
-    public var diagnosis: String = ""
-    public var treatment: String = ""
-    public var status: String = "draft"
-    public var createdAt: Int64 = 0
-    public var updatedAt: Int64 = 0
-}
+
+/*
+ * ⚠ 原先这里有一个 `MemMedicalRecord` 类 —— P4 起**已删除**：
+ *   病历改直接 SQL（`domain_emr.cj` 的 `MedicalRecord`），不再有内存副本。
+ *   留着它就是留一个"两处数据模型"的口子（迟早不一致）。
+ */
 
 /*
  * 刷盘结果回传用（见 flushToMysql 的说明：仓颉闭包不能直接捕获外层可变 var）。
@@ -139,7 +157,7 @@ public class MemStore {
     public var departments: HashMap<Int64, MemDepartment> = HashMap<Int64, MemDepartment>()
     public var doctors: HashMap<Int64, MemDoctor> = HashMap<Int64, MemDoctor>()
     public var patients: HashMap<Int64, MemPatient> = HashMap<Int64, MemPatient>()
-    public var medicalRecords: HashMap<Int64, MemMedicalRecord> = HashMap<Int64, MemMedicalRecord>()
+    /* ⚠ 原先这里还有 `medicalRecords` —— P4 起病历**不属内存 Store**（见文件头）。 */
 
     public init(db: DbBackend) {
         this.db = db
@@ -182,7 +200,6 @@ public class MemStore {
         departments.clear()
         doctors.clear()
         patients.clear()
-        medicalRecords.clear()
 
         let d = db.query("SELECT id, name, code, location, sort, enabled, created_at " +
                          "FROM department", Array<DbValue>())
@@ -234,31 +251,12 @@ public class MemStore {
             n = n + 1
         }
 
-        let mr = db.query("SELECT id, appointment_id, patient_id, doctor_id, chief_complaint, " +
-                          "present_illness, past_history, allergy_history, physical_exam, " +
-                          "diagnosis, treatment, status, created_at, updated_at " +
-                          "FROM medical_record", Array<DbValue>())
-        i = 0
-        while (i < mr.rowCount()) {
-            let m = MemMedicalRecord()
-            m.id = mr.getInt(i, 0)
-            m.appointmentId = mr.getInt(i, 1)
-            m.patientId = mr.getInt(i, 2)
-            m.doctorId = mr.getInt(i, 3)
-            m.chiefComplaint = mr.getString(i, 4)
-            m.presentIllness = mr.getString(i, 5)
-            m.pastHistory = mr.getString(i, 6)
-            m.allergyHistory = mr.getString(i, 7)
-            m.physicalExam = mr.getString(i, 8)
-            m.diagnosis = mr.getString(i, 9)
-            m.treatment = mr.getString(i, 10)
-            m.status = mr.getString(i, 11)
-            m.createdAt = mr.getInt(i, 12)
-            m.updatedAt = mr.getInt(i, 13)
-            medicalRecords[m.id] = m
-            i = i + 1
-            n = n + 1
-        }
+        /*
+         * ⚠ 原先这里还 query + 装配 `medical_record` —— P4 起**已删除**：
+         *   病历不属内存 Store（见文件头），`loadAll()` 不再碰它。
+         *   📌 注意这也是 AC-4 的机制之一：`loadAll` 的读取面与 `MEM_TABLES` 必须**一致**，
+         *     否则"内存里有的表"与"会刷盘的表"两张清单就会漂移。
+         */
         return n
     }
 
@@ -306,8 +304,7 @@ public class MemStore {
             counter.written = counter.written + replaceDepartments()
             counter.written = counter.written + replaceDoctors()
             counter.written = counter.written + replacePatients()
-            counter.written = counter.written + replaceMedicalRecords()
-        })
+            })
         return counter.written
     }
 
@@ -374,13 +371,7 @@ public class MemStore {
         return ks
     }
 
-    func idsOfMedicalRecords(): ArrayList<Int64> {
-        let ks = ArrayList<Int64>()
-        for ((k, _v) in medicalRecords) {
-            ks.add(k)
-        }
-        return ks
-    }
+    /* ⚠ 原先这里还有 `idsOfMedicalRecords()` —— P4 起病历不属内存 Store，已删除。 */
 
     /* 整表替换：先清空再逐行 REPLACE。返回写入行数。 */
     func replaceDepartments(): Int64 {
@@ -428,24 +419,12 @@ public class MemStore {
         return n
     }
 
-    func replaceMedicalRecords(): Int64 {
-        let _ = db.exec("DELETE FROM medical_record", Array<DbValue>())
-        var n: Int64 = 0
-        for (k in sortedIds(idsOfMedicalRecords())) {
-            let m = medicalRecords[k]
-            let _ = db.exec(
-                "REPLACE INTO medical_record (id, appointment_id, patient_id, doctor_id, " +
-                "chief_complaint, present_illness, past_history, allergy_history, " +
-                "physical_exam, diagnosis, treatment, status, created_at, updated_at) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [DbInt(m.id), DbInt(m.appointmentId), DbInt(m.patientId), DbInt(m.doctorId),
-                 DbStr(m.chiefComplaint), DbStr(m.presentIllness), DbStr(m.pastHistory),
-                 DbStr(m.allergyHistory), DbStr(m.physicalExam), DbStr(m.diagnosis),
-                 DbStr(m.treatment), DbStr(m.status), DbInt(m.createdAt), DbInt(m.updatedAt)])
-            n = n + 1
-        }
-        return n
-    }
+    /*
+     * ⚠ 原先这里还有一个 `replaceMedicalRecords()` —— P4 起**已删除**。
+     *   它是"整体替换病历表"（`DELETE FROM medical_record` + 逐行 REPLACE），
+     *   而这正是病历最不该承受的写放大：一次刷盘就把**全表**删掉重写，
+     *   中途失败即整表丢失。病历改由 `MedicalRecordRepo` 逐条 upsert（直接 SQL）。
+     */
 }
 
 /* ===================== 刷盘的"遍历源" ===================== */

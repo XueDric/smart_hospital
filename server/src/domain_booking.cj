@@ -352,7 +352,52 @@ public class BookingRepo {
      *   必须完全一致，各写一份 getInt(0, n) 下标就迟早会错位（而且错位后
      *   类型恰好兼容时**不会报错**，只会读到隔壁列的值）。
      */
-    func fillFromRow(rs: DbResultSet, i: Int64): BookingResult {
+    /*
+     * ★ 按 id + **医生**读挂号单（P4 接诊队列用；2026-10-07 增）。
+     *
+     * ⚠ 为什么放在 BookingRepo 而不是 VisitRepo：列清单与 `fillFromRow` 的下标顺序
+     *   都定义在**本文件** —— 换个文件再写一遍 SELECT 就等于有了第二份列顺序，
+     *   而列顺序错位在类型恰好兼容时**不报错**，只会读到隔壁列。
+     *   📌 所以"读挂号单"这个语义**只在 BookingRepo 里实现一次**，VisitRepo 调它。
+     *
+     * ⚠ 不匹配（不存在 / 不属于该医生）一律返回 None：**不区分 404 与 403** ——
+     *   区分开就成了"这张单是否存在"的枚举 oracle。
+     */
+    public func findAppointmentForDoctor(appointmentId: Int64, doctorId: Int64): ?BookingResult {
+        let rs = db.query(
+            "SELECT id, schedule_id, patient_id, doctor_id, department_id, " +
+            "visit_date, period, seq_no, status, created_at, slot_restored " +
+            "FROM appointment WHERE id = ? AND doctor_id = ?",
+            [DbInt(appointmentId), DbInt(doctorId)])
+        if (rs.rowCount() < 1) {
+            return None
+        }
+        return Some(fillFromRow(rs, 0))
+    }
+
+    /*
+     * ★ 某医生的接诊队列（P4；不含已退号的单）。
+     *
+     * 排序刻意是 `visit_date, period, seq_no` —— 与医生实际叫号顺序一致
+     *   （先按就诊日、再按上下午、最后按就诊序号）。
+     */
+    public func listAppointmentsByDoctor(doctorId: Int64, limit: Int64): Array<BookingResult> {
+        let out = ArrayList<BookingResult>()
+        let rs = db.query(
+            "SELECT id, schedule_id, patient_id, doctor_id, department_id, " +
+            "visit_date, period, seq_no, status, created_at, slot_restored " +
+            "FROM appointment WHERE doctor_id = ? AND status <> ? " +
+            "ORDER BY visit_date ASC, period ASC, seq_no ASC LIMIT ?",
+            [DbInt(doctorId), DbStr("cancelled"), DbInt(limit)])
+        var i: Int64 = 0
+        while (i < rs.rowCount()) {
+            out.add(fillFromRow(rs, i))
+            i = i + 1
+        }
+        return out.toArray()
+    }
+
+    public func fillFromRow(rs: DbResultSet, i: Int64): BookingResult {
         let r = BookingResult()
         r.appointmentId = rs.getInt(i, 0)
         r.scheduleId = rs.getInt(i, 1)

@@ -76,6 +76,19 @@ public enum Action {
     | CancelOwn           // 取消自己的挂号（患者）
     | CancelAny           // 取消任意挂号（管理员）
     | ManageSchedule      // 维护排班与号源（管理员）
+    /*
+     * ★ P4 新增两条。**刻意分成"读自己的"与"写自己的"两个动作**，
+     *   而不是一个笼统的 `ManageMedicalRecord`：
+     *     · 患者要能读**自己**的病历（医疗档案），但绝不能写；
+     *     · 医生要能写**自己接诊的**病历，但边界是"自己的号"；
+     *   两者的"自己的"含义还不同（患者=patient_id，医生=doctor_id）。
+     *   合成一个动作就没法在 `can()` 这一层表达这个差异，
+     *   只能退化成 handler 里手写 if —— 而"权限收敛到单一函数"是本项目的铁律。
+     */
+    | QueryOwnMedicalRecord   // 读自己的病历（患者读自己的；医生读自己接诊的）
+    | WriteOwnMedicalRecord   // 写自己的病历（仅医生）
+    | ManageVisit             // 接诊队列的状态流转（仅医生，限自己的号）
+    | ViewDashboard           // 运营看板（仅管理员）
 }
 
 public func actionName(a: Action): String {
@@ -85,23 +98,39 @@ public func actionName(a: Action): String {
         case CancelOwn => return "cancel_own"
         case CancelAny => return "cancel_any"
         case ManageSchedule => return "manage_schedule"
+        case QueryOwnMedicalRecord => return "query_own_medical_record"
+        case WriteOwnMedicalRecord => return "write_own_medical_record"
+        case ManageVisit => return "manage_visit"
+        case ViewDashboard => return "view_dashboard"
     }
 }
 
 /*
  * ★ 权限判定的**唯一入口**（基线铁律：收敛到单一函数，禁止 handler 手写 if）。
  *
- * 权限矩阵（P1）：
-
- *   动作              患者   医生   管理员
- *   view_schedule      ✅     ✅     ✅
- *   book               ✅     ❌     ❌
- *   cancel_own         ✅     ❌     ❌
- *   cancel_any         ❌     ❌     ✅
- *   manage_schedule    ❌     ❌     ✅
+ * 权限矩阵（P4 更新）：
  *
- * 医生当前**没有**写权限（接诊/写病历属 P4）。这里如实留空，
- * 不预先发权 —— 未实现的动作给权限等于埋一个未测的入口。
+ *   动作                       患者   医生   管理员
+ *   view_schedule               ✅     ✅     ✅
+ *   book                        ✅     ❌     ❌
+ *   cancel_own                  ✅     ❌     ❌
+ *   cancel_any                  ❌     ❌     ✅
+ *   manage_schedule             ❌     ❌     ✅
+ *   query_own_medical_record    ✅     ✅     ❌   ← P4（"自己的"含义见 Action 注释）
+ *   write_own_medical_record    ❌     ✅     ❌   ← P4（病历的临床作者只能是医生）
+ *   manage_visit                ❌     ✅     ❌   ← P4（接诊队列）
+ *   view_dashboard              ❌     ❌     ✅   ← P4（运营看板含全院聚合）
+ *
+ * ⚠ 三条刻意的选择，都值得说清：
+ *   ① **管理员不能写病历** —— 病历的"作者"必须是临床人员。若管理员可写，
+ *      "谁写的"就失去意义（而那是病历最要紧的属性之一）。
+ *      管理员需要纠错时走**解锁**（`reopen`）这条显式通道，
+ *      由医生改完再锁定 —— 修订责任仍在医生。
+ *   ② **患者不能读任意病历，也不能读"自己以外"的** —— 由 handler 用
+ *      `patient_id`（从令牌派生）过滤，权限只管到"这一类动作"。
+ *   ③ **管理员不参与 `query_own_medical_record`** —— 管理员查病历属"审计"，
+ *      与"读自己的"是两件事，本轮**没有**给管理员开通读病历的入口
+ *      （未实现的动作不发权：给权限等于埋一个未测的入口）。
  */
 public func can(role: Role, action: Action): Bool {
     match (action) {
@@ -122,6 +151,27 @@ public func can(role: Role, action: Action): Bool {
                 case _ => return false
             }
         case ManageSchedule =>
+            match (role) {
+                case Admin => return true
+                case _ => return false
+            }
+        case QueryOwnMedicalRecord =>
+            match (role) {
+                case Patient => return true
+                case Doctor => return true
+                case _ => return false
+            }
+        case WriteOwnMedicalRecord =>
+            match (role) {
+                case Doctor => return true
+                case _ => return false
+            }
+        case ManageVisit =>
+            match (role) {
+                case Doctor => return true
+                case _ => return false
+            }
+        case ViewDashboard =>
             match (role) {
                 case Admin => return true
                 case _ => return false
@@ -581,7 +631,9 @@ func previsitSessionJson(s: PrevisitSession): JsonObject {
     }
     return o
 }
-public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate, triage: TriageRepo, previsit: PrevisitRepo, aiSettings: AiSettingsRepo, prompts: PromptRepo): Router {
+public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate, triage: TriageRepo, previsit: PrevisitRepo, aiSettings: AiSettingsRepo, prompts: PromptRepo,
+                           emr: MedicalRecordRepo, visit: VisitRepo,
+                           dash: DashboardRepo, triageStat: TriageStatRepo): Router {
     let r = Router()
 
     /* ---------- 健康检查（无需认证，供压测与探活）---------- */
@@ -1037,6 +1089,20 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         }
         let today = hTodayDate()
         let v = triageComplaint(triage, text, today)
+        /*
+         * ★ P4：把**结论**记进统计表（看板的"分诊命中率"靠它）。
+         *
+         * ⚠ 记的是**结论字段**，**不是 `text`（主诉原文）** ——
+         *   `TriageStatRepo.record` 的签名里**根本没有**主诉参数，
+         *   所以"想记主诉"在**类型层面**就做不到（比注释约束硬）。
+         *   主诉是患者自己写的一句话，是最敏感的自由文本；看板只需要计数
+         *   （见 triage_stat.cj 文件头）。
+         *
+         * ⚠ `record()` 内部**吞异常** —— 统计是旁路，
+         *   绝不能把患者正在等的分诊响应变成 500。
+         */
+        let topDept = if (v.options.size > 0) { v.options[0].departmentName } else { "" }
+        triageStat.record(v.reasonCode, v.redFlag, topDept, truncated, v.source, hNowEpoch())
         sendOk(ctx, triageJson(v, truncated))
     })
     /* ===================== 预问诊（P2，SSE 流式）===================== */
@@ -1359,6 +1425,14 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         o.put("remain_num", JsonInt(total))
         sendCreated(ctx, o)
     })
+    /* ===================== P4：病历 + 接诊队列 + 运营看板 ===================== */
+    /*
+     * ⚠ 定义在 `http_p4.cj`（那一块有自己的纪律要写清：病历锁定语义、
+     *   接诊状态机、"看板只出聚合"）。这里只**注册** ——
+     *   于是"有哪些端点"仍然只有一处可数（便于 doc-counts 对账）。
+     */
+    registerP4Routes(r, auth, gate, repo, emr, visit, dash, aiSettings)
+
 
     return r
 }
@@ -1376,8 +1450,11 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
  */
 public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate,
                              triage: TriageRepo, previsit: PrevisitRepo,
-                             aiSettings: AiSettingsRepo, prompts: PromptRepo): QingZhouApp {
-    let router = buildHospitalRouter(repo, auth, gate, triage, previsit, aiSettings, prompts)
+                             aiSettings: AiSettingsRepo, prompts: PromptRepo,
+                             emr: MedicalRecordRepo, visit: VisitRepo,
+                             dash: DashboardRepo, triageStat: TriageStatRepo): QingZhouApp {
+    let router = buildHospitalRouter(repo, auth, gate, triage, previsit, aiSettings, prompts,
+                                     emr, visit, dash, triageStat)
     return QingZhouApp()
         .use(requestId())
         .use(logger())

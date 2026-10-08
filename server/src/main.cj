@@ -229,13 +229,32 @@ func selftest(): Int64 {
      *   并把"四类互不重叠、且并集 == ALL_TABLES"也断言上 ——
      *   这样"加表时忘了归类"会立刻变红，而不是悄悄混进某个数字里。
      */
-    let bookingTables = 2
-    let memTables = 4
+    /*
+     * ⚠ 这几个数**必须与来源一致**，能派生的就派生：
+     *   `memTables` 原先硬编码 4 —— 而 P4 把 `medical_record` 移出内存 Store 后
+     *   实际是 3，于是这条断言立刻变红（**好事**：它把"数字与事实脱节"暴露了）。
+     *   现在直接从 `MEM_TABLES` 派生 ⇒ 加/减表时它自动跟随，不会再有"忘记改数字"。
+     *   📌 这正是本项目反复的教训：**断言要钉不变量，不要钉数字**。
+     */
+    let bookingTables = BOOKING_DOMAIN_TABLES.size
+    let memTables = MEM_TABLES.size
     let authTables = 3
     let previsitTables = 1
     let aiTables = 1        // ai_setting（P3 AI 能力中心；直接 SQL、非号源域、非医疗数据）
-    let totalTables = bookingTables + memTables + authTables + previsitTables + aiTables
-    check("表集共 ${totalTables} 张 = 号源域 ${bookingTables} + 配套域 ${memTables} + 鉴权域 ${authTables} + 预问诊域 ${previsitTables} + AI 配置域 ${aiTables}",
+    /*
+     * ★ P4 新增两张表，各成一类（**不塞进现有类**：它们的纪律不同）：
+     *   · medical_record —— 从内存 Store **移出**，改直接 SQL（ADR-0001 rev.6）
+     *     ⇒ 它不再属配套域，而是一张"临床数据、直接 SQL"的表。
+     *   · triage_stat —— 分诊统计，**只存计数**、不含任何患者标识，
+     *     且有 TTL 清理 ⇒ 与"医疗数据"（要长期留）纪律不同，单列一类。
+     * 📌 为什么每次都真的加一类、而不是"归到最接近的那类"：
+     *   分类的意义就是**让纪律可见**。硬塞进别类 = 那条纪律从此没人看得到。
+     */
+    let emrTables = 1       // medical_record（临床数据，直接 SQL，MedicalRecordRepo 独占）
+    let statTables = 1      // triage_stat（聚合统计，只存计数，带 TTL）
+    let totalTables = bookingTables + memTables + authTables + previsitTables + aiTables +
+                      emrTables + statTables
+    check("表集共 ${totalTables} 张 = 号源域 ${bookingTables} + 配套域(内存Store) ${memTables} + 鉴权域 ${authTables} + 预问诊域 ${previsitTables} + AI 配置域 ${aiTables} + 病历域 ${emrTables} + 统计域 ${statTables}",
           ALL_TABLES.size == totalTables)
     check("号源/挂号域恰好 ${bookingTables} 张（schedule / appointment）",
           BOOKING_DOMAIN_TABLES.size == bookingTables)
@@ -247,6 +266,26 @@ func selftest(): Int64 {
           !BOOKING_DOMAIN_TABLES.contains(TABLE_AI_SETTING))
     check("★ AI 配置表**不**属内存 Store 负责的表（配置要立刻持久化，不能进整表替换范式）",
           !MEM_TABLES.contains(TABLE_AI_SETTING))
+    /*
+     * ★★ P4：病历**必须**在内存 Store 之外（ADR-0001 rev.6）。
+     *
+     * 这条断言守的是一个**真缺陷**的形状：P0 起 `medical_record` 一直被划在
+     * 内存 Store 里，而内存 Store 在生产路径上**从未刷盘**（`flushToMysql()`
+     * 只有测试调用过）⇒ 写病历 = 只写内存 + 永不落库。
+     * 而本仓 P2 已经为同类数据（预问诊）明确判过："**它是医疗数据，
+     * 必须立刻持久化，不能进整表替换范式**"。
+     * ⇒ 用断言把"病历不属内存 Store"钉住，防止将来有人"顺手"把它挪回去。
+     */
+    check("★★ 病历表**不**属内存 Store 负责的表（医疗数据必须立刻持久化）",
+          !MEM_TABLES.contains(TABLE_MEDICAL_RECORD))
+    check("★★ 且病历**有**自己的直接 SQL 仓储（MedicalRecordRepo 存在即可编译检查，这里断言表名口径一致）",
+          TABLE_MEDICAL_RECORD == "medical_record")
+    check("★ 内存 Store 现在的表集 = 科室/医生/患者 三张（实得 ${MEM_TABLES.size} 张）",
+          MEM_TABLES.size == 3)
+    check("★ 分诊统计表**不**属内存 Store（它是聚合统计，且带 TTL）",
+          !MEM_TABLES.contains(TABLE_TRIAGE_STAT))
+    check("★ 分诊统计表**不**属号源域（它不是可扣号路径）",
+          !BOOKING_DOMAIN_TABLES.contains(TABLE_TRIAGE_STAT))
     /*
      * ⚠ 写成"3 张表各判一次"而不是跨行 `&&` 串联 ——
      *   实测跨行时 cjc 报 `warning: possibly confusing line terminator`
@@ -619,7 +658,17 @@ func serve(args: Array<String>): Int64 {
     let aiSettings = AiSettingsRepo(db)
     // P3 第二块：Prompt 模板仓储（复用 aiSettings 的 KV 表与缓存，靠 prompt. 前缀隔离）
     let prompts = PromptRepo(aiSettings)
-    let app = buildHospitalApp(repo, auth, gate, triage, previsit, aiSettings, prompts)
+    /*
+     * P4：电子病历 + 接诊队列 + 运营看板。
+     * ⚠ `medical_record` 自 P4 起**不属内存 Store**，由 `MedicalRecordRepo`
+     *   直接 SQL 独占写入（ADR-0001 rev.6；理由见 domain_emr.cj 文件头）。
+     */
+    let emr = MedicalRecordRepo(db)
+    let visit = VisitRepo(db)
+    let dash = DashboardRepo(db)
+    let triageStat = TriageStatRepo(db)
+    let app = buildHospitalApp(repo, auth, gate, triage, previsit, aiSettings, prompts,
+                               emr, visit, dash, triageStat)
     let box = HandleBox()
 
     println("")

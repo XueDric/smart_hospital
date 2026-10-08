@@ -414,7 +414,16 @@ public class TestRunner {
             let overlap = paradigmOverlap()
             check("① 两套范式表集无交集（MEM_TABLES ∩ BOOKING_DOMAIN_TABLES = ∅）",
                   overlap.size == 0)
-            check("① 内存 Store 负责 4 张表", MEM_TABLES.size == 4)
+            /*
+     * ⚠ 这里**不写死 4**（2026-10-07 P4 修）。
+     *   原先写死 `MEM_TABLES.size == 4`，而 P4 把 `medical_record` 移出内存 Store
+     *   ⇒ 该断言立刻变红。这正是**"测试钉的是数字而不是不变量"**的典型：
+     *   真正要守的是"内存 Store 的表集**恰好**等于清单、且号源域不在里面"，
+     *   而不是"恰好 4 张"。改成从 `MEM_TABLES` 派生，加/减表时它自动跟随，
+     *   而"清单与实际遍历一致"那条（下面 ② 的 touched.size == MEM_TABLES.size）继续钉住一致性。
+     */
+    check("① 内存 Store 负责 ${MEM_TABLES.size} 张表（≥1，且号源域不在内）",
+          MEM_TABLES.size >= 1)
             check("① schedule 不由内存 Store 负责", !isMemStoreTable(TABLE_SCHEDULE))
             check("① appointment 不由内存 Store 负责", !isMemStoreTable(TABLE_APPOINTMENT))
             check("① department 由内存 Store 负责", isMemStoreTable(TABLE_DEPARTMENT))
@@ -490,7 +499,7 @@ public class TestRunner {
                   !rec.mentionsTable(TABLE_APPOINTMENT))
             // ② 反向：该碰的表确实碰了
             let touched = rec.mentionedMemTables()
-            check("② 反向：刷盘确实碰了全部 4 张内存表（实碰 ${touched.size} 张）",
+            check("② 反向：刷盘确实碰了全部 ${MEM_TABLES.size} 张内存表（实碰 ${touched.size} 张）",
                   touched.size == MEM_TABLES.size)
 
             // ③ 逐值比对：号源域**一个字节都没变**
@@ -739,6 +748,11 @@ public func runAcceptance(db: DbBackend): Int64 {
     acP3_4(runner, db)
     acP3_5(runner, db)
     acP3_6(runner, db)
+    // P4 电子病历 + 接诊队列 + 运营看板（定义在 acceptance_p4.cj）
+    acP4_1(runner, db)
+    acP4_2(runner, db)
+    acP4_3(runner, db)
+    acP4_4(runner, db)
     println("")
     println("通过 ${runner.passed} 项，失败 ${runner.failed} 项")
     if (runner.failed == 0) {

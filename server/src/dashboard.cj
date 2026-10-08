@@ -1,0 +1,283 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * 智慧医院智能导诊就诊系统 · 服务端
+ *
+ * ===== dashboard.cj —— P4 运营看板（**只出聚合，绝不出明细**）==============
+ *
+ * 对应 brief §2.1 第 5 块「运营看板：科室医生患者规模、挂号趋势、号源使用率、
+ * 分诊命中率、AI 调用概览」。
+ *
+ * ── ★★ 本文件唯一的硬约束：隐私 ──────────────────────────────────────────
+ *
+ *   看板是**跨患者**的视图 —— 这正是隐私最容易漏的地方（"就看一下聚合"）。
+ *   所以这里立的规矩是**机制性**的，不是"我们记得别写"：
+ *
+ *     ① 本文件**所有**查询的 SELECT 列表只允许 `COUNT(*)` / `SUM(...)` /
+ *        分组键（科室名、日期），**不允许出现任何 id 或联系方式列**；
+ *     ② 分组键只允许用 `department.name` 与 `visit_date`（都不是个人数据）；
+ *     ③ 响应里**不含任何** `patient_id` / `doctor_id` / `phone` / `name`
+ *        （科室名例外 —— 它是机构信息，不是个人数据）；
+ *     ④ 上述三条由验收测试**逐字段**钉住（AC-P4-*：把响应当字符串搜这些键）。
+ *
+ *   ⚠ 一个**刻意的遗漏**，写在这里免得将来有人"补齐"：
+ *     看板**没有**"按患者年龄/性别分布"这类指标。它们看起来是聚合，
+ *     但在小科室里等价于个人识别（某科室当天只有 1 个患者时，
+ *     "60 岁以上 1 人"就等于说出他/她的年龄）。
+ *     📌 小样本下的聚合会退化成个体信息 —— 这是"k-匿名"的朴素版本，
+ *       在没有明确的 k 阈值之前，不提供这类维度。
+ *
+ * ── AI 调用概览做到了哪一步（诚实标注）──────────────────────────────────
+ *   本轮**仍未接真模型**（Q6 合规待决），所以**没有**真实的调用量/耗时/命中率。
+ *   能如实给出的只有：
+ *     · AI 能力中心的**配置状态**（开关/endpoint host/模型/工具启用数）；
+ *     · **规则版**分诊的命中分布（`source=rules`，那是真实发生的）。
+ *   ⇒ 响应里用 `ai.source` 明确标注 `rules`，并给 `ai.model_calls` = 0 +
+ *     `ai.model_calls_note` 说明为什么是 0。**不编造数字**。
+ */
+
+package qingzhou
+
+import std.collection.*
+import stdx.encoding.json.*
+
+/*
+ * 一个"计数 + 标签"的行（分组统计的通用形状）。
+ * ⚠ 标签只允许放**非个人**的分组键（科室名 / 日期 / 状态码）。
+ */
+class CountRow {
+    var label: String = ""
+    var n: Int64 = 0
+}
+
+public class DashboardRepo {
+    private let db: DbBackend
+
+    public init(db: DbBackend) {
+        this.db = db
+    }
+
+    /* 单值计数（失败当 0 —— 看板不该因为一个指标查不到就整页 500）。 */
+    private func count1(sql: String, params: Array<DbValue>): Int64 {
+        try {
+            let rs = db.query(sql, params)
+            if (rs.rowCount() > 0) {
+                return rs.getInt(0, 0)
+            }
+        } catch (e: Exception) {
+            return 0
+        }
+        return 0
+    }
+
+    /* 分组计数（标签 + 计数）。 */
+    private func group2(sql: String, params: Array<DbValue>): Array<CountRow> {
+        let out = ArrayList<CountRow>()
+        try {
+            let rs = db.query(sql, params)
+            var i: Int64 = 0
+            while (i < rs.rowCount()) {
+                let c = CountRow()
+                c.label = rs.getString(i, 0)
+                c.n = rs.getInt(i, 1)
+                out.add(c)
+                i = i + 1
+            }
+        } catch (e: Exception) {
+            /* 同上：看板是只读视图，单个指标失败不该整页失败 */
+        }
+        return out.toArray()
+    }
+
+    private func rowsToJson(rows: Array<CountRow>): JsonArray {
+        let arr = ArrayList<JsonValue>()
+        for (c in rows) {
+            let e = JsonObject()
+            e.put("label", JsonString(c.label))
+            e.put("count", JsonInt(c.n))
+            arr.add(e)
+        }
+        return JsonArray(arr.toArray())
+    }
+
+    /*
+     * 组装整块看板。
+     *
+     * ⚠ 所有指标都**独立容错**（`count1` / `group2` 内部 catch）：
+     *   看板某张表还不存在（例如全新库）时应该是"这一项为 0"，
+     *   而不是整页 500 —— 看板的用途恰恰是"看清全局"，
+     *   它自己挂掉会让人以为整个系统坏了。
+     *   📌 代价：一个真故障会被显示成 0。所以每块都带 `source` 字段说明
+     *     数据从哪来，并在 selftest 里另有一组"表都在"的断言兜底。
+     */
+    public func build(now: Int64, aiSettings: AiSettingsRepo): JsonObject {
+        let o = JsonObject()
+
+        /* ---------- ① 规模（科室 / 医生 / 患者）---------- */
+        /*
+         * ⚠ `department` / `doctor` / `patient` 三张表属**内存 Store**，
+         *   而内存 Store 在生产路径上**不刷盘**（P4 已确认，见 P4-HANDOFF）
+         *   ⇒ 这里读到的可能是**旧数据**（上一次刷盘时的快照）。
+         *   如实标注：`scale.source` = "mysql（内存 Store 的表，生产未刷盘 ⇒ 可能滞后）"。
+         *   📌 这比"悄悄给个数字"诚实得多 —— 运维看到这句就知道为什么数字不动。
+         */
+        let scale = JsonObject()
+        scale.put("departments", JsonInt(count1("SELECT COUNT(*) FROM department", Array<DbValue>())))
+        scale.put("doctors", JsonInt(count1("SELECT COUNT(*) FROM doctor", Array<DbValue>())))
+        scale.put("patients", JsonInt(count1("SELECT COUNT(*) FROM patient", Array<DbValue>())))
+        scale.put("source", JsonString(
+            "mysql：department/doctor/patient 属内存 Store 的表，生产路径未刷盘 ⇒ 可能滞后"))
+        o.put("scale", scale)
+
+        /* ---------- ② 挂号总览（含取消率）---------- */
+        let total = count1("SELECT COUNT(*) FROM appointment", Array<DbValue>())
+        let booked = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_BOOKED)])
+        let visiting = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_VISITING)])
+        let done = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_DONE)])
+        let cancelled = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_CANCELLED)])
+        let noShow = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_NO_SHOW)])
+        let appt = JsonObject()
+        appt.put("total", JsonInt(total))
+        appt.put("booked", JsonInt(booked))
+        appt.put("visiting", JsonInt(visiting))
+        appt.put("done", JsonInt(done))
+        appt.put("cancelled", JsonInt(cancelled))
+        appt.put("no_show", JsonInt(noShow))
+        /*
+         * ⚠ 取消率**用整数千分比**（`permille`）而不是浮点：
+         *   · 仓颉侧的浮点格式化在本项目没验过（不想为了一个百分比引入未测路径）；
+         *   · 千分比精度足够（0.1%），且客户端除以 10 即可。
+         *   ⚠ 分母为 0 时给 0，**不给 NULL、不抛** —— "没有挂号"时取消率是 0 很自然。
+         */
+        appt.put("cancel_permille", JsonInt(if (total > 0) { cancelled * 1000 / total } else { 0 }))
+        appt.put("no_show_permille", JsonInt(if (total > 0) { noShow * 1000 / total } else { 0 }))
+        appt.put("permille_note", JsonString("取消率/爽约率是**千分比**（除以 10 得百分比）"))
+        o.put("appointments", appt)
+
+        /* ---------- ③ 挂号趋势（按就诊日，最近 N 天）---------- */
+        /*
+         * ⚠ 分组键是 `visit_date`（日期字符串）—— 不是个人数据。
+         *   限定窗口是为了"响应大小可预期"（不限窗口时，一个跑了三年的库
+         *   会返回上千行，看板反而看不清）。
+         */
+        let days = 14
+        o.put("trend_days", JsonInt(days))
+        o.put("trend", rowsToJson(group2(
+            "SELECT visit_date, COUNT(*) FROM appointment " +
+            "WHERE visit_date >= ? GROUP BY visit_date ORDER BY visit_date ASC LIMIT ?",
+            [DbStr(dashCutoffDate(now, days)), DbInt(days)])))
+
+        /* ---------- ④ 科室分布（挂号量 / 号源使用率）---------- */
+        /*
+         * ⚠ 这里 JOIN 了 department 拿**科室名**做分组键。
+         *   科室名是机构信息（管理员本来就在管理它），不是个人数据 ——
+         *   这一点与"不给患者姓名"是两回事，刻意区分。
+         */
+        o.put("by_department", rowsToJson(group2(
+            "SELECT d.name, COUNT(*) FROM appointment a " +
+            "JOIN department d ON d.id = a.department_id " +
+            "GROUP BY d.name ORDER BY COUNT(*) DESC LIMIT ?",
+            [DbInt(50)])))
+        /* 号源使用率：总号源 / 已用 / 剩余（全局 + 按科室） */
+        let cap = JsonObject()
+        cap.put("total_slots", JsonInt(count1("SELECT IFNULL(SUM(total_num), 0) FROM schedule", Array<DbValue>())))
+        cap.put("remain_slots", JsonInt(count1("SELECT IFNULL(SUM(remain_num), 0) FROM schedule", Array<DbValue>())))
+        cap.put("schedule_count", JsonInt(count1("SELECT COUNT(*) FROM schedule", Array<DbValue>())))
+        cap.put("enabled_schedule_count",
+                JsonInt(count1("SELECT COUNT(*) FROM schedule WHERE enabled = 1", Array<DbValue>())))
+        o.put("slots", cap)
+
+        /* ---------- ⑤ 分诊命中（**规则版**，如实标注）---------- */
+        /*
+         * ⚠ 本轮分诊**未接真模型**，所以这里能给的只有"规则引擎的结论分布"。
+         *   它是**真实发生**的数据（每次 POST /triage 都记了数与结论），
+         *   但**不能**把它说成"AI 调用概览"。
+         */
+        let triage = JsonObject()
+        triage.put("source", JsonString("rules"))
+        triage.put("source_note", JsonString("分诊当前是**规则引擎**（未接真模型），此分布是规则结论"))
+        triage.put("total_calls", JsonInt(count1("SELECT COUNT(*) FROM triage_stat", Array<DbValue>())))
+        triage.put("red_flag_calls",
+                   JsonInt(count1("SELECT COUNT(*) FROM triage_stat WHERE red_flag = 1", Array<DbValue>())))
+        triage.put("by_reason", rowsToJson(group2(
+            "SELECT reason_code, COUNT(*) FROM triage_stat GROUP BY reason_code " +
+            "ORDER BY COUNT(*) DESC LIMIT ?", [DbInt(20)])))
+        triage.put("by_department", rowsToJson(group2(
+            "SELECT IFNULL(department, ''), COUNT(*) FROM triage_stat " +
+            "WHERE department <> '' GROUP BY department ORDER BY COUNT(*) DESC LIMIT ?",
+            [DbInt(50)])))
+        o.put("triage", triage)
+
+        /* ---------- ⑥ 预问诊完成率（P2 的成果可见化）---------- */
+        let pvTotal = count1("SELECT COUNT(*) FROM previsit_session", Array<DbValue>())
+        let pvDone = count1("SELECT COUNT(*) FROM previsit_session WHERE " + previsitCompleteSql(),
+                            Array<DbValue>())
+        let previsit = JsonObject()
+        previsit.put("sessions", JsonInt(pvTotal))
+        previsit.put("completed", JsonInt(pvDone))
+        previsit.put("completion_permille", JsonInt(if (pvTotal > 0) { pvDone * 1000 / pvTotal } else { 0 }))
+        previsit.put("permille_note", JsonString("完成率是**千分比**（除以 10 得百分比）"))
+        o.put("previsit", previsit)
+
+        /* ---------- ⑦ 电子病历进度（P4 自己的成果）---------- */
+        let emrTotal = count1("SELECT COUNT(*) FROM medical_record", Array<DbValue>())
+        let emrLocked = count1("SELECT COUNT(*) FROM medical_record WHERE status = ?",
+                              [DbStr(EMR_LOCKED)])
+        let emrEmpty = count1("SELECT COUNT(*) FROM medical_record WHERE " + emrEmptySql(),
+                             Array<DbValue>())
+        let emr = JsonObject()
+        emr.put("records", JsonInt(emrTotal))
+        emr.put("locked", JsonInt(emrLocked))
+        emr.put("draft", JsonInt(emrTotal - emrLocked))
+        emr.put("empty", JsonInt(emrEmpty))
+        emr.put("locked_permille", JsonInt(if (emrTotal > 0) { emrLocked * 1000 / emrTotal } else { 0 }))
+        emr.put("sections_per_record", JsonInt(emrSections().size))
+        o.put("medical_records", emr)
+
+        /* ---------- ⑧ AI 能力中心概览（**配置状态**，不是调用量）---------- */
+        let opt = aiSettings.options(now)
+        let ai = JsonObject()
+        ai.put("enabled", JsonBool(opt.enabled))
+        ai.put("disabled_reason", JsonString(opt.disabledReason))
+        /* ⚠ endpoint 只给 host（查询串可能含凭据 —— 与 aiSettingsJson 同一口径） */
+        ai.put("endpoint_host", JsonString(aiSafeHost(opt.endpoint)))
+        ai.put("model", JsonString(opt.model))
+        ai.put("tools_enabled", JsonInt(aiToolEnabledCount(aiSettings, now)))
+        ai.put("tools_total", JsonInt(aiToolToggles().size))
+        let promptCount = promptSlots().size
+        var customized: Int64 = 0
+        let prepo = PromptRepo(aiSettings)
+        for (s in promptSlots()) {
+            if (prepo.customized(s.name, now)) {
+                customized = customized + 1
+            }
+        }
+        ai.put("prompts_total", JsonInt(promptCount))
+        ai.put("prompts_customized", JsonInt(customized))
+        /*
+         * ⚠⚠ **不编造调用量**：没接模型就是 0 条真实调用。
+         *   给一个 `model_calls = 0` + 明确说明，比给一个"看起来有数据"的假指标好。
+         */
+        ai.put("model_calls", JsonInt(0))
+        ai.put("model_calls_note", JsonString(
+            "未接真模型（阻塞于合规评估 Q6）⇒ 真实模型调用为 0；上面是**配置状态**，不是调用量"))
+        o.put("ai", ai)
+
+        o.put("generated_at", JsonInt(now))
+        return o
+    }
+}
+
+/*
+ * 趋势窗口的起始日期（now - days 天，YYYY-MM-DD）。
+ *
+ * ⚠ 复用 `civilFromDays` / `triagePad2`（hTodayDate 的实现）而不是另写一份日期换算：
+ *   日期换算是最容易写错且"错了也看不出来"的一类代码（闰年、月末边界），
+ *   本仓只有一处实现，这里沿用。
+ */
+func dashCutoffDate(now: Int64, daysBack: Int64): String {
+    let daySecs: Int64 = 86400
+    let days = now / daySecs - daysBack
+    let (y, mo, d) = civilFromDays(days)
+    return "${y}-${triagePad2(mo)}-${triagePad2(d)}"
+}

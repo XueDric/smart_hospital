@@ -128,6 +128,30 @@ public let TABLE_PREVISIT: String = "previsit_session"
 public let TABLE_AI_SETTING: String = "ai_setting"
 
 /*
+ * ★★ 分诊统计表（P4 新增，**第六类表**）。
+ *
+ * ── 为什么要一张专门的统计表（而不是看板时现算）──────────────────────────
+ *   分诊（`POST /triage`）现在**只回结论、不留任何痕迹** ——
+ *   于是"分诊命中率"这个指标在原设计里**无从计算**（要算就必须有历史）。
+ *   ⇒ 记录每次分诊的**结论**，看板才可能给出真实分布。
+ *
+ * ── ★★ 它为什么**不含任何患者标识**（这是刻意的设计约束）────────────────
+ *   本表**只有**：时间、结论码、是否危急、命中的科室名。
+ *   **没有** patient_id / doctor_id / patient 任何联系方式 / 主诉原文。
+ *
+ *   理由：分诊是"还没挂号的人"在用的入口，它的输入是**主诉原文** ——
+ *   那是最敏感的自由文本。一旦落库，它就成了"一份没有病历的病情记录"，
+ *   而看板只需要**计数**。⇒ **按"只存得出指标所必需的最小集合"来建表**。
+ *   📌 这也是"数据最小化"的朴素版本：不是"存了再脱敏"，而是**根本不存**。
+ *
+ * ⚠ 保留策略（与 previsit 同一纪律：不许无界增长）：
+ *   `TRIAGE_STAT_TTL_DAYS` 天之前的行在每次写入时顺手清理（照 pruneTokens /
+ *   pruneAttempts 的"顺手 prune"手法）。看板只看最近 14 天趋势 ⇒
+ *   留 180 天足够，且能防"有人脚本刷分诊把表撑爆"。
+ */
+public let TABLE_TRIAGE_STAT: String = "triage_stat"
+
+/*
  * 全部业务表。
  * ⚠ 与 `BOOKING_DOMAIN_TABLES` 的差集就是"走内存 Store 范式"的表。
  */
@@ -135,7 +159,7 @@ public let ALL_TABLES: Array<String> = [
     TABLE_DEPARTMENT, TABLE_DOCTOR, TABLE_SCHEDULE,
     TABLE_APPOINTMENT, TABLE_PATIENT, TABLE_MEDICAL_RECORD,
     TABLE_AUTH_USER, TABLE_AUTH_TOKEN, TABLE_AUTH_ATTEMPT, TABLE_PREVISIT,
-    TABLE_AI_SETTING
+    TABLE_AI_SETTING, TABLE_TRIAGE_STAT
 ]
 
 /* ===================== DDL ===================== */
@@ -283,6 +307,14 @@ public let SCHEMA_DDL: Array<String> = [
     "diagnosis TEXT NOT NULL, " +         // 诊断
     "treatment TEXT NOT NULL, " +         // 处理意见
     "status VARCHAR(16) NOT NULL DEFAULT 'draft', " + // draft / locked
+    /*
+     * ★ 最后修改人（P4 增）。**为什么病历必须有它**：
+     *   病历最要紧的属性之一是"**谁写的**" —— 没有它，"锁定"只锁住了内容，
+     *   锁不住责任（解锁后谁改的、谁该为这版负责，都无从查）。
+     *   ⚠ 本轮只记"最后修改人"，**没有**完整修订历史表（谁在第几版改了什么）——
+     *     那属后续，已写进 P4-HANDOFF 的未做清单。
+     */
+    "updated_by BIGINT NOT NULL DEFAULT 0, " +
     "created_at BIGINT NOT NULL DEFAULT 0, " +
     "updated_at BIGINT NOT NULL DEFAULT 0, " +
     "PRIMARY KEY (id), " +
@@ -382,6 +414,19 @@ public let SCHEMA_DDL: Array<String> = [
      * ⚠ **不建**指向 `patient` 的外键：与本 schema 其它表一致（见 hResetAll 的说明），
      *   让测试可以独立清表。
      */
+    "CREATE TABLE IF NOT EXISTS triage_stat (" +
+    "id BIGINT NOT NULL AUTO_INCREMENT, " +
+    "created_at BIGINT NOT NULL DEFAULT 0, " +
+    "source VARCHAR(16) NOT NULL DEFAULT 'rules', " +   // rules / model（接模型后区分）
+    "reason_code VARCHAR(32) NOT NULL DEFAULT '', " +
+    "red_flag TINYINT NOT NULL DEFAULT 0, " +
+    "department VARCHAR(64) NOT NULL DEFAULT '', " +
+    "truncated TINYINT NOT NULL DEFAULT 0, " +
+    "PRIMARY KEY (id), " +
+    "KEY idx_triage_stat_at (created_at), " +
+    "KEY idx_triage_stat_reason (reason_code)" +
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+
     "CREATE TABLE IF NOT EXISTS ai_setting (" +
     "k VARCHAR(64) NOT NULL, " +
     "v TEXT NOT NULL, " +
@@ -481,6 +526,25 @@ public func isBookingOwnedTable(name: String): Bool {
  */
 public func migrateSchema(db: DbBackend): Int64 {
     var done: Int64 = 0
+
+    /*
+     * ★ P4：`medical_record.updated_by`（存量库补列）。
+     *
+     * ⚠ 为什么必须显式迁移：`CREATE TABLE IF NOT EXISTS` 对**已存在**的表
+     *   **完全无效** —— 老库上这张表早就建好了，DDL 里加列不会生效。
+     *   实测症状：`Unknown column 'updated_by' in 'SELECT'`（整个病历域全挂）。
+     *   📌 这就是 `migrateSchema` 存在的理由（原注释里已写明"存量库靠 DDL 改不动"）。
+     */
+    let hasUpdatedBy = db.query(
+        "SELECT COUNT(*) FROM information_schema.COLUMNS " +
+        "WHERE table_schema = DATABASE() AND table_name = 'medical_record' " +
+        "AND column_name = 'updated_by'",
+        Array<DbValue>())
+    if (hasUpdatedBy.rowCount() > 0 && hasUpdatedBy.getInt(0, 0) == 0) {
+        db.exec("ALTER TABLE medical_record ADD COLUMN updated_by BIGINT NOT NULL DEFAULT 0",
+                Array<DbValue>())
+        done = done + 1
+    }
 
     let oldIdx = db.query(
         "SELECT COUNT(*) FROM information_schema.statistics " +
