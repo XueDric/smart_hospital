@@ -38,7 +38,7 @@
 | [docs/P1-OPS-HANDOFF.md](docs/P1-OPS-HANDOFF.md) | **P1 运维交接**：证书信任分发 / 轮换与到期监控 —— 两项**本机不可验证**，含判据与具体命令 | ✏️ 本项目文档 |
 | [docs/P2-HANDOFF.md](docs/P2-HANDOFF.md) | **P2 AI 分诊交付**：边界（未接模型及原因）、核心不变式、变异测试、三个"字节/字符混用"缺陷 | ✏️ 本项目文档 |
 | [docs/P3-HANDOFF.md](docs/P3-HANDOFF.md) | **P3 AI 能力中心**：密钥不落库的**机制**、改配置零重启、第五类表、诚实的边界 | ✏️ 本项目文档 |
-| [server/](server/README.md) | **智慧医院服务端**（仓颉 + 轻舟）：`src/` **19 个 `.cj`** + 5 个构建/运维脚本 + `tests/` **9 个测试脚本** + README | ✏️ 本项目代码 |
+| [server/](server/README.md) | **智慧医院服务端**（仓颉 + 轻舟）：`src/` **19 个 `.cj`** + 5 个构建/运维脚本 + `tests/` **9 个测试脚本** + `common.ps1` + README | ✏️ 本项目代码 |
 | [baseline/](baseline/SNAPSHOT.md) | **只读参考基线** —— 复制自 `cangjie_web`，**352 文件 / 7.53 MB**，基线提交 `07a0922`（上传前已剔除机密材料，见其 §二·补） | 🚫 **只读，勿就地改** |
 | [baseline/SNAPSHOT.md](baseline/SNAPSHOT.md) | 基线说明：来源/提交/排除清单/路径映射表/复用风险 | ✏️ 复制说明 |
 | `entry/` | ⚠️ **目前尚不存在** —— 鸿蒙患者端将来落这里，取用 `baseline/entry/` 作模板 | — |

@@ -756,7 +756,7 @@ P0 把 AC-4 的完整回归挂到 P1（写在本 ADR 的"验证边界"里），�
 | `selftest` | 0 | 0 | ok（纯本地断言） |
 | `check-db` | 1 | 3 | ok |
 | `accept` | 1 | 2 | ok |
-| `create-db` | 2 | 0 | ok |
+| `create-db` | 2 | 0 | ok（新增 `--admin-dsn`，见 P3-HANDOFF §五之四） |
 | `create-admin` | 2 | 5 | ✅ 本轮修好 |
 | `serve` | 1 | 0 | ok |
 

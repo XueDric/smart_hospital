@@ -44,7 +44,7 @@ func usage(): Unit {
     println("  hospital-server.exe version               打印版本")
     println("  hospital-server.exe create-admin <dsn> [登录名]")
     println("                                            创建/重置管理员并打印口令（引导用）")
-    println("  hospital-server.exe create-db <dsn>       幂等建库（utf8mb4）")
+    println("  hospital-server.exe create-db <dsn> [--admin-dsn <dsn>]  建库 + 授权（utf8mb4）")
     println("")
     println("DSN 格式：mysql://user:pass@host:port/db")
     println("  本机联调示例：mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital")
@@ -60,21 +60,63 @@ func usage(): Unit {
  */
 func checkDb(dsn: String): Int64 {
     var db: DbBackend
+    /*
+     * ⚠ `cfg` 必须声明在 try **外面** —— 下面的 catch 要用它拼处置命令里的库名，
+     *   而仓颉**没有变量提升**：try 块里声明的 `let cfg` 在 catch 里不可见。
+     *   （这是本项目踩坑表里的 B 条，此处又遇到一次。）
+     */
+    var cfg: MySqlConfig
     try {
-        let cfg = parseDsn(dsn)
+        cfg = parseDsn(dsn)
         println("连接：${cfg.describe()}")
         db = openDatabase(cfg)
     } catch (e: Exception) {
         println("❌ ${e.message}")
         return 1
     }
-    let n = ensureSchema(db)
-    // 存量库靠 DDL 改不动，必须显式迁移（见 migrateSchema 注释）
-    let migrated = migrateSchema(db)
+    /*
+     * ★★ 建表 + 迁移必须**包在 try/catch 里**（第八份复查第 2 条）。
+     *
+     * 原来这两行在 try 之外 ⇒ 权限不足时抛**未捕获异常 + 完整堆栈**：
+     *     An exception has occurred:
+     *     SqlException: ALTER command denied to user ... 
+     *        at mariadb.cdbc::ConnectionImpl::sendUpdate ...
+     *        at qingzhou::checkDb(main.cj:73)
+     * 这违反本仓自己立的规矩「**失败必须被说出来，不能靠崩溃表达**」——
+     * 而且堆栈里全是驱动内部帧，对使用者**毫无用处**（真正的原因在最后一行）。
+     *
+     * ⚠ 对照：同一个 `migrateSchema` 在 `accept` / `serve` / `create-admin`
+     *   三处**早就都包好了**（main.cj 各自的 try）。只有 `check-db` 漏了 ——
+     *   所以这是**同一类疏漏的最后一份**，不是新问题。
+     */
+    var n: Int64 = 0
+    var migrated: Int64 = 0
+    try {
+        n = ensureSchema(db)
+        // 存量库靠 DDL 改不动，必须显式迁移（见 migrateSchema 注释）
+        migrated = migrateSchema(db)
+    } catch (e: Exception) {
+        println("❌ 建表/迁移失败：${e.message}")
+        println("")
+        /*
+         * 这个报错**极可能**是权限不够（而不是 SQL 写错）—— 因为"库是新造的、
+         * 但账号只有全局 CREATE"是本项目已知的配置形态（见 ensureDatabaseUsable）。
+         * 所以直接给出最可能的处置，而不是让人去猜堆栈。
+         */
+        println("   处置（按可能性排序）：")
+        println("   ① **账号对该库没有 DDL 权限**（最常见）—— 用管理员执行：")
+        println("        GRANT ALL PRIVILEGES ON `" + cfg.db + "`.* TO `" + cfg.user + "`@`localhost`;")
+        println("        FLUSH PRIVILEGES;")
+        println("      （跑 `create-db <同一条 DSN>` 也会打印这条现成命令）")
+        println("   ② 上一步 create-db 是否**成功**？库不存在时会先在这里失败")
+        println("   ③ DSN 是否指到了预期的库")
+        db.close()
+        return 1
+    }
+    println("建表：执行 ${n} 条 DDL（IF NOT EXISTS，幂等）")
     if (migrated > 0) {
         println("迁移：执行了 ${migrated} 条结构变更")
     }
-    println("建表：执行 ${n} 条 DDL（IF NOT EXISTS，幂等）")
     println("")
     println("表清单：")
     let rs = db.query("SHOW TABLES", Array<DbValue>())
@@ -787,7 +829,25 @@ func createAdmin(args: Array<String>): Int64 {
  * ⚠ 账号必须**有建库权限**（或不带库名也能连）。没权限时会明确报错并给出
  *   `CREATE DATABASE ...` 手工命令，而不是含糊地说"建库失败"。
  */
-func createDb(dsn: String): Int64 {
+func createDb(args: Array<String>): Int64 {
+    let dsn = args[0]
+    /*
+     * 解析 `--admin-dsn`（照 serve 的口径：**严格解析、未知参数直接拒**，
+     * 不做"忽略看不懂的选项"那种宽松处理 —— 那会让 `--admin-dsn` 拼错时静默失效，
+     * 而使用者会以为已经授好权了）。
+     */
+    var adminDsn = ""
+    var ai = 1
+    while (ai < args.size) {
+        if (args[ai] == "--admin-dsn" && ai + 1 < args.size) {
+            adminDsn = args[ai + 1]
+            ai = ai + 2
+        } else {
+            println("未知参数：${args[ai]}")
+            println("用法：hospital-server.exe create-db <dsn> [--admin-dsn <管理员 DSN>]")
+            return 2
+        }
+    }
     var cfg: MySqlConfig
     try {
         cfg = parseDsn(dsn)
@@ -805,9 +865,32 @@ func createDb(dsn: String): Int64 {
         println("❌ ${e.message}")
         return 1
     }
-    println("✅ 库已就绪：${cfg.db}（CHARACTER SET utf8mb4）")
+    /*
+     * ★★ 建完库还要**让库对当前账号真的可用**（第八份复查的真问题）。
+     *
+     * 原来这里直接打印「✅ 库已就绪」就返回了 —— 而权限是**按库逐个授**的：
+     * 本项目的 `hospital` 账号只有 `CREATE ON *.*` + 两个库的 ALL，
+     * 所以它**能建第三个库、却对新库没有任何权限**。
+     * ⇒ 「就绪」是**假的**：紧接着 `check-db` 的 `migrateSchema` 会在 ALTER 上被拒。
+     *
+     * 现在：建库 → 探测（真做一次 DDL）→ 不可用则尝试自助授权 →
+     *   还不行就**明确报"已建好但用不了" + 给 root 命令**，并返回失败。
+     *   📌 关键纪律：**不许把"不可用"报成"就绪"**。
+     */
+    var usable: Int64 = 0
+    if (adminDsn.size > 0) {
+        /* 给了管理员 DSN ⇒ 建库 + 授权 + 探通，一步到位 */
+        usable = ensureDatabaseUsableWithAdmin(cfg, adminDsn)
+    } else {
+        usable = ensureDatabaseUsable(cfg)
+    }
+    if (usable != 0) {
+        return usable
+    }
+    println("✅ 库已就绪且可用：${cfg.db}（CHARACTER SET utf8mb4，账号 ${cfg.user} 可 DDL）")
     return 0
 }
+
 
 main(args: Array<String>): Int64 {
     // args[0] 即第一个参数（不含 exe 路径）
@@ -856,10 +939,14 @@ main(args: Array<String>): Int64 {
     }
     if (cmd == "create-db") {
         if (args.size < 2) {
-            println("用法：hospital-server.exe create-db <dsn>")
+            println("用法：hospital-server.exe create-db <dsn> [--admin-dsn <管理员 DSN>]")
+            println("")
+            println("  <dsn>         目标库（业务账号，例如 hospital）—— 必须带库名")
+            println("  --admin-dsn   可选。给一个有 GRANT OPTION 的账号，本命令会**一步授好**")
+            println("                （不给的话：新库对业务账号没有权限，check-db/accept/serve 会失败）")
             return 2
         }
-        return createDb(args[1])
+        return createDb(args[1..])
     }
     println("未知子命令：${cmd}")
     println("")

@@ -309,6 +309,99 @@ match("zzz") -> 还是命中 case A ✗
 📌 一般规律：**`asXxx()` 在类型不符时是抛异常，不是返回 None** —— 读用户输入必须先判类型。
 （HTTP 层的测试抓到；纯逻辑层碰不到这段。）
 
+## 五之四、🔴 **第八份**复查（2026-10-07）：1 条真问题 + 1 条测试卫生
+
+### 🔴 ① `create-db` 建出来的库，同一个账号用不了（已复现）
+
+复查给的复现链我逐条验过，与它完全一致：
+
+```
+create-db → ✅ 库已就绪：iso_test2
+check-db  → An exception has occurred:
+            SqlException: ALTER command denied to user 'hospital'@'localhost'
+            for table `iso_test2`.`appointment`
+            at migrateSchema(schema.cj:520) → checkDb(main.cj:73)
+            exit=1
+```
+
+根因（我实查 `SHOW GRANTS` 确认）：
+
+```
+GRANT CREATE ON *.*                          ← 全局：只能"建库"
+GRANT ALL PRIVILEGES ON `hospital`.*         ← 权限是**按库逐个授**的
+GRANT ALL PRIVILEGES ON `hospital_test`.*
+```
+
+⇒ 它能 `CREATE DATABASE iso_test2` 成功，但**对新库没有任何权限**。
+
+**修法**（两处）：
+
+1. **`create-db` 建完库后必须让库"真能用"** —— 新增 `ensureDatabaseUsable()`：
+   探测 → 不可用则尝试自助授权 → 还不行就**明确报"已建好但用不了"** + 给出
+   可复制的 root 命令 + 返回失败（exit=2）。
+   📌 纪律：**不许把"不可用"报成"就绪"**。
+2. **新增 `--admin-dsn`**（推荐路径）：给一个带 `GRANT OPTION` 的 DSN，
+   **建库 + 授权 + 探通一步到位**。管理员 DSN **允许不带库名**（`GRANT` 不需要）。
+
+> ⚠ 业务账号**不能**给自己授权，这是**正确**的安全设计 —— 所以正确做法是
+> **显式提供**一个管理员 DSN（一次性使用），而不是让业务账号拿到 GRANT OPTION。
+
+#### 修的过程里我错了三次，每次都记下来（都是"探错了能力"）
+
+| # | 我探的 | 为什么错 |
+| --- | --- | --- |
+| ❌ 1 | `CREATE TABLE` 一个探测表 | `CREATE ON *.*` 是**全局**的 ⇒ 在新库上**永远允许**（实测：新库上 CREATE 允许，而 ALTER/DROP/SELECT 全被拒）⇒ **必然误报"可用"**，还会**留下垃圾表** |
+| ❌ 2 | 对"**已存在**的应用表做 ALTER" | 真·全新库里一张应用表都没有 ⇒ 走"保守判不可用"的兜底 ⇒ **管理员明明授好权了也报"用不了"**（实测：`GRANT` 成功却打印 ❌） |
+| ✅ 3 | `CREATE TEMPORARY TABLE`（无残留）+ 对已存在应用表 `ALTER ... ENGINE=InnoDB`（幂等改写），**两者必须都过** | 临时表随连接消失、零残留；ALTER 才是 `migrateSchema` 的真正需求 |
+
+> 📌 教训：**"探测"必须探"我们真正需要的那件事"，而不是一件相关但更弱的事。**
+> 拿更弱的能力去探，会得到一个"看起来通过"的假阳性 —— 比不探更坏。
+
+#### 还修掉一处同类隐患：授权语句**不要硬编码 host**
+
+我第一版写 `TO 'user'@'localhost'` —— 而 host **不是**由 DSN 决定的：
+同一个 DSN 连上去，MySQL 可能把你认成 `user@localhost`（socket/named pipe）
+或 `user@127.0.0.1`（TCP）。写死 `localhost` 对后者就是**授给了一个不存在的账户**
+（GRANT 甚至报成功，因为 MySQL 默认会创建账户）。
+⇒ 现在一律用**数据库自己报告的 `CURRENT_USER()`**（`user@host`）拼授权语句，
+这样"授给谁"与"我是谁"**必然一致**。
+
+### 🟠 ② `check-db` 的未捕获异常 + 完整堆栈
+
+`migrateSchema` 在 `check-db` 里**在 try/catch 之外**（`main.cj:73`），
+于是权限不足时抛未捕获异常 + 一堆驱动内部帧 ——
+违反本仓自己立的规矩「**失败必须被说出来，不能靠崩溃表达**」。
+
+⚠ 对照：同一个 `migrateSchema` 在 **`accept` / `serve` / `create-admin` 三处
+早就都包好了**。⇒ 这是**同一类疏漏的最后一份**，不是新问题
+（我全仓扫过 4 个调用点，确认只有 `check-db` 漏了）。
+
+**修法**：纳入 try/catch，给 `❌` + 处置（含精确到本库的 GRANT 命令）。
+⚠ 顺手修了一个**作用域**问题：`cfg` 原在 try 内声明，而 catch 里要用它拼命令 ——
+仓颉**没有变量提升**（踩坑表 B 条），所以把声明提到 try 之外。
+
+### 新增回归脚本 `tests/create-db-check.ps1`（17 项，可重复）
+
+覆盖：① 不给 `--admin-dsn` 必须**明确失败**（且无成功话术、无堆栈、有 GRANT 处置）；
+② `check-db` 权限不足时**干净报错**；③ 给 `--admin-dsn` **一步到位**；
+④ 授权后 `check-db` 与 `accept` **都通过**（复查的原始断言）；⑤ 管理员 DSN **不带库名**也能用。
+
+#### ⚠ 我又踩了一个"测试卫生"问题（正是复查第 2 点批评的那类）
+
+第一版断言②**只 DROP 库、没撤授权**。于是第二次跑时库虽被删、**授权仍留在 `mysql.db` 里**
+⇒ 重建同名库时权限**立刻生效** ⇒ "必须失败"那条变成成功（`exit=0`），**假红**。
+
+⇒ 修法：前置清理**既撤权又删库**，并**直接查 `mysql.db` 断言"残留授权 == 0"**
+（不假设 `REVOKE` 一定成功）。现在**连跑两次结果完全一致**。
+
+> 📌 `GRANT` 是**独立于库**存在的 —— 删库不等于撤权。这条值得记住。
+
+### 变异/回归
+
+  注入旧行为（`create-db` 不校验可用性）⇒ 断言① `exit=2 → exit=0` 立刻变红
+  全量回归：selftest 39 / authtest 17 / triagetest 108 / accept 184 ✅
+  5 个 HTTP 脚本 + stress + 新脚本（跑两次）✅
+
 ## 六、诚实的边界
 
 | # | 边界 | 说明 |

@@ -95,6 +95,35 @@ $pw = "<上一步打印的管理员口令>"
 .\tests\stress-booking.ps1 -Base http://127.0.0.1:8091 -Tokens 50 -ScheduleTotal 50 -Dsn $dsn -AdminPw $pw
 ```
 
+### ⚠ 新建**第三个**库时，`create-db` 必须带 `--admin-dsn`
+
+`hospital` 账号的实际授权是**按库逐个授**的（本机实测）：
+
+```
+GRANT CREATE ON *.*                          ← 全局：只能"建库"
+GRANT ALL PRIVILEGES ON `hospital`.*         ← 库级：权限在这里
+GRANT ALL PRIVILEGES ON `hospital_test`.*
+```
+
+所以**它能建出第三个库，却对新库没有任何权限**。`create-db` 现在会当场探测并告诉你：
+
+```powershell
+# ✅ 推荐：给一个有 GRANT OPTION 的 DSN，一步授好
+$adm = "mysql://root:devroot2026@127.0.0.1:3317/"    # 管理员 DSN 可以不带库名
+.\build\hospital-server.exe create-db mysql://hospital:hospital_dev_2026@127.0.0.1:3317/newdb_test --admin-dsn $adm
+
+# 不给 --admin-dsn 时：它**明确失败**（exit=2），并打印出可复制的 GRANT 命令
+```
+
+> ⚠ **这一步不做，`check-db` / `accept` / `serve` 都会在 `migrateSchema` 的
+> `ALTER` 上被拒**。原缺陷正是「`create-db` 报『库已就绪』、下一条命令才炸」——
+> 失败被推迟，而且**报错的地方不是出错的地方**。现在 `create-db` **不会**再把
+> "不可用"报成"就绪"。
+>
+> 📌 业务账号**不能**给自己授权，这是**正确**的安全设计（服务进程不该长期持有
+> 授权能力）—— 所以正确做法是**显式提供**一个管理员 DSN（一次性使用），
+> 而不是想办法让业务账号拿到 GRANT OPTION。
+
 ---
 
 ## 五、为什么不用社团那台（历史原因，留档）

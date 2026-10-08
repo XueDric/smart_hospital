@@ -81,7 +81,11 @@ function Invoke-MySqlScalar {
         [Parameter(Mandatory=$true)][string]$Sql,
         [string]$Label = "scalar"
     )
-    $raw = & $My.Client -h $My.DbHost -P $My.Port -u $My.User "-p$($My.Pass)" --skip-ssl $My.Db -N -B -e $Sql 2>&1
+    # 库名为空时**不传**库名（管理员 DSN 常常不带库名，而 DROP/GRANT 不需要当前库）
+    $cliArgs = @("-h", $My.DbHost, "-P", "$($My.Port)", "-u", $My.User, "-p$($My.Pass)", "--skip-ssl")
+    if ($My.Db) { $cliArgs += $My.Db }
+    $cliArgs += @("-N", "-B", "-e", $Sql)
+    $raw = & $My.Client $cliArgs 2>&1
     if ($null -eq $raw -or "$raw".Trim().Length -eq 0) {
         if ($Sql.TrimStart().ToUpper().StartsWith("SELECT")) {
             Write-Warning "  SQL 未返回任何行（$Label，库 $($My.Db)）：$Sql"
