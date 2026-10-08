@@ -791,7 +791,7 @@ P0 把 AC-4 的完整回归挂到 P1（写在本 ADR 的"验证边界"里），�
 
 | 套件 | 命令 | 结果 |
 | --- | --- | --- |
-| schema 自检（无需库） | `hospital-server.exe selftest` | ✅ **31 项** |
+| schema 自检（无需库） | `hospital-server.exe selftest` | ✅ **32 项** |
 | ★ 口令/令牌原语（含 3 个公开向量） | `hospital-server.exe authtest` | ✅ 17 项 |
 | 验收（AC-1…AC-P2-4） | `hospital-server.exe accept <dsn>` | ✅ **94 项** |
 | ★ 令牌鉴权端到端 | `tests\auth-check.ps1` | ✅ 全绿（登录/Bearer/三端权限/登出/改口令踢下线/防枚举计时） |

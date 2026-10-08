@@ -287,6 +287,53 @@ func selftest(): Int64 {
     check("appointment 有 visit_date 就诊日快照列", hasVisitDate)
     check("appointment 有 client_token 幂等键列", hasClientToken)
 
+    /*
+     * ---- ★★ DSN 解析：多字节（中文）内容不得被切坏 ----
+     *
+     * 为什么加这一组（第五份复查的连带要求）：复查指出我在 triage 里
+     * **逐点修**字节/字符混用，而不是**按类别扫**。扫全仓时发现
+     * `parseDsn` 也在同一个表达式里混用了两者：
+     *     `authority[(at + 1)..]`  ← `at` 来自 `lastIndexOf("@")`，是**字节**偏移
+     * 我实测确认它**恰好是安全的** —— 因为它搜的分隔符（`/ @ :`）全是**单字节 ASCII**，
+     *   而 `x + 1` 又恰好是"跳过那个 1 字节分隔符"，所以整个解析**自洽地待在字节空间**里。
+     *   但这属于"**碰巧对**"：它的正确性依赖"分隔符一定是 1 字节"这个隐含前提，
+     *   而代码里**没有任何东西**写明或保证这一点。
+     *
+     * ⇒ 所以把它**钉成断言**：只要多字节输入仍解析正确，这个前提就没被破坏；
+     *   哪天有人把某个分隔符改成多字节、或把某处改成字符下标，这里会立刻变红。
+     *   （📌 这是"按类别扫"的正确姿势：**不重写没坏的东西，但把它的前提写成测试**。）
+     */
+    println("")
+    println("=== DSN 解析（多字节输入）===")
+    let dsnCases: Array<(String, String, String, String, String)> = [
+        // dsn, 期望 user, 期望 pass, 期望 host, 期望 db
+        ("mysql://hospital:pw@127.0.0.1:3317/hospital_test", "hospital", "pw", "127.0.0.1", "hospital_test"),
+        // 密码含中文（3 字节字符）
+        ("mysql://hospital:密码2026@127.0.0.1:3317/hospital_test", "hospital", "密码2026", "127.0.0.1", "hospital_test"),
+        // 库名含中文
+        ("mysql://hospital:pw@127.0.0.1:3317/医院_test", "hospital", "pw", "127.0.0.1", "医院_test"),
+        // 用户名含中文
+        ("mysql://管理员:pw@127.0.0.1:3317/db_test", "管理员", "pw", "127.0.0.1", "db_test"),
+        // 三项全含中文
+        ("mysql://管理员:密码@主机:3317/库_test", "管理员", "密码", "主机", "库_test"),
+        // 无端口（默认 3306）
+        ("mysql://u:p@localhost/db_test", "u", "p", "localhost", "db_test")
+    ]
+    var dsnAllOk = true
+    for ((dsn, wu, wp, wh, wd) in dsnCases) {
+        try {
+            let c = parseDsn(dsn)
+            if (c.user != wu || c.pass != wp || c.host != wh || c.db != wd) {
+                dsnAllOk = false
+                println("        '${dsn}' -> user='${c.user}' pass='${c.pass}' host='${c.host}' db='${c.db}'")
+            }
+        } catch (e: Exception) {
+            dsnAllOk = false
+            println("        '${dsn}' 抛异常：${e.message}")
+        }
+    }
+    check("★ ${dsnCases.size} 条 DSN（含中文用户名/密码/主机/库名）解析正确", dsnAllOk)
+
     println("")
     if (failed == 0) {
         println("✅ 自检全部通过")

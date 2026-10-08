@@ -57,7 +57,9 @@ public func runTriageTests(): Int64 {
     rtRedFlag(r)
     rtNegation(r)
     rtVague(r)
+    rtWidthMix(r)
     rtDept(r)
+    rtDeptNegation(r)
     println("")
     println("通过 ${r.passed} 项，失败 ${r.failed} 项")
     if (r.failed == 0) {
@@ -184,6 +186,163 @@ func rtVague(r: TriageRunner): Unit {
         ]
         for (c in vagueWithMod) {
             r.check("共现升级为红牌：${c}", detectRedFlag(c).redFlag)
+        }
+    })
+}
+
+/* ---------- ★★ 宽度混排：按**类别**扫，而不是逐点修 ---------- */
+func rtWidthMix(r: TriageRunner): Unit {
+    println("")
+    println("--- ★★ 宽度混排（ASCII 窄字符 + 汉字宽字符）---")
+    triageSection(r, "rtWidthMix", { =>
+        /*
+         * ★★ 这一组守的是**第五份复查**抓出的严重缺陷，它同时也是"测试为什么没抓到"的答案。
+         *
+         * 原缺陷：否定窗口的字节/字符换算取错了参照点，于是 `from` 可能落在
+         *   多字节字符**中间** ⇒ `seg[from..at]` 切出非法 UTF-8 ⇒ 普通主诉 **HTTP 500**。
+         *   实测触发条件极其常见（真实临床写法）：
+         *       CT显示没有胸痛 / BP160没有胸痛 / 1234没有胸痛 / aaaa没有胸痛
+         *   而 "血压160没有胸痛" / "糖尿病10年没有胸痛" / "aaa没有呕血" 却**正常** ——
+         *   因为它们的宽度组合恰好让偏移落在字符边界上。
+         *
+         * 为什么原来的用例全没抓到：**所有否定用例都是等宽纯汉字**
+         *   （"没有胸痛" / "否认胸痛" / "未曾呕血"），边界永远不会落在字符中间。
+         *   📌 这与上一轮"变异②漏掉"是**同一个病**：用例只覆盖了一种形态，
+         *     于是它验的是那种形态，而不是那条**规则**。
+         *
+         * ⇒ 所以这里不做"再补几个用例"，而是**按类别扫**：
+         *   系统性组合「前缀宽度」×「否定写法」，把整个组合空间走一遍。
+         *   任何"只在某些宽度组合下错"的实现都必然被覆盖。
+         */
+        let prefixes: Array<String> = [
+            "", "CT显示", "BP160", "1234", "aaaa", "血压160", "糖尿病10年",
+            "a", "ab", "abc", "abcd", "abcde", "体温37.5度", "x1", "患者男", "男65岁"
+        ]
+        let negForms: Array<String> = [
+            "没有胸痛", "无胸痛", "不胸闷", "否认胸痛", "未曾呕血", "并没有昏迷",
+            "没有呼吸困难", "无呕血便血", "排除误服", "不抽搐"
+        ]
+        var bad: Int64 = 0
+        var total: Int64 = 0
+        for (p in prefixes) {
+            for (nf in negForms) {
+                let c = p + nf
+                total = total + 1
+                if (detectRedFlag(c).redFlag) {
+                    bad = bad + 1
+                    if (bad <= 5) {
+                        println("        误报红牌：'${c}'")
+                    }
+                }
+            }
+        }
+        r.check("★ 宽度混排 × 否定写法 共 ${total} 组全部不报红牌（误报 ${bad} 组）", bad == 0)
+
+        // 反向：混排 + **真**征象必须仍然报（不能矫枉过正成"一律不报"）
+        let truths: Array<String> = [
+            "胸痛", "呕血", "呼吸困难", "昏迷", "抽搐", "误服农药", "胎动减少"
+        ]
+        var missed: Int64 = 0
+        var total2: Int64 = 0
+        for (p in prefixes) {
+            for (tv in truths) {
+                let c = p + "，" + tv
+                total2 = total2 + 1
+                if (!detectRedFlag(c).redFlag) {
+                    missed = missed + 1
+                    if (missed <= 5) {
+                        println("        漏报：'${c}'")
+                    }
+                }
+            }
+        }
+        r.check("★ 宽度混排 × 真征象 共 ${total2} 组全部报红牌（漏报 ${missed} 组）", missed == 0)
+
+        /*
+         * 复查给的**具体**输入：必须区分两类断言（不能混成一条）。
+         *
+         * ⚠ 我第一版把 8 个样例**全部**断言成"不报红牌"，结果 `aaaa持续头痛` 失败 ——
+         *   而它报红牌是**设计如此**（`持续` 是程度修饰 + `头痛` 是模糊词 ⇒ 共现升级）。
+         *   复查表格里这一条列的是 **500（崩）**，不是"误报红牌"。
+         *   ⇒ 教训：**从报告里抄样例时，要连"每条样例断言什么"一起抄清楚**；
+         *     把不同性质的样例混成一条断言，会把**正确行为**报成失败。
+         */
+        let repro: Array<String> = [
+            "CT显示没有胸痛", "BP160没有胸痛", "1234没有胸痛", "aaaa没有胸痛",
+            "aaaa持续头痛", "血压160没有胸痛", "糖尿病10年没有胸痛", "aaa没有呕血"
+        ]
+        // ★ 断言 A（全部 8 条）：**不抛异常** —— "500"就是本次缺陷的直接表现
+        var threw = false
+        try {
+            for (c in repro) {
+                let _f = detectRedFlag(c)
+            }
+        } catch (e: Exception) {
+            threw = true
+            println("        抛异常：${e.message}")
+        }
+        r.check("★★ 复查的 8 个样例**全部不抛异常**（原缺陷表现为 HTTP 500）", !threw)
+
+        // ★ 断言 B（只对"纯否定"那 7 条）：不得误报红牌
+        let mustNotFlag: Array<String> = [
+            "CT显示没有胸痛", "BP160没有胸痛", "1234没有胸痛", "aaaa没有胸痛",
+            "血压160没有胸痛", "糖尿病10年没有胸痛", "aaa没有呕血"
+        ]
+        var anyBad = false
+        for (c in mustNotFlag) {
+            if (detectRedFlag(c).redFlag) {
+                anyBad = true
+                println("        复查样例仍误报红牌：'${c}'")
+            }
+        }
+        r.check("★ 复查的 7 条**纯否定**样例不报红牌", !anyBad)
+
+        // ★ 断言 C：混排下的"共现升级"**仍然生效**（反向，防止有人把它当误报改坏）
+        r.check("★ 混排 + 程度修饰仍按设计升级为红牌（'aaaa持续头痛'）",
+                detectRedFlag("aaaa持续头痛").redFlag)
+    })
+}
+
+/* ---------- ★★ 科室判定也必须处理否定 ---------- */
+func rtDeptNegation(r: TriageRunner): Unit {
+    println("")
+    println("--- ★★ 科室判定：被否认的症状不得主导推荐 ---")
+    triageSection(r, "rtDeptNegation", { =>
+        /*
+         * ★★ 第五份复查的第二个严重缺陷。实测（让心血管内科有号后）：
+         *     '不胸闷，只是咳嗽'   -> 心血管内科  ✗
+         *     '没有胸闷，就是咳嗽' -> 心血管内科  ✗
+         *     '否认胸闷，主要咳嗽' -> 心血管内科  ✗
+         *     '咳嗽'（对照）       -> 呼吸内科    ✓
+         *
+         * 危害比"分错科"更隐蔽：**有号校验是通过的**，于是 `reason=OK`
+         * 还附了真实医生与号源 ⇒ 响应看起来权威而确定，患者很可能照着挂错科。
+         *
+         * 根因：保险丝那条路处理了否定，科室判定这条路用的是**裸 `seg.contains`** ——
+         * 同一语义两处实现，只改了一处（本项目反复吃过的"两套口径"病）。
+         */
+        let cases: Array<(String, String)> = [
+            ("不胸闷，只是咳嗽", "呼吸内科"),
+            ("没有胸闷，就是咳嗽", "呼吸内科"),
+            ("否认胸闷，主要咳嗽", "呼吸内科"),
+            ("无胸闷，咳嗽三天", "呼吸内科"),
+            // 对照：真的说胸闷，必须仍然给心血管内科（不能矫枉过正）
+            ("胸闷心悸", "心血管内科"),
+            ("血压高，胸闷", "心血管内科")
+        ]
+        for ((c, want) in cases) {
+            let g = guessDepartment(c)
+            r.check("「${c}」→ ${want}（实得 ${g.deptName}）", g.deptName == want)
+        }
+
+        // 混排也要正确（与保险丝同一类风险）
+        let mixed: Array<(String, String)> = [
+            ("CT显示没有胸闷，只是咳嗽", "呼吸内科"),
+            ("BP160否认胸闷，主要咳嗽", "呼吸内科")
+        ]
+        for ((c, want) in mixed) {
+            let g = guessDepartment(c)
+            r.check("混排「${c}」→ ${want}（实得 ${g.deptName}）", g.deptName == want)
         }
     })
 }

@@ -247,7 +247,7 @@ P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与
 
 | 套件 | 结果 |
 | --- | --- |
-| `hospital-server.exe selftest` | ✅ **31 项** |
+| `hospital-server.exe selftest` | ✅ **32 项** |
 | `hospital-server.exe authtest` | ✅ **17 项**（含 3 个公开测试向量） |
 | `hospital-server.exe accept <dsn>` | ✅ **94 项 / 失败 0**（原 32，新增 AC-10） |
 | `tests\stress-booking.ps1` | ✅ **20/30/40/50 并发抢同数号源 → 全部恰好卖光、零 409、零少卖** |

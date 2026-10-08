@@ -138,6 +138,59 @@ $r = DoReq 'long' 'POST' '/api/v1/triage' @("Authorization: Bearer $patTok") ('{
 Check "超长主诉（1200 字）→ 200 且 truncated=true（不是 500）" `
       ($r.Http -eq 200 -and $r.Json.data.truncated -eq $true) ("HTTP $($r.Http) truncated=$($r.Json.data.truncated)")
 
+# ── 5b) ★★ 宽度混排（ASCII 窄字符 + 汉字宽字符）不得 500 ──────────────────
+Write-Host ""
+Write-Host "[5b] ★★ 宽度混排：真实临床写法不得 500（第五份复查缺陷）"
+# ── 这一节守的是第五份复查抓出的严重缺陷 ─────────────────────────────────
+# 否定窗口的字节/字符换算取错了参照点（取的是"片段开头前 4 个字符"的字节数，
+# 而不是"命中词之前 4 个字符"的字节数），于是当片段以 ASCII 开头而命中词前是汉字时，
+# `from` 落在多字节字符**中间** ⇒ 切出非法 UTF-8 ⇒ **普通主诉直接 HTTP 500**。
+#
+# 实测触发条件极常见：CT显示没有胸痛 / BP160没有胸痛 / 1234没有胸痛 / aaaa没有胸痛
+# 而"血压160没有胸痛"/"糖尿病10年没有胸痛"/"aaa没有呕血"却正常 ——
+# 因为它们的宽度组合恰好让偏移落在字符边界上。
+#
+# ⚠ 为什么 triagetest 当时没抓到：所有否定用例都是**等宽纯汉字**（"没有胸痛"），
+#   边界永远不落在字符中间。所以本节的用例**必须**含窄+宽混排 ——
+#   这正是"逐点修 vs 按类别扫"的教训。
+$mixCases = @(
+    'CT显示没有胸痛', 'BP160没有胸痛', '1234没有胸痛', 'aaaa没有胸痛',
+    'aaaa持续头痛', '血压160没有胸痛', '糖尿病10年没有胸痛', 'aaa没有呕血',
+    '男65岁，没有胸闷，只是咳嗽', 'x1否认呕血'
+)
+$mixBad = @()
+foreach ($c in $mixCases) {
+    $r = DoReq ('mx' + [Guid]::NewGuid().ToString('N').Substring(0,6)) 'POST' '/api/v1/triage' `
+         @("Authorization: Bearer $patTok") ('{"chief_complaint":"' + $c + '"}')
+    if ($r.Http -ne 200) { $mixBad += "$c -> $($r.Http)" }
+}
+Check "★★ $($mixCases.Count) 条宽度混排主诉全部 200（0 条 500）" ($mixBad.Count -eq 0) ($mixBad -join ' | ')
+
+# ── 5c) ★★ 被否认的症状不得主导科室推荐 ───────────────────────────────────
+Write-Host ""
+Write-Host "[5c] ★★ 科室判定必须处理否定（第五份复查缺陷二）"
+# 造一个"有号的心血管内科"—— 让错推荐**看起来权威**（否则一眼就能看出不对）
+$null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO department (id,name,code,created_at) VALUES (9211,'心血管内科','T9211',0)" -Label "建心内科"
+$null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO doctor (id,name,department_id,title,specialty,created_at) VALUES (9211,'测试心内医生',9211,'主任医师','心血管',0)" -Label "建心内医生"
+$null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO schedule (id,doctor_id,department_id,work_date,period,total_num,remain_num,version,enabled,created_at) VALUES (9211,9211,9211,'2026-12-28','AM',5,5,0,1,0)" -Label "建心内排班"
+$null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO department (id,name,code,created_at) VALUES (9212,'呼吸内科','T9212',0)" -Label "建呼吸科"
+$null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO doctor (id,name,department_id,title,specialty,created_at) VALUES (9212,'测试呼吸医生',9212,'主任医师','呼吸',0)" -Label "建呼吸医生"
+$null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO schedule (id,doctor_id,department_id,work_date,period,total_num,remain_num,version,enabled,created_at) VALUES (9212,9212,9212,'2026-12-28','AM',5,5,0,1,0)" -Label "建呼吸排班"
+foreach ($c in @('不胸闷，只是咳嗽', '没有胸闷，就是咳嗽', '否认胸闷，主要咳嗽')) {
+    $r = DoReq ('ng' + [Guid]::NewGuid().ToString('N').Substring(0,6)) 'POST' '/api/v1/triage' `
+         @("Authorization: Bearer $patTok") ('{"chief_complaint":"' + $c + '"}')
+    $dept = ''
+    if ($r.Json.data.options -and @($r.Json.data.options).Count -gt 0) {
+        $dept = @($r.Json.data.options)[0].department_name
+    }
+    Check "★ 「$c」→ 呼吸内科（不是心血管内科；实得 $dept）" ($dept -eq '呼吸内科') ("$dept")
+}
+# 对照：真的说胸闷，必须仍然给心血管内科（不能矫枉过正成"一律不给"）
+$r = DoReq 'ngpos' 'POST' '/api/v1/triage' @("Authorization: Bearer $patTok") '{"chief_complaint":"胸闷心悸"}'
+$dept2 = ''
+if ($r.Json.data.options -and @($r.Json.data.options).Count -gt 0) { $dept2 = @($r.Json.data.options)[0].department_name }
+Check "★ 对照：真的胸闷 → 心血管内科（实得 $dept2）" ($dept2 -eq '心血管内科')
+
 # ── 6) 越权：患者 id 从令牌取，参数无效 ───────────────────────────────────
 Write-Host ""
 Write-Host "[6] ★ 越权尝试（分诊不涉及他人数据，但确认参数不被信任）"

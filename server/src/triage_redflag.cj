@@ -209,66 +209,69 @@ func redFlagSegments(text: String): Array<String> {
     }
     return out.toArray()
 }
+/* ===================== 字符空间工具（本文件所有下标运算的统一口径）===== */
+
 /*
- * 某片段里，`term` 的这次出现是否被**否定**。
+ * 把片段拆成 `Rune[]`。**所有涉及"下标"的判断都必须经过它**。
  *
- * ★★ 这里有一个**实测踩出来的坑**，是本文件最难发现的一处（记下来）：
+ * ★★ 为什么必须集中到这里（这是本文件踩了两次、被复查各抓出一次的根因）：
  *
- *   `String.indexOf` 返回的是**字节**下标，**不是**字符下标！
- *   实测：`"没有胸痛".indexOf("胸痛")` = **6**（不是 2；"没有"各占 3 字节）。
+ *   仓颉 `String` 的**下标 / 切片 / `indexOf` 全都是「字节」语义**，
+ *   而 `size` 是**字节数** —— 只有 `runes()` 是字符语义。
+ *   一旦在同一个表达式里混用，就会出现"看起来对、只在特定宽度组合下炸"的缺陷：
  *
- *   我第一版按"字符下标"处理，于是：
- *     · `at` 其实是字节偏移 6；
- *     · 窗口写 `at - 4` = 2 —— 拿**字节** 2 当**字符**边界去切 `Rune[]`，
- *       切到的是第 2 个字符起，正好**跳过了"没有"**；
- *     · 结果 `head = "有胸"`，不含任何否定词 ⇒ 判定"未被否定" ⇒ **误报红牌**。
+ *     · 第一次（复查④）：`at` 是字节偏移，我却按字符下标去切 rune 数组 ⇒
+ *       窗口跳过"没有" ⇒ 误报红牌。当时我"修"成"窗口统一用字节"。
+ *     · 第二次（复查⑤，本次）：那个修法**仍然错的** —— 它取的是
+ *       "**片段开头**前 4 个字符"的字节数，而不是"**`at` 之前** 4 个字符"的字节数。
+ *       于是当片段以 ASCII 开头（`CT显示…`，前 4 字符只占 4 字节）而命中词前是
+ *       汉字（每字 3 字节）时，`from = at - 4` 落在**第二个汉字中间** ⇒
+ *       `seg[from..at]` 切出非法 UTF-8 ⇒ **普通主诉直接 HTTP 500**。
  *
- *   表现极具迷惑性：`"无发热，无胸痛"` 反而**通过**（因为"无"是单字符，
- *   字节偏移恰好落在窗口里），而 `"没有胸痛"`、`"否认胸痛"`、`"未曾呕血"`
- *   全部失败 —— 看起来像"否定词表不全"，实际是**单位混用**。
- *
- *   修法：**窗口统一用字节**。`from` 的算法是"先按字符取前 4 个字符、
- *   量出它们的字节长度、再从 at 往回减" —— 这样 `from` 一定落在**字符边界**上，
- *   切片既不会撕裂多字节字符，语义又正好是"前面 4 个字符"。
- *   （字符边界这一点很关键：直接 `at - 4` 是字节运算，会切在汉字中间 ⇒ 非法 UTF-8。）
+ *   ⇒ 结论：**不要在字节空间里做减法。** 下标一律先换算成**字符下标**，
+ *     窗口、切片、回退全部在 `Rune[]` 上做，最后只需要"拼回字符串"时才碰字节。
+ *     📌 这也是"逐点修 vs 按类别扫"的区别 —— 前两次我都在**同一个表达式**里
+ *     打补丁，而正确做法是**把这个类别的运算全部收口到一个口径**（本函数）。
  */
-func redFlagIsNegated(seg: String, at: Int64): Bool {
-    if (at <= 0) {
-        return false
-    }
-    // 取"前面最多 4 个字符"的字节长度（按字符数截，避免切在汉字中间）
-    let chars = ArrayList<Rune>()
-    var n: Int64 = 0
+func redFlagRunes(seg: String): Array<Rune> {
+    let out = ArrayList<Rune>()
     for (r in seg.runes()) {
-        if (n >= 4) {
-            break
-        }
-        chars.add(r)
-        n = n + 1
+        out.add(r)
     }
-    if (chars.size == 0) {
+    return out.toArray()
+}
+
+/* 某**字符**下标 `chat` 之前（不含）的窗口文本，最多 `width` 个字符。 */
+func redFlagWindowBefore(chars: Array<Rune>, chat: Int64, width: Int64): String {
+    if (chat <= 0 || chars.size == 0) {
+        return ""
+    }
+    var from: Int64 = 0
+    if (chat > width) {
+        from = chat - width
+    }
+    if (from >= chat) {
+        return ""
+    }
+    if (chat > chars.size) {
+        return ""
+    }
+    return String(chars[from..chat])
+}
+
+/* ===================== 否定判定（字符空间）===================== */
+
+/*
+ * 字符下标 `chat` 处的那次命中，是否被**否定**（往前 `width` 个字符内有否定词）。
+ *
+ * `width` 取 4：够覆盖「我没有」「否认有」「未曾见」这类中文写法。
+ * ⚠ 窗口是**按字符**数的，不是按字节 —— 理由见 `redFlagRunes` 的长注释。
+ */
+func redFlagIsNegatedAt(chars: Array<Rune>, chat: Int64): Bool {
+    let head = redFlagWindowBefore(chars, chat, 4)
+    if (head.size == 0) {
         return false
     }
-    /*
-     * 逐个字符回退：从 at 开始，按前面这些字符的字节数往回累计，
-     * 但**不越过段首**。因为 at 是字节偏移，而单个字符的字节数 = 该字符 UTF-8 长度，
-     * 所以用 `String(单个 Rune).toArray().size` 得到它的字节数。
-     */
-    var back: Int64 = 0
-    let step = if (chars.size < 4) { chars.size } else { 4 }
-    var k = step - 1
-    while (k >= 0) {
-        back = back + String([chars[k]]).toArray().size
-        k = k - 1
-    }
-    var from: Int64 = at - back
-    if (from < 0) {
-        from = 0
-    }
-    if (from >= at) {
-        return false
-    }
-    let head = seg[from..at]
     for (nego in RED_FLAG_NEGATIONS) {
         if (head.contains(nego)) {
             return true
@@ -277,16 +280,40 @@ func redFlagIsNegated(seg: String, at: Int64): Bool {
     return false
 }
 
-/* 片段里是否命中某个词**且未被否定**。命中则把词记进 hits。 */
-func redFlagHit(seg: String, term: String, hits: ArrayList<String>, negated: ArrayList<String>): Bool {
-    var from: Int64 = 0
-    while (true) {
-        let idx = seg.indexOf(term, from)
+/*
+ * ★★ 片段里 `term` 是否**未被否定地**出现一次。
+ *
+ * 返回：命中且未被否定 ⇒ true；并顺带把"命中词/被否定的词"记进 hits / negated。
+ *
+ * ── 下标口径（本次修好的关键）────────────────────────────────────────────
+ *   `seg.indexOf(term, byteFrom)` 返回**字节**偏移；
+ *   立刻用 `redFlagByteToChar` 换算成**字符**下标 `chat`；
+ *   否定窗口、以及"下一轮从哪里继续找"都用 `chat`（字符空间），
+ *   只有再次调用 `indexOf` 时才换算回字节。
+ *   ⇒ 全程**没有一处**在字节空间里做算术减法。
+ */
+func redFlagHit(seg: String, term: String, hits: ArrayList<String>,
+                negated: ?ArrayList<String>): Bool {
+    let chars = redFlagRunes(seg)
+    var chat: Int64 = 0
+    while (chat < chars.size) {
+        let byteFrom = redFlagCharToByte(chars, chat)
+        let idx = seg.indexOf(term, byteFrom)
         match (idx) {
-            case Some(i) =>
-                if (redFlagIsNegated(seg, i)) {
-                    if (!negated.contains(term)) {
-                        negated.add(term)
+            case Some(byteAt) =>
+                let at = redFlagByteToChar(chars, byteAt)
+                if (at < 0) {
+                    // 换算不出（理论上不会发生：byteAt 来自 indexOf，必在字符边界上）
+                    // ⇒ 保守地当作"没命中"，绝不让非法下标流到切片里
+                    return false
+                }
+                if (redFlagIsNegatedAt(chars, at)) {
+                    match (negated) {
+                        case Some(acc) =>
+                            if (!acc.contains(term)) {
+                                acc.add(term)
+                            }
+                        case None => ()
                     }
                 } else {
                     if (!hits.contains(term)) {
@@ -294,11 +321,49 @@ func redFlagHit(seg: String, term: String, hits: ArrayList<String>, negated: Arr
                     }
                     return true
                 }
-                from = i + 1
+                // 从这次命中的**下一个字符**继续找（不是 next 字节 —— 那会切进字符中间）
+                chat = at + 1
             case None => return false
         }
     }
     return false
+}
+
+/* 字符下标 → 该位置的**字节**偏移（用于再次调用 indexOf）。 */
+func redFlagCharToByte(chars: Array<Rune>, chat: Int64): Int64 {
+    var b: Int64 = 0
+    var i: Int64 = 0
+    while (i < chat && i < chars.size) {
+        b = b + String([chars[i]]).toArray().size
+        i = i + 1
+    }
+    return b
+}
+
+/*
+ * **字节**偏移 → 字符下标。若该字节偏移**不在字符边界上**，返回 -1。
+ *
+ * ⚠ 这个"返回 -1"是**刻意的防御**：上一版的缺陷正是"字节偏移被当成字符下标用"，
+ *   而如果那时有一个位置检查，缺陷会在第一次运行就暴露而不是等到"ASCII+汉字混排"。
+ *   现在任何非边界输入都会被显式拒绝，而不是静默切出非法 UTF-8。
+ */
+func redFlagByteToChar(chars: Array<Rune>, byteAt: Int64): Int64 {
+    var b: Int64 = 0
+    var i: Int64 = 0
+    while (i < chars.size) {
+        if (b == byteAt) {
+            return i
+        }
+        if (b > byteAt) {
+            return -1
+        }
+        b = b + String([chars[i]]).toArray().size
+        i = i + 1
+    }
+    if (b == byteAt) {
+        return i        // 末尾之后的位置（= 片段长度）是合法边界
+    }
+    return -1
 }
 
 /*
@@ -320,7 +385,7 @@ public func detectRedFlag(chiefComplaint: String): RedFlagFacts {
     // ② 高危词：任一命中即红牌
     for (seg in segs) {
         for (term in RED_FLAG_TERMS) {
-            if (redFlagHit(seg, term, highHits, negated)) {
+            if (redFlagHit(seg, term, highHits, Some(negated))) {
                 f.redFlag = true
                 f.terms = highHits.toArray()
                 f.vagueTerms = vagueHits.toArray()
@@ -342,7 +407,7 @@ public func detectRedFlag(chiefComplaint: String): RedFlagFacts {
             continue
         }
         for (term in RED_FLAG_VAGUE_TERMS) {
-            if (redFlagHit(seg, term, vagueHits, negated)) {
+            if (redFlagHit(seg, term, vagueHits, Some(negated))) {
                 f.redFlag = true
             }
         }
