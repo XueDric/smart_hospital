@@ -546,7 +546,42 @@ func triageJson(v: TriageVerdict, truncated: Bool): JsonObject {
     o.put("count", JsonInt(v.options.size))
     return o
 }
-public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate, triage: TriageRepo): Router {
+/*
+ * 把预问诊会话序列化成响应体（**业务值**，只走非流式路径）。
+ *
+ * ⚠ `form` 只在 `complete() == true` 时才输出 —— 半成品问诊单给出去，
+ *   客户端可能把它当"已完成的就诊前信息"提交给医生。
+ *   未完成时输出 `progress`（已填项数/总项数）让界面显示进度，但**不给表单内容**。
+ */
+func previsitSessionJson(s: PrevisitSession): JsonObject {
+    let o = JsonObject()
+    o.put("session_id", JsonString(s.id))
+    o.put("turn", JsonInt(s.turn))
+    o.put("filled", JsonInt(s.form.filled()))
+    o.put("total_slots", JsonInt(intakeSlots().size))
+    o.put("complete", JsonBool(s.form.complete()))
+    let next = s.nextSlot()
+    o.put("next_slot", JsonString(match (next) {
+        case Some(sl) => sl.key
+        case None => ""
+    }))
+    // 下一个问题也一并给出：客户端不必再猜（它是**问句文本**，不是业务值）
+    o.put("next_question", JsonString(match (next) {
+        case Some(sl) => sl.question
+        case None => ""
+    }))
+    if (s.form.complete()) {
+        let f = JsonObject()
+        for (sl in intakeSlots()) {
+            if (s.form.answers.contains(sl.key)) {
+                f.put(sl.key, JsonString(s.form.answers[sl.key]))
+            }
+        }
+        o.put("form", f)
+    }
+    return o
+}
+public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate, triage: TriageRepo, previsit: PrevisitRepo): Router {
     let r = Router()
 
     /* ---------- 健康检查（无需认证，供压测与探活）---------- */
@@ -876,6 +911,115 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         let v = triageComplaint(triage, text, today)
         sendOk(ctx, triageJson(v, truncated))
     })
+    /* ===================== 预问诊（P2，SSE 流式）===================== */
+
+    /*
+     * ★★ 为什么预问诊的"对话文本"走 SSE，而业务值走普通 JSON
+     *    —— brief §5.2 明确点名"这是本节最容易做错的地方"。详见 previsit.cj 文件头。
+     *
+     * 路由分工（这个划分本身就是纪律）：
+     *   GET  /api/v1/previsit/stream   开新会话 + **流式**吐第一轮追问（对话文本）
+     *   POST /api/v1/previsit/answer   提交一个答案 → 返回**结构化业务值**（问诊单状态）
+     *
+     * ⚠ `answer` **刻意不用 SSE**：它返回的是"下一个问题 + 已填项数 + 是否完成"，
+     *   其中"已填项数/是否完成"是**业务值** —— 流式会让客户端拿到中间态
+     *   （"已完成 3/6" → "已完成 4/6"），而它可能已经据此更新了界面进度条。
+     *   对话文本流错了只是看到半句话；**业务值流错了是状态污染**。
+     */
+    r.get("/api/v1/previsit/stream", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.Book)
+        let chief = ctx.queryParamOr("chief_complaint", "").trimAscii()
+        /*
+         * ⚠ 主诉先按**字符**截断再落库：按字节会在汉字中间切断 ⇒ 非法 UTF-8。
+         *   （本项目已因按字节截断吃过一次 HTTP 500，见 triageTruncateChars 的注释。）
+         */
+        let ccap = if (previsitCharLen(chief) > 200) { previsitTruncateChars(chief, 200) } else { chief }
+        let now = hNowEpoch()
+        let sid = previsit.create(p.patientId, now)
+        if (ccap.size > 0) {
+            let _ = previsit.answer(sid, p.patientId, "chief", ccap, now)
+        }
+        let found = previsit.find(sid, p.patientId)
+        let sess = match (found) {
+            case Some(s) => s
+            case None => throw apiErrorMsg("INTERNAL", "会话创建后立即读取失败")
+        }
+        /*
+         * ★ 进入流式模式。`streamStart` 设 content-type + transfer-encoding: chunked
+         *   （框架会在首次 write 时刷响应头，handler 返回时自动写 last-chunk）。
+         */
+        let _ = ctx.streamStart("text/event-stream; charset=utf-8")
+        // 帧 ①：会话元信息（客户端拿到 session_id 才能继续推进多轮）
+        let meta = JsonObject()
+        meta.put("session_id", JsonString(sid))
+        meta.put("turn", JsonInt(sess.turn))
+        meta.put("total_slots", JsonInt(intakeSlots().size))
+        ctx.writeChunk(sseFrame("meta", meta))
+        // 帧 ②…：逐句吐"对话文本"（每句一帧 —— 这就是"可流式"的那一半）
+        for (line in previsitAssistantLines(sess, None)) {
+            let o = JsonObject()
+            o.put("text", JsonString(line))
+            ctx.writeChunk(sseFrame("delta", o))
+        }
+        // 帧 末：显式告知流结束（客户端不必靠连接关闭来判断）
+        let done = JsonObject()
+        done.put("session_id", JsonString(sid))
+        done.put("next_slot", JsonString(match (sess.nextSlot()) {
+            case Some(sl) => sl.key
+            case None => ""
+        }))
+        ctx.writeChunk(sseFrame("done", done))
+        // ⚠ 已经流式写出 ⇒ **不能**再走 sendOk/sendError（那会二次写响应体）
+        //   所以这里什么都不返回，让 handler 自然结束。
+    })
+
+    /* ---------- POST /api/v1/previsit/answer —— 提交一项答案（业务值，非流式）---------- */
+    r.post("/api/v1/previsit/answer", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.Book)
+        let sid = requireStr(ctx, "session_id")
+        let key = requireStr(ctx, "slot")
+        let body = bodyObj(ctx)
+        let value = match (bodyStr(ctx, "value")) {
+            case Some(v) => v
+            case None => ""
+        }
+        let r = previsit.answer(sid, p.patientId, key, value, hNowEpoch())
+        /*
+         * ⚠ 会话不存在时返回 **404 而不是 403**：
+         *   403 等于告诉调用方"这个 session_id 存在但不属于你" —— 那是个枚举 oracle，
+         *   攻击者可以据此试探哪些会话 id 有效。404 对"不存在"与"不属于你"给同一答案。
+         */
+        if (r.noSuchSession) {
+            throw apiErrorMsg("PREVISIT_NOT_FOUND", "预问诊会话不存在或已失效")
+        }
+        if (r.unknownSlot.size > 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "未知的问诊项：${r.unknownSlot}")
+        }
+        if (r.tooLong.size > 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "字段 ${r.tooLong} 超出长度上限")
+        }
+        let found = previsit.find(sid, p.patientId)
+        let sess = match (found) {
+            case Some(s) => s
+            case None => throw apiErrorMsg("PREVISIT_NOT_FOUND", "预问诊会话不存在或已失效")
+        }
+        sendOk(ctx, previsitSessionJson(sess))
+    })
+
+    /* ---------- GET /api/v1/previsit/:id —— 取已采集的问诊单（业务值，非流式）---------- */
+    r.get("/api/v1/previsit/:id", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.Book)
+        let sid = ctx.paramOr("id", "")
+        let found = previsit.find(sid, p.patientId)
+        let sess = match (found) {
+            case Some(s) => s
+            case None => throw apiErrorMsg("PREVISIT_NOT_FOUND", "预问诊会话不存在或已失效")
+        }
+        sendOk(ctx, previsitSessionJson(sess))
+    })
     /* ---------- GET /api/v1/schedules —— 排班列表（按科室/日期，P1 收尾项 ④）---------- */
     /*
      * 之前只有 `GET /schedules/:id`（按 id 查单个）。患者端要"看某科室某天有哪些号"
@@ -1103,8 +1247,8 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
  *   "分诊不会改号源"在**类型层面**成立，而不是靠约定。
  */
 public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate,
-                             triage: TriageRepo): QingZhouApp {
-    let router = buildHospitalRouter(repo, auth, gate, triage)
+                             triage: TriageRepo, previsit: PrevisitRepo): QingZhouApp {
+    let router = buildHospitalRouter(repo, auth, gate, triage, previsit)
     return QingZhouApp()
         .use(requestId())
         .use(logger())

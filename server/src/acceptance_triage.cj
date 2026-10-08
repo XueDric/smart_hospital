@@ -374,3 +374,99 @@ public func acP2_4(runner: TestRunner, db: DbBackend): Unit {
         runner.assertAllOptionsBookable(db, v, "归并")
     })
 }
+
+/* ===================== P2 预问诊（库级）===================== */
+
+/*
+ * AC-P2-5 ★★ 预问诊会话**按患者隔离** —— 这是本组最重要的一条。
+ *
+ * 为什么必须在**库级**测（而不是只靠 HTTP 层）：HTTP 层的越权用例走的是同一段
+ * `PrevisitRepo.find`，但它是"端到端黑盒"——如果哪天有人把 `find` 的
+ * `patient_id` 条件去掉，HTTP 用例**确实**会变红，但排查时要绕一大圈。
+ * 库级用例把这条不变式**钉在 SQL 上**：`find(sid, 别的患者)` 必须返回 None。
+ *
+ * 危害说明：问诊单里有既往史/过敏史 —— 那是最敏感的一类信息。
+ * 越权读到别人的问诊单，等于泄露他人病史（比泄露手机号严重得多）。
+ */
+public func acP2_5(runner: TestRunner, db: DbBackend): Unit {
+    println("=== AC-P2-5 ★★ 预问诊会话按患者隔离 ===")
+    runner.section("AC-P2-5", { =>
+        hResetAll(db)
+        db.exec("DELETE FROM previsit_session", Array<DbValue>())
+        let now = hNowEpoch()
+        let repo = PrevisitRepo(db)
+
+        // 患者 1 建会话并作答
+        let sid = repo.create(9501, now)
+        let _a = repo.answer(sid, 9501, "chief", "咳嗽三天", now)
+        // ① 本人能读到
+        runner.check("① 本人能读到自己的会话", repo.find(sid, 9501).isSome())
+        // ② ★★ 别的患者**读不到**（这是 SQL 里 patient_id 条件的直接断言）
+        runner.check("★★ ② 别的患者读不到（find 必须带 patient_id 条件）",
+                     repo.find(sid, 9502).isNone())
+        // ③ ★★ 别的患者**写不了**
+        let w = repo.answer(sid, 9502, "duration", "篡改", now)
+        runner.check("★★ ③ 别的患者写不了（answer 同样带 patient_id）", w.noSuchSession)
+        // ④ 篡改确实没生效
+        let mine = repo.find(sid, 9501).getOrThrow()
+        runner.check("④ 篡改未生效（duration 仍未被别人写入）",
+                     !mine.form.answers.contains("duration"))
+        // ⑤ 不存在的会话
+        runner.check("⑤ 不存在的 session_id → None", repo.find("nope", 9501).isNone())
+
+        // ⑥ ★ 未知槽位必须被拒（不能让客户端塞任意键进医疗记录）
+        let bad = repo.answer(sid, 9501, "id_card", "110101199001011234", now)
+        runner.check("★ ⑥ 未知槽位被拒（unknownSlot 非空）", bad.unknownSlot.size > 0)
+        let after = repo.find(sid, 9501).getOrThrow()
+        runner.check("⑥ 未知字段**没有**进表单（表单里不会有自造键）",
+                     !after.form.answers.contains("id_card"))
+
+        // ⑦ 长度上限按**字符**算：61 个汉字（183 字节）必须被拒
+        let cn61 = hRepeatChar("持", 61)
+        let tl = repo.answer(sid, 9501, "duration", cn61, now)
+        runner.check("★ ⑦ 61 个汉字被拒（长度按字符，不按字节）", tl.tooLong.size > 0)
+        // 恰好 60 个汉字 → 接受
+        let cn60 = hRepeatChar("持", 60)
+        let ok60 = repo.answer(sid, 9501, "duration", cn60, now)
+        runner.check("★ ⑦ 恰好 60 个汉字被接受（边界包含）", ok60.ok)
+
+        // ⑧ ★ 空值不写入（"空" ≠ "无"）
+        let before = repo.find(sid, 9501).getOrThrow()
+        let hadHistory = before.form.answers.contains("history")
+        let _e = repo.answer(sid, 9501, "history", "   ", now)
+        let after2 = repo.find(sid, 9501).getOrThrow()
+        runner.check("★ ⑧ 空值不写入表单（留空 ≠ 阴性答案）",
+                     after2.form.answers.contains("history") == hadHistory)
+        // 而「无」要被如实保留
+        let _n = repo.answer(sid, 9501, "history", "无", now)
+        let after3 = repo.find(sid, 9501).getOrThrow()
+        runner.check("★ ⑧ 「无」是有效答案，被如实保留", after3.form.answers["history"] == "无")
+
+        // ⑨ 幂等：重复提交同一槽位不改变已填项数
+        let f1 = after3.form.filled()
+        let _r2 = repo.answer(sid, 9501, "history", "无", now)
+        let f2 = repo.find(sid, 9501).getOrThrow().form.filled()
+        runner.check("★ ⑨ 重复提交不改变已填项数（重试幂等）", f1 == f2)
+
+        // ⑩ 全部采完后 complete = true（这就是"可以出业务值"的信号）
+        for (sl in intakeSlots()) {
+            let _x = repo.answer(sid, 9501, sl.key, "x", now)
+        }
+        let full = repo.find(sid, 9501).getOrThrow()
+        runner.check("⑩ 六项齐备后 complete = true", full.form.complete())
+        runner.check("⑩ filled = 6", full.form.filled() == 6)
+        // ★ 且**别的患者仍然读不到**这个已完成的问诊单（最该保护的时刻）
+        runner.check("★★ ⑩ 采完后别的患者依然读不到", repo.find(sid, 9502).isNone())
+    })
+}
+
+/* 生成 n 个重复字符（测试用；避免在测试里写 60 个汉字字面量）。 */
+func hRepeatChar(c: String, n: Int64): String {
+    var s = ""
+    var i: Int64 = 0
+    while (i < n) {
+        s = s + c
+        i = i + 1
+    }
+    return s
+}

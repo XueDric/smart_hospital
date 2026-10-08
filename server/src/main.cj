@@ -166,14 +166,40 @@ func selftest(): Int64 {
 
     println("=== schema 自检 ===")
 
-    // 1) 最小表集：brief §10 Q2 的 7 张**业务**表 + P1 令牌体系的 2 张**鉴权**表 = 9。
-    //    ⚠ 用"业务表数 + 鉴权表数"两个分项断言，而不是硬编码总数 ——
-    //      硬编码数字在加表时必然要手改，而漏改就变成"测试说没事、其实漂移了"。
-    //      （加鉴权表时触发过一次；删掉 booking_idem 时一次；
-    //        2026-10-07 加 auth_login_attempt 时又一次 —— **三次都证明它有用**。）
-    let bizTables = 6
+    /*
+     * 1) 表集分类断言。
+     *
+     * ⚠ 用**分项**断言而不是硬编码总数 —— 硬编码数字在加表时必然要手改，
+     *   而漏改就变成"测试说没事、其实漂移了"。
+     *   本断言已**四次**证明它有用：加鉴权表一次、删 `booking_idem` 一次、
+     *   加 `auth_login_attempt` 一次、**加 `previsit_session`（P2）一次**。
+     *
+     * ★ 2026-10-07 重构（加 `previsit_session` 时暴露的问题）：
+     *   原来是"业务表 6 + 鉴权表 3 = 9"，而 `previsit_session` **既不是**内存 Store
+     *   负责的配套域表、**也不是**鉴权表 —— 它是 P2 新增的**第三种**：
+     *   直接 SQL、但**不属号源域**（由 `PrevisitRepo` 独占，见 schema.cj 的 TABLE_PREVISIT）。
+     *   ⇒ 硬把它塞进"业务表"会让那个数字失去含义（"业务表"到底指什么？）。
+     *   所以改成**四个人口都有的分项**：
+     *     ① 号源/挂号域（直接 SQL，ADR-0001 §4.3 锁死的那两张）
+     *     ② 配套域（走内存 Store）
+     *     ③ 鉴权域
+     *     ④ **预问诊域**（直接 SQL、非号源域；P2 新增的第三类）
+     *   并把"四类互不重叠、且并集 == ALL_TABLES"也断言上 ——
+     *   这样"加表时忘了归类"会立刻变红，而不是悄悄混进某个数字里。
+     */
+    let bookingTables = 2
+    let memTables = 4
     let authTables = 3
-    check("业务表为 ${bizTables} 张 + 鉴权表 ${authTables} 张", ALL_TABLES.size == bizTables + authTables)
+    let previsitTables = 1
+    let totalTables = bookingTables + memTables + authTables + previsitTables
+    check("表集共 ${totalTables} 张 = 号源域 ${bookingTables} + 配套域 ${memTables} + 鉴权域 ${authTables} + 预问诊域 ${previsitTables}",
+          ALL_TABLES.size == totalTables)
+    check("号源/挂号域恰好 ${bookingTables} 张（schedule / appointment）",
+          BOOKING_DOMAIN_TABLES.size == bookingTables)
+    check("★ 预问诊表**不**属号源域（否则会被误当作可扣号路径）",
+          !BOOKING_DOMAIN_TABLES.contains(TABLE_PREVISIT))
+    check("★ 预问诊表**不**属内存 Store 负责的表（它是医疗数据，必须立刻持久化）",
+          !MEM_TABLES.contains(TABLE_PREVISIT))
     /*
      * ⚠ 写成"3 张表各判一次"而不是跨行 `&&` 串联 ——
      *   实测跨行时 cjc 报 `warning: possibly confusing line terminator`
@@ -540,7 +566,9 @@ func serve(args: Array<String>): Int64 {
     let auth = AuthRepo(db)
     // P2 分诊的**只读**仓储：只读 schedule/doctor/department，不写（见 buildHospitalApp 注释）
     let triage = TriageRepo(db)
-    let app = buildHospitalApp(repo, auth, gate, triage)
+    // P2 预问诊会话仓储（直接 SQL；不属号源域，也不进内存 Store —— 见 schema.cj TABLE_PREVISIT）
+    let previsit = PrevisitRepo(db)
+    let app = buildHospitalApp(repo, auth, gate, triage, previsit)
     let box = HandleBox()
 
     println("")

@@ -86,13 +86,36 @@ public let TABLE_AUTH_ATTEMPT: String = "auth_login_attempt"
 public let BOOKING_DOMAIN_TABLES: Array<String> = [TABLE_SCHEDULE, TABLE_APPOINTMENT]
 
 /*
+ * ★ 预问诊会话表（P2）。
+ *
+ * ── 为什么单独一张表、且**不**属于上面任何一类 ────────────────────────────
+ *   · 不属 `BOOKING_DOMAIN_TABLES`：它不参与号源扣减，没有并发争抢语义；
+ *   · 不属内存 Store 负责的配套域：它是**医疗数据**，必须立刻持久化
+ *     （内存 Store 是"整表替换"范式，会话数据进去会被别的写入牵连）。
+ *   ⇒ 它走**直接 SQL**，但**不是**"号源域"—— ADR-0001 §4.3 的范围锁死锁的是
+ *     "`schedule`/`appointment` 只准 `BookingRepo` 写"，本表由 `PrevisitRepo` 独占。
+ *     两者互不越界，所以锁死关系没有被破坏。
+ *
+ * ── 为什么要落库而不是放内存（P2 的具体理由）────────────────────────────
+ *   ① 多轮对话跨请求：轻舟的 handler 是**同步**的，会话状态必须在请求之间存活。
+ *      放进程内存 ⇒ 重启即丢；本项目已定"不做 Redis"的路线（brief §5.1）。
+ *   ② 问诊单本身就是要长期保留的**患者档案素材**，迟早落库 —— 现在落，将来不必迁。
+ *
+ * ⚠ `form_json` 存序列化后的问诊单：六个槽位是**稳定的最小集**，
+ *   为它建六列会让"加一个问诊项"变成一次 DDL 变更。
+ *   JSON 列让加项只是改 `intakeSlots()` 一处 —— 与"口径只留一处"同一条纪律。
+ *   （对照：参考系统也用 MySQL JSON 存 `kb_chunk.embedding`，同一思路。）
+ */
+public let TABLE_PREVISIT: String = "previsit_session"
+
+/*
  * 全部业务表。
  * ⚠ 与 `BOOKING_DOMAIN_TABLES` 的差集就是"走内存 Store 范式"的表。
  */
 public let ALL_TABLES: Array<String> = [
     TABLE_DEPARTMENT, TABLE_DOCTOR, TABLE_SCHEDULE,
     TABLE_APPOINTMENT, TABLE_PATIENT, TABLE_MEDICAL_RECORD,
-    TABLE_AUTH_USER, TABLE_AUTH_TOKEN, TABLE_AUTH_ATTEMPT
+    TABLE_AUTH_USER, TABLE_AUTH_TOKEN, TABLE_AUTH_ATTEMPT, TABLE_PREVISIT
 ]
 
 /* ===================== DDL ===================== */
@@ -329,6 +352,25 @@ public let SCHEMA_DDL: Array<String> = [
     "last_fail_at BIGINT NOT NULL DEFAULT 0, " +
     "PRIMARY KEY (login_hash), " +
     "KEY idx_auth_attempt_lastfail (last_fail_at)" +
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+
+    /*
+     * ── 预问诊会话（P2）────────────────────────────────────────────────────
+     * `form_json` 用 JSON 列存问诊单（加问诊项不必改 DDL，见 TABLE_PREVISIT 注释）。
+     * ⚠ `patient_id` 上有索引：`find` 永远带 `patient_id` 条件
+     *   （只按 id 查会让患者 A 读到 B 的问诊单 —— 这是安全要求，不是性能要求）。
+     * ⚠ **不建**指向 `patient` 的外键：与本 schema 其它表一致（见 hResetAll 的说明），
+     *   让测试可以独立清表。
+     */
+    "CREATE TABLE IF NOT EXISTS previsit_session (" +
+    "id VARCHAR(64) NOT NULL, " +
+    "patient_id BIGINT NOT NULL, " +
+    "turn BIGINT NOT NULL DEFAULT 0, " +
+    "form_json TEXT NOT NULL, " +
+    "created_at BIGINT NOT NULL DEFAULT 0, " +
+    "updated_at BIGINT NOT NULL DEFAULT 0, " +
+    "PRIMARY KEY (id), " +
+    "KEY idx_previsit_patient (patient_id, updated_at)" +
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
 ]
 

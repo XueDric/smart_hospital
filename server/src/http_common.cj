@@ -95,6 +95,16 @@ public func apiErrorSpec(code: String): (Int64, String) {
     if (code == "USER_NOT_FOUND") {
         return (404, "账号不存在")
     }
+    /*
+     * 预问诊会话不存在（P2，2026-10-07 增）。
+     *
+     * ⚠ 刻意用 **404** 而不是 403：403 等于告诉调用方
+     *   「这个 session_id **存在**、只是不属于你」—— 那是个枚举 oracle，
+     *   攻击者可据此试探哪些会话 id 有效。404 对"不存在"与"不属于你"给同一答案。
+     */
+    if (code == "PREVISIT_NOT_FOUND") {
+        return (404, "预问诊会话不存在或已失效")
+    }
     if (code == "USER_EXISTS") {
         return (409, "登录名已存在")
     }
