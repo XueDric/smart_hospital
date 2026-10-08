@@ -6,7 +6,7 @@
 | **日期** | 2026-10-07（创建）｜ 2026-10-07（复查修订 rev.2） |
 | **阶段** | P0 —— 架构决策落定 |
 | **决策者** | 项目组（依据 `smart-hospital-project-brief.md` §5.1） |
-| **影响面** | `server/src/` 数据访问层；号源域 `schedule`/`appointment`（rev.4 删除 `booking_idem`）+ 配套域 `department`/`doctor`/`patient`/`medical_record`（rev.5 落地内存 Store） |
+| **影响面** | `server/src/` 数据访问层；号源域 `schedule`/`appointment`（rev.4 删除 `booking_idem`）+ 配套域 `department`/`doctor`/`patient`（rev.5 落地内存 Store）+ 病历域 `medical_record`（**rev.6 移出内存 Store，改直接 SQL**） |
 | **关联** | `smart-hospital-project-brief.md` §4 复用映射、§5.1、§7；基线 `mysql_store.cj:30-37` |
 
 ### 修订记录
@@ -17,6 +17,7 @@
 | **rev.2** | 2026-10-07 | ①§4.3 口径矛盾修订（拆「业务状态」/「幂等基础设施」两层）；②§4.3.2 新增并修掉与基线 `idem` 撞名（→ `booking_idem`）；③§5 补 AC-7/AC-8，AC-4 扩大到全表比对；④§5.1 新增「源码哈希而非产物哈希」；⑤§7 修正验收测试落点笔误（`server/tests/` → `server/src/acceptance.cj`）；⑥§8 补第 5 条复审触发条件 | 用户复查提出的 5 项发现（口径打架、撞名、`cancel()` 边界缺陷、文档笔误、产物不可复现） |
 | **rev.5** | 2026-10-07 | ★ **落地配套域的内存 Store**（`mem_store.cj` + `sql_recorder.cj`），**AC-4 从"结构性"升级为"真跑一次刷盘"**（四层断言 + 两道变异测试）；§4.2 范式表补上"内存 Store 范式"的实现落点 | 用户决策：做「内存 Store + AC-4 完整回归」，还掉 P0 挂到 P1 的验证边界 |
 | **rev.4** | 2026-10-07 | ★ **删除 `booking_idem` 表与 `idemKey`/`putIdem`/`pruneIdem` 实现**（含 AC-8）；表集 9→8（业务 7→6）；新增迁移步骤 DROP 遗留表；`isBookingInfraTable`/`BOOKING_INFRA_TABLES` 一并移除 | 用户决策：该表在生产路径上是死代码，幂等已由 `(patient_id, client_token)` 唯一索引完整保证（见 §7 第 7 条） |
+| **rev.6** | 2026-10-07 | ★★ **`medical_record` 移出内存 Store，改直接 SQL**（`domain_emr.cj` 的 `MedicalRecordRepo` 独占写入）。`MEM_TABLES` 4→3；删除 `MemMedicalRecord` 类与 `replaceMedicalRecords()`；`loadAll()` 不再读病历；`selftest` 加两条否定断言；AC-4 的"4 张表"改为**从 `MEM_TABLES` 派生**（不再硬编码数字）。**新增一类表**：`medical_record` = 病历域（临床数据、直接 SQL） | P4 落地时发现病历划错类（详见下面「rev.6 的核心」） |
 | **rev.3** | 2026-10-07 | ★ **扣号策略变更**：去掉 `version = ?` 乐观锁前置条件，改为**一次成功的原子自减**（§2.2 改写 + §8 触发条件已命中）；幂等键改为**按患者隔离**并**退号时释放**；`cancel()` 幂等路径改为按落库状态如实回报；§6 调参项与实际代码对齐；§7 落地清单更新 | 第三方复查：①`client_token` 跨患者泄露；②最穷工况少卖 15%~50%（**命中 §8 第 1 条复审阈值**）；③`--tls-files` 静默降级；④`cancel()` 重试路径吞告警；⑤`accept` 守卫漏洞 |
 
 ### ★ rev.3 的核心：为什么去掉了乐观锁
@@ -42,6 +43,61 @@ rev.1/rev.2 用的是「`version` 乐观锁 + 重试」。**实测证明它在�
 （防覆盖别人的排班改动）。
 
 ---
+
+### ★★ rev.6 的核心：`medical_record` 为什么必须移出内存 Store
+
+P4 落地电子病历时发现：**病历被划错了类**（rev.1 起一直在"配套域/内存 Store"里）。
+两条理由，都是硬的：
+
+#### 理由 ① 本仓**自己**已经为同类数据判过一次（P2 的先例）
+
+P2 引入 `previsit_session` 时**特意**把它排除在内存 Store 之外，当时的原话是
+（见 `docs/P2-HANDOFF.md` §「新增的第三类表」与 `previsit_schema` 注释）：
+
+> ★ 预问诊表**不属内存 Store 负责的表**（**它是医疗数据，必须立刻持久化**，
+>   不能进"整表替换"范式）
+
+而 `medical_record` 装的是**诊断与处理意见** —— 比预问诊问诊单**更**典型的医疗数据。
+同一类数据两套处置，正是本项目反复点名的病（"同一语义两处口径"）。
+
+#### 理由 ② 内存 Store 在**生产路径上从未刷盘**（已核实）
+
+这是更硬的一条。`flushToMysql()` 的全部调用点：
+
+```
+acceptance.cj:483   ← 只有测试
+```
+
+`main.cj` 与 `http_app.cj` **完全没有引用 `MemStore`**。
+⇒ 若病历走内存 Store，那么"医生写病历"这个动作的实际效果是：
+**只写进程内存，永不落库**（服务一停即丢）。
+
+> 📌 对科室/医生这类"可重新配置"的数据，这个缺口是**待补的工程债**
+>   （配置丢了能重建）；
+>   对病历，它是**数据丢失**（诊断与处理意见重建不出来）。两者不是一个量级。
+
+#### 因此 rev.6 的处置
+
+| 项 | rev.5 | rev.6 |
+| --- | --- | --- |
+| `MEM_TABLES` | 4 张（含 `medical_record`） | **3 张**（科室/医生/患者） |
+| 病历写入 | 内存 + 整表替换刷盘 | **直接 SQL**（`MedicalRecordRepo` 独占） |
+| 病历的删除风险 | 一次刷盘 `DELETE FROM medical_record` 全表重写 | 逐条 upsert，**不存在整表删除** |
+| 断言 | — | `!MEM_TABLES.contains(TABLE_MEDICAL_RECORD)`（selftest 两条） |
+
+⚠ **明确没做的事**（诚实边界，免得被读成"配套域也搬走了"）：
+`department` / `doctor` / `patient` **仍在内存 Store 里**。
+它们同样"生产不刷盘"，但处置它们属**另一项决策**
+（是给 `serve` 接上刷盘、还是也改直接 SQL），本轮**没有**顺手改 ——
+把一件没论证的事混进来比留着它更糟。已写进 `docs/P4-HANDOFF.md` 的未做清单。
+
+#### 顺带修掉的一处"钉数字"式断言
+
+AC-4 里原有一句 `check("① 内存 Store 负责 4 张表", MEM_TABLES.size == 4)` ——
+rev.6 一改就**必然变红**。这暴露了它是"**钉数字**"而不是"钉不变量"：
+真正要守的是"刷盘只碰 `MEM_TABLES` 里的表、且号源域不在其中"。
+⇒ 已改为从 `MEM_TABLES` 派生（`selftest` 的 `memTables` 同样改为派生）。
+📌 这是本项目的反复教训：**断言要钉不变量，不要钉数字**。
 
 ## 1. 背景（Context）
 
@@ -163,8 +219,15 @@ if (n == 1) {
 
 | 范式 | 适用域 | 权威 | 一致性手段 |
 | --- | --- | --- | --- |
-| **内存 Store**（原范式） | 科室、医生、患者档案、病历 —— ★ rev.5 起落点在 `server/src/mem_store.cj`（`MemStore.flushToMysql`，一个事务内整体替换 `MEM_TABLES`） | 内存 → 定期整体刷 MySQL | 全局锁 |
-| **直接 SQL**（本 ADR） | **仅**号源/挂号（`schedule`/`appointment`）两张 | MySQL | **原子自减 + 事务**（rev.3；原为乐观锁，已因少卖废弃） |
+| **内存 Store** | 科室、医生、患者档案 —— ★ rev.5 起落点在 `server/src/mem_store.cj`（`MemStore.flushToMysql`，一个事务内整体替换 `MEM_TABLES`）。★ **rev.6 起病历已移出本范式** | 内存 → 定期整体刷 MySQL | 全局锁 |
+| **直接 SQL**（本 ADR 的核心） | 号源/挂号（`schedule`/`appointment`）；★ rev.6 起**新增病历域** `medical_record`（`domain_emr.cj` 的 `MedicalRecordRepo` 独占写入） | MySQL | **原子自减 + 事务**（rev.3；原为乐观锁，已因少卖废弃） |
+
+> ★ **rev.6 补充：为什么病历与号源/挂号同属"直接 SQL"却不是同一类**
+>   两者共享"MySQL 权威"这一点，但**理由不同**：
+>     · 号源/挂号走直接 SQL 是因为**并发正确性**（内存 Store 三个代价全中，见 §1.3）；
+>     · 病历走直接 SQL 是因为**持久性**（医疗数据不能只活在进程内存里）。
+>   所以 `selftest` 里它们仍是**两个不同的类**（`BOOKING_DOMAIN_TABLES` vs 病历域），
+>   而不是被并成一类 —— 分类的意义是让**纪律**可见，合并就看不到了。
 
 **这是明确的架构债**（`smart-hospital-project-brief.md` §9 **R-2**）。代价：
 
@@ -247,9 +310,9 @@ P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与
 
 | 套件 | 结果 |
 | --- | --- |
-| `hospital-server.exe selftest` | ✅ **39 项** |
+| `hospital-server.exe selftest` | ✅ **45 项** |
 | `hospital-server.exe authtest` | ✅ **17 项**（含 3 个公开测试向量） |
-| `hospital-server.exe accept <dsn>` | ✅ **184 项 / 失败 0**（原 32，新增 AC-10） |
+| `hospital-server.exe accept <dsn>` | ✅ **248 项 / 失败 0**（原 32，新增 AC-10） |
 | `tests\stress-booking.ps1` | ✅ **20/30/40/50 并发抢同数号源 → 全部恰好卖光、零 409、零少卖** |
 | `tests\auth-check.ps1` | ✅ 全绿 |
 | `tests\tls-check.ps1` | ✅ 全绿 |
