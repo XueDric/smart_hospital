@@ -248,6 +248,38 @@ public func requireStr(ctx: Context, key: String): String {
     }
 }
 
+/*
+ * 读可选的**布尔**字段（P3 第二块新增：工具开关用）。
+ *
+ * ⚠ 只认 JSON 的 `true` / `false` —— 不接受 `"1"` / `"yes"` / `"on"` 这类写法。
+ *   理由与"工具开关只接受 0/1"同源：**多一种写法就多一处口径**，
+ *   而布尔字段没必要给表达空间。缺字段返回 None（与"显式 false"区分开），
+ *   让调用方能给出"缺少必填字段 enabled"这种准确报错。
+ */
+public func bodyBool(ctx: Context, key: String): ?Bool {
+    let o = bodyObj(ctx)
+    match (o.get(key)) {
+        case Some(v) =>
+            /*
+             * ⚠⚠ **必须先判类型再取值**（实测踩出来的）：
+             *   原实现直接 `v.asBool().getValue()`，于是 `{"enabled":"yes"}`
+             *   （字符串）会让 `asBool()` **抛异常** ⇒ 走到全局兜底 ⇒ **500**。
+             *   而"字段类型不对"是**客户端错误**（400），不是服务端故障。
+             *   实测：`PUT /admin/ai/tools/x {"enabled":"yes"}` -> 500。
+             *
+             *   ⇒ 现在：不是布尔就返回 `None`，由调用方给出准确的 400
+             *     （"缺少必填字段 enabled（true/false）"）。
+             *   📌 一般规律：**读用户输入时，先用 `is` 判类型，再取值**。
+             *     直接 `asXxx()` 在类型不符时是抛异常而不是返回 None。
+             */
+            if (v is JsonBool) {
+                return Some(v.asBool().getValue())
+            }
+            return None
+        case None => return None
+    }
+}
+
 public func requireInt(ctx: Context, key: String): Int64 {
     match (bodyInt64(ctx, key)) {
         case Some(v) => return v

@@ -581,7 +581,7 @@ func previsitSessionJson(s: PrevisitSession): JsonObject {
     }
     return o
 }
-public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate, triage: TriageRepo, previsit: PrevisitRepo, aiSettings: AiSettingsRepo): Router {
+public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate, triage: TriageRepo, previsit: PrevisitRepo, aiSettings: AiSettingsRepo, prompts: PromptRepo): Router {
     let r = Router()
 
     /* ---------- 健康检查（无需认证，供压测与探活）---------- */
@@ -909,6 +909,72 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         sendOk(ctx, aiSettingsJson(aiSettings, hNowEpoch()))
     })
 
+    /* ---------- GET /api/v1/admin/ai/prompts —— 读 Prompt 模板（仅管理员）---------- */
+    /*
+     * ⚠ Prompt 正文**原样回显**（不做脱敏）：它不是机密 —— 它是"让模型干什么"的
+     *   指令文本，管理员必须能核对。**密钥才脱敏**，两者不是一回事。
+     */
+    r.get("/api/v1/admin/ai/prompts", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        sendOk(ctx, aiPromptsJson(prompts, hNowEpoch()))
+    })
+
+    /* ---------- PUT /api/v1/admin/ai/prompts/:name —— 改模板（仅管理员）---------- */
+    r.put("/api/v1/admin/ai/prompts/:name", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        let name = ctx.paramOr("name", "")
+        let body = bodyObj(ctx)
+        let text = match (bodyStr(ctx, "body")) {
+            case Some(v) => v
+            case None => ""
+        }
+        let res = prompts.put(name, text, hNowEpoch())
+        if (!res.ok) {
+            throw apiErrorMsg("VALIDATION_FAILED", res.rejected)
+        }
+        sendOk(ctx, aiPromptsJson(prompts, hNowEpoch()))
+    })
+
+    /* ---------- DELETE /api/v1/admin/ai/prompts/:name —— 恢复默认模板（仅管理员）---------- */
+    r.delete("/api/v1/admin/ai/prompts/:name", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        let name = ctx.paramOr("name", "")
+        if (!prompts.reset(name, hNowEpoch())) {
+            throw apiErrorMsg("VALIDATION_FAILED", "未知的 Prompt：${name}")
+        }
+        sendOk(ctx, aiPromptsJson(prompts, hNowEpoch()))
+    })
+
+    /* ---------- GET /api/v1/admin/ai/tools —— AI 工具开关（仅管理员）---------- */
+    r.get("/api/v1/admin/ai/tools", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        sendOk(ctx, aiToolsJson(aiSettings, hNowEpoch()))
+    })
+
+    /* ---------- PUT /api/v1/admin/ai/tools/:name —— 开关某工具（仅管理员）---------- */
+    /*
+     * ⚠ 请求体的 `enabled` 只接受 `true`/`false`（布尔），不接受 "1"/"yes"/"on"：
+     *   多一种写法就多一处口径，而"开关只有两态"没必要给表达空间。
+     */
+    r.put("/api/v1/admin/ai/tools/:name", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        let name = ctx.paramOr("name", "")
+        let body = bodyObj(ctx)
+        let on = match (bodyBool(ctx, "enabled")) {
+            case Some(b) => b
+            case None => throw apiErrorMsg("VALIDATION_FAILED", "缺少必填字段 enabled（true/false）")
+        }
+        let res = aiToolSet(aiSettings, name, on, hNowEpoch())
+        if (!res.ok) {
+            throw apiErrorMsg("VALIDATION_FAILED", res.rejected)
+        }
+        sendOk(ctx, aiToolsJson(aiSettings, hNowEpoch()))
+    })
     /* ---------- DELETE /api/v1/admin/ai/settings/:key —— 删一项（回到默认值）---------- */
     r.delete("/api/v1/admin/ai/settings/:key", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
@@ -1310,8 +1376,8 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
  */
 public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate,
                              triage: TriageRepo, previsit: PrevisitRepo,
-                             aiSettings: AiSettingsRepo): QingZhouApp {
-    let router = buildHospitalRouter(repo, auth, gate, triage, previsit, aiSettings)
+                             aiSettings: AiSettingsRepo, prompts: PromptRepo): QingZhouApp {
+    let router = buildHospitalRouter(repo, auth, gate, triage, previsit, aiSettings, prompts)
     return QingZhouApp()
         .use(requestId())
         .use(logger())

@@ -128,14 +128,77 @@ public func aiSettingSpecs(): Array<AiSettingSpec> {
     ]
 }
 
-/* 取某 key 的默认值；key 未登记返回 None。 */
-public func aiSettingDefault(key: String): ?String {
+/*
+ * ★ 某个 key 是否"已登记" —— **三类 key 的统一入口**（P3 第二块新增）。
+ *
+ * 三类各有自己的登记表，但**判断"这个 key 合不合法"只此一处**：
+ *   · `ai.*`      → `aiSettingSpecs()`
+ *   · `prompt.*`  → `promptSlots()`（在 ai_prompt.cj）
+ *   · `ai.tool.*` → `aiToolToggles()`（在 ai_prompt.cj）
+ *
+ * ⚠ 为什么不把 prompt / tool 也塞进 `aiSettingSpecs()`：
+ *   那张表是**静态**的（编译期就定），而 prompt/tool 的 key 是**由各自的
+ *   登记表派生出来的**（`prompt.` + 名字）。塞进去要么手写重复项（加一个模板
+ *   要改两处 ⇒ 迟早漏），要么就得让 `aiSettingSpecs()` 变成动态拼接
+ *   （那它就不再是"可一眼看全的静态白名单"了）。
+ *   ⇒ 现在这样：**各自的登记表是唯一真相**，而"合法性判断"收口到这一个函数。
+ */
+public func aiSettingKeyKnown(key: String): Bool {
+    if (aiSettingDefaultOfRaw(key).isSome()) {
+        return true
+    }
+    if (startsWithAscii(key, "prompt.")) {
+        return promptSlotOf(key[7..]).isSome()
+    }
+    if (startsWithAscii(key, AI_TOOL_KEY_PREFIX)) {
+        return aiToolKnown(key[AI_TOOL_KEY_PREFIX.size..])
+    }
+    return false
+}
+
+/*
+ * 某 key 的**默认值**（三类通用）。未登记返回空串。
+ * ⚠ 空串与"未登记"在这里**不需要区分** —— 未登记的值本来就不该被读到
+ *   （`put` 已经挡住了写入），所以读路径给空串是正确的降级。
+ */
+public func aiSettingDefaultOf(key: String): String {
+    match (aiSettingDefaultOfRaw(key)) {
+        case Some(d) => return d
+        case None => ()
+    }
+    if (startsWithAscii(key, "prompt.")) {
+        // Prompt 的"默认值"就是默认模板（非空），但它由 PromptRepo 负责拼装；
+        // 这里返回空串表示"库里没有该行 ⇒ 由 PromptRepo 回落到默认模板"。
+        return ""
+    }
+    if (startsWithAscii(key, AI_TOOL_KEY_PREFIX)) {
+        let name = key[AI_TOOL_KEY_PREFIX.size..]
+        // 工具未设置 ⇒ 用默认开关（空串表示"没设"，由 aiToolEnabled 处理默认值）
+        if (aiToolKnown(name)) {
+            return ""
+        }
+    }
+    return ""
+}
+
+/*
+ * 取某 key 在**静态登记表**里的默认值；未登记返回 None。
+ *
+ * ⚠ 名字带 `Raw` 是为了区分于 `aiSettingDefaultOf()`（三类通用）：
+ *   这个只看 `aiSettingSpecs()`（静态那一类），是 `aiSettingDefaultOf` 的第一层。
+ */
+public func aiSettingDefaultOfRaw(key: String): ?String {
     for (s in aiSettingSpecs()) {
         if (s.key == key) {
             return Some(s.defaultVal)
         }
     }
     return None
+}
+
+/* 兼容性别名：旧调用点用 `aiSettingDefault` 表示"静态表的默认值"。 */
+public func aiSettingDefault(key: String): ?String {
+    return aiSettingDefaultOfRaw(key)
 }
 
 /* 某项是否敏感。 */
@@ -435,11 +498,8 @@ public class AiSettingsRepo {
         if (cache.contains(key)) {
             return cache[key]
         }
-        match (aiSettingDefault(key)) {
-            // ⚠ 默认值也 trim：与"写入时 trim"配套，保证任何路径都不带首尾空白
-            case Some(d) => return d.trimAscii()
-            case None => return ""
-        }
+        // ⚠ 默认值也 trim：与"写入时 trim"配套，保证任何路径都不带首尾空白
+        return aiSettingDefaultOf(key).trimAscii()
     }
 
     /* 重新加载全部配置到缓存。 */
@@ -469,8 +529,18 @@ public class AiSettingsRepo {
     /* 写某项配置（含**未登记 key 拒绝**与**密钥引用校验**两道闸门）。 */
     public func put(key: String, value: String, now: Int64): AiSettingPutResult {
         let r = AiSettingPutResult()
-        // 闸门①：必须是登记过的 key（否则 KV 表会变垃圾场）
-        if (aiSettingDefault(key).isNone()) {
+        /*
+         * 闸门①：必须是"**已登记**"的 key（否则 KV 表会变垃圾场）。
+         *
+         * ⚠ 这里有三类合法 key（同一张表、同一套缓存，靠**前缀**做命名空间）：
+         *   · `ai.*`      —— 静态登记表里的项（`aiSettingSpecs()`）
+         *   · `prompt.*`  —— Prompt 模板（登记表在 `promptSlots()`）
+         *   · `ai.tool.*` —— AI 工具开关（登记表在 `aiToolToggles()`）
+         *   三类各自有登记表 ⇒ 都"有名单可查"，不是任意键。
+         *   📌 复用同一张 KV 表 + 同一套缓存失效，是为了**不把"失效逻辑"写第二遍**
+         *     （"同一语义只留一处"）。
+         */
+        if (!aiSettingKeyKnown(key)) {
             r.rejected = "未知的配置项：${key}（只有登记过的 key 才能写）"
             return r
         }
@@ -500,8 +570,13 @@ public class AiSettingsRepo {
                 spec = Some(s)
             }
         }
-        let sp = spec.getOrThrow()
-        if (sp.numeric() && trimmed.size > 0) {
+        /*
+         * ⚠ 只有**静态登记项**才做数值校验：Prompt 模板与工具开关走各自的闸门
+         *   （`PromptRepo.put()` 校验占位符与长度；`aiToolSet` 只接受 0/1）。
+         *   把数值校验也套到它们身上会误拒（一个模板当然不是数字）。
+         */
+        if (spec.isSome() && spec.getOrThrow().numeric() && trimmed.size > 0) {
+            let sp = spec.getOrThrow()
             if (!aiIsAllDigits(trimmed)) {
                 r.rejected = "${key} 必须是整数（收到的是非数字；" +
                              "允许范围 ${sp.numMin}..${sp.numMax}）"
@@ -535,7 +610,7 @@ public class AiSettingsRepo {
 
     /* 删某项配置（回到默认值）。 */
     public func remove(key: String, now: Int64): Bool {
-        if (aiSettingDefault(key).isNone()) {
+        if (!aiSettingKeyKnown(key)) {
             return false
         }
         let _ = db.exec("DELETE FROM ai_setting WHERE k = ?", [DbStr(key)])

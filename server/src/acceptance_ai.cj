@@ -382,3 +382,154 @@ public func acP3_4(runner: TestRunner, db: DbBackend): Unit {
         runner.check("④ 秘密项 ref_kind=env", view.contains("\"ref_kind\":\"env\""))
     })
 }
+
+/* ===================== P3 第二块：Prompt 模板 + 工具开关 ===================== */
+
+/*
+ * AC-P3-5 ★★ Prompt 模板：**缺占位符的模板存不进去**。
+ *
+ * 这条守的是"AI 变笨"这类**最难查**的故障：模板漏了 `{主诉}` 不会报错、
+ * 不会崩溃，只是模型收到一段没有患者信息的人设，输出看起来正常但完全没用。
+ * ⇒ 所以把"必需占位符"写成契约，写入时就拦。
+ */
+public func acP3_5(runner: TestRunner, db: DbBackend): Unit {
+    println("=== AC-P3-5 ★★ Prompt 模板（占位符校验 + 零重启）===")
+    runner.section("AC-P3-5", { =>
+        hResetAiSettings(db)
+        let now = hNowEpoch()
+        let settings = AiSettingsRepo(db)
+        let repo = PromptRepo(settings)
+
+        // ① 默认模板必须**自身合法**（否则"默认值"这条路会把校验绕过去）
+        var defaultsOk = true
+        for (s in promptSlots()) {
+            let body = promptDefaultBody(s.name)
+            for (ph in s.required) {
+                if (!body.contains(ph)) {
+                    defaultsOk = false
+                    println("        默认模板 ${s.name} 缺 ${ph}")
+                }
+            }
+        }
+        runner.check("★★ ① 每个默认模板都含齐它的必需占位符（默认值不能绕过校验）", defaultsOk)
+
+        /*
+         * ★★ ①b **三个默认模板必须两两不同**（结构断言 —— 守的是语言陷阱，不是业务）。
+         *
+         * 我原来用 `match (name) { case PROMPT_DEPT => ... }` 分派默认模板，
+         * 而 `PROMPT_DEPT` 是 **String 常量** ⇒ 实测发现它被当成 **catch-all 绑定**，
+         * 于是 `promptDefaultBody("previsit")` **一直返回 dept 的模板**。
+         * 上面 ① 那条断言把它抓出来了（previsit 模板缺自己的占位符）。
+         *
+         * 但 ① 是"**碰巧**"抓到的（因为两个模板的占位符不同）。要**直接**守住这个陷阱，
+         * 就该断言"不同名字给出不同模板" —— 那正是 catch-all 会破坏的性质。
+         * 三条模板内容本来就不同，所以这个断言永远是良性的；而一旦有人把分派改回
+         * `match` + 常量标签，它会立刻变红。
+         */
+        let bodies = ArrayList<String>()
+        for (s in promptSlots()) {
+            bodies.add(promptDefaultBody(s.name))
+        }
+        var distinct = true
+        var i: Int64 = 0
+        while (i < bodies.size) {
+            var j: Int64 = i + 1
+            while (j < bodies.size) {
+                if (bodies[i] == bodies[j]) {
+                    distinct = false
+                }
+                j = j + 1
+            }
+            i = i + 1
+        }
+        runner.check("★★ ①b 三个默认模板两两不同（守住「String 常量当 match 标签会变 catch-all」这个陷阱）",
+                     distinct)
+
+        // ② ★ 缺占位符的模板必须被拒
+        let badTemplates: Array<(String, String, String)> = [
+            (PROMPT_DEPT, "你是导诊助手，请推荐科室：{候选科室}", "缺 {主诉}"),
+            (PROMPT_DEPT, "你是导诊助手，患者主诉：{主诉}", "缺 {候选科室}"),
+            (PROMPT_PREVISIT, "患者主诉：{主诉}，请追问", "缺 {已有信息} 与 {待问项}"),
+            (PROMPT_REDFLAG, "请判断是否需要立即就医", "缺 {主诉}")
+        ]
+        var allRejected = true
+        for ((n, body, why) in badTemplates) {
+            let r = repo.put(n, body, now)
+            if (r.ok) {
+                allRejected = false
+                println("        ★ 未拒绝（${why}）：${n}")
+            }
+        }
+        runner.check("★★ ② 4 个缺占位符的模板全部被拒（防「AI 静默变笨」）", allRejected)
+
+        // ③ 合法模板能存；且**立刻**生效（零重启）
+        let good = "患者主诉：{主诉}\n候选科室：{候选科室}\n请只输出 JSON。"
+        let w = repo.put(PROMPT_DEPT, good, now)
+        runner.check("③ 合法模板被接受", w.ok)
+        runner.check("★★ ③ 同一实例立刻读到新模板（零重启）", repo.body(PROMPT_DEPT, now) == good)
+        runner.check("③ customized = true", repo.customized(PROMPT_DEPT, now))
+        // ④ 未改过的仍报默认模板
+        runner.check("④ 未改过的模板返回默认正文且 customized=false",
+                     repo.body(PROMPT_REDFLAG, now).size > 0 && !repo.customized(PROMPT_REDFLAG, now))
+        // ⑤ 恢复默认
+        let _r = repo.reset(PROMPT_DEPT, now)
+        runner.check("⑤ 恢复默认后正文 == 默认模板", repo.body(PROMPT_DEPT, now) == promptDefaultBody(PROMPT_DEPT))
+        runner.check("⑤ 且 customized 回到 false", !repo.customized(PROMPT_DEPT, now))
+        // ⑥ 未知 Prompt 被拒
+        runner.check("⑥ 未知 Prompt 被拒", !repo.put("no_such_prompt", "x", now).ok)
+        // ⑦ 长度上限按**字符**算（用中文，避免"按字节"误判）
+        let longBody = hRepeatChar("持", 4001) + "{主诉}{候选科室}"
+        runner.check("★ ⑦ 超长模板被拒（按字符数算，中文不误伤）", !repo.put(PROMPT_DEPT, longBody, now).ok)
+        let okLen = hRepeatChar("持", 3900) + "{主诉}{候选科室}"
+        runner.check("★ ⑦ 但 3900 字符 + 占位符被接受", repo.put(PROMPT_DEPT, okLen, now).ok)
+        let _c = repo.reset(PROMPT_DEPT, now)
+    })
+}
+
+/*
+ * AC-P3-6 ★★ 工具开关：**被禁用的工具必须真的不可用**。
+ *
+ * ⚠ 这是本组最关键的一条：开关"看起来生效了"（接口返回了 enabled=false）
+ *   与"真的不可用"（判据函数返回 false）是**两件事**。
+ *   所以断言必须打在**判据函数**上，而不是接口回显上。
+ */
+public func acP3_6(runner: TestRunner, db: DbBackend): Unit {
+    println("=== AC-P3-6 ★★ AI 工具开关（禁用即真的不可用）===")
+    runner.section("AC-P3-6", { =>
+        hResetAiSettings(db)
+        let now = hNowEpoch()
+        let settings = AiSettingsRepo(db)
+
+        // ① 默认全开
+        runner.check("① 默认全部启用（${aiToolEnabledCount(settings, now)} / ${aiToolToggles().size}）",
+                     aiToolEnabledCount(settings, now) == aiToolToggles().size)
+        // ② ★ 关掉一条 ⇒ **判据函数**必须返回 false
+        let target = "bookable_slots"
+        let w = aiToolSet(settings, target, false, now)
+        runner.check("② 关闭 ${target} 成功", w.ok)
+        runner.check("★★ ② 判据函数真的返回 false（不是只改了回显）",
+                     !aiToolEnabled(settings, target, now))
+        runner.check("② 其它工具不受影响（抽查 redflag_scan 仍为 true）",
+                     aiToolEnabled(settings, "redflag_scan", now))
+        runner.check("② 已启用数减 1（${aiToolEnabledCount(settings, now)}）",
+                     aiToolEnabledCount(settings, now) == aiToolToggles().size - 1)
+        // ③ 再打开 ⇒ 恢复
+        let _w2 = aiToolSet(settings, target, true, now)
+        runner.check("③ 重新打开后判据恢复 true", aiToolEnabled(settings, target, now))
+        // ④ ★ 未登记的工具**不可用**（白名单纪律：模型不能新增工具）
+        runner.check("★★ ④ 未登记的工具判据为 false（不存在的工具不会「默认可用」）",
+                     !aiToolEnabled(settings, "delete_all_patients", now))
+        runner.check("④ 也无法开关未登记的工具", !aiToolSet(settings, "no_such_tool", true, now).ok)
+        // ⑤ ★ 值被写坏 ⇒ **从严判为关**（失败方向选安全的那侧）
+        let _bad = settings.put(AI_TOOL_KEY_PREFIX + target, "abc", now)
+        runner.check("★★ ⑤ 库里是垃圾值（abc）⇒ 从严判为**关**（只有明确的 1 才算开）",
+                     !aiToolEnabled(settings, target, now))
+        let _z = settings.put(AI_TOOL_KEY_PREFIX + target, "0", now)
+        runner.check("⑤ 显式 0 ⇒ 关", !aiToolEnabled(settings, target, now))
+        let _o = settings.put(AI_TOOL_KEY_PREFIX + target, "1", now)
+        runner.check("⑤ 显式 1 ⇒ 开", aiToolEnabled(settings, target, now))
+        // ⑥ ★ 开关**零重启**：写后同一实例立刻生效
+        runner.check("★★ ⑥ 开关零重启（写后立即生效，无需重启）",
+                     aiToolEnabled(settings, target, now))
+    })
+}

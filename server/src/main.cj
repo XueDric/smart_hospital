@@ -575,7 +575,9 @@ func serve(args: Array<String>): Int64 {
     let previsit = PrevisitRepo(db)
     // P3 AI 能力中心配置仓储（DB 驱动 + 缓存失效；密钥只存引用，见 ai_settings.cj）
     let aiSettings = AiSettingsRepo(db)
-    let app = buildHospitalApp(repo, auth, gate, triage, previsit, aiSettings)
+    // P3 第二块：Prompt 模板仓储（复用 aiSettings 的 KV 表与缓存，靠 prompt. 前缀隔离）
+    let prompts = PromptRepo(aiSettings)
+    let app = buildHospitalApp(repo, auth, gate, triage, previsit, aiSettings, prompts)
     let box = HandleBox()
 
     println("")

@@ -1,4 +1,4 @@
-﻿# 智慧医院服务端（仓颉 + 轻舟）
+# 智慧医院服务端（仓颉 + 轻舟）
 
 > **当前进度**：P0（号源/挂号域独立 MySQL 路径）→ **P1**（令牌鉴权 + HTTPS + 安全加固 + 内存 Store）
 > → **P2**（AI 分诊 + 预问诊 SSE）**均已完成**。P3 / P4 见 [../README.md](../README.md) 的里程碑表。
@@ -74,7 +74,7 @@ cd server     # ⚠ cwd 必须是 server/，见下
 | `triagetest` | P2 分诊 + 预问诊**纯逻辑**自检（**108 项**断言），不碰库不调模型 | ❌ |
 | `authtest` | **口令/令牌原语自检**（含 3 个公开测试向量，**17 项**） | ❌ |
 | `check-db <dsn>` | 连库 + 幂等建表 + 打印表清单（★ 标记号源域） | ✅ |
-| `accept <dsn>` | 验收测试 AC-1…AC-P3-4（**160 项断言**；⚠ 只允许库名含 `test` 的测试库） | ✅ |
+| `accept <dsn>` | 验收测试 AC-1…AC-P3-6（**184 项断言**；⚠ 只允许库名含 `test` 的测试库） | ✅ |
 | `create-db <dsn>` | 幂等建库（utf8mb4）—— 测试库靠它 | ✅ |
 | `create-admin <dsn>` | 建/重置管理员并打印口令（**引导入口**） | ✅ |
 | `serve <dsn>` | **P1**：启动 HTTP / HTTPS 服务（默认只绑 `127.0.0.1`） | ✅ |
@@ -185,11 +185,12 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
 | `src/http_common.cj` | 统一响应/错误码表（`{ok,data}` / `{ok:false,error}`） |
 | `src/http_app.cj` | HTTP 装配 + 三端权限矩阵 + `principalOf()`（令牌优先，开发态头可选）+ **登录限流闸门** + **会话/列表端点** |
 | `src/auth_repo.cj` | 鉴权仓储：**口令强度校验（仓储层强制）** + 登录名归一 + 限流计数 + 会话按设备 |
-| `src/acceptance.cj` | AC-1…AC-P3-4 验收测试（含异常兜底与变异测试记录） |
+| `src/acceptance.cj` | AC-1…AC-P3-6 验收测试（含异常兜底与变异测试记录） |
 | `src/acceptance_triage.cj` | AC-P2-1…AC-P2-5：分诊**验证层** + 预问诊**会话隔离**在库级成立（含变异测试记录） |
 | `src/previsit.cj` | **P2 预问诊**：多轮采集状态机 + SSE 帧 + 结构化问诊单（业务值，非流式） |
 | `src/ai_settings.cj` | **P3 AI 能力中心**：配置 KV 表 + 缓存失效 + ★★ 密钥引用校验（密钥不落库）+ 脱敏回显 |
-| `src/acceptance_ai.cj` | AC-P3-1…4：密钥不落库 / 零重启 / 配置校验 / 回显脱敏 |
+| `src/ai_prompt.cj` | **P3 第二块**：Prompt 模板（占位符契约）+ AI 工具开关，复用同一 KV 与缓存 |
+| `src/acceptance_ai.cj` | AC-P3-1…6：密钥不落库 / 零重启 / 配置校验 / 回显脱敏 / 占位符 / 工具开关 |
 | `src/main.cj` | 进程入口与子命令分发（含 TLS 分支与 fail-closed） |
 | `new-tls-cert.ps1` | 生成带 SAN 的自签证书 + ASCII 运行副本 + ACL 收紧 |
 | `tests/tls-check.ps1` | TLS 验证（SslStream 真校验、反向验证、HTTPS 业务链路） |
@@ -274,6 +275,8 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
 | H | **`build.ps1` 看不到完整编译诊断** | 它只抛 `编译失败 (exit N)`，没有文件:行:列 | 直接调 `cjc`（带 `--import-path` / `-L` / `-l:` 那一串）才能拿到全部错误与 `==> 文件:行:列`。**排查编译错时优先这么做** |
 | L | ★★ **仓颉 `String` 的下标/切片/`indexOf` 都是「字节」语义，不是字符** | P2 里连踩三次：① 按字节截断主诉 → 超长中文直接 **500**；② `"没有胸痛".indexOf("胸痛")` = **6**（不是 2），否定窗口算错 ⇒ **误报红牌**；③ 逐字节拼回字符串撕裂汉字 ⇒ `Invalid utf8 byte sequence` | 只有 `runes()` 是字符语义。**要按字符就全程 `runes()` + `String(Rune[])`**；要按字节就别混用字符单位 |
 | M | **断言"没有 X"时，要让 X 真的存在过** | P2 变异测试：把 `remain_num > 0` 改成 `>= 0`（约满也推荐），**92 项断言全绿** —— 因为用例造的是"科室没有排班行"，诱惑源根本不在 | 改造成"排班存在但 `remain_num = 0`"后变异立刻 **2 FAIL**。否则测试验的是"列表是空的"，而不是"不该出现的项没出现" |
+| Y | ★★★ **String 常量不能当 `match` 的 case 标签**（会变成 catch-all 绑定！） | 我写 `match (name) { case PROMPT_DEPT => ... case PROMPT_PREVISIT => ... }`，而 `PROMPT_DEPT` 是 **String 常量**。探针实测（`let A: String = "dept"`）：`match(A)`→A ✓；`match("previsit")`→**也命中 A** ✗；`match("zzz")`→**还是命中 A** ✗。⇒ `promptDefaultBody("previsit")` **一直返回 dept 的模板** | **String 的分支一律用 `if (x == 常量)`**。⚠ `case None` / `case Patient` 那些**没问题** —— 它们是 Option/枚举构造子，不是 String 常量。**不报错、不崩溃，只是返回错数据**，靠"值上的断言"才照得出来 |
+| Z | ★★ **读用户输入时先用 `is` 判类型再取值** | `{"enabled":"yes"}` 让 `v.asBool().getValue()` **抛异常** ⇒ 全局兜底 ⇒ **500**（字段类型不对是客户端错误，该 400）。实测 `PUT /admin/ai/tools/x {"enabled":"yes"}` → 500 | `if (v is JsonBool) { ...asBool()... } else { return None }`，由调用方给准确 400。📌 `asXxx()` 在类型不符时**抛异常**，不是返回 None |
 | X | ★★ **写路径要严格，读路径才宽容**（不要拿"读时的兜底"当"写时的校验"） | `PUT ai.timeout_secs=abc` 返回 200、回显 `abc`，而读取时 `parseInt64Or` 把它**静默换成默认值 30** ⇒ **回显值 ≠ 生效值**，且系统报"配置有效"。更能说明危害的是：库里越界的 `9999` 本来正确地给了 `enabled=false`，被"改成"`abc` 后 **enabled 反而翻成 true** —— 写错一个值把报警变成了绿灯 | 校验放到 `put()`（与 `key_ref` 同一道闸门）；`parseInt64Or` 那种"尽力解析 + 兜底"只该用在**读**路径 |
 | V | **注释里不能出现 ``*/``（即使它只是文字）** | 我在块注释里写了 glob 例子 ``server/src/*.cj``，其中的 ``*/`` **提前闭合了注释** ⇒ 报 `unterminated block comment`，而报错行指向别处 | 注释里要写 glob/通配时，避开 ``/*`` 与 ``*/`` 相邻（换成文字描述）。**写完注释也要编译一遍** |
 | W | ★★ **脱敏必须只在一处做**（同一个病第 N 次） | `aiSettingsJson` 把 endpoint 当非秘密项**原样回显**，于是 `?token=SECRET` 进了响应体与访问日志 —— 而我**已经在 `aiSafeHost()` 里为日志脱敏过一次** | 回显统一走 `aiSafeHost()` + 加 `redacted` 字段。这条与 P 条（同一语义只准一处实现）是同一个病换了面孔 |

@@ -313,6 +313,59 @@ Check "★ 空值被接受（=回默认值），不是 400" ($r.Http -eq 200) ("
 Check "★★ 空值后回显是**默认值 30**，不是空串（回显 == 生效）" ($r.Body -match '"value":"30"')
 Check "★ 并标记 is_default=true" ($r.Body -match '"is_default":true')
 
+# 8.6c ★★ Prompt 模板（占位符校验 + 零重启）
+$r = DoReq 'aipr' 'GET' '/api/v1/admin/ai/prompts' @("Authorization: Bearer $patTok") $null
+Check "★ 患者读 Prompt → 403（Prompt 含系统指令，不该对患者开放）" ($r.Http -eq 403) ("HTTP $($r.Http)")
+$r = DoReq 'aipradm' 'GET' '/api/v1/admin/ai/prompts' @("Authorization: Bearer $admTok") $null
+Check "管理员读 Prompt → 200，且含三个模板" `
+      ($r.Http -eq 200 -and ([regex]::Matches($r.Body, '"name":"')).Count -ge 3) ("HTTP $($r.Http)")
+Check "★ Prompt 正文**原样回显**（不是机密，管理员要能核对）" ($r.Body -match '\{主诉\}')
+# ★★ 缺占位符的模板必须被拒（防「AI 静默变笨」）
+foreach ($bad in @('你是导诊助手，推荐科室：{候选科室}', '请判断是否需要立即就医')) {
+    $bf = Join-Path $env:TEMP ("pbad" + [Guid]::NewGuid().ToString('N').Substring(0,6) + ".json")
+    [System.IO.File]::WriteAllText($bf, ('{"body":"' + $bad + '"}'), (New-Object System.Text.UTF8Encoding($false)))
+    $cf = Join-Path $env:TEMP ("pbad" + [Guid]::NewGuid().ToString('N').Substring(0,6) + ".cfg")
+    [System.IO.File]::WriteAllText($cf, ("request = `"PUT`"`nheader = `"Authorization: Bearer $admTok`"`nheader = `"Content-Type: application/json`"`ndata = `"@" + ($bf -replace '\\','/') + "`"`nsilent`nwrite-out = `"\n__M__%{http_code}`""), (New-Object System.Text.UTF8Encoding($false)))
+    $raw = (& curl.exe -s -K $cf "$Base/api/v1/admin/ai/prompts/dept" 2>&1) -join "`n"
+    $code = [int](($raw -split "__M__")[1].Trim())
+    Check "★★ 缺占位符的模板被拒 400（「$($bad.Substring(0,[Math]::Min(14,$bad.Length)))…」）" ($code -eq 400) ("HTTP $code")
+}
+# 合法模板可写，且**立刻**生效（零重启）
+$okBody = '患者主诉：{主诉}｜候选科室：{候选科室}｜请只输出 JSON。'
+$bf2 = Join-Path $env:TEMP "pok.json"
+[System.IO.File]::WriteAllText($bf2, ('{"body":"' + $okBody + '"}'), (New-Object System.Text.UTF8Encoding($false)))
+$cf2 = Join-Path $env:TEMP "pok.cfg"
+[System.IO.File]::WriteAllText($cf2, ("request = `"PUT`"`nheader = `"Authorization: Bearer $admTok`"`nheader = `"Content-Type: application/json`"`ndata = `"@" + ($bf2 -replace '\\','/') + "`"`nsilent`nwrite-out = `"\n__M__%{http_code}`""), (New-Object System.Text.UTF8Encoding($false)))
+$raw2 = (& curl.exe -s -K $cf2 "$Base/api/v1/admin/ai/prompts/dept" 2>&1) -join "`n"
+$code2 = [int](($raw2 -split "__M__")[1].Trim())
+$body2 = ($raw2 -split "__M__")[0]
+Check "合法模板写入 200" ($code2 -eq 200) ("HTTP $code2")
+Check "★★ 同一响应里立刻看到新模板（零重启）" ($body2 -match '请只输出 JSON')
+Check "★ 且标记 customized=true" ($body2 -match '"customized":true')
+$null = DoReq 'aiprdel' 'DELETE' '/api/v1/admin/ai/prompts/dept' @("Authorization: Bearer $admTok") $null
+$r = DoReq 'aiprr' 'GET' '/api/v1/admin/ai/prompts' @("Authorization: Bearer $admTok") $null
+Check "恢复默认后不再含自定义正文" (-not ($r.Body -match '请只输出 JSON'))
+$r = DoReq 'aiprunk' 'PUT' '/api/v1/admin/ai/prompts/no_such' @("Authorization: Bearer $admTok") '{"body":"x"}'
+Check "未知 Prompt 被拒 400" ($r.Http -eq 400) ("HTTP $($r.Http)")
+
+# 8.6d ★★ AI 工具开关（禁用即真的不可用）
+$r = DoReq 'aitools' 'GET' '/api/v1/admin/ai/tools' @("Authorization: Bearer $patTok") $null
+Check "★ 患者读工具开关 → 403" ($r.Http -eq 403) ("HTTP $($r.Http)")
+$r = DoReq 'aitoolsadm' 'GET' '/api/v1/admin/ai/tools' @("Authorization: Bearer $admTok") $null
+Check "管理员读工具开关 → 200，默认全开（6 个）" `
+      ($r.Http -eq 200 -and ([regex]::Matches($r.Body, '"enabled":true')).Count -eq 6) `
+      ("enabled=true 个数 = $(([regex]::Matches($r.Body, '"enabled":true')).Count)")
+$r = DoReq 'aitooloff' 'PUT' '/api/v1/admin/ai/tools/bookable_slots' @("Authorization: Bearer $admTok") '{"enabled":false}'
+Check "关闭一个工具 200" ($r.Http -eq 200) ("HTTP $($r.Http)")
+Check "★★ 回显里该工具 enabled=false（且只剩 5 个开）" `
+      (([regex]::Matches($r.Body, '"enabled":true')).Count -eq 5 -and $r.Body -match '"name":"bookable_slots","label":"[^"]*","default_on":true,"enabled":false')
+$r = DoReq 'aitoolon' 'PUT' '/api/v1/admin/ai/tools/bookable_slots' @("Authorization: Bearer $admTok") '{"enabled":true}'
+Check "重新打开后恢复 6 个开" (([regex]::Matches($r.Body, '"enabled":true')).Count -eq 6)
+$r = DoReq 'aitoolunk' 'PUT' '/api/v1/admin/ai/tools/no_such_tool' @("Authorization: Bearer $admTok") '{"enabled":true}'
+Check "★ 未登记的工具被拒 400（白名单纪律：不能新增工具）" ($r.Http -eq 400) ("HTTP $($r.Http)")
+$r = DoReq 'aitoolbad' 'PUT' '/api/v1/admin/ai/tools/bookable_slots' @("Authorization: Bearer $admTok") '{"enabled":"yes"}'
+Check "★ enabled 非布尔被拒 400（只认 true/false，不给表达空间）" ($r.Http -eq 400) ("HTTP $($r.Http)")
+
 # 8.7 ★ 未登记的配置项必须被拒（否则 KV 表变垃圾场）
 $r = DoReq 'aiunk' 'PUT' '/api/v1/admin/ai/settings/ai.garbage' @("Authorization: Bearer $admTok") '{"value":"x"}'
 Check "★ 未登记的配置项被拒 400" ($r.Http -eq 400) ("HTTP $($r.Http)")
