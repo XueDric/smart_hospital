@@ -29,6 +29,9 @@
 
 package qingzhou
 
+/* ⚠ P5 起需要 ArrayList：仓颉的 Array 不支持 `+`，合并 DDL 两个数组只能靠它。 */
+import std.collection.*
+
 /* ===================== 表名常量 ===================== */
 
 /*
@@ -566,6 +569,37 @@ public func ensureSchema(db: DbBackend): Int64 {
         n = n + 1
     }
     return n
+}
+
+/*
+ * ★★ **全部** DDL 的合并视图 —— 任何"遍历所有 DDL"的地方都必须用它。
+ *
+ * ⚠⚠ 这个函数是 2026-10-09 补的，起因是一个**真实的漏检**：
+ *   P5 把知识库 DDL 单独放进 `KB_SCHEMA_DDL`（为了让 P5 的设计说明独立、
+ *   不被 14 张表的长数组淹掉），`ensureSchema` **两处都遍历**了 —— 建表是对的。
+ *   但 `main.cj` 的 selftest 有 **4 处**只遍历 `SCHEMA_DDL`
+ *   ⇒ 自检报「表 kb_doc 没有对应 DDL」，而**实际上表建出来了**。
+ *
+ *   ⇒ 那次失败**有价值**：它证明「每张业务表都有 DDL」这条自检**确实在工作**
+ *     （它抓到了自己遍历不全），但也暴露了**遍历点分散**这个结构问题 ——
+ *     下次再加表，很可能又只改一处。
+ *   ⇒ 修法不是"把 P5 的表塞回大数组"（那会丢掉分文件的好处），
+ *     而是**把「全部 DDL」变成一个不可绕过的名字**。自检只认它 ⇒
+ *     以后新增任何 DDL 数组，只要并进这里就自动被覆盖。
+ *   📌 一般化：**「有哪些」这件事只能有一处答案** —— 否则迟早有地方少数。
+ *
+ * ⚠ 用 `ArrayList` 拼（仓颉的 `Array` **不支持 `+`**：实测报
+ *   `invalid binary operator '+' on type 'Struct-Array<Struct-String>'`）。
+ */
+public func allSchemaDdl(): Array<String> {
+    let out = ArrayList<String>()
+    for (sql in SCHEMA_DDL) {
+        out.add(sql)
+    }
+    for (sql in KB_SCHEMA_DDL) {
+        out.add(sql)
+    }
+    return out.toArray()
 }
 
 /*

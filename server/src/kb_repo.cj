@@ -160,7 +160,7 @@ public class KbRepo {
             [DbStr(title.trimAscii()), DbStr(category.trimAscii()), DbStr(body), DbInt(actorId),
              DbInt(now), DbInt(now)])
         if (!ins.ok) {
-            return kbClassifyDuplicate(ins.message, out)
+            return kbClassifyDuplicate(ins.message, title.trimAscii(), out)
         }
         let idRs = db.query("SELECT LAST_INSERT_ID()", Array<DbValue>())
         let id = idRs.getInt(0, 0)
@@ -194,7 +194,7 @@ public class KbRepo {
             [DbStr(title.trimAscii()), DbStr(category.trimAscii()), DbStr(body),
              DbInt(if (enabled) { 1 } else { 0 }), DbInt(actorId), DbInt(now), DbInt(id)])
         if (!up.ok) {
-            return kbClassifyDuplicate(up.message, out)
+            return kbClassifyDuplicate(up.message, title.trimAscii(), out)
         }
         /*
          * ★★ 重新切块 —— **这是本文件最容易出错的地方**（见文件头）。
@@ -542,15 +542,24 @@ public func kbExecTolerant(db: DbBackend, sql: String, args: Array<DbValue>): Kb
 /*
  * 把唯一键冲突分类。
  * ⚠ 与 `baseClassifyDuplicate` 同一口径：认索引名；消息为空（驱动吞掉）时**不猜成 500**。
+ *
+ * ⚠⚠ `title` 参数是**必须的**，不是装饰（2026-10-09 实测发现）：
+ *   原来这里只置 `duplicate = true`、不填 `detail`，于是 HTTP 层拼出的 409 消息是
+ *   **「已存在同名文档：」后面空着** —— 用户看不到**是哪个名字**冲突了。
+ *   一个"说了等于没说"的错误消息会让调用方只能靠猜（尤其批量导入时）。
+ *   📌 一般化：**报错要带上"足以定位"的信息** —— 只说"冲突了"而不说"和谁冲突"，
+ *     是把定位成本推给调用方。
  */
-public func kbClassifyDuplicate(message: String, out: KbWriteOutcome): KbWriteOutcome {
+public func kbClassifyDuplicate(message: String, title: String, out: KbWriteOutcome): KbWriteOutcome {
     if (message.contains("uk_kb_doc_title") || message.contains("Duplicate entry")) {
         out.duplicate = true
+        out.detail = "标题「${title}」"
         return out
     }
     if (message.size == 0) {
         /* 驱动吞了消息 ⇒ 按"重复"处理（与 domain_base 的兜底一致）。 */
         out.duplicate = true
+        out.detail = "标题「${title}」"
         return out
     }
     return out.markInvalid("写入失败：${message}")

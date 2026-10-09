@@ -94,7 +94,7 @@ Write-Host "  AC 编号上限（四套体系各自）= AC-$acMax / AC-P2-$acP2Ma
 #   ⇒ 现在：扫**全部注册文件**（清单显式给出，与"路由注册集中可见"这条约定配套）。
 #     并覆盖 `delete`。📌 教训：**计数脚本本身也要能被"加了东西"这件事验证到** ——
 #     否则它会给一个恒定的旧数字，而所有人都以为它对。
-$regFiles = @("src\http_app.cj", "src\http_p4.cj", "src\http_base.cj")
+$regFiles = @("src\http_app.cj", "src\http_p4.cj", "src\http_base.cj", "src\http_kb.cj")
 $epCount = 0
 foreach ($rf in $regFiles) {
     $p = Join-Path $serverDir $rf

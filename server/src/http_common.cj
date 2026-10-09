@@ -174,6 +174,21 @@ public func apiErrorSpec(code: String): (Int64, String) {
     if (code == "BASE_CODE_TAKEN") {
         return (409, "该编码已被占用")
     }
+    /*
+     * ★ P5 知识库两个码。
+     *
+     * ⚠ **又一次**提醒（P4 真踩过、P5 差点再踩）：**新错误码必须在这里登记**，
+     *   否则落到兜底 `(500, "服务器内部错误")`，把正常的业务拒绝
+     *   （"文档不存在"、"同名文档已存在"）报成服务端故障。
+     *   而且**纯逻辑层测试抓不到** —— 必须有走 HTTP 的用例（`kb-check.ps1` 覆盖）。
+     */
+    if (code == "KB_DOC_NOT_FOUND") {
+        return (404, "知识库文档不存在")
+    }
+    /* 同名文档 ⇒ 409（请求本身合法，是与既有数据冲突）。 */
+    if (code == "KB_TITLE_TAKEN") {
+        return (409, "已存在同名知识库文档")
+    }
     /* 被引用不能删 ⇒ 409。消息由 handler 给出（含"被谁引用"的具体数字）。 */
     if (code == "BASE_IN_USE") {
         return (409, "该记录正被引用，不能删除")

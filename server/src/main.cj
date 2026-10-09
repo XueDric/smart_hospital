@@ -275,9 +275,20 @@ func selftest(): Int64 {
      */
     let emrTables = 1       // medical_record（临床数据，直接 SQL，MedicalRecordRepo 独占）
     let statTables = 1      // triage_stat（聚合统计，只存计数，带 TTL）
+    /*
+     * ★ P5 新增两张表，**合成一类**（知识库域）：
+     *   · kb_doc   —— 文档（人维护的单位）
+     *   · kb_chunk —— 切块（检索的单位，含 embedding JSON 或 NULL）
+     * ⚠ 合成一类（而不是像 P4 那样各成一类）的理由：这两张表**纪律相同**
+     *   （本院人员维护的运营资料、不含患者个人信息、走直接 SQL）。
+     *   而 P4 的 `medical_record` / `triage_stat` 各成一类，是因为它们的
+     *   **留存纪律不同**（临床长期留 vs 统计带 TTL）。
+     * 📌 分类按**纪律是否相同**分，不按"是不是同一批加的"分。
+     */
+    let kbTables = 2        // kb_doc / kb_chunk（知识库，P5）
     let totalTables = bookingTables + baseTables + authTables + previsitTables + aiTables +
-                      emrTables + statTables
-    check("表集共 ${totalTables} 张 = 号源域 ${bookingTables} + 基础数据域 ${baseTables}（department/doctor/patient，直接 SQL、无写入端点） + 鉴权域 ${authTables} + 预问诊域 ${previsitTables} + AI 配置域 ${aiTables} + 病历域 ${emrTables} + 统计域 ${statTables}（★ 无「内存 Store 域」：rev.7 已拆除）",
+                      emrTables + statTables + kbTables
+    check("表集共 ${totalTables} 张 = 号源域 ${bookingTables} + 基础数据域 ${baseTables}（department/doctor/patient，直接 SQL、无写入端点） + 鉴权域 ${authTables} + 预问诊域 ${previsitTables} + AI 配置域 ${aiTables} + 病历域 ${emrTables} + 统计域 ${statTables} + 知识库域 ${kbTables}（★ 无「内存 Store 域」：rev.7 已拆除）",
           ALL_TABLES.size == totalTables)
     check("号源/挂号域恰好 ${bookingTables} 张（schedule / appointment）",
           BOOKING_DOMAIN_TABLES.size == bookingTables)
@@ -319,7 +330,7 @@ func selftest(): Int64 {
     var ddlMiss = 0
     for (t in ALL_TABLES) {
         var hit = false
-        for (sql in SCHEMA_DDL) {
+        for (sql in allSchemaDdl()) {
             if (sql.contains("CREATE TABLE IF NOT EXISTS ${t} ")) {
                 hit = true
             }
@@ -330,8 +341,8 @@ func selftest(): Int64 {
         check("表 ${t} 有对应 DDL", hit)
     }
     check("每张业务表都有 DDL（缺 ${ddlMiss} 张）", ddlMiss == 0)
-    check("DDL 条数不少于业务表数（${SCHEMA_DDL.size} ≥ ${ALL_TABLES.size}）",
-          SCHEMA_DDL.size >= ALL_TABLES.size)
+    check("DDL 条数不少于业务表数（${allSchemaDdl().size} ≥ ${ALL_TABLES.size}）",
+          allSchemaDdl().size >= ALL_TABLES.size)
 
     /*
      * 3) ★ DDL 里不得出现任何以 `idem` 命名的表（**长期纪律**，不是"改名只改一半"的临时检查）。
@@ -344,7 +355,7 @@ func selftest(): Int64 {
      * （`baseline/server/src/mysql_store.cj:892`），P1 引入整库刷盘后同名表会争同一张表。
      */
     var staleIdem = false
-    for (sql in SCHEMA_DDL) {
+    for (sql in allSchemaDdl()) {
         if (sql.contains("CREATE TABLE IF NOT EXISTS idem")) {
             staleIdem = true
         }
@@ -352,7 +363,7 @@ func selftest(): Int64 {
     check("DDL 里没有任何以 idem 命名的表（不得与基线撞名，也不得复活死代码）", !staleIdem)
 
     // 4) 全部 DDL 幂等（IF NOT EXISTS）+ utf8mb4
-    for (sql in SCHEMA_DDL) {
+    for (sql in allSchemaDdl()) {
         if (!sql.contains("IF NOT EXISTS")) {
             println("  [FAIL] 非幂等 DDL：${sql}")
             failed = failed + 1
@@ -437,7 +448,7 @@ func selftest(): Int64 {
     var hasRemain = false
     var hasVisitDate = false
     var hasClientToken = false
-    for (sql in SCHEMA_DDL) {
+    for (sql in allSchemaDdl()) {
         if (sql.contains("version BIGINT")) { hasVersion = true }
         if (sql.contains("remain_num BIGINT")) { hasRemain = true }
         if (sql.contains("visit_date VARCHAR")) { hasVisitDate = true }
@@ -725,8 +736,10 @@ func serve(args: Array<String>): Int64 {
      */
     let dept = DepartmentRepo(db)
     let doc = DoctorRepo(db)
+    // P5 知识库仓储（文档 CRUD + 切块 + 检索）
+    let kb = KbRepo(db)
     let app = buildHospitalApp(repo, auth, gate, triage, previsit, aiSettings, prompts,
-                               emr, visit, dash, triageStat, dept, doc)
+                               emr, visit, dash, triageStat, dept, doc, kb)
     let box = HandleBox()
 
     println("")

@@ -401,6 +401,20 @@ public func acKb4(runner: TestRunner, db: DbBackend): Unit {
     runner.check("★ ⑧ 纯标点查询 ⇒ 空结果", repo.searchKeyword("，。！").hits.size == 0)
 
     /* ⑨ 向量路：库里没向量 ⇒ 空结果 + `missingVectors` 如实回报。 */
+    /*
+     * ⚠⚠ 先把**库里所有**向量清掉，自己制造"无向量"这个前提（2026-10-09 修）。
+     *
+     * 原来直接断言"向量检索应当空结果"，而**它只在首次运行时成立**：
+     * 本用例 ⑩ 会写入向量，重跑时那些向量还在 ⇒ ⑨ 变成**假红**。
+     * 实测症状：首次 `accept` 381 项全绿，再跑一次就 380 项 + 1 失败。
+     * 📌 判据（本仓纪律）：**断言一个"某状态下"的性质，就必须自己制造那个状态** ——
+     *   不能依赖"别的用例还没跑过"或"上一轮没留下东西"。
+     * ⚠ 清全表（而不是只清本用例的文档）是刻意的：本用例断言的是
+     *   "**库里**无向量"，所以前提就是全库范围 —— 只清自己的会漏掉别的来源。
+     */
+    db.exec("UPDATE kb_chunk SET embedding = NULL, embedded_at = 0", Array<DbValue>())
+    let vecLeft = kbCount1(db, "SELECT COUNT(*) FROM kb_chunk WHERE embedding IS NOT NULL")
+    runner.check("★★ ⑨ 前提就绪：库里确实没有向量（实得 ${vecLeft}）", vecLeft == 0)
     let rv = repo.searchVector([1.0, 2.0, 3.0], topN: 5)
     runner.check("★★ ⑨ 库里无向量 ⇒ 向量检索空结果（不是回落到关键词冒充向量）",
                  rv.hits.size == 0)

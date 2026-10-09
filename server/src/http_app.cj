@@ -100,6 +100,19 @@ public enum Action {
      *   📌 本仓纪律：权限动作按**语义**分，不按"当前谁能做"分。
      */
     | ManageBaseData          // 维护科室/医生档案（仅管理员）
+    /*
+     * ★ 2026-10-09（P5 知识库）新增两条。**读与写分开**，与 P4 的病历同一考量。
+     *
+     * ⚠ 为什么读侧单独一条、且**不给患者**：
+     *   知识库文档是**院内运营资料**（就诊须知/流程说明等），
+     *   患者**不需要**直接检索它 —— 患者拿到的是分诊结论里被引用后的那段说明。
+     *   把原始知识库开放给患者端，等于交出一个**可自由检索院内文档**的入口
+     *   （其中可能有尚未定稿或被停用的内容）。⇒ 读侧只给**医生与管理员**。
+     *   📌 权限按**语义**分、按**最小必要**给；不因为"反正只读"就放开 ——
+     *     只读同样能泄露（未定稿/已停用内容）。
+     */
+    | QueryKnowledgeBase      // 检索知识库（医生 + 管理员；**患者不给**）
+    | ManageKnowledgeBase     // 维护知识库文档（仅管理员）
 }
 
 public func actionName(a: Action): String {
@@ -113,6 +126,8 @@ public func actionName(a: Action): String {
         case WriteOwnMedicalRecord => return "write_own_medical_record"
         case ManageVisit => return "manage_visit"
         case ManageBaseData => return "manage_base_data"
+        case QueryKnowledgeBase => return "query_knowledge_base"
+        case ManageKnowledgeBase => return "manage_knowledge_base"
         case ViewDashboard => return "view_dashboard"
     }
 }
@@ -184,6 +199,24 @@ public func can(role: Role, action: Action): Bool {
                 case _ => return false
             }
         case ManageBaseData =>
+            match (role) {
+                case Admin => return true
+                case _ => return false
+            }
+        /*
+         * ★ P5 知识库两条。
+         *
+         * ⚠ 读侧**不给患者**（理由见 Action 枚举处的注释）：
+         *   患者需要的是"分诊结论里被引用后的那句话"，不是"自由检索院内文档的入口"。
+         *   📌 不因为"只读"就默认放开 —— 只读也能泄露（未定稿/已停用的内容）。
+         */
+        case QueryKnowledgeBase =>
+            match (role) {
+                case Admin => return true
+                case Doctor => return true
+                case _ => return false
+            }
+        case ManageKnowledgeBase =>
             match (role) {
                 case Admin => return true
                 case _ => return false
@@ -669,7 +702,7 @@ func previsitSessionJson(s: PrevisitSession): JsonObject {
 public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate, triage: TriageRepo, previsit: PrevisitRepo, aiSettings: AiSettingsRepo, prompts: PromptRepo,
                            emr: MedicalRecordRepo, visit: VisitRepo,
                            dash: DashboardRepo, triageStat: TriageStatRepo,
-                           dept: DepartmentRepo, doc: DoctorRepo): Router {
+                           dept: DepartmentRepo, doc: DoctorRepo, kb: KbRepo): Router {
     let r = Router()
 
     /* ---------- 健康检查（无需认证，供压测与探活）---------- */
@@ -1499,6 +1532,13 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      *   （P4 时它漏扫 http_p4.cj，把 38 个端点报成 27 个）。
      */
     registerBaseRoutes(r, auth, gate, dept, doc)
+    /*
+     * ★ P5 知识库。
+     * ⚠ 同样登记在这个函数里（理由见上）：`doc-counts.ps1` 才能数清端点总数。
+     *   本仓已因"计数脚本漏扫文件"踩过一次（P4 把 27 报成 38 的前身），
+     *   ⇒ 新增文件必须**同时**更新 `doc-counts.ps1` 的清单（端点 48 -> 55）。
+     */
+    registerKbRoutes(r, auth, gate, kb)
 
     return r
 }
@@ -1519,9 +1559,9 @@ public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGat
                              aiSettings: AiSettingsRepo, prompts: PromptRepo,
                              emr: MedicalRecordRepo, visit: VisitRepo,
                              dash: DashboardRepo, triageStat: TriageStatRepo,
-                             dept: DepartmentRepo, doc: DoctorRepo): QingZhouApp {
+                             dept: DepartmentRepo, doc: DoctorRepo, kb: KbRepo): QingZhouApp {
     let router = buildHospitalRouter(repo, auth, gate, triage, previsit, aiSettings, prompts,
-                                     emr, visit, dash, triageStat, dept, doc)
+                                     emr, visit, dash, triageStat, dept, doc, kb)
     return QingZhouApp()
         .use(requestId())
         .use(logger())
