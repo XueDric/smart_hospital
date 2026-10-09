@@ -306,8 +306,7 @@ public func acKb3(runner: TestRunner, db: DbBackend): Unit {
     runner.check("⑦ 按分数降序（高分在前，实得首位 score=${s2[0].score}）", s2[0].score == 0.9)
 }
 
-/* ---------- AC-KB-4：仓储（★ 改文档后旧块必须消失）---------- */
-public func acKb4(runner: TestRunner, db: DbBackend): Unit {
+/* ---------- AC-KB-4：仓储（★ 改文档后旧块必须消失）---------- */public func acKb4(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-KB-4 ★★★ 仓储：改正文后**旧块必须消失** + 检索如实标注 source ===")
     let repo = KbRepo(db)
     let now = hNowEpoch()
@@ -343,6 +342,30 @@ public func acKb4(runner: TestRunner, db: DbBackend): Unit {
     runner.check("★ ③ 且说明原因（含「个人信息」）", piPhone.detail.contains("个人信息"))
     let piId = repo.create("ACKB含身份证", "", "身份证 110101199003071234 见附件。", 9901, now)
     runner.check("★★ ③ 正文含身份证形态 ⇒ 被拒", piId.invalid)
+    /*
+     * ★★ ③之二 「17 位数字 + X」也要被拒（2026-10-09 复查抓到的**真漏判**）。
+     *
+     * ⚠ 上面的数字段只累加 `0-9`，所以末位是 X 的身份证（**最常见的一种**）
+     *   数字段只有 17 位 ⇒ 不触发 `maxRun >= 18` ⇒ **放行**。
+     *   实测（复查）：纯 18 位数字 → 400 拒绝，而「17 位 + X」→ **201 放行**。
+     *
+     * ⚠ 为什么单独为它写两条用例（大小写各一）：
+     *   本仓把"拒绝个人信息形态"**列为 Q6 的一条合规缓解手段**，
+     *   而合规手段**漏掉最常见写法**比没有更糟 —— 它会让人以为"已经挡住了"。
+     *   📌 **声称"已挡住"的东西，必须挡住常见写法。**
+     */
+    let piIdX = repo.create("ACKB含身份证X", "", "身份证 11010119900307123X 见附件。", 9901, now)
+    runner.check("★★ ③ 正文含「17 位 + 大写 X」身份证 ⇒ **被拒**（原来漏判；理由：${piIdX.detail}）", piIdX.invalid)
+    let piIdx = repo.create("ACKB含身份证x", "", "身份证 11010119900307123x 见附件。", 9901, now)
+    runner.check("★★ ③ 正文含「17 位 + 小写 x」身份证 ⇒ 被拒", piIdx.invalid)
+    /* 反向：16 位数字 + X 不是身份证形状（**不得误杀**）。 */
+    let ok16 = repo.create("ACKB十六位加X", "", "编号 1234567890123456X 是设备序列号。", 9901, now)
+    runner.check("★ ③ 对照：16 位数字 + X **不误杀**（不是身份证形状）", ok16.ok)
+    let _rm16 = repo.remove(ok16.id)
+    /* 反向：17 位纯数字也不是（不是身份证形状）。 */
+    let ok17 = repo.create("ACKB十七位纯数字", "", "编号 12345678901234567 是设备序列号。", 9901, now)
+    runner.check("★ ③ 对照：17 位**纯数字** 不误杀", ok17.ok)
+    let _rm17 = repo.remove(ok17.id)
     /* 对照：正常医学文本**不得**被误杀（否则这个闸门就是"一律拒绝"的假绿）。 */
     let okDoc = repo.create("ACKB正常文档", "内科", "血压 140/90 mmHg 属于偏高，需复诊评估。", 9901, now)
     runner.check("★★ ③ 对照：含数字的正常医学文本**不被误杀**", okDoc.ok)
@@ -467,4 +490,96 @@ public func acKb4(runner: TestRunner, db: DbBackend): Unit {
             let _r = repo.remove(d.id)
         }
     }
+}
+
+/* ---------- AC-KB-5：★ RAG 片段接入分诊（三条硬约束）---------- */
+public func acKb5(runner: TestRunner, db: DbBackend): Unit {
+    println("=== AC-KB-5 ★★★ RAG 片段：过安全层 / 有界 / **改不了 options** ===")
+
+    /* ① 空命中 ⇒ 空串（**不是**空段落 —— 那会诱导模型自己编参考资料）。 */
+    runner.check("① 空命中 ⇒ 空串", aiRagContext(Array<KbHit>()).size == 0)
+
+    /* 造一条正常命中。 */
+    let h1 = KbHit()
+    h1.title = "就诊须知"
+    h1.content = "就诊前请携带既往病历与检查资料，便于医生快速了解病情。"
+    let one: Array<KbHit> = [h1]
+    let ctx1 = aiRagContext(one)
+    runner.check("★ ② 正常片段被采纳且**带上标题**（便于模型措辞与排障）", ctx1.contains("就诊须知"))
+    runner.check("★ ② 且以列表符开头（结构清晰）", ctx1.startsWith("· "))
+
+    /*
+     * ③ ★★★ 片段**也要过安全层**：含用药/诊断的片段必须被丢弃。
+     *   ⚠ 理由（写在这里免得将来有人"优化掉"这道检查）：
+     *     片段来自 `kb_doc.body`，是**本院人员**维护的，比模型编的可信；
+     *     但"可信来源"≠"可信格式"。也可能被误粘进一段医疗建议。
+     *   📌 判据：**清理的依据是"这段文本会不会原样给患者看"，不是"它从哪来"。**
+     */
+    let bad = KbHit()
+    bad.title = "某材料"
+    bad.content = "建议服用氨氯地平 5mg，每日一次。"
+    let badArr: Array<KbHit> = [bad]
+    runner.check("★★★ ③ 含用药的片段被**整条丢弃**（不是过滤掉药名后留下）",
+                 aiRagContext(badArr).size == 0)
+
+    /* ④ 混排：坏片段被丢、好片段保留。 */
+    let mixed: Array<KbHit> = [bad, h1]
+    let ctxMixed = aiRagContext(mixed)
+    runner.check("★★ ④ 好坏混排时，好的留下、坏的丢掉（不是整批丢弃）",
+                 ctxMixed.size > 0 && ctxMixed.contains("就诊须知"))
+    runner.check("★★ ④ 且坏片段的内容**没有**出现在结果里", !ctxMixed.contains("氨氯地平"))
+
+    /*
+     * ⑤ ★★ 有界：塞 50 条长片段，总长不得超过 `AI_RAG_TOTAL_CHARS`（按**字符**）。
+     *   ⚠ 按字符不是字节（本仓踩过三次）。这里用多字节汉字造数据，
+     *     若实现按字节限长会**明显短于**上限（那是另一类错，也要能被看出来）。
+     */
+    let many = ArrayList<KbHit>()
+    var k: Int64 = 0
+    while (k < 50) {
+        let h = KbHit()
+        h.title = "材料${k}"
+        h.content = hRepeatChar("高血压需要长期管理并定期随访。", 10)
+        many.add(h)
+        k = k + 1
+    }
+    let ctxMany = aiRagContext(many.toArray())
+    let ctxLen = previsitCharLen(ctxMany)
+    runner.check("★★ ⑤ 总长有界（${ctxLen} ≤ ${AI_RAG_TOTAL_CHARS} 字符）", ctxLen <= AI_RAG_TOTAL_CHARS)
+    runner.check("★ ⑤ 且确实取到了内容（不是「为了有界干脆全丢」，实得 ${ctxLen} 字符）", ctxLen > 0)
+
+    /*
+     * ⑥ ★★★ **Prompt 里必须挡住"按资料改推荐"**。
+     *   知识库文档里极可能写着"高血压请挂心内科"这类句子；
+     *   若不点明"以系统判定为准"，模型会照着资料复述一个科室 ——
+     *   而那个科室**可能根本没号**（P2 硬性验证层要防的正是这个）。
+     */
+    let v = TriageVerdict()
+    let o = TriageOption()
+    o.departmentName = "呼吸内科"
+    v.options = [o]
+    let pr = aiTriagePrompt("咳嗽三天", v, ragHits: one)
+    runner.check("★★★ ⑥ Prompt 含参考资料段", pr.contains("参考资料"))
+    runner.check("★★★ ⑥ 且明确写了「不要去哪个科室以系统判定为准」", pr.contains("以系统判定为准"))
+    runner.check("★★ ⑥ 且仍带上规则判定的科室（模型据此措辞）", pr.contains("呼吸内科"))
+
+    /* ⑦ 无命中 ⇒ Prompt **完全不变**（不留空段）。 */
+    let prNo = aiTriagePrompt("咳嗽三天", v)
+    runner.check("★★ ⑦ 无命中时 Prompt **不含**参考资料段（不留空段诱导模型编造）",
+                 !prNo.contains("参考资料"))
+    runner.check("★ ⑦ 且与显式传空数组等价", prNo == aiTriagePrompt("咳嗽三天", v, ragHits: Array<KbHit>()))
+
+    /* ⑧ ★★★ 接入 RAG 之后，`options` **依然**只由规则决定。 */
+    let v2 = TriageVerdict()
+    let o2 = TriageOption()
+    o2.departmentName = "心内科"
+    o2.remainNum = 0
+    v2.options = [o2]
+    let _ = aiRagContext(one)
+    let _p2 = aiTriagePrompt("咳嗽", v2, ragHits: one)
+    runner.check("★★★ ⑧ 组 Prompt 不改 `options`（推荐科室与号源仍是规则给的）",
+                 v2.options.size == 1 && v2.options[0].departmentName == "心内科" &&
+                 v2.options[0].remainNum == 0)
+    runner.check("★★★ ⑧ 且没有把知识库里的科室名塞进 options",
+                 v2.options.size == 1)
 }

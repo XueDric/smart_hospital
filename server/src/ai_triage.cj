@@ -39,6 +39,104 @@ import stdx.encoding.json.*
 /* 模型给患者的说明最长多少**字符**（不是字节 —— 本仓踩过三次这个坑）。 */
 public let AI_NOTE_MAX_CHARS: Int64 = 160
 
+/*
+ * ===================== P5：RAG 片段接入 =====================
+ *
+ * ★★ 三条约束（都不是"注意一下"，而是结构性的）：
+ *
+ * ① **片段是"不可信输入"，与本仓对模型输出、HTTP 请求体的口径一致。**
+ *    这些文本来自 `kb_doc.body` —— 由**本院人员**维护，比模型编的可信；
+ *    但"可信来源"≠"可信格式"：里面可能有 Markdown、可能有超长段落、
+ *    也可能被误粘进一段医疗建议。⇒ 片段**也要过 `aiSanitizeNote` 那套白名单清理**。
+ *    📌 判据：**清理的判据是"这段文本会不会原样给患者看"，不是"它从哪来"。**
+ *
+ * ② **必须有界。** 检索可以返回 5 段 × 400 字 = 2000 字，直接拼进 Prompt 会：
+ *    · 顶掉"患者主诉"在模型注意力里的位置（主诉才是真正的输入）；
+ *    · 把 token 成本乘几倍，而收益递减。
+ *    ⇒ `AI_RAG_TOTAL_CHARS` 卡总长，**超了就截**（不是"丢最后一段"：
+ *      截断保留的是**最相关那段的开头**，而丢弃会连标题一起丢）。
+ *
+ * ③ **模型仍然一个字节都改不了 `options`。** 片段只影响"给患者的说明"怎么写。
+ *    ⚠ 这一条在接入 RAG 之后**更重要**了：知识库文档里很可能写着
+ *    "高血压请挂心内科"之类的句子 —— 若模型能据此改推荐，就等于
+ *    **知识库内容可以绕过 P2 的硬性验证层**（推荐一个没号的科室）。
+ *    ⇒ 本文件里依然**没有**对 `v.options` 的任何赋值。
+ */
+public let AI_RAG_TOTAL_CHARS: Int64 = 600
+
+/* 单条片段喂给模型前的最大字符数（块本身 ≤ KB_CHUNK_CHARS，这里再压一道）。 */
+public let AI_RAG_PER_HIT_CHARS: Int64 = 300
+
+/*
+ * 把检索命中整理成"可以喂给模型"的片段文本。
+ *
+ * ⚠ 返回**已清理、已有界**的字符串（空串表示"没有可用片段"）。
+ *   调用方据此决定要不要在 Prompt 里加"参考资料"段 ——
+ *   ⚠ **不要**在 Prompt 里写一段空的"参考资料："，那会让模型去**编**参考内容。
+ *
+ * ⚠ 每条都带上标题：让模型知道"这是哪份材料的说法"，
+ *   输出里提到"按我院须知…"比"据资料…"对患者更有用；
+ *   同时**给排障留了线索**（哪份文档被召回）。
+ */
+public func aiRagContext(hits: Array<KbHit>): String {
+    if (hits.size == 0) {
+        return ""
+    }
+    var out = ""
+    var used: Int64 = 0
+    for (h in hits) {
+        if (used >= AI_RAG_TOTAL_CHARS) {
+            break
+        }
+        /*
+         * ⚠ 片段**逐条过清理**（只取首行、去 Markdown、命中禁用词整条丢）。
+         *   禁用词命中 ⇒ `aiSanitizeNote` 返回空串 ⇒ 这条**自然被跳过**，
+         *   不需要在这里再写一遍判断（同一语义只留一处实现）。
+         */
+        let body = aiSanitizeNote(h.content)
+        if (body.size == 0) {
+            continue
+        }
+        let title = aiSanitizeNote(h.title)
+        var piece = aiTruncateChars(body, AI_RAG_PER_HIT_CHARS)
+        if (title.size > 0) {
+            piece = "【${title}】${piece}"
+        }
+        /*
+         * ⚠⚠ 分隔符**必须计入预算**（2026-10-09 由 AC-KB-5 ⑤ 抓到的真缺陷）。
+         *
+         * 原来只按 `piece` 的长度扣预算，而实际写进 `out` 的还有：
+         *   · 条目之间的 `"\n"`（1 字符）
+         *   · 每条开头的 `"· "`（2 字符）
+         * 这些**没被计入 `used`** ⇒ 累加式超界。实测：50 条长片段时
+         * 结果 **611 字符** > 上限 600（超了 11）。
+         *
+         * 📌 教训：**算"还能放多少"时，要把所有将要写入的字节都算上** ——
+         *   只算"正文"而漏掉分隔符/前缀，是累加式起界最典型的错法，
+         *   而且**条目越多超得越多**（少量条目时看不出来）。
+         * ⇒ 做法：先算出完整的一行（含 `"· "` 与可能的 `"\n"`），
+         *   用它去比对剩余预算。
+         */
+        let sep = if (out.size > 0) { "\n· " } else { "· " }
+        let sepLen = previsitCharLen(sep)
+        /* 剩余预算里要先扣掉分隔符；不够就到此为止（不写半行）。 */
+        let remain = AI_RAG_TOTAL_CHARS - used - sepLen
+        if (remain <= 0) {
+            break
+        }
+        if (previsitCharLen(piece) > remain) {
+            piece = aiTruncateChars(piece, remain)
+        }
+        if (piece.size == 0) {
+            break
+        }
+        out = out + sep + piece
+        used = used + sepLen + previsitCharLen(piece)
+    }
+    return out
+}
+
+
 /* 命中这些词就**整条丢弃**模型输出（疑似诊断/用药/剂量）。 */
 public let AI_NOTE_DENY: Array<String> = [
     "mg", "毫克", "克", "片", "粒", "支", "剂量", "服用", "口服", "注射", "静脉",
@@ -59,7 +157,8 @@ public let AI_NOTE_DENY: Array<String> = [
  *   它是分诊响应路径上的一环，任何异常都会变成患者看到 500。
  */
 public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
-                            aiSettings: AiSettingsRepo, now: Int64): Unit {
+                            aiSettings: AiSettingsRepo, now: Int64,
+                            ragHits!: Array<KbHit> = Array<KbHit>()): Unit {
     /*
      * ① 危急征象 ⇒ **不调模型**。
      *   理由：这时患者最需要的是"立刻就医"四个字，而不是一段更通顺的解释。
@@ -102,8 +201,14 @@ public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
      * ③ 组 Prompt。
      *   ⚠ 只给模型**规则已经算好的事实**（命中的科室名），**不给**它自由发挥的余地：
      *     让它"想推荐哪个科室"就回到了一开始要避免的那件事上。
+     *
+     * ★ P5：额外给**知识库检索片段**（`ragHits`）。
+     *   ⚠ 片段已经在调用方经过 `aiRagContext()` 的清理与限长 ——
+     *     本函数**不再**碰它们的格式（同一语义只留一处实现）。
+     *   ⚠ `ragHits` 为空时 Prompt **完全不变**（不加空的"参考资料"段：
+     *     那会诱导模型自己编参考资料）。
      */
-    let prompt = aiTriagePrompt(complaint, v)
+    let prompt = aiTriagePrompt(complaint, v, ragHits: ragHits)
     let r = aiCallChat(opts, prompt, now)
     if (r.ok) {
         let clean = aiSanitizeNote(r.text)
@@ -125,8 +230,9 @@ public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
     v.aiReason = r.reason
 }
 
-/* 组给模型的 Prompt（只含规则已判定的事实）。 */
-public func aiTriagePrompt(complaint: String, v: TriageVerdict): String {
+/* 组给模型的 Prompt（只含规则已判定的事实 + 可选的知识库片段）。 */
+public func aiTriagePrompt(complaint: String, v: TriageVerdict,
+                           ragHits!: Array<KbHit> = Array<KbHit>()): String {
     var deptHint = ""
     if (v.options.size > 0) {
         deptHint = v.options[0].departmentName
@@ -134,6 +240,26 @@ public func aiTriagePrompt(complaint: String, v: TriageVerdict): String {
     var b = "患者主诉：${complaint}\n"
     if (deptHint.size > 0) {
         b = b + "系统已按规则判定应去：${deptHint}\n"
+    }
+    /*
+     * ★ P5：参考资料段。
+     *
+     * ⚠⚠ 三处刻意的措辞，都是为了**不让知识库内容变成"第二个推荐来源"**：
+     *
+     *   ① 标题是「参考资料（供措辞参考）」而**不是**「你可以推荐这些科室」——
+     *      后者会让模型觉得"可以按资料改建议去哪"。
+     *   ② 正文明确写「**不要去哪个科室以系统判定为准**」——
+     *      知识库文档里极可能写着"高血压请挂心内科"这类句子；
+     *      若不点明，模型会**照着资料复述一个科室名**，而那个科室
+     *      **可能根本没号** ⇒ 患者照做就挂不上号（P2 硬性验证层要防的正是这个）。
+     *   ③ 整段包在「参考资料」里而不是混进主诉 —— 让模型能区分
+     *      "患者自己说的"与"院内材料写的"。
+     *
+     * ⚠ `rag` 为空 ⇒ **整段不加**（不留空的"参考资料："，那会诱导模型自己编）。
+     */
+    let rag = aiRagContext(ragHits)
+    if (rag.size > 0) {
+        b = b + "\n参考资料（供措辞参考；**不要去哪个科室以系统判定为准**）：\n" + rag + "\n"
     }
     b = b + "\n请用**一到两句**中文向患者说明：为什么会建议去这个科室、就诊前可以准备什么。\n" +
         "要求：\n" +

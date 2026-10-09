@@ -122,18 +122,35 @@ INSERT INTO patient (id, phone, name, gender, birth_date, created_at)
 #        （它用 $null = Invoke-MySqlScalar 且不检查结果）⇒ 它的断言随后失败，
 #        **看起来像产品缺陷**（复查独立复现了这一点：干净态 24 PASS/0 FAIL，
 #         先跑 base-check 再跑就成 19 PASS/5 FAIL）。
-#   ⇒ 本脚本建的科室**一律用 BASET/BASEDEL 前缀**，清理只按前缀删 —— 既不漏
+#   ⇒ 本脚本建的科室**一律用本脚本的编码前缀**，清理只按前缀删 —— 既不漏
 #     （不依赖 id 段），也不误伤别的用例（不按名字）。
 #   📌 一般化：**测试夹具要用自己的命名空间，并按自己的命名空间清理。**
 #     按 id 段/按名字都是"假设别人不会用同样的东西"，而那个假设迟早不成立。
+#
+# ⚠⚠⚠ 第二轮复查（2026-10-09）指出：**上面这条我只修了一半**。
+#   我把清理前缀写成字面量 `'BASET%' OR 'BASEDEL%'`，却**漏了第 5 节那个 `RESP950`**
+#   （它建的是 `code=RESP950` 的「呼吸内科」）⇒ 那行**永远清不掉**，于是：
+#     · 第一次跑 base-check：48/0
+#     · **再跑一次同一库**：47/1（失败项「⑧ 给该医生排了号」）
+#     · `base-check` → `triage-check`（它们文档里的顺序）：23/1
+#       失败项「★ 反向：有号后能推荐呼吸内科」—— **读起来完全像产品缺陷**
+#   根因链：RESP950 逃过清理 ⇒ 残留的「呼吸内科」（无排班）与 triage-check 的
+#   **固定名字**夹具在 `UNIQUE(department.name)` 上撞车 ⇒ 它的 INSERT 静默失败 ⇒ 断言失败。
+#
+# ⇒ 两条修法（都做了，因为"记得加前缀"本身不可靠）：
+#   ① **前缀只在这里定义一次**（下面的 `$KbClean` 拼出来），不再散落字面量；
+#   ② ★ **本脚本结尾自检残留为 0** —— 照 `create-db-check.ps1` 的做法。
+#      这样同类问题会在**源头**暴露，而不是伪装成产品缺陷去坑下一个脚本。
+$CleanPrefixes = @('BASET', 'BASEDEL', 'RESP')
+$LikeClause = ($CleanPrefixes | ForEach-Object { "code LIKE '$_%'" }) -join ' OR '
 SqlFile @"
 DELETE FROM auth_user WHERE login_name = 'basepatient';
-DELETE FROM appointment WHERE department_id IN (SELECT id FROM department WHERE code LIKE 'BASET%' OR code LIKE 'BASEDEL%');
-DELETE FROM schedule WHERE department_id IN (SELECT id FROM department WHERE code LIKE 'BASET%' OR code LIKE 'BASEDEL%');
-DELETE FROM doctor WHERE department_id IN (SELECT id FROM department WHERE code LIKE 'BASET%' OR code LIKE 'BASEDEL%');
-DELETE FROM department WHERE code LIKE 'BASET%' OR code LIKE 'BASEDEL%';
+DELETE FROM appointment WHERE department_id IN (SELECT id FROM department WHERE $LikeClause);
+DELETE FROM schedule WHERE department_id IN (SELECT id FROM department WHERE $LikeClause);
+DELETE FROM doctor WHERE department_id IN (SELECT id FROM department WHERE $LikeClause);
+DELETE FROM department WHERE $LikeClause;
 "@ "base 夹具（按编码前缀清残留）"
-Check "夹具就绪（按 id 段 + **按本脚本编码前缀**双重清理）" $true
+Check "夹具就绪（清理前缀 = $($CleanPrefixes -join '/')）" $true
 
 $admTok = Tok "admin" $AdminPw
 # 患者账号（绑 patient 950001）——用于"患者无权维护科室"
@@ -330,12 +347,23 @@ DELETE FROM schedule WHERE department_id BETWEEN 950000 AND 950999;
 DELETE FROM department WHERE id BETWEEN 950000 AND 950999;
 "@ "清旧"
 # 建一个名字能被分诊词表命中的科室（"呼吸内科"是分诊的既有科室名）
+# ⚠ `code` 用 **RESP950**（在 $CleanPrefixes 里）—— 上一版就是这里用的前缀没被收进
+#   清理清单，导致残留跨轮累积、连带坑了 triage-check（见文件上方那段）。
 $r = Req 'c1' 'POST' '/api/v1/admin/departments' @("Authorization: Bearer $admTok") '{"name":"呼吸内科","code":"RESP950"}'
 # ⚠ 这里原来写的是 `data.id` —— 与第 2 节同一条纪律：**不要猜字段名**，统一走 PickId。
 #   （`data.id` 目前确实存在，但字段名一旦换成 `department_id` 就会静默变 0，
 #     症状是"排班建了但分诊推荐不出来"，看起来像分诊坏了。）
-$respId = PickId ($r.Body | ConvertFrom-Json).data @('department_id','id') "SELECT id FROM department WHERE name = '呼吸内科' ORDER BY id DESC LIMIT 1"
+$respId = PickId ($r.Body | ConvertFrom-Json).data @('department_id','id') "SELECT id FROM department WHERE code = 'RESP950' ORDER BY id DESC LIMIT 1"
 Check "① 通过管理端建出「呼吸内科」（HTTP $($r.Http)）" ($respId -gt 0) ("id=$respId")
+# ★★ 守卫：科室没建出来就**立刻停下**，不要继续建"孤儿医生 + 排班"。
+#   ⚠ 复查指出的正是这一点：原来只 Check 不中止 ⇒
+#     失败之后仍然建了医生与排班（挂在一个不存在的科室上），
+#     于是**残留物比失败本身更难查**（实测残留里就有 dept=810033 的孤儿医生）。
+#   📌 判据：**前置条件不成立时，后续步骤不是"也会失败"，而是"会留下垃圾"**。
+if ($respId -le 0) {
+    Write-Host "  [STOP] 未能建出夹具科室 ⇒ 中止本段，避免留下孤儿医生/排班" -ForegroundColor Red
+    Write-Host "         本次响应：HTTP $($r.Http) $($r.Body)" -ForegroundColor DarkGray
+} else {
 # 给该科室建医生 + 排班（分诊只推荐**有号**的科室）
 $r = Req 'c2' 'POST' '/api/v1/admin/doctors' @("Authorization: Bearer $admTok") ('{"name":"Base呼吸医生","department_id":' + $respId + ',"title":"医师"}')
 $docId2 = PickId ($r.Body | ConvertFrom-Json).data @('doctor_id','id') "SELECT id FROM doctor WHERE name = 'Base呼吸医生' ORDER BY id DESC LIMIT 1"
@@ -355,14 +383,36 @@ Check "★★⑤ 分诊推荐**含**刚建出的「呼吸内科」——" `
       ("推荐=$(($tri.data.options | ForEach-Object { $_.department_name }) -join ',')")
 Check "★★⑤ 且推荐的排班有号（绝不给没号的推荐）" `
       ((@($tri.data.options | Where-Object { $_.department_name -eq '呼吸内科' -and $_.remain_num -le 0 })).Count -eq 0)
-Check "⑤ source 如实标注（未接模型时为 rules）" ($tri.data.source -eq 'rules') ($tri.data.source)
+# ⚠ 这条断言 2026-10-09 **改过**：原写死 `source -eq 'rules'`，理由是"未接真模型"。
+#   真模型接通后，**配了模型的环境下 source 是 `model`** ⇒ 这条在那种环境下**假红**。
+#   ⇒ 现在守的是**真正的不变量**：source 必须**如实标注**且在三个已知值之内。
+#   （"未配置 ⇒ rules"那条降级路径由 `accept` 的 AC-AICALL 覆盖，两件事。）
+$src = $tri.data.source
+Check "⑤ source 如实标注（rules / model / model:invalid 三者之一，实得 $src）" `
+      (@("rules","model","model:invalid") -contains $src) ("source=$src")
+
+# 闭合第 5 节的守卫（见上面 `if ($respId -le 0) { ... } else {`）
+}
 
 # 清理
+# ⚠ 用**同一份 $CleanPrefixes**（不再写字面量，也不再按 id 段 —— 成功建的 id 是
+#   AUTO_INCREMENT，实测落在 176xxxx，按段根本清不到）。
 SqlFile @"
-DELETE FROM schedule WHERE department_id BETWEEN 950000 AND 950999;
-DELETE FROM doctor WHERE department_id BETWEEN 950000 AND 950999;
-DELETE FROM department WHERE id BETWEEN 950000 AND 950999;
+DELETE FROM appointment WHERE department_id IN (SELECT id FROM department WHERE $LikeClause);
+DELETE FROM schedule WHERE department_id IN (SELECT id FROM department WHERE $LikeClause);
+DELETE FROM doctor WHERE department_id IN (SELECT id FROM department WHERE $LikeClause);
+DELETE FROM department WHERE $LikeClause;
 "@ "清理"
+
+# ★★ 结尾自检：**本脚本的残留必须是 0**
+#   ⚠ 照 `create-db-check.ps1` 的做法（复查建议）。价值在于：同类"清理漏了前缀"
+#     的问题会在**源头**就报出来，而不是伪装成"别的脚本的产品缺陷"去坑下一个人
+#     —— 上一轮 RESP950 漏清就是这样坑了 triage-check，害我排查了两轮。
+$residue = Scalar ("SELECT (SELECT COUNT(*) FROM department WHERE $LikeClause) + " +
+                   "(SELECT COUNT(*) FROM doctor WHERE department_id IN (SELECT id FROM department WHERE $LikeClause)) + " +
+                   "(SELECT COUNT(*) FROM schedule WHERE department_id IN (SELECT id FROM department WHERE $LikeClause))")
+Check "★★ 结尾自检：本脚本的夹具残留为 0（实得 $residue）—— 清理前缀 = $($CleanPrefixes -join '/')" `
+      ("$residue" -eq '0')
 
 Write-Host ""
 if ($failed -eq 0) {

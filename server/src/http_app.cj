@@ -620,6 +620,34 @@ func triageTruncateChars(s: String, n: Int64): String {
  *   给患者看会变成"你自己说你胸痛"式的复述，没有价值；给攻击者看则暴露了
  *   词表结构（可用于试探绕过）。它只进服务端日志/审计。
  */
+/*
+ * ★ P5：为分诊取**知识库参考片段**。
+ *
+ * ⚠ 为什么单独一个函数（而不是在 handler 里内联三行）：
+ *   ① 它包含**两个降级决定**（危急时不检索、检索出错不抛），
+ *      内联会让 handler 里多出一段 try —— 而 handler 已经很长；
+ *   ② 它必须**永不抛异常**：知识库是**旁路增强**，
+ *      检索失败/表不存在都不该把患者正在等的分诊变成 500。
+ *      （本仓纪律：旁路出错靠 `ai_reason` 说出来，不靠崩溃。）
+ *
+ * ⚠⚠ 危急征象时**不检索**，与 `aiEnhanceTriage` 里"不调模型"同一条理由：
+ *   那时患者最需要的是"立刻就医"四个字，多一次数据库检索毫无收益。
+ *   而且这条判断要放在**这里**（检索之前），不能只在 `aiEnhanceTriage` 里 ——
+ *   否则检出 redFlag 却仍然白跑一次检索。
+ */
+func triageRagHits(kb: KbRepo, complaint: String, v: TriageVerdict): Array<KbHit> {
+    if (v.redFlag) {
+        return Array<KbHit>()
+    }
+    try {
+        let res = kb.searchKeyword(complaint, topN: KB_SEARCH_TOP_N)
+        return res.hits
+    } catch (e: Exception) {
+        /* 检索失败 ⇒ 当作"没有参考资料"，分诊照常。 */
+        return Array<KbHit>()
+    }
+}
+
 func triageJson(v: TriageVerdict, truncated: Bool): JsonObject {
     let o = JsonObject()
     o.put("red_flag", JsonBool(v.redFlag))
@@ -1176,7 +1204,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
          * ⚠ **危急征象时不调模型**：那正是要立刻就医的场景，多一次网络往返
          *   只会延迟患者看到「立即就医」，收益为零、风险为正。
          */
-        aiEnhanceTriage(v, text, aiSettings, hNowEpoch())
+        aiEnhanceTriage(v, text, aiSettings, hNowEpoch(), ragHits: triageRagHits(kb, text, v))
         /*
          * ★ P4：把**结论**记进统计表（看板的"分诊命中率"靠它）。
          *
