@@ -37,7 +37,21 @@ import mariadb.cdbc.*
 /* MySQL 连接配置。 */
 public class MySqlConfig {
     public var host: String = "127.0.0.1"
-    public var port: Int64 = 3307
+    /*
+     * ⚠ 默认端口 = **3306**（MySQL 出厂默认），不是本项目的 3317 —— 这是刻意的。
+     *
+     * 原值是 **3307**，那是**社团那台**便携 MariaDB 的端口；本项目自管 devdb
+     * 后来迁到 **3317**，而这个默认值一直没跟着改。它造成的实际危害是：
+     *   ① 它是个**假默认** —— 本项目**没有任何实例**跑在 3307 上，
+     *      所以"什么都不传就用了默认值"这条路径必然失败；
+     *   ② 更坏的是它**看起来像对的**（一个具体的、像是配置过的数字），
+     *      于是"DSN 没传进来"和"端口写错了"这两种故障会长得一模一样。
+     * 📌 所以默认值取**协议标准口**：它不假装知道本项目的部署，
+     *   而任何"没拿到 DSN"的情况都会以一个**明显不对**的端口暴露出来。
+     *   （DSN 缺端口时的行为：`parseDsn` 会保留这个默认值 ⇒ 连不上 ⇒ 报错里
+     *     回显实际用的 host:port，使用者一眼能看到是 3306 而不是自己的端口。）
+     */
+    public var port: Int64 = 3306
     public var user: String = "hospital"
     public var pass: String = ""
     public var db: String = "hospital"
@@ -194,11 +208,24 @@ public func ensureDatabase(cfg: MySqlConfig): Unit {
          *   而是**端口/主机不对**或**DSN 是空的**（PowerShell 引用未定义变量 = 空串，
          *   会静默退回默认值）。基线专门为此写过一版把原因按可能性排序的报错，
          *   这里沿用同一口径 —— 错误信息本身就是排障文档。
+         *
+         * ⚠⚠ **这条提示里绝不再写死端口号**（2026-10-07 修，第九份复查发现）。
+         *   原文是「本机联调的便携版 MariaDB 是 127.0.0.1:**3307**」——
+         *   而本项目自管 devdb 早已迁到 **3317**（3307 是**社团那台**，
+         *   本项目不再依赖它，见 `docs/DEV-DB.md`）。
+         *   后果很实在：**复查的人、以及我自己在本项目里，都被它误导过** ——
+         *   devdb 没起来时，提示让人去查 3307，而正确处置是启动 3317 的 devdb。
+         *   📌 根因是"**同一件事两处口径**"：端口的事实来源是 `cfg`（DSN 里那个），
+         *     提示里却又手写了一份 ⇒ 迟早漂移。而且**偏偏这是最需要准确的地方**
+         *     （出错时的提示）。⇒ 改成**从 `cfg` 派生**：先回显实际用的 host:port，
+         *     再让使用者拿它去 `docs/DEV-DB.md` 核对 —— **本提示不复制那个数字**，
+         *     从机制上消灭漂移。
          */
         throw Exception("连不上 MySQL（${cfg.describe()}）：${e.message}\n" +
             "  处置（按可能性排序）：\n" +
-            "   ① **端口/主机不对**：本机联调的便携版 MariaDB 是 127.0.0.1:**3307**" +
-            "（MySQL 出厂默认 3306）\n" +
+            "   ① **端口/主机不对**：把你启动实例的端口与上面回显的 ${cfg.host}:${cfg.port} 核对\n" +
+            "      ⚠ 本项目自管 devdb 的端口**以 docs/DEV-DB.md 为准**（本提示刻意不写死它，" +
+            "免得两处漂移）；MySQL 出厂默认是 3306\n" +
             "   ② **这条命令压根没拿到 DSN**：PowerShell 里引用未定义的变量不报错、只是空串\n" +
             "   ③ 账号/口令不对\n" +
             "   ④ 账号**不允许不带库名连接**（没有全局权限）—— 只有这一种才需要手工建库：\n" +
@@ -530,7 +557,9 @@ public func openDatabase(cfg: MySqlConfig): DbBackend {
                                noBackslashEscapes: false)
     } catch (e: Exception) {
         throw Exception("连接 MySQL 失败（${cfg.describe()}）：${e.message}\n" +
-            "  处置：① 确认服务器在跑（本项目本机联调用便携版 MariaDB 的 3307）；" +
+            "  处置：① 确认服务器在跑、且端口与上面回显的 ${cfg.host}:${cfg.port} 一致" +
+            "（本项目自管 devdb 的端口以 docs/DEV-DB.md 为准 —— 本提示刻意不写死它，" +
+            "免得两处漂移）；" +
             "② 确认账号口令与库已建好；" +
             "③ 若报「未注册 mysql/mariadb 驱动」，说明驱动没被注册进链接产物 —— " +
             "先跑 build-mysql-driver.ps1 再 build.ps1，并确认 db_bootstrap.cj 里 import 了 mariadb.cdbc.*")

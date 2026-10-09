@@ -352,15 +352,17 @@ cd server
 .\build\hospital-server.exe authtest
 
 # 2) 建第一个管理员（引导入口，不经 HTTP；口令只打印一次）
-.\build\hospital-server.exe create-admin "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
+#   ⚠ 端口与口令**以 docs/DEV-DB.md 为准**：本项目自管 devdb 是 **3317**
+#     （下面写 3317 是为了"照抄即能跑"；若你的实例改了端口，改这里）
+.\build\hospital-server.exe create-admin "mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital"
 
 # 3a) 启动 **HTTPS**（推荐；先生成证书）
 .\new-tls-cert.ps1
-.\build\hospital-server.exe serve "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital" `
+.\build\hospital-server.exe serve "mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital" `
     --port 8443 --tls-files "C:\ProgramData\smart-hospital\tls\tls.env"
 
 # 3b) 或启动明文 HTTP（仅限可信本机/内网；启动时会打印明文警告）
-.\build\hospital-server.exe serve "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital" --port 8091
+.\build\hospital-server.exe serve "mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital" --port 8091
 ```
 
 ```powershell
@@ -791,7 +793,7 @@ P0 把 AC-4 的完整回归挂到 P1（写在本 ADR 的"验证边界"里），�
 
 | 套件 | 命令 | 结果 |
 | --- | --- | --- |
-| schema 自检（无需库） | `hospital-server.exe selftest` | ✅ **45 项** |
+| schema 自检（无需库） | `hospital-server.exe selftest` | ✅ **47 项** |
 | ★ 口令/令牌原语（含 3 个公开向量） | `hospital-server.exe authtest` | ✅ 17 项 |
 | 验收（AC-1…AC-P4-4） | `hospital-server.exe accept <dsn>` | ✅ **248 项** |
 | ★ 令牌鉴权端到端 | `tests\auth-check.ps1` | ✅ 全绿（登录/Bearer/三端权限/登出/改口令踢下线/防枚举计时） |
