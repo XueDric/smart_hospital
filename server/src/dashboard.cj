@@ -125,8 +125,16 @@ public class DashboardRepo {
         scale.put("departments", JsonInt(count1("SELECT COUNT(*) FROM department", Array<DbValue>())))
         scale.put("doctors", JsonInt(count1("SELECT COUNT(*) FROM doctor", Array<DbValue>())))
         scale.put("patients", JsonInt(count1("SELECT COUNT(*) FROM patient", Array<DbValue>())))
+        /*
+         * ★ ADR-0001 rev.7：内存 Store 已整体拆除 ⇒ 这三张表现在是**直接 SQL 读**，
+         *   **不再是"上次刷盘的快照"**，所以原先那句"可能滞后"的标注已不成立。
+         *   ⚠ 但仍要标注来源：它们目前**没有写入端点**（靠人工 SQL 维护），
+         *     所以数字反映的是"库里现有的参考数据"，不是"系统自动积累的规模"。
+         *     这两件事对看板读者是**不同的信息**，不能混。
+         */
         scale.put("source", JsonString(
-            "mysql：department/doctor/patient 属内存 Store 的表，生产路径未刷盘 ⇒ 可能滞后"))
+            "mysql 直接读（rev.7 起不再经内存 Store，无滞后）；" +
+            "⚠ 但这三张表目前**没有写入端点**，靠人工 SQL 维护 ⇒ 数字反映库中现有参考数据"))
         o.put("scale", scale)
 
         /* ---------- ② 挂号总览（含取消率）---------- */

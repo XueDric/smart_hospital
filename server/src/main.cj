@@ -239,60 +239,68 @@ func selftest(): Int64 {
      *   这样"加表时忘了归类"会立刻变红，而不是悄悄混进某个数字里。
      */
     /*
-     * ⚠ 这几个数**必须与来源一致**，能派生的就派生：
-     *   `memTables` 原先硬编码 4 —— 而 P4 把 `medical_record` 移出内存 Store 后
-     *   实际是 3，于是这条断言立刻变红（**好事**：它把"数字与事实脱节"暴露了）。
-     *   现在直接从 `MEM_TABLES` 派生 ⇒ 加/减表时它自动跟随，不会再有"忘记改数字"。
-     *   📌 这正是本项目反复的教训：**断言要钉不变量，不要钉数字**。
+     * ⚠ 这几个数**必须与来源一致**，能派生的就派生。
+     *   📌 历史（两次都值得记）：
+     *     · `memTables` 曾硬编码 4；P4 把 `medical_record` 移出后实际是 3，
+     *       那条断言立刻变红（**好事**：把"数字与事实脱节"暴露了）。
+     *     · ADR-0001 **rev.7 整体拆除内存 Store** ⇒ "配套域（走内存 Store）"这个
+     *       分类**不存在了**。但 ⚠⚠ **消失的是"范式"，不是"表"**：
+     *       department / doctor / patient 这三张表**还在库里、还在 `ALL_TABLES` 里、
+     *       还被人读**（看板的规模统计、分诊的科室名查询）。它们只是不再经内存 Store。
+     *       ⇒ 所以下面**不是**把那一项删掉（我第一版就是那么干的，结果 = 9 与
+     *         `ALL_TABLES.size`(12) 对不上 —— **而那条断言恰好把它抓住了**），
+     *         而是给它一个**新的归属**：`baseTables`（基础数据域）。
+     *   📌 教训：**删一个概念时，先问"挂在它下面的实体去哪"**。
+     *     把实体一起删掉 = 数据丢失；连分类一起删掉 = 断言数不上账。
+     *     正确做法是**重新归类并写明新纪律**。
      */
     let bookingTables = BOOKING_DOMAIN_TABLES.size
-    let memTables = MEM_TABLES.size
+    /*
+     * ★ 基础数据域（rev.7 新分类，**取代**原来的"配套域（走内存 Store）"）：
+     *   department / doctor / patient —— 直接 SQL 读；**目前没有写入端点**，
+     *   靠人工 SQL 维护（见 README 表集说明与 P4-HANDOFF 未做清单）。
+     *   ⚠ 这条纪律要写明，否则读者会以为"系统会自动积累科室/医生数据"。
+     */
+    let baseTables = 3
     let authTables = 3
     let previsitTables = 1
     let aiTables = 1        // ai_setting（P3 AI 能力中心；直接 SQL、非号源域、非医疗数据）
     /*
      * ★ P4 新增两张表，各成一类（**不塞进现有类**：它们的纪律不同）：
-     *   · medical_record —— 从内存 Store **移出**，改直接 SQL（ADR-0001 rev.6）
-     *     ⇒ 它不再属配套域，而是一张"临床数据、直接 SQL"的表。
-     *   · triage_stat —— 分诊统计，**只存计数**、不含任何患者标识，
-     *     且有 TTL 清理 ⇒ 与"医疗数据"（要长期留）纪律不同，单列一类。
+     *   · medical_record —— 临床数据，直接 SQL（`MedicalRecordRepo` 独占；rev.6 起不属内存 Store）
+     *   · triage_stat —— 分诊统计，**只存计数**、不含任何患者标识，且有 TTL 清理
+     *     ⇒ 与"医疗数据"（要长期留）纪律不同，单列一类。
      * 📌 为什么每次都真的加一类、而不是"归到最接近的那类"：
      *   分类的意义就是**让纪律可见**。硬塞进别类 = 那条纪律从此没人看得到。
      */
     let emrTables = 1       // medical_record（临床数据，直接 SQL，MedicalRecordRepo 独占）
     let statTables = 1      // triage_stat（聚合统计，只存计数，带 TTL）
-    let totalTables = bookingTables + memTables + authTables + previsitTables + aiTables +
+    let totalTables = bookingTables + baseTables + authTables + previsitTables + aiTables +
                       emrTables + statTables
-    check("表集共 ${totalTables} 张 = 号源域 ${bookingTables} + 配套域(内存Store) ${memTables} + 鉴权域 ${authTables} + 预问诊域 ${previsitTables} + AI 配置域 ${aiTables} + 病历域 ${emrTables} + 统计域 ${statTables}",
+    check("表集共 ${totalTables} 张 = 号源域 ${bookingTables} + 基础数据域 ${baseTables}（department/doctor/patient，直接 SQL、无写入端点） + 鉴权域 ${authTables} + 预问诊域 ${previsitTables} + AI 配置域 ${aiTables} + 病历域 ${emrTables} + 统计域 ${statTables}（★ 无「内存 Store 域」：rev.7 已拆除）",
           ALL_TABLES.size == totalTables)
     check("号源/挂号域恰好 ${bookingTables} 张（schedule / appointment）",
           BOOKING_DOMAIN_TABLES.size == bookingTables)
     check("★ 预问诊表**不**属号源域（否则会被误当作可扣号路径）",
           !BOOKING_DOMAIN_TABLES.contains(TABLE_PREVISIT))
-    check("★ 预问诊表**不**属内存 Store 负责的表（它是医疗数据，必须立刻持久化）",
-          !MEM_TABLES.contains(TABLE_PREVISIT))
     check("★ AI 配置表**不**属号源域（它是配置，不是可扣号路径）",
           !BOOKING_DOMAIN_TABLES.contains(TABLE_AI_SETTING))
-    check("★ AI 配置表**不**属内存 Store 负责的表（配置要立刻持久化，不能进整表替换范式）",
-          !MEM_TABLES.contains(TABLE_AI_SETTING))
+    check("★ 基础数据域恰好 ${baseTables} 张，且这三张**都不属**号源域",
+          !BOOKING_DOMAIN_TABLES.contains(TABLE_DEPARTMENT) &&
+          !BOOKING_DOMAIN_TABLES.contains(TABLE_DOCTOR) &&
+          !BOOKING_DOMAIN_TABLES.contains(TABLE_PATIENT))
     /*
-     * ★★ P4：病历**必须**在内存 Store 之外（ADR-0001 rev.6）。
+     * ★★ 病历表：`medical_record` 由 `MedicalRecordRepo` **直接 SQL** 独占写入。
      *
-     * 这条断言守的是一个**真缺陷**的形状：P0 起 `medical_record` 一直被划在
-     * 内存 Store 里，而内存 Store 在生产路径上**从未刷盘**（`flushToMysql()`
-     * 只有测试调用过）⇒ 写病历 = 只写内存 + 永不落库。
-     * 而本仓 P2 已经为同类数据（预问诊）明确判过："**它是医疗数据，
-     * 必须立刻持久化，不能进整表替换范式**"。
-     * ⇒ 用断言把"病历不属内存 Store"钉住，防止将来有人"顺手"把它挪回去。
+     * 历史（两次变迁，都留档）：
+     *   · rev.6（P4）：把它**移出内存 Store** —— 因为内存 Store 在生产路径上
+     *     **从未刷盘**（`flushToMysql()` 只有测试调过）⇒ 写病历 = 只写内存 + 永不落库。
+     *   · rev.7（本次）：内存 Store **整体拆除** ⇒ "病历不属内存 Store"这件事
+     *     从"一条需要断言的例外"变成了"**没有别的选项**"。
+     *     ⇒ 只保留"表名口径一致"这条**仍有意义**的断言（它是仓储的锚点）。
      */
-    check("★★ 病历表**不**属内存 Store 负责的表（医疗数据必须立刻持久化）",
-          !MEM_TABLES.contains(TABLE_MEDICAL_RECORD))
-    check("★★ 且病历**有**自己的直接 SQL 仓储（MedicalRecordRepo 存在即可编译检查，这里断言表名口径一致）",
+    check("★★ 病历表名口径一致（MedicalRecordRepo 的锚点）",
           TABLE_MEDICAL_RECORD == "medical_record")
-    check("★ 内存 Store 现在的表集 = 科室/医生/患者 三张（实得 ${MEM_TABLES.size} 张）",
-          MEM_TABLES.size == 3)
-    check("★ 分诊统计表**不**属内存 Store（它是聚合统计，且带 TTL）",
-          !MEM_TABLES.contains(TABLE_TRIAGE_STAT))
     check("★ 分诊统计表**不**属号源域（它不是可扣号路径）",
           !BOOKING_DOMAIN_TABLES.contains(TABLE_TRIAGE_STAT))
     /*

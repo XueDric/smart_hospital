@@ -70,11 +70,11 @@ cd server     # ⚠ cwd 必须是 server/，见下
 
 | 子命令 | 作用 | 需要 MySQL |
 | --- | --- | --- |
-| `selftest` | schema 与 ADR 不变量的**纯本地**自检（**47 项**断言） | ❌ |
+| `selftest` | schema 与 ADR 不变量的**纯本地**自检（**43 项**断言） | ❌ |
 | `triagetest` | P2 分诊 + 预问诊**纯逻辑**自检（**108 项**断言），不碰库不调模型 | ❌ |
 | `authtest` | **口令/令牌原语自检**（含 3 个公开测试向量，**17 项**） | ❌ |
 | `check-db <dsn>` | 连库 + 幂等建表 + 打印表清单（★ 标记号源域） | ✅ |
-| `accept <dsn>` | 验收测试 AC-1…AC-P4-4（**248 项断言**；⚠ 只允许库名含 `test` 的测试库） | ✅ |
+| `accept <dsn>` | 验收测试 AC-1…AC-P4-4（**238 项断言**；⚠ 只允许库名含 `test` 的测试库） | ✅ |
 | `create-db <dsn>` | 幂等建库（utf8mb4）—— 测试库靠它 | ✅ |
 | `create-admin <dsn>` | 建/重置管理员并打印口令（**引导入口**） | ✅ |
 | `serve <dsn>` | **P1**：启动 HTTP / HTTPS 服务（默认只绑 `127.0.0.1`） | ✅ |
@@ -175,9 +175,9 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/schema.cj` | 最小表集 DDL（**12 张 / 7 类**：号源域 2 + 配套域 3（内存 Store）+ 鉴权域 3 + 预问诊域 1 + AI 配置域 1 + **病历域 1** + **统计域 1**）+ 范围锁死 + 幂等迁移 |
-| `src/mem_store.cj` | **内存 Store 范式**（配套域：department/doctor/patient/medical_record）—— 一次事务整体替换 `MEM_TABLES` |
-| `src/sql_recorder.cj` | `DbBackend` 录制装饰器（**测试工具**）：录下实际发出的 SQL，供 AC-4 断言"没碰号源域" |
+| `src/schema.cj` | 最小表集 DDL（**12 张 / 7 类**：号源域 2 + **基础数据域 3**（直接 SQL、无写入端点）+ 鉴权域 3 + 预问诊域 1 + AI 配置域 1 + **病历域 1** + **统计域 1**）+ 范围锁死 + 幂等迁移 |
+
+
 | `src/domain_booking.cj` | ★ 号源/挂号域：原子扣减、幂等、取消归还（三态 `CancelOutcome`）、`visit_date` 快照 |
 | `src/auth_crypto.cj` | PBKDF2-HMAC-SHA256（100k）+ 令牌原语 + **3 个公开测试向量自检** |
 | `src/auth_repo.cj` | 鉴权仓储：账号、按登录名查、登录（防枚举）、令牌签发/校验/续期/吊销 |
@@ -200,14 +200,27 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
 | `new-tls-cert.ps1` | 生成带 SAN 的自签证书 + ASCII 运行副本 + ACL 收紧 |
 | `tests/tls-check.ps1` | TLS 验证（SslStream 真校验、反向验证、HTTPS 业务链路） |
 
-**最小表集（8 张）**：
+**最小表集（12 张 / 7 域）**：
 
-| 表 | 层 | 数据访问 |
+| 表 | 域 · 纪律 | 数据访问 |
 | --- | --- | --- |
-| `schedule` | 号源域 · **业务状态** | 直接 SQL |
-| `appointment` | 挂号域 · **业务状态** | 直接 SQL |
-| `auth_user` `auth_token` | **鉴权域** | 直接 SQL（仅 `AuthRepo` 写） |
-| `department` `doctor` `patient` `medical_record` | 业务 | 内存 Store 范式（P1+ 落地） |
+| `schedule` | 号源域 · **业务状态** | 直接 SQL（仅 `BookingRepo` 写；**原子自减**，ADR-0001 范围锁死） |
+| `appointment` | 挂号域 · **业务状态** | 直接 SQL（仅 `BookingRepo` 写） |
+| `department` `doctor` `patient` | **基础数据域** | 直接 SQL 读；⚠ **无写入端点**（靠人工 SQL 维护 —— 见下方 rev.7 说明） |
+| `auth_user` `auth_token` `auth_login_attempt` | **鉴权域** | 直接 SQL（仅 `AuthRepo` 写） |
+| `previsit_session` | **预问诊域** · 医疗数据 | 直接 SQL（仅 `PrevisitRepo` 写；★ P2 起**刻意不进**任何缓存范式） |
+| `ai_setting` | **AI 配置域** · 配置 | 直接 SQL（KV；写库即失效缓存 ⇒ 改配置零重启）；⚠ 密钥**只存引用**不存明文 |
+| `medical_record` | **病历域** · 临床数据 | 直接 SQL（仅 `MedicalRecordRepo` 写；锁定后不可改） |
+| `triage_stat` | **统计域** · 聚合 | 直接 SQL（只存计数，**不含任何患者标识**，带 180 天 TTL） |
+
+> ★★ **ADR-0001 rev.7（2026-10-07）：内存 Store 已整体拆除，全库只剩一种数据访问范式。**
+> 原"内存 Store 范式"的 `mem_store.cj` / `sql_recorder.cj` **已删除** ——
+> 实测它**在生产上从未接线**（生产零实例化、零 `loadAll`、零 `flushToMysql`，
+> 且**没有"往内存里写"的入口方法**）⇒ 那三张表实际是**只读参考数据**。
+> ⇒ 因此 `department`/`doctor`/`patient` 归入新的**基础数据域**：
+>   **直接 SQL 读，但目前没有写入端点**（靠人工 SQL 维护）。
+>   ⚠ 这句话要留着 —— 否则读者会以为"系统会自动积累科室/医生数据"。
+> 详见 [../docs/adr/ADR-0001](../docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) rev.7。
 
 > ⚠ `auth_token` **刻意不叫** `tokens`：基线内存 Store 已占用该表名
 > （`mysql_store.cj:891`），列定义也不同。
@@ -319,7 +332,7 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
 | 本节原记「未做」 | 现状 | 落地提交 |
 | --- | --- | --- |
 | ❌ 令牌鉴权体系（换取/持久化/过期回收） | ✅ **已做**：不透明令牌 + PBKDF2 100k + 登录限流 + 会话按设备 | `c80e344` 起 |
-| ❌ 内存 Store 范式（科室/医生/病历） | ✅ **已做**：`mem_store.cj` + AC-4 四层断言 + 两道变异测试 | `a4123e1` |
+| ~~❌ 内存 Store 范式（科室/医生/病历）~~ | ★★ **2026-10-07 rev.7 已整体拆除** —— 实测它**在生产上从未接线**（零实例化/零 loadAll/零 flushToMysql/无写入口）⇒ `mem_store.cj` 与 `sql_recorder.cj` 删除，AC-4 重写为"范式唯一化"。见 [ADR-0001](../docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) rev.7 | ~~`a4123e1`~~ |
 | ❌ 患者"我的挂号"列表、排班列表（按科室/日期） | ✅ **已做**：`GET /api/v1/appointments` + `GET /api/v1/schedules` | `3c05497` |
 | ❌ HTTPS（`serveTls`） | ✅ **已做**：TLS 1.2/1.3 + 带 SAN 自签 + fail-closed | `061ad0d` |
 | ❌ AI 分诊与预问诊 SSE | ✅ **已做**：分诊（`bf87a4f`）+ 预问诊 SSE（`e5d2a33`） | `bf87a4f` / `e5d2a33` |
