@@ -96,6 +96,19 @@ public class TriageVerdict {
     public var redFlagEvidence: String = ""
     /* 给患者看的一句话（可为空）。 */
     public var patientNote: String = ""
+    /*
+     * ★ 2026-10-09 接真模型：模型给的**解释文字**。
+     *
+     * ⚠⚠ 它与 `options` 是**两回事**，这个划分是刻意且不可让步的：
+     *   `options`（科室 + 排班 + 号源）**永远由规则 + 数据库决定**，
+     *   模型**一个字节都改不了它** —— 于是 P2 立的"**绝不给没有号的推荐**"
+     *   这条硬性验证层**不可能被模型绕过**（模型幻觉推荐一个没号的科室，
+     *   是比规则出错更难发现的失败形态：它看起来很有道理）。
+     *   ⇒ 模型只让"给患者的说明"更好读，不让"能不能挂号"发生变化。
+     */
+    public var aiNote: String = ""
+    /* 为什么没用上模型（给运维看；不含密钥）。 */
+    public var aiReason: String = ""
     /* 是否**真的**给出了可挂号的推荐。 */
     public func hasBookable(): Bool {
         return options.size > 0

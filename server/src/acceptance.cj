@@ -105,7 +105,34 @@ func hAppointmentCount(db: DbBackend, scheduleId: Int64): Int64 {
  *     （留着它们等于留一段"看起来还有人在做全表比对"的假象）。
  * `hCountRows` 取而代之：新 AC-4 只需要"号源域确实有数据"这一个反向证明。
  */
-func hCountRows(db: DbBackend, table: String): Int64 {
+/*
+ * ★★ 数一张表的行数。
+ *
+ * ⚠⚠ 参数是**表名**，不是 SQL —— 名字必须让人一眼看出来。
+ *   原名 `hCountRows(db, table)` 长得像"执行任意计数 SQL"，而我恰恰就这么用了：
+ *   传进去一条完整 `SELECT COUNT(*) ... WHERE id = N`，拼出来变成
+ *     `SELECT COUNT(*) FROM SELECT COUNT(*) FROM department WHERE id = N`
+ *   ⇒ 语法错 ⇒ **accept 中途抛异常退出**（连失败项都数不出来）。
+ *   📌 教训：函数名要**暴露参数的性质**。`hCountRows` 没说清"给表名"，
+ *     于是它"看起来能用"，实际一用就炸 —— 这类**签名与名字不一致**的
+ *     内部工具，比一个明显的 bug 更费时间（我为此多跑了两轮构建）。
+ *   ⇒ 改名 `hTableRowCount`，并在参数名上写 `table`（而不是 `sql`）。
+ */
+/*
+ * ⚠ 与 `hTableRowCount` 并列的存在理由：那个收**表名**，这个收**完整 SQL**。
+ *   两个函数分开而不是合并成一个"聪明"的，是因为合并后**无法从调用处看出**
+ *   传的是哪一种 —— 而我正因为看不出才炸过一次。
+ *   现在名字把差别写在明面上：`hTableRowCount(table)` vs `hScalarCount(sql)`。
+ */
+func hScalarCount(db: DbBackend, sql: String): Int64 {
+    let rs = db.query(sql, Array<DbValue>())
+    if (rs.rowCount() > 0) {
+        return rs.getInt(0, 0)
+    }
+    return 0
+}
+
+func hTableRowCount(db: DbBackend, table: String): Int64 {
     let rs = db.query("SELECT COUNT(*) FROM " + table, Array<DbValue>())
     if (rs.rowCount() > 0) {
         return rs.getInt(0, 0)
@@ -403,8 +430,8 @@ public class TestRunner {
             let a = repo.book(1, 9011, "tok-ac4", hNowEpoch())
             check("④ ★★ 反向：号源域确实有数据（造出一张挂号单）—— 否则③可能是「因为什么都没做」而假绿",
                   isBooked(a))
-            let schedRows = hCountRows(db, TABLE_SCHEDULE)
-            let apptRows = hCountRows(db, TABLE_APPOINTMENT)
+            let schedRows = hTableRowCount(db, TABLE_SCHEDULE)
+            let apptRows = hTableRowCount(db, TABLE_APPOINTMENT)
             check("④ 号源域两表都非空（schedule=${schedRows} appointment=${apptRows}）",
                   schedRows > 0 && apptRows > 0)
 
@@ -650,6 +677,27 @@ public func runAcceptance(db: DbBackend): Int64 {
     acP4_2(runner, db)
     acP4_3(runner, db)
     acP4_4(runner, db)
+    /*
+     * 基础数据域（科室/医生）的管理端 CRUD（定义在 acceptance_base.cj）。
+     *
+     * ⚠ 排在**最后**，理由与上面那段一样：不改变既有用例的执行顺序
+     *   （它们之间有共享夹具的隐含顺序）。而这三个用例自己会**只清自己的 id 段**
+     *   （91xxxx / 92xxxx / 93xxxx），不碰别的用例的数据。
+     */
+    acBase1(runner, db)
+    acBase2(runner, db)
+    acBase3(runner, db)
+    /*
+     * 真模型出站（定义在 acceptance_ai_call.cj）。
+     *
+     * ⚠ 其中"真实出站"那一条**只在环境变量就位时才跑**，否则**如实跳过并打印** ——
+     *   验收必须能在无外网/无密钥的机器上跑绿，否则它会变成"永远红"，
+     *   然后被人用 `--skip` 绕过去，最后连它守的是什么都没人记得。
+     *   跳过时**打印 `[SKIP]` 与原因**，不静默。
+     */
+    acAiCall1(runner, db)
+    acAiCall2(runner, db)
+    acAiCall3(runner, db)
     println("")
     println("通过 ${runner.passed} 项，失败 ${runner.failed} 项")
     if (runner.failed == 0) {

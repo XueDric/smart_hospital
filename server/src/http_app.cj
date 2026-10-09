@@ -89,6 +89,17 @@ public enum Action {
     | WriteOwnMedicalRecord   // 写自己的病历（仅医生）
     | ManageVisit             // 接诊队列的状态流转（仅医生，限自己的号）
     | ViewDashboard           // 运营看板（仅管理员）
+    /*
+     * ★ 2026-10-09（基础数据域 CRUD）新增一条。
+     *
+     * ⚠ 为什么**不**复用 `ManageSchedule`：两者都是管理员动作，但语义不同 ——
+     *   `ManageSchedule` 管的是"号源与排班"（易变的运营数据），
+     *   本动作管的是"科室与医生档案"（**相对稳定的主数据**）。
+     *   合成一条的后果不是"现在会出错"，而是**将来无法只放开其中一个**
+     *   （例如"让科室主任改本科室医生"就必须拆开）。
+     *   📌 本仓纪律：权限动作按**语义**分，不按"当前谁能做"分。
+     */
+    | ManageBaseData          // 维护科室/医生档案（仅管理员）
 }
 
 public func actionName(a: Action): String {
@@ -101,6 +112,7 @@ public func actionName(a: Action): String {
         case QueryOwnMedicalRecord => return "query_own_medical_record"
         case WriteOwnMedicalRecord => return "write_own_medical_record"
         case ManageVisit => return "manage_visit"
+        case ManageBaseData => return "manage_base_data"
         case ViewDashboard => return "view_dashboard"
     }
 }
@@ -169,6 +181,11 @@ public func can(role: Role, action: Action): Bool {
         case ManageVisit =>
             match (role) {
                 case Doctor => return true
+                case _ => return false
+            }
+        case ManageBaseData =>
+            match (role) {
+                case Admin => return true
                 case _ => return false
             }
         case ViewDashboard =>
@@ -577,6 +594,24 @@ func triageJson(v: TriageVerdict, truncated: Bool): JsonObject {
     o.put("source", JsonString(v.source))
     o.put("patient_note", JsonString(v.patientNote))
     o.put("truncated", JsonBool(truncated))
+    /*
+     * ★ 2026-10-09 接真模型后新增两个字段（**只增不改**，老客户端不受影响）：
+     *   · `ai_note`   —— 模型给的患者说明（无模型 / 降级时为空）
+     *   · `ai_reason` —— 为什么没给（**给运维看**，不含密钥）
+     *
+     * ⚠⚠ `source` 字段的语义**没有变**：它仍如实标注这次结论的来源 ——
+     *   `model`（模型答了）/ `model:invalid`（答了但没过安全检查）/ `rules`（降级）。
+     *
+     * ⚠ 这两个字段曾**漏掉过一次**，记下来：我上一轮用 PowerShell 的
+     *   `$t.Replace("...\"ai_note\"...", ...)` 去改，而 PowerShell 的双引号串里
+     *   `\"` 是**字面反斜杠 + 引号**（不是转义）⇒ 锚点永远匹配不上 ⇒ **静默什么都没做**。
+     *   症状是"模型调通了、`source=model`、库里统计也对，但 `ai_note` 永远是空"，
+     *   看起来像模型没产出内容 —— 而真相是这个字段根本没被输出。
+     *   📌 教训：**改动后要验证目标确实变了**（看 diff / 看输出），
+     *     不要因为"替换命令没报错"就假定它生效了。
+     */
+    o.put("ai_note", JsonString(v.aiNote))
+    o.put("ai_reason", JsonString(v.aiReason))
     let arr = ArrayList<JsonValue>()
     for (x in v.options) {
         let e = JsonObject()
@@ -633,7 +668,8 @@ func previsitSessionJson(s: PrevisitSession): JsonObject {
 }
 public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate, triage: TriageRepo, previsit: PrevisitRepo, aiSettings: AiSettingsRepo, prompts: PromptRepo,
                            emr: MedicalRecordRepo, visit: VisitRepo,
-                           dash: DashboardRepo, triageStat: TriageStatRepo): Router {
+                           dash: DashboardRepo, triageStat: TriageStatRepo,
+                           dept: DepartmentRepo, doc: DoctorRepo): Router {
     let r = Router()
 
     /* ---------- 健康检查（无需认证，供压测与探活）---------- */
@@ -1090,6 +1126,25 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         let today = hTodayDate()
         let v = triageComplaint(triage, text, today)
         /*
+         * ★★ 2026-10-09：**模型增强层**（P3 建好配置底座后补上的最后一环）。
+         *
+         * ── 它做什么、不做什么（这个边界是本段最要紧的部分）──────────────
+         *   ✅ 做：把「给患者看的那句话」写得更好读。
+         *   ❌ 不做：**不碰 `v.options`**。科室/排班/号源永远由规则 + 数据库决定。
+         *   ⇒ 于是 P2 立的硬性验证层「**绝不给没有号的推荐**」在接上模型之后
+         *     **依然成立且不可能被绕过** —— 模型幻觉推荐一个没号的科室，是比
+         *     规则出错更危险的失败（它看起来很有道理，患者会照做然后挂不上号）。
+         *
+         * ── 四种情形，四种如实标注 ──────────────────────────────────────
+         *   · 未配置/未启用   ⇒ source=rules，`ai_reason` 说明为什么
+         *   · 调用成功        ⇒ source=model，`ai_note` 是模型文字
+         *   · 模型答了但不合格 ⇒ source=model:invalid（**要改 Prompt**，不是查网络）
+         *   · 调用失败        ⇒ source=rules（降级），`ai_reason` 带**脱敏后**的原因
+         * ⚠ **危急征象时不调模型**：那正是要立刻就医的场景，多一次网络往返
+         *   只会延迟患者看到「立即就医」，收益为零、风险为正。
+         */
+        aiEnhanceTriage(v, text, aiSettings, hNowEpoch())
+        /*
          * ★ P4：把**结论**记进统计表（看板的"分诊命中率"靠它）。
          *
          * ⚠ 记的是**结论字段**，**不是 `text`（主诉原文）** ——
@@ -1433,6 +1488,17 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      */
     registerP4Routes(r, auth, gate, repo, emr, visit, dash, aiSettings)
 
+    /*
+     * ★ 2026-10-09：基础数据域（科室/医生）的管理端 CRUD。
+     *
+     * ⚠ 为什么**必须**在这里调用（而不是让 http_base.cj 自己注册）：
+     *   本仓纪律是"路由注册集中可见"—— 调用点写在一处，
+     *   `doc-counts.ps1` 才能**数得清端点总数**（它扫的就是这几个登记在册的文件）。
+     *   若让每个域自己注册，端点总数会变成"运行时才知道"，
+     *   文档对账就失去依据 —— 而本仓**已经因为"计数脚本漏扫文件"踩过一次**
+     *   （P4 时它漏扫 http_p4.cj，把 38 个端点报成 27 个）。
+     */
+    registerBaseRoutes(r, auth, gate, dept, doc)
 
     return r
 }
@@ -1452,9 +1518,10 @@ public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGat
                              triage: TriageRepo, previsit: PrevisitRepo,
                              aiSettings: AiSettingsRepo, prompts: PromptRepo,
                              emr: MedicalRecordRepo, visit: VisitRepo,
-                             dash: DashboardRepo, triageStat: TriageStatRepo): QingZhouApp {
+                             dash: DashboardRepo, triageStat: TriageStatRepo,
+                             dept: DepartmentRepo, doc: DoctorRepo): QingZhouApp {
     let router = buildHospitalRouter(repo, auth, gate, triage, previsit, aiSettings, prompts,
-                                     emr, visit, dash, triageStat)
+                                     emr, visit, dash, triageStat, dept, doc)
     return QingZhouApp()
         .use(requestId())
         .use(logger())

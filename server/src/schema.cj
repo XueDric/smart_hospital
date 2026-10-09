@@ -193,7 +193,17 @@ public let SCHEMA_DDL: Array<String> = [
     "enabled TINYINT NOT NULL DEFAULT 1, " +
     "created_at BIGINT NOT NULL DEFAULT 0, " +
     "PRIMARY KEY (id), " +
-    "UNIQUE KEY uk_department_code (code)" +
+    "UNIQUE KEY uk_department_code (code), " +
+    /*
+     * ★ 2026-10-09（基础数据域 CRUD）新增：**科室名唯一**。
+     *
+     * ⚠ 理由不是"看起来该唯一"，而是**有一个真调用方按名字查**：
+     *   `triage.cj` 用 `SELECT ... FROM department WHERE name = ?` 判断
+     *   "该科室是否可挂号"。同名会让这条判断**分裂**（命中哪行取决于存储顺序），
+     *   而它恰好是"分诊推荐"与"排班列表"两处口径的连接点。
+     * ⇒ 纪律要能被**数据库**兜底，而不是只靠应用层先查后写（那是 TOCTOU）。
+     */
+    "UNIQUE KEY uk_department_name (name)" +
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 
     // ── 医生 ──────────────────────────────────────────────────────────────
@@ -542,6 +552,36 @@ public func migrateSchema(db: DbBackend): Int64 {
         Array<DbValue>())
     if (hasUpdatedBy.rowCount() > 0 && hasUpdatedBy.getInt(0, 0) == 0) {
         db.exec("ALTER TABLE medical_record ADD COLUMN updated_by BIGINT NOT NULL DEFAULT 0",
+                Array<DbValue>())
+        done = done + 1
+    }
+
+    /*
+     * ★ 2026-10-09：`department.name` 补唯一键（存量库）。
+     *
+     * ⚠ 与上面 medical_record.updated_by 同理：`CREATE TABLE IF NOT EXISTS`
+     *   对已存在的表**完全无效**，老库上这张表早建好了 ⇒ 必须在迁移里显式加。
+     * ⚠ 加之前**先查重名**：若有重名，ALTER 会失败并让整个 check-db 报错。
+     *   重名是**数据问题**，不是结构问题 ⇒ 这里给出**可执行的处置**（列出重名），
+     *   而不是抛一个"Duplicate entry"让人猜。若确实有重名，我们**不自动改名**
+     *   （改名可能改变分诊含义，属人工决策），只报告。
+     */
+    let nameIdx = db.query(
+        "SELECT COUNT(*) FROM information_schema.statistics " +
+        "WHERE table_schema = DATABASE() AND table_name = 'department' " +
+        "AND index_name = 'uk_department_name'",
+        Array<DbValue>())
+    if (nameIdx.rowCount() > 0 && nameIdx.getInt(0, 0) == 0) {
+        let dups = db.query(
+            "SELECT COUNT(*) FROM (SELECT name FROM department GROUP BY name " +
+            "HAVING COUNT(*) > 1) t", Array<DbValue>())
+        if (dups.rowCount() > 0 && dups.getInt(0, 0) > 0) {
+            throw Exception("department 表存在 ${dups.getInt(0, 0)} 组**重名科室**，" +
+                "无法加唯一键 uk_department_name。\n" +
+                "  处置：先人工合并/改名（分诊按科室名查询，重名会让推荐结果不确定）：\n" +
+                "    SELECT name, COUNT(*) c FROM department GROUP BY name HAVING c > 1;")
+        }
+        db.exec("ALTER TABLE department ADD UNIQUE KEY uk_department_name (name)",
                 Array<DbValue>())
         done = done + 1
     }

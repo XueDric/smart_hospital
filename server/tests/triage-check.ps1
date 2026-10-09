@@ -128,7 +128,20 @@ Check "结论非流式一次性返回（options 与 count 同体）" `
 Write-Host ""
 Write-Host "[5] 响应形状 / 三态标注"
 $r = DoReq 'shape' 'POST' '/api/v1/triage' @("Authorization: Bearer $patTok") '{"chief_complaint":"咳嗽三天有痰"}'
-Check "source 如实标注为 rules（本轮**未接**真模型）" ($r.Json.data.source -eq 'rules') ("source=$($r.Json.data.source)")
+# ⚠ 这条断言 2026-10-09 **改过** —— 它原先写死 source -eq "rules"，理由是"本轮未接真模型"。
+#   真模型接入后，**配了模型的环境下 source 会是 model**，于是这条断言在**配了模型就跑红**
+#   —— 而那不是缺陷，是断言过时了。
+#
+# ⇒ 现在守的是**真正的不变量**：source 必须**如实**标注，且只能是这三个已知值之一。
+#   注意它与 accept 里那条"未配置 ⇒ rules"是**两件事**：
+#   那条测降级路径（配置为空），这条测标注合法性（配没配都成立）。
+#
+# ⚠ PowerShell 用 # 注释，**没有 C 风格块注释** —— 我在这里写过 /* */，
+#   实测报 `CommandNotFoundException: /*`（脚本突然中止、连 [FAIL] 都没有）。
+#   全仓扫过，只有这一处。
+$src = $r.Json.data.source
+Check "★ source 如实标注（rules / model / model:invalid 三者之一，实得「$src」）" `
+      (@("rules","model","model:invalid") -contains $src) ("source=$src")
 Check "含 truncated 字段（截断不静默）" ($null -ne $r.Json.data.truncated)
 Check "响应里不含 red_flag_evidence（内部依据不外泄）" (-not ($r.Body -match 'red_flag_evidence'))
 

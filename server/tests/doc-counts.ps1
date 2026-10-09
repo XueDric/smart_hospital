@@ -91,10 +91,10 @@ Write-Host "  AC 编号上限（四套体系各自）= AC-$acMax / AC-P2-$acP2Ma
 #      于是用 `r.delete(...)` 注册的端点**永远不被计入**。
 #   ② 只扫 `http_app.cj` —— 而 P4 把 11 个端点放在 `http_p4.cj`
 #      （理由：那一块有自己的纪律要写清）。⇒ 不扫它就会漏掉整块。
-#   ⇒ 现在：扫**全部注册文件**（清单显式给出，与"路由注册仍集中在 http_app"这条约定配套），
+#   ⇒ 现在：扫**全部注册文件**（清单显式给出，与"路由注册集中可见"这条约定配套）。
 #     并覆盖 `delete`。📌 教训：**计数脚本本身也要能被"加了东西"这件事验证到** ——
 #     否则它会给一个恒定的旧数字，而所有人都以为它对。
-$regFiles = @("src\http_app.cj", "src\http_p4.cj")
+$regFiles = @("src\http_app.cj", "src\http_p4.cj", "src\http_base.cj")
 $epCount = 0
 foreach ($rf in $regFiles) {
     $p = Join-Path $serverDir $rf

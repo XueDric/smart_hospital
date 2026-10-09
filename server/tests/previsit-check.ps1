@@ -254,8 +254,20 @@ Check "管理员读配置 → 200" ($r.Http -eq 200) ("HTTP $($r.Http)")
 Check "响应含 items 与 enabled/disabled_reason" `
       (($null -ne $r.Json.data.items) -and ($null -ne $r.Json.data.enabled)) `
       ("enabled=$($r.Json.data.enabled)")
-Check "未配置时 enabled=false 且理由非空" `
-      ($r.Json.data.enabled -eq $false -and $r.Json.data.disabled_reason.Length -gt 0)
+# ⚠⚠ 这条断言 2026-10-09 **补了自备夹具**，原因是它曾**依赖测试执行顺序**：
+#   它假设「AI 未配置」，于是 enabled 必为 false。而 `ai-live-check.ps1` 会**真的去配
+#   `ai_setting`** —— 它跑过之后再跑本脚本，enabled 就是 true ⇒ 本条**假红**
+#   （看起来像产品坏了，其实是测试间状态泄漏）。
+#
+# ⇒ 正确做法是**自己把前提准备好**（本仓纪律：夹具自备，不依赖别的用例留下的状态）：
+#   显式清掉 AI 总开关与端点，然后再断言「未配置 ⇒ enabled=false」。
+#   📌 判据：**断言一个「未配置状态下」的性质，就必须自己制造「未配置」这个状态。**
+$null = DoReq 'aiclr1' 'DELETE' '/api/v1/admin/ai/settings/ai.enabled' @("Authorization: Bearer $admTok") $null
+$null = DoReq 'aiclr2' 'DELETE' '/api/v1/admin/ai/settings/ai.endpoint' @("Authorization: Bearer $admTok") $null
+$r = DoReq 'aiadm2' 'GET' '/api/v1/admin/ai/settings' @("Authorization: Bearer $admTok") $null
+Check "清掉配置后 enabled=false 且理由非空" `
+      ($r.Json.data.enabled -eq $false -and $r.Json.data.disabled_reason.Length -gt 0) `
+      ("enabled=$($r.Json.data.enabled) reason=$($r.Json.data.disabled_reason)")
 
 # 8.3 ★★ 密钥不落库：裸密钥必须被拒（HTTP 层）
 foreach ($bad in @('sk-abcdefghijklmnopqrstuvwxyz012345', 'env:sk-abcdefghijklmnopqrstuvwxyz', 'https://api.x/v1?key=sk-xxx')) {

@@ -85,7 +85,36 @@ function Invoke-MySqlScalar {
     $cliArgs = @("-h", $My.DbHost, "-P", "$($My.Port)", "-u", $My.User, "-p$($My.Pass)", "--skip-ssl")
     if ($My.Db) { $cliArgs += $My.Db }
     $cliArgs += @("-N", "-B", "-e", $Sql)
-    $raw = & $My.Client $cliArgs 2>&1
+    # ⚠⚠ 这里必须把 stderr 的「提升为终止错误」**临时关掉**（2026-10-09 修）。
+    #
+    # 踩到的现象：`triage-check.ps1` 跑到一半**突然中止**（退出码 1、
+    # 只报 10 项、**连一条 [FAIL] 都没有**）—— 看起来像脚本坏了，
+    # 其实是 mariadb 客户端往 stderr 打了一段分隔线，
+    # 而本文件顶部设了 $ErrorActionPreference = 'Stop'。
+    # 在 PowerShell 里，**原生命令写到 stderr 的任何内容都会被当成错误记录**，
+    # 配上 'Stop' 就**直接中断整个脚本**。
+    #
+    # ⇒ 正确做法：只在**这一条**原生命令前后临时切到 'Continue'，用完立刻还原。
+    #   ⚠ 不改成「整个文件都用 Continue」—— 那会让真正的错误被吞掉，
+    #     把本仓最忌的「静默失败」引进来。
+    # 📌 一般化：**调用外部命令并捕获输出时，永远不要让它继承 'Stop'。**
+    $savedEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $raw = & $My.Client $cliArgs 2>&1
+    } finally {
+        $ErrorActionPreference = $savedEap
+    }
+    # 过滤掉 PowerShell 为每条 stderr 行包出来的 ErrorRecord（保留真正的输出文本）。
+    $text = @()
+    foreach ($item in @($raw)) {
+        if ($item -is [System.Management.Automation.ErrorRecord]) {
+            $text += $item.Exception.Message
+        } else {
+            $text += $item
+        }
+    }
+    $raw = ($text -join "`n")
     if ($null -eq $raw -or "$raw".Trim().Length -eq 0) {
         if ($Sql.TrimStart().ToUpper().StartsWith("SELECT")) {
             Write-Warning "  SQL 未返回任何行（$Label，库 $($My.Db)）：$Sql"

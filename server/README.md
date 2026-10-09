@@ -1,4 +1,4 @@
-# 智慧医院服务端（仓颉 + 轻舟）
+﻿# 智慧医院服务端（仓颉 + 轻舟）
 
 > **当前进度**：P0（号源/挂号域独立 MySQL 路径）→ **P1**（令牌鉴权 + HTTPS + 安全加固 + 内存 Store）
 > → **P2**（AI 分诊 + 预问诊 SSE）**均已完成**。P3 / P4 见 [../README.md](../README.md) 的里程碑表。
@@ -74,7 +74,7 @@ cd server     # ⚠ cwd 必须是 server/，见下
 | `triagetest` | P2 分诊 + 预问诊**纯逻辑**自检（**108 项**断言），不碰库不调模型 | ❌ |
 | `authtest` | **口令/令牌原语自检**（含 3 个公开测试向量，**17 项**） | ❌ |
 | `check-db <dsn>` | 连库 + 幂等建表 + 打印表清单（★ 标记号源域） | ✅ |
-| `accept <dsn>` | 验收测试 AC-1…AC-P4-4（**238 项断言**；⚠ 只允许库名含 `test` 的测试库） | ✅ |
+| `accept <dsn>` | 验收测试 AC-1…AC-P4-4（**312 项断言**；⚠ 只允许库名含 `test` 的测试库） | ✅ |
 | `create-db <dsn>` | 幂等建库（utf8mb4）—— 测试库靠它 | ✅ |
 | `create-admin <dsn>` | 建/重置管理员并打印口令（**引导入口**） | ✅ |
 | `serve <dsn>` | **P1**：启动 HTTP / HTTPS 服务（默认只绑 `127.0.0.1`） | ✅ |
@@ -195,7 +195,13 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
 | `src/dashboard.cj` | **P4 运营看板**：只出聚合、绝不出明细（隐私红线写在文件头） |
 | `src/triage_stat.cj` | **P4 分诊统计**：只存结论；`record()` 签名里**没有主诉参数**（类型层面存不进敏感文本） |
 | `src/http_p4.cj` | **P4 接口层**：11 个端点（接诊队列 / 病历 / 看板）；路由注册仍集中在 http_app.cj |
-| `src/acceptance_p4.cj` | AC-P4-1…4：病历锁定不可改 / 状态机 / 看板隐私 / 统计不落敏感文本 |
+'| `src/acceptance_p4.cj` | AC-P4-1…4：病历锁定不可改 / 状态机 / 看板隐私 / 统计不落敏感文本 |
+| `src/domain_base.cj` | **基础数据域（科室/医生）仓储**：CRUD + 唯一键冲突分类 + **引用保护**（有引用不删）+ **软删**（force） |
+| `src/http_base.cj` | **基础数据域接口**（10 个端点）：科室/医生的管理端 CRUD；仅 `ManageBaseData`（管理员） |
+| `src/ai_call.cj` | **真模型出站**（P5 第一步）：TLS 出站 + 密钥**引用**解析 + **脱敏** + 失败不抛异常 |
+| `src/ai_triage.cj` | **模型增强层**：只写 `aiNote`/`aiReason`，**绝不碰 `options`**（硬性验证层不可绕过）+ 安全清理层 |
+| `src/acceptance_base.cj` | AC-BASE-1…3：科室唯一性 / 不许孤儿医生 / 删除的两种语义 |
+| `src/acceptance_ai_call.cj` | AC-AICALL-1…3：可调用性 / **安全清理层（医疗建议一律丢弃）** / 响应解析 + 可选真实出站 |'
 | `src/main.cj` | 进程入口与子命令分发（含 TLS 分支与 fail-closed） |
 | `new-tls-cert.ps1` | 生成带 SAN 的自签证书 + ASCII 运行副本 + ACL 收紧 |
 | `tests/tls-check.ps1` | TLS 验证（SslStream 真校验、反向验证、HTTPS 业务链路） |

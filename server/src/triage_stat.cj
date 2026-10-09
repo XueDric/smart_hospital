@@ -76,7 +76,25 @@ public class TriageStatRepo {
     }
 
     /* 当前统计行数（自检/测试用）。 */
-    public func count(): Int64 {
+    /*
+ * ★ 2026-10-09：按 `source` 计数 —— 看板靠它报**真实的**模型调用次数。
+ *
+ * ⚠ 为什么复用本表而不是新建一张"模型调用表"：
+ *   `triage_stat` 本就是"分诊这件事的留痕"，而 `source` 已经区分了
+ *   `rules` / `model`。模型调用次数**就是** `source` 的分布 ——
+ *   再建一张表会让同一件事有两份记录，而它们迟早不一致。
+ *   📌 代价（如实记下）：本表**只覆盖分诊**，不含预问诊的模型调用。
+ *     看板报数时必须**写清口径**，否则读者会以为那是全部调用。
+ */
+public func countBySource(src: String): Int64 {
+    let rs = db.query("SELECT COUNT(*) FROM triage_stat WHERE source = ?", [DbStr(src)])
+    if (rs.rowCount() == 0) {
+        return 0
+    }
+    return rs.getInt(0, 0)
+}
+
+public func count(): Int64 {
         let rs = db.query("SELECT COUNT(*) FROM triage_stat", Array<DbValue>())
         if (rs.rowCount() > 0) {
             return rs.getInt(0, 0)

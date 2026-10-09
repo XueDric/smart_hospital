@@ -140,7 +140,7 @@ func checkDb(dsn: String): Int64 {
         i = i + 1
     }
     println("")
-    println("（★ = 号源/挂号域，走直接 SQL；其余属内存 Store 范式，见 ADR-0001 §4.2）")
+    println("（★ = 号源/挂号域，由 BookingRepo 独占；**全部表统一走直接 SQL** —— ADR-0001 rev.7：内存 Store 已拆除）")
     db.close()
     return 0
 }
@@ -717,8 +717,16 @@ func serve(args: Array<String>): Int64 {
     let visit = VisitRepo(db)
     let dash = DashboardRepo(db)
     let triageStat = TriageStatRepo(db)
+    /*
+     * ★ 2026-10-09：基础数据域（科室/医生）仓储。
+     *   ADR-0001 rev.7 拆掉内存 Store 后，这几张表由"人工 SQL 维护"变成
+     *   "有管理端 CRUD" —— 补上的正是"分诊推荐科室"这条链路缺的最后一环
+     *   （`triage.cj` 按科室名查 `department`，而此前**没人能往里加数据**）。
+     */
+    let dept = DepartmentRepo(db)
+    let doc = DoctorRepo(db)
     let app = buildHospitalApp(repo, auth, gate, triage, previsit, aiSettings, prompts,
-                               emr, visit, dash, triageStat)
+                               emr, visit, dash, triageStat, dept, doc)
     let box = HandleBox()
 
     println("")
@@ -837,6 +845,8 @@ func serve(args: Array<String>): Int64 {
  *   · 这是"有 DB 写权限即可拿到管理员"的路径 —— 与直接改库等价，
  *     所以它不引入新的信任假设（能改 auth_user 表的人本来就能改任何东西）。
  */
+
+
 func createAdmin(args: Array<String>): Int64 {
     if (args.size < 1) {
         println("用法：hospital-server.exe create-admin <dsn> [登录名]")

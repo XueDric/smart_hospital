@@ -28,12 +28,15 @@
  *       在没有明确的 k 阈值之前，不提供这类维度。
  *
  * ── AI 调用概览做到了哪一步（诚实标注）──────────────────────────────────
- *   本轮**仍未接真模型**（Q6 合规待决），所以**没有**真实的调用量/耗时/命中率。
- *   能如实给出的只有：
- *     · AI 能力中心的**配置状态**（开关/endpoint host/模型/工具启用数）；
- *     · **规则版**分诊的命中分布（`source=rules`，那是真实发生的）。
- *   ⇒ 响应里用 `ai.source` 明确标注 `rules`，并给 `ai.model_calls` = 0 +
- *     `ai.model_calls_note` 说明为什么是 0。**不编造数字**。
+ *   ★ 2026-10-09：**真模型已接入**（`ai_call.cj` + `ai_triage.cj`），
+ *     所以这里报的是**真实的**调用分布，不再是"诚实地说 0"：
+ *       `ai.model_calls` / `ai.rules_calls` / `ai.model_invalid_calls`
+ *     三者来自 `triage_stat.source` 的分布 —— 可自证（三个数加起来 = 分诊总次数）。
+ *   ⚠ **口径边界（必须写清，否则数字会被误读）**：
+ *     这三个数只覆盖**分诊**；**不含预问诊** —— 预问诊的采集槽位是
+ *     **确定性规则流程**（P2 的设计），**根本不调模型**。
+ *   ⚠ 仍然**不编造**：`ai.model_calls` 为 0 时就是"这段时间没有模型调用"，
+ *     而不是"我们没统计"。区别在于前者可被 `triage_stat` 的行数核对。
  */
 
 package qingzhou
@@ -263,12 +266,30 @@ public class DashboardRepo {
         ai.put("prompts_total", JsonInt(promptCount))
         ai.put("prompts_customized", JsonInt(customized))
         /*
-         * ⚠⚠ **不编造调用量**：没接模型就是 0 条真实调用。
-         *   给一个 `model_calls = 0` + 明确说明，比给一个"看起来有数据"的假指标好。
+         * ★★ 2026-10-09：**真模型已接入** ⇒ 这里从"诚实地说 0"改成"报真实的数"。
+         *
+         * ── 口径（必须写清，否则数字会被误读）────────────────────────────
+         *   `model_calls` / `rules_calls` / `model_invalid_calls` 来自
+         *   `triage_stat.source` 的分布 —— 即**分诊**这件事的真实留痕。
+         *   ⚠ **不含预问诊**：预问诊的采集问题是**确定性的规则流程**
+         *     （P2 的设计：槽位顺序固定、校验在规则里），**不调模型**。
+         *     所以这两个数加起来**不等于**"系统全部 AI 调用"，
+         *     而是"分诊的调用分布"。`model_calls_note` 里写明这一点。
+         *   📌 为什么坚持按 source 分布报、而不是合成一个"总调用数"：
+         *     合成的那个数**无法自证**（谁也说不清它统计了什么），
+         *     而分布能自证 —— 三个数加起来就是分诊总次数（可核对）。
          */
-        ai.put("model_calls", JsonInt(0))
+        let srcRepo = TriageStatRepo(db)
+        let modelCalls = srcRepo.countBySource("model")
+        let rulesCalls = srcRepo.countBySource("rules")
+        let invalidCalls = srcRepo.countBySource("model:invalid")
+        ai.put("model_calls", JsonInt(modelCalls))
+        ai.put("rules_calls", JsonInt(rulesCalls))
+        ai.put("model_invalid_calls", JsonInt(invalidCalls))
         ai.put("model_calls_note", JsonString(
-            "未接真模型（阻塞于合规评估 Q6）⇒ 真实模型调用为 0；上面是**配置状态**，不是调用量"))
+            "口径：上方三个数来自 `triage_stat.source` 的分布，即**分诊**的真实留痕；" +
+            "⚠ **不含预问诊**（它的采集槽位是**确定性规则流程**，不调模型）。" +
+            "`model:invalid` = 模型答了但输出未通过安全检查（要改 Prompt，不是查网络）"))
         o.put("ai", ai)
 
         o.put("generated_at", JsonInt(now))
