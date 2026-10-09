@@ -698,6 +698,15 @@ public func runAcceptance(db: DbBackend): Int64 {
     acAiCall1(runner, db)
     acAiCall2(runner, db)
     acAiCall3(runner, db)
+    /*
+     * P5 知识库（定义在 acceptance_kb.cj）。
+     * ⚠ 排在最后：它的夹具**自建自清**（按标题前缀 `ACKB`），
+     *   不依赖别的用例留下的状态，也不给别的用例留状态。
+     */
+    acKb1(runner, db)
+    acKb2(runner, db)
+    acKb3(runner, db)
+    acKb4(runner, db)
     println("")
     println("通过 ${runner.passed} 项，失败 ${runner.failed} 项")
     if (runner.failed == 0) {

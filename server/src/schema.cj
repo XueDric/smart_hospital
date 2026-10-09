@@ -152,14 +152,38 @@ public let TABLE_AI_SETTING: String = "ai_setting"
 public let TABLE_TRIAGE_STAT: String = "triage_stat"
 
 /*
+ * ===================== P5：知识库（零向量库 RAG）=====================
+ *
+ * brief §5.5：「仓库**无 embedding、无向量、无余弦相似度**（全仓 grep 0 匹配）。
+ * 仓颉侧要自己写：① 出站调 embedding 模型 ② 向量存 MySQL JSON
+ * ③ **纯仓颉算余弦相似度**」。
+ *
+ * ★★ 两张表而不是一张，是**刻意的**：
+ *   · `kb_doc`   —— 文档（**人维护的单位**：一篇须知/一条问答）
+ *   · `kb_chunk` —— 切块（**检索的单位**：向量/关键词都作用在它上面）
+ *   ⇒ 分成两层是因为"切块策略会变"（块大小/重叠），而**改策略不该动文档**；
+ *     若合成一张表，每次调窗口都要重写文档行，且丢不掉旧块。
+ *
+ * ⚠⚠ 合规边界（第十份复查后新增，已写进 docs/Q6-合规决策记录.md）：
+ *   知识库文档由**本院人员**维护（**文档本身不出站**），
+ *   但**检索命中的片段会随 Prompt 出站给第三方模型** ⇒
+ *   ⇒ 知识库里**不得放患者个人信息**。这一条**无法用代码保证**
+ *     （文档是自由文本），所以：① 表注释写明；② 管理端写入时**拒绝明显的个人信息形态**；
+ *     ③ Q6 记录里如实列为「仍需人工把关」的边界。
+ */
+public let TABLE_KB_DOC: String = "kb_doc"
+public let TABLE_KB_CHUNK: String = "kb_chunk"
+
+/*
  * 全部业务表。
- * ⚠ 与 `BOOKING_DOMAIN_TABLES` 的差集就是"走内存 Store 范式"的表。
+ * ⚠ rev.7 起内存 Store 已整体拆除 ⇒ 这张清单就是"库里有几张表"的唯一答案。
  */
 public let ALL_TABLES: Array<String> = [
     TABLE_DEPARTMENT, TABLE_DOCTOR, TABLE_SCHEDULE,
     TABLE_APPOINTMENT, TABLE_PATIENT, TABLE_MEDICAL_RECORD,
     TABLE_AUTH_USER, TABLE_AUTH_TOKEN, TABLE_AUTH_ATTEMPT, TABLE_PREVISIT,
-    TABLE_AI_SETTING, TABLE_TRIAGE_STAT
+    TABLE_AI_SETTING, TABLE_TRIAGE_STAT,
+    TABLE_KB_DOC, TABLE_KB_CHUNK
 ]
 
 /* ===================== DDL ===================== */
@@ -456,6 +480,65 @@ public let SCHEMA_DDL: Array<String> = [
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
 ]
 
+/* ===================== P5 知识库 DDL（拼在 SCHEMA_DDL 上）===================== */
+
+/*
+ * ⚠ 为什么单独一个数组而不是直接塞进 `SCHEMA_DDL`：
+ *   那一段很长（14 张表），P5 的表有**自己的设计说明**（向量存储格式、切块与文档分层、
+ *   合规边界），塞进去会把它淹掉。分开写、末尾拼接 —— 建表入口一处不改。
+ *   📌 与 `registerP4Routes` / `registerBaseRoutes` 同一手法：**内容分文件，注册集中**。
+ */
+public let KB_SCHEMA_DDL: Array<String> = [
+    /*
+     * 知识库文档（**人维护的单位**）。
+     *
+     * ⚠ `title` 加唯一键：知识库最容易出的问题是**同一主题写了两份互相矛盾的文档**，
+     *   而检索会把两份都召回 ⇒ 模型看到矛盾内容，输出不可预测。
+     *   让"重名"在写入那一刻失败，比事后人工比对可靠。
+     * ⚠ `enabled` 而不是删除：文档停用后**历史检索记录仍可解释**（同 department 的理由）。
+     */
+    "CREATE TABLE IF NOT EXISTS kb_doc (" +
+    "id BIGINT NOT NULL AUTO_INCREMENT, " +
+    "title VARCHAR(128) NOT NULL, " +
+    "category VARCHAR(32) NOT NULL DEFAULT '', " +
+    "body TEXT NOT NULL, " +
+    "enabled TINYINT NOT NULL DEFAULT 1, " +
+    "updated_by BIGINT NOT NULL DEFAULT 0, " +
+    "created_at BIGINT NOT NULL DEFAULT 0, " +
+    "updated_at BIGINT NOT NULL DEFAULT 0, " +
+    "PRIMARY KEY (id), " +
+    "UNIQUE KEY uk_kb_doc_title (title), " +
+    "KEY idx_kb_doc_category (category)" +
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+
+    /*
+     * 知识库切块（**检索的单位**）。
+     *
+     * `embedding` 存 **JSON 数组**（复刻 brief §5.5 说的参考系统 `kb_chunk.embedding` 做法）。
+     * ⚠ 为什么用 JSON 而不是 BLOB/float 表：
+     *   · 本项目**没有向量库**，也不该为几千个块引入一个（brief §5.5 的判断）；
+     *   · JSON 让**纯仓颉**能直接解析成 `Array<Float64>` 算余弦（brief 明确要求）；
+     *   · 代价如实记下：**全表扫描 + 逐行 JSON 解析**，几千块可接受，上万块要降维/分片。
+     * ⚠ `embedding` 允许 NULL：**关键词检索不需要向量**（brief §5.5 的降级路径）。
+     *   这正是"零向量库"的关键 —— 没有 embedding 服务时系统**照样能用**。
+     * ⚠ 唯一键 `(doc_id, seq)`：同一文档的同一个块号只能有一行 ⇒
+     *   **重新切块时按 (doc_id, seq) upsert**，不会留下旧块的幽灵行。
+     */
+    "CREATE TABLE IF NOT EXISTS kb_chunk (" +
+    "id BIGINT NOT NULL AUTO_INCREMENT, " +
+    "doc_id BIGINT NOT NULL, " +
+    "seq BIGINT NOT NULL, " +
+    "content TEXT NOT NULL, " +
+    "chars BIGINT NOT NULL DEFAULT 0, " +
+    "embedding TEXT NULL, " +
+    "embedded_at BIGINT NOT NULL DEFAULT 0, " +
+    "created_at BIGINT NOT NULL DEFAULT 0, " +
+    "PRIMARY KEY (id), " +
+    "UNIQUE KEY uk_kb_chunk_doc_seq (doc_id, seq), " +
+    "KEY idx_kb_chunk_doc (doc_id)" +
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+]
+
 /* ===================== 建表入口 ===================== */
 
 /*
@@ -470,6 +553,15 @@ public let SCHEMA_DDL: Array<String> = [
 public func ensureSchema(db: DbBackend): Int64 {
     var n: Int64 = 0
     for (sql in SCHEMA_DDL) {
+        db.exec(sql, Array<DbValue>())
+        n = n + 1
+    }
+    /*
+     * ★ P5：知识库两张表（各自一个数组，理由见 KB_SCHEMA_DDL 上方注释）。
+     * ⚠ 拼接而不是并进 SCHEMA_DDL：**建表入口一处不改**，
+     *   但"有哪些表"仍然只有一处可数（便于 selftest 与 doc-counts 对账）。
+     */
+    for (sql in KB_SCHEMA_DDL) {
         db.exec(sql, Array<DbValue>())
         n = n + 1
     }
