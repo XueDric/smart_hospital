@@ -113,17 +113,27 @@ INSERT INTO patient (id, phone, name, gender, birth_date, created_at)
   ON DUPLICATE KEY UPDATE name = VALUES(name);
 "@ "base 夹具"
 
-# ⚠⚠ 夹具必须**按名字/登录名再清一遍**，不能只按 id 段。
-#   理由：上一轮若在建科室那步失败（例如残留导致 409），那些行的 id 可能落在
-#   950000 段**之外**，"按段清"清不掉 ⇒ 下一轮建同名又 409 ⇒
-#   **看起来是产品坏了，其实是夹具不干净**。实测踩过：`Base测试科` 残留
-#   导致连续两轮 409，我为此排查了两轮。
+# ⚠⚠ 清理必须**按本脚本自己的编码前缀**，而不是按 id 段或按名字。
+#   复查实测到两条更隐蔽的残留路径（我为此绕过两次远路）：
+#     ① 我先前按 id 段清（950000-950999），但成功建的科室 id 是 **AUTO_INCREMENT**
+#        （实测落在 176xxxx）⇒ **按段根本清不到**，残留会跨轮累积；
+#     ② 按名字清也不够：我一度用「呼吸内科」当夹具名，与 triage-check 的**固定 id+固定名字**
+#        夹具撞名 —— 而 UNIQUE(department.name) 让 triage-check 那条 INSERT **静默失败**
+#        （它用 $null = Invoke-MySqlScalar 且不检查结果）⇒ 它的断言随后失败，
+#        **看起来像产品缺陷**（复查独立复现了这一点：干净态 24 PASS/0 FAIL，
+#         先跑 base-check 再跑就成 19 PASS/5 FAIL）。
+#   ⇒ 本脚本建的科室**一律用 BASET/BASEDEL 前缀**，清理只按前缀删 —— 既不漏
+#     （不依赖 id 段），也不误伤别的用例（不按名字）。
+#   📌 一般化：**测试夹具要用自己的命名空间，并按自己的命名空间清理。**
+#     按 id 段/按名字都是"假设别人不会用同样的东西"，而那个假设迟早不成立。
 SqlFile @"
 DELETE FROM auth_user WHERE login_name = 'basepatient';
-DELETE FROM department WHERE name IN
-  ('Base测试科','Base测试科（改名）','Base另一个科','Base可删科','呼吸内科','患者建的科');
-"@ "base 夹具（按名字/登录名清残留）"
-Check "夹具就绪（按 id 段 + 按名字双重清理）" $true
+DELETE FROM appointment WHERE department_id IN (SELECT id FROM department WHERE code LIKE 'BASET%' OR code LIKE 'BASEDEL%');
+DELETE FROM schedule WHERE department_id IN (SELECT id FROM department WHERE code LIKE 'BASET%' OR code LIKE 'BASEDEL%');
+DELETE FROM doctor WHERE department_id IN (SELECT id FROM department WHERE code LIKE 'BASET%' OR code LIKE 'BASEDEL%');
+DELETE FROM department WHERE code LIKE 'BASET%' OR code LIKE 'BASEDEL%';
+"@ "base 夹具（按编码前缀清残留）"
+Check "夹具就绪（按 id 段 + **按本脚本编码前缀**双重清理）" $true
 
 $admTok = Tok "admin" $AdminPw
 # 患者账号（绑 patient 950001）——用于"患者无权维护科室"

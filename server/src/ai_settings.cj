@@ -73,15 +73,39 @@ public class AiSettingSpec {
      */
     public let numMin: Int64
     public let numMax: Int64
+    /*
+     * ★★ 已登记但**本版本不支持**（2026-10-09 增，第十份复查触发）。
+     *
+     * ⚠ 为什么需要这一列：复查发现 `ai.ca_bundle_path` **被校验、被存库、被回显，
+     *   却没有任何地方消费** —— 管理员设了它，系统回 200，然后**完全忽略**。
+     *   我原本打算把它接上，但读 `stdx.net.tls` 的符号后确认：
+     *     `TlsClientConfig.certificate` 的类型是
+     *       `Option<Tuple<Array<Certificate>, PrivateKey>>`
+     *     —— 那是**客户端证书（mTLS）**，**不是信任锚**。
+     *     这个版本的 `TlsClientConfig` **没有** CA bundle / 自定义信任库的入口。
+     *   ⇒ 所以它**在架构上无法在本版本接线**，不是"我懒得接"。
+     *
+     * ⇒ 处置（比"接线了但假的"和"静默忽略"都好）：**明确标成不支持**，
+     *   任何写入尝试都被 `put()` 拒并给出理由 —— 让"我配了自建 CA"这件事
+     *   **在配置那一刻就失败**，而不是等到连不上时去猜。
+     *   📌 本仓纪律：**配置项要么真生效，要么明确说它不生效**；
+     *     "看起来生效"是最坏的一种（它会把排查引向错误方向）。
+     */
+    public let unsupported: Bool
+    /* 不支持时的**可执行**理由（写清"为什么"与"怎么办"）。 */
+    public let unsupportedReason: String
 
     public init(key: String, label: String, defaultVal: String, secret!: Bool = false,
-                numMin!: Int64 = 0, numMax!: Int64 = 0) {
+                numMin!: Int64 = 0, numMax!: Int64 = 0,
+                unsupported!: Bool = false, unsupportedReason!: String = "") {
         this.key = key
         this.label = label
         this.defaultVal = defaultVal
         this.secret = secret
         this.numMin = numMin
         this.numMax = numMax
+        this.unsupported = unsupported
+        this.unsupportedReason = unsupportedReason
     }
 
     /* 是否是数值项（需要范围校验）。 */
@@ -124,7 +148,18 @@ public func aiSettingSpecs(): Array<AiSettingSpec> {
          *   值必须是 `env:` 或 `file:` 开头 —— 由 validateKeyRef 机制性保证。
          */
         AiSettingSpec(SET_AI_KEY_REF, "密钥**引用**（env:名 或 file:路径；⚠ 不存密钥本体）", "", secret: true),
-        AiSettingSpec(SET_AI_CA_BUNDLE, "CA bundle 路径（PEM）", "")
+        /*
+         * ⚠⚠ **本版本不支持**（第十份复查发现它"被校验、被存库、被回显，却没人消费"）。
+         *
+         * 我查过为什么接不上：`TlsClientConfig.certificate` 的类型是
+         *   `Option<Tuple<Array<Certificate>, PrivateKey>>` —— 那是**客户端证书（mTLS）**，
+         * **不是信任锚**。这个版本的 `TlsClientConfig` 没有 CA bundle 入口。
+         * ⇒ 与其留一个"看起来生效"的旋钮（会把排查引向错误方向），不如**明确拒绝写入**。
+         */
+        AiSettingSpec(SET_AI_CA_BUNDLE, "CA bundle 路径（⚠ 本版本不支持：框架未暴露信任锚配置）",
+                      "", unsupported: true,
+                      unsupportedReason: "本版本无法生效：stdx 1.1.3.1 的 TlsClientConfig 只支持「客户端证书(mTLS)」，没有自定义信任锚(CA bundle)入口。" +
+                          "若需要连自建 CA 的服务，请把该 CA 装进操作系统的信任库，或升级到暴露了信任锚配置的 stdx 版本。")
     ]
 }
 
@@ -143,6 +178,20 @@ public func aiSettingSpecs(): Array<AiSettingSpec> {
  *   （那它就不再是"可一眼看全的静态白名单"了）。
  *   ⇒ 现在这样：**各自的登记表是唯一真相**，而"合法性判断"收口到这一个函数。
  */
+/*
+ * 按 key 取配置项定义（找不到返回 None）。
+ * ⚠ 存在的理由：`put()` 需要判断"这一项是否**已登记但不支持**"，
+ *   而原来的 `aiSettingKeyKnown` 只回答"认不认得" —— 不够。
+ */
+public func aiSettingSpecOf(key: String): ?AiSettingSpec {
+    for (s in aiSettingSpecs()) {
+        if (s.key == key) {
+            return Some(s)
+        }
+    }
+    return None
+}
+
 public func aiSettingKeyKnown(key: String): Bool {
     if (aiSettingDefaultOfRaw(key).isSome()) {
         return true
@@ -543,6 +592,23 @@ public class AiSettingsRepo {
         if (!aiSettingKeyKnown(key)) {
             r.rejected = "未知的配置项：${key}（只有登记过的 key 才能写）"
             return r
+        }
+        /*
+         * ★★ 闸门①之二：**已登记但本版本不支持**的项 —— 拒绝写入并给出理由。
+         *
+         * ⚠ 为什么连"写"都要拒（而不是允许写、运行期忽略）：
+         *   复查实测这个旋钮的行为是「写入 200 → 回显正常 → **完全没人消费**」。
+         *   那是最坏的一类失败：使用者**以为配置生效了**，排查方向于是全错
+         *   （去查网络、查证书链，而事实是"这个开关根本没接线"）。
+         *   ⇒ 让它在**写入那一刻**失败，并说清「为什么」与「怎么办」。
+         */
+        match (aiSettingSpecOf(key)) {
+            case Some(s) =>
+                if (s.unsupported) {
+                    r.rejected = "配置项 ${key} 在本版本**不支持**（不会生效，故拒绝写入）：${s.unsupportedReason}"
+                    return r
+                }
+            case None => ()
         }
         // 闸门②：★★ 密钥引用必须过形状校验 —— 这是"密钥不落库"的机制保证
         if (key == SET_AI_KEY_REF) {

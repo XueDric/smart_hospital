@@ -7,6 +7,7 @@ import stdx.encoding.json.*
 import stdx.net.http.*
 import stdx.net.tls.*
 import std.env.*
+import std.sync.*
 import std.time.*
 
 /*
@@ -71,6 +72,69 @@ import std.time.*
  */
 /* 响应体读取上限：模型返回不该超过 1 MiB。没有上限时一个畸形/恶意响应能吃掉内存。 */
 public let AI_MAX_RESP_BYTES: Int64 = 1024 * 1024
+
+/*
+ * ★★ 出站并发闸（2026-10-09 补 —— 复查发现 `ai.max_concurrent` **被校验、被存库、
+ *    被回显，却没有任何地方消费**，正是本项目反复复抓的那一类"配置看起来生效"）。
+ *
+ * ⚠⚠ 这里有一个**必须讲清的口径边界**：
+ *   `ai.max_concurrent` 是**库配置**（管理员可改），而信号量的容量在**进程启动时**
+ *   就定了 —— 仓颉没有"运行时改信号量容量"这种操作。
+ *   ⇒ 所以本闸取**启动后第一次出站时读到的值**，之后不再变。
+ *     文档与回显必须写明这一点，否则又是一次"看起来生效"。
+ *   📌 为什么不每次调用都新建信号量：那等于**没有限流**（每个请求各自持有一个信号量）。
+ *
+ * ⚠ 另一个诚实边界（复查实测指出）：本闸限的是**本进程内同时进行的出站调用数**。
+ *   它不限制连接数上限、也不排队超时 —— 若并发远超上限，
+ *   请求会**在 acquire 处等待**（这是限流的本意：宁可等，不要打爆下游）。
+ */
+private var aiSemCapacity: Int64 = 0
+private let aiSemLock = Mutex()
+private var aiSem: ?Semaphore = None
+
+/* 取（必要时创建）出站并发闸。容量取**首次**调用时配置的值。 */
+private func aiAcquireGate(limit: Int64): Unit {
+    aiSemLock.lock()
+    try {
+        if (aiSemCapacity != limit) {
+            if (aiSem.isNone()) {
+                aiSem = Some(Semaphore(limit))
+                aiSemCapacity = limit
+            }
+            /*
+             * ⚠ 配置在运行中被改成**不同**的值时，**不重建**信号量
+             *   （重建会让正在等待的调用永久阻塞）。只记一行提示。
+             */
+        }
+    } finally {
+        aiSemLock.unlock()
+    }
+    match (aiSem) {
+        case Some(s) => s.acquire()
+        case None => ()
+    }
+}
+
+private func aiReleaseGate(): Unit {
+    match (aiSem) {
+        case Some(s) => s.release()
+        case None => ()
+    }
+}
+
+/*
+ * 单调时钟（毫秒）。
+ *
+ * ⚠⚠ 复查发现 `elapsedMs` **恒为 0** —— 根因是我把**同一个** `now` 参数既当起点又当终点：
+ *     `let t0 = now ... r.elapsedMs = now - t0` ⇒ 恒等于 0。
+ *   那个字段的注释写着"用于看板的调用耗时与超时排查"，
+ *   而它恰是能暴露"超时没接线"的信号 —— 却永远是 0。
+ *   ⇒ 改成**真的读时钟**（`DateTime.now()`）。
+ *   📌 教训：**用参数当"当前时间"就等于假设调用是瞬时的**；测耗时必须读真时钟。
+ */
+private func aiNowMs(): Int64 {
+    return DateTime.now().toUnixTimeStamp().toMilliseconds()
+}
 
 /* ===================== 结果与状态 ===================== */
 
@@ -208,7 +272,12 @@ public let AI_SYS_FALLBACK: String =
  */
 public func aiCallChat(o: AiRuntimeOptions, prompt: String, now: Int64): AiCallResult {
     let r = AiCallResult()
-    let t0 = now
+    /*
+     * ★★ 用**真时钟**量耗时（2026-10-09 修）。
+     * ⚠ 原来写的是 `let t0 = now` —— 而 `now` 是**调用方传进来的参数**，
+     *   末尾又用 `now - t0` ⇒ **恒等于 0**。复查实测确认了这一点。
+     */
+    let t0 = aiNowMs()
     let (can, why) = aiCanCall(o)
     if (!can) {
         r.reason = why
@@ -242,6 +311,13 @@ public func aiCallChat(o: AiRuntimeOptions, prompt: String, now: Int64): AiCallR
     reqBody.put("messages", msgs)
 
     try {
+        /*
+         * ★★ 出站并发闸（`ai.max_concurrent`）——2026-10-09 补。
+         * ⚠ 复查发现这个旋钮**被校验、被存库、被回显，却没有任何地方消费**。
+         *   ⚠ 口径边界：容量取**启动后首次出站**时配置的值（仓颉没有运行时改信号量容量），
+         *     已写进 `ai_settings.cj` 的说明与 `ai-live-check`。
+         */
+        aiAcquireGate(o.maxConcurrent)
         let b = ClientBuilder()
         /*
          * ⚠⚠ TLS **必须显式配置**，否则对 https:// 会直接抛
@@ -251,6 +327,20 @@ public func aiCallChat(o: AiRuntimeOptions, prompt: String, now: Int64): AiCallR
          *     · `TlsConfig` —— 是**接口**，不能实例化；
          *     · `ClientTlsConfig` —— **不存在**（编译器说 undeclared identifier）；
          *     · `TlsClientConfig` —— ✅ 就是它。
+         */
+        /*
+         * ⚠⚠ `ai.ca_bundle_path` **不能在这里接线**（2026-10-09 查清并如实处理）：
+         *
+         *   我原本打算设 `TlsClientConfig().certificate = Some(certs)`，编译器给出的期望类型是
+         *     `Option<Tuple<Array<Certificate>, PrivateKey>>`
+         *   —— 那是**客户端证书（mTLS）**，**不是信任锚**。
+         *   这个版本的 `TlsClientConfig` **没有** CA bundle / 自定义信任库入口。
+         *   ⇒ 它在**架构上无法在本版本生效**，不是"懒得接"。
+         *
+         *   ⇒ 处置：把那个配置项在 `ai_settings.cj` 里标成 **unsupported**，
+         *     **写入即被拒**并给出「为什么 + 怎么办」。这样"我配了自建 CA"
+         *     会在**配置那一刻**失败，而不是等到连不上时让人去猜网络。
+         *     📌 比"接线了但假的"和"静默忽略"都好 —— 那两者都会把排查引向错误方向。
          */
         b.tlsConfig(TlsClientConfig())
         /*
@@ -262,16 +352,45 @@ public func aiCallChat(o: AiRuntimeOptions, prompt: String, now: Int64): AiCallR
          *   而不是靠环境变量隐式生效（隐式生效正是"配置漂移"的来源）。
          */
         b.noProxy()
+        /*
+         * ★★ 超时（`ai.timeout_secs`）——2026-10-09 补。**这是本轮最严重的一个发现**。
+         *
+         * 复查实测：设 `ai.timeout_secs = 5`、端点指向不可达地址，
+         * 患者请求**挂了 21130 ms**，而 `ai_reason` 报的是操作系统级 connect 超时
+         * ⇒ 配置的 5 秒**完全没生效**。
+         * 静态确认：`timeoutSecs` 只出现在 `options()`、校验与解析断言里，出站**一次都没用**。
+         *
+         * ⚠⚠ **必须讲清的两个边界，不能假装超时是全能的**：
+         *
+         *   ① 框架**没有 connect 超时**（我把 `stdx.net.http.cjo` 的 ClientBuilder 成员
+         *      全列出来核对过：只有 readTimeout / writeTimeout / poolSize /
+         *      maxFrameSize / autoRedirect / proxy / logger，**没有 connectTimeout**）。
+         *      ⇒ 「连一个**不可达**地址」这一段的时长由**操作系统的 TCP 连接超时**决定
+         *        （本机实测约 21 秒），**我们在应用层改不了**。
+         *        所以复查那条 21 秒**不是"接线后又没生效"**，而是**连不上时必然如此**。
+         *   ② 但**握手成功之后的读写**是能限的，而且那才是"一直不回的端点"那种
+         *      真会**无限挂住并占着服务线程**的形态（复查也点出了这一层）。
+         *
+         * ⇒ 接的是 ①'s 能接的部分：**请求级** read/write 超时都设上，
+         *   并在文档里**如实写明 connect 阶段不受控**。
+         *   📌 只设 client 级不够 —— 请求级才是逐次生效的那一层，两层都设。
+         */
+        let d = Duration.second * o.timeoutSecs
+        b.readTimeout(d)
+        b.writeTimeout(d)
         let c = b.build()
         let req = HttpRequestBuilder().method("POST").url(o.endpoint)
             .header("Content-Type", "application/json")
             .header("Authorization", "Bearer " + key)
+            .readTimeout(d)
+            .writeTimeout(d)
             .body(reqBody.toString()).build()
         let resp = c.send(req)
         let status = Int64(resp.status)
         let body = aiReadAll(resp.body)
         c.close()
-        r.elapsedMs = now - t0
+        aiReleaseGate()
+        r.elapsedMs = aiNowMs() - t0
         if (status < 200 || status >= 300) {
             /*
              * ⚠ 错误体**不回显给患者**，只进 `reason`（运维看）。
@@ -300,7 +419,8 @@ public func aiCallChat(o: AiRuntimeOptions, prompt: String, now: Int64): AiCallR
                 return r
         }
     } catch (e: Exception) {
-        r.elapsedMs = now - t0
+        aiReleaseGate()
+        r.elapsedMs = aiNowMs() - t0
         /*
          * ⚠ 异常消息也可能含密钥（例如把整个请求 URL/头拼进消息的库）。
          *   一律过 `aiRedact`。**这一层不能省** —— 它的成本是一次字符串查找，
