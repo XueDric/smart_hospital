@@ -65,7 +65,28 @@ POST https://api.deepseek.com/v1/embeddings   -> 404
 ### 2.5 ★ RAG 接进分诊（`ai_triage.cj` + `http_app.cj`）
 `aiRagContext(hits)` → 片段进 Prompt 的「参考资料」段；`triageRagHits()` 取片段。
 
-### 2.6 测试
+'### 2.6 ★ 看板知识库块（`dashboard.cj`）
+
+`GET /admin/dashboard` 新增 `knowledge_base` 块：`docs` / `docs_enabled` / `chunks` /
+`chunks_embedded` / `embedding_coverage_pct` / `scan_limit` / **`scan_limit_reached`** / `note`。
+
+★ **为什么必须放在看板上**（而不是"知识库自己有 stats 接口就够"）：
+`GET /admin/kb/stats` 只有**知道要去看**的人才会调；而看板的用途是**看清全局**。
+知识库是分诊说明文案的来源，其规模与向量覆盖率决定"RAG 增强还能不能更强"
+⇒ 放在看板上，运维例行巡检就会看到"覆盖率长期 0%"，
+不必等到有人抱怨"模型说的和院内须知不一致"。
+
+★ `scan_limit_reached` 是**布尔结论**：块数是否已超过检索上限。
+超了之后**后面的块静默检索不到**（本仓最忌的形态）⇒ 看板上**一眼可见**，
+不让人自己去比 `chunks` 与 5000。
+
+⚠ **独立容错**：用看板自带的 `count1`（内部 catch），**不是** `kb_repo.cj` 的 `kbCount1`
+（后者是裸查询，表缺失会直接抛）。看板恰恰是"系统出问题时给人看的那一页"，
+它自己 500 会让人以为**整个系统**坏了。
+📌 顺带记一条坑：**同名/近名的两个取数助手，容错语义可能完全不同** ——
+不能按名字像就挑。
+
+### 2.7 测试'
 `AC-KB-1…5`（accept **401 项**）+ `kb-check.ps1`（**39 项**，HTTP 端到端）
 
 ---
@@ -224,8 +245,8 @@ POST https://api.deepseek.com/v1/embeddings   -> 404
 selftest      45 项 ✅（表集 12 -> 14 + 知识库域）
 authtest      17 项 ✅
 triagetest   108 项 ✅
-accept       401 项 ✅ **连跑 2 次一致**（AC-KB-1…5）
-kb-check      39 项 ✅（HTTP 端到端：权限/错误码/切块/停用/删除）
+accept       404 项 ✅ **连跑 2 次一致**（AC-KB-1…5）
+kb-check      45 项 ✅（HTTP 端到端：权限/错误码/切块/停用/删除/**看板块**）
 auth 25 / rate-limit 16 / triage 24 / previsit 86 / emr 54 / base 49 / p1-extra 49  ✅
 ★ 顺序混合验证（复查点名）：base-check ×2 全绿；base-check → triage-check ×2 全绿
 doc-counts ✅ 一致（端点 48 -> 55、accept 401、selftest 45）

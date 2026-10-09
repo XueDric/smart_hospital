@@ -215,6 +215,21 @@ $sj = $r.Body | ConvertFrom-Json
 Check "★ ② 含 docs/chunks/embedding_coverage_pct" `
       ($null -ne $sj.data.docs -and $null -ne $sj.data.chunks -and $null -ne $sj.data.embedding_coverage_pct)
 Check "★★ ③ 含口径说明（0% 时不能让人以为「功能坏了」）" ($sj.data.embedding_note.Length -gt 0)
+Check "★★ ③ 且给出**布尔结论** scan_limit_reached（静默触顶的显式信号）" `
+      ($null -ne $sj.data.scan_limit_reached -and $null -ne $sj.data.scan_limit)
+
+# ── [8] ★★ 看板里的知识库规模（与 stats 同源、且**独立容错**）
+Write-Host ""
+Write-Host "[8] ★★ 看板知识库块"
+$r = Req 'dash' 'GET' '/api/v1/admin/dashboard' @("Authorization: Bearer $admTok") $null
+Check "① 看板 → 200（知识库表缺失时也不该整页 500）" ($r.Http -eq 200) ("HTTP $($r.Http)")
+$dj = $r.Body | ConvertFrom-Json
+Check "★★ ② 含 knowledge_base 块" ($null -ne $dj.data.knowledge_base)
+Check "★★ ② 且计数存在（实际值随库变化，只断言「有真实的数」）" `
+      ($null -ne $dj.data.knowledge_base.docs -and $null -ne $dj.data.knowledge_base.chunks)
+Check "★★ ③ 含 scan_limit_reached（看板上**一眼可见**是否触顶，不让人自己去比）" `
+      ($null -ne $dj.data.knowledge_base.scan_limit_reached)
+Check "★★ ③ 且含口径说明（0% 不等于功能损坏）" ($dj.data.knowledge_base.note.Length -gt 0)
 
 # ── 清理
 Sql "DELETE FROM kb_chunk WHERE doc_id IN (SELECT id FROM kb_doc WHERE title LIKE 'KBCHK%');

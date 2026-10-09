@@ -239,15 +239,13 @@ public func registerKbRoutes(r: Router, auth: AuthRepo, gate: DevAuthGate, kb: K
         requireCan(p.role, Action.ManageKnowledgeBase)
         let data = kb.stats()
         /*
-         * ★ 附一句口径说明（与看板 `model_calls_note` 同一纪律）：
-         *   `embedding_coverage_pct` 是"块里有向量的比例"，
-         *   它直接决定**向量路能不能用** —— 0% 说明只能走关键词。
-         *   ⚠ 不写清口径的话，看到 0% 的人会以为"功能坏了"，
-         *     而事实是"没配 embedding 端点"（当前 DeepSeek 也没有该端点）。
+         * ⚠ 口径说明（`embedding_note` / `scan_limit_note`）**不在这里加** ——
+         *   它们由 `KbRepo.stats()` 一并产出。
+         *   2026-10-09 改：原来这里手写了一份，而 `stats()` 里没有 ⇒
+         *   "同一口径说明"存在**两处**，其中一处会被看板/别的调用方漏掉
+         *   （AC-KB-5 ⑨ 抓到的就是这个）。
+         *   📌 判据：**口径说明应当与被解释的数据同源**，不能靠调用方自觉补。
          */
-        data.put("embedding_note", JsonString(
-            "embedding_coverage_pct 为 0 表示尚无向量（当前检索走关键词路，source=keyword）。" +
-            "本版本 DeepSeek 未提供 embeddings 端点，故向量路需另配支持 embedding 的服务。"))
         sendOk(ctx, data)
     })
 

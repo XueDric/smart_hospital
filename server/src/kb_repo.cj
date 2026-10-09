@@ -415,6 +415,20 @@ public class KbRepo {
         o.put("scan_limit_note", JsonString(
             "检索最多扫描 scan_limit 个块（按 id 升序）；chunks 超过它时，后面的块**不会被检索到**。" +
             "scan_limit_reached=true 表示已触顶，需要分片或缩库。"))
+        /*
+         * ★★ `embedding_note` **放在这里**，而不是放在 HTTP 端点的 handler 里
+         *   （2026-10-09 由 AC-KB-5 ⑨ 抓到：端点里有一份、`stats()` 里没有，
+         *    于是"同一口径说明"有了**两处**——而其中一处会被看板/别的调用方漏掉）。
+         *
+         * ⚠ 为什么口径说明必须跟着数据走：`embedding_coverage_pct` 为 0 是**当前常态**
+         *   （DeepSeek 无 embeddings 端点），不解释的话看到 0% 的人会以为**功能坏了**。
+         *   把说明与数字**放在同一个对象里**，任何拿到这份数据的调用方
+         *   都自动带上解释 —— 而"记得在每个使用点补一句"迟早会漏。
+         *   📌 判据：**口径说明应当与被解释的数据同源**，不能靠调用方自觉。
+         */
+        o.put("embedding_note", JsonString(
+            "embedding_coverage_pct 为 0 表示尚无向量（当前检索走关键词路，source=keyword）。" +
+            "本版本 DeepSeek 未提供 embeddings 端点，故向量路需另配支持 embedding 的服务。"))
         return o
     }
 

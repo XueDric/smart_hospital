@@ -1,6 +1,7 @@
 package qingzhou
 
 import std.collection.*
+import stdx.encoding.json.*
 
 /*
  * SPDX-License-Identifier: MIT
@@ -494,6 +495,7 @@ public func acKb3(runner: TestRunner, db: DbBackend): Unit {
 
 /* ---------- AC-KB-5：★ RAG 片段接入分诊（三条硬约束）---------- */
 public func acKb5(runner: TestRunner, db: DbBackend): Unit {
+    let repo = KbRepo(db)
     println("=== AC-KB-5 ★★★ RAG 片段：过安全层 / 有界 / **改不了 options** ===")
 
     /* ① 空命中 ⇒ 空串（**不是**空段落 —— 那会诱导模型自己编参考资料）。 */
@@ -582,4 +584,35 @@ public func acKb5(runner: TestRunner, db: DbBackend): Unit {
                  v2.options[0].remainNum == 0)
     runner.check("★★★ ⑧ 且没有把知识库里的科室名塞进 options",
                  v2.options.size == 1)
+
+    /*
+     * ⑨ ★★ 看板/统计口径：`stats()` 必须给出"能不能检索全"的**布尔结论**。
+     *
+     * ⚠ 为什么这条断言重要（而不是"多个字段而已"）：
+     *   `KB_SCAN_LIMIT` 触顶后，超出的块**静默检索不到** —— 本仓最忌的形态。
+     *   只回报总块数不够（看到 6000 未必联想到"只扫 5000"）
+     *   ⇒ 必须有 `scan_limit_reached` 这个**显式信号**。
+     *   ⚠ 且必须断言它**当前是 false** —— 只断言"字段存在"的话，
+     *     一个恒为 true 的假信号也能通过（那就等于天天报警，很快没人看）。
+     */
+    let st = repo.stats()
+    runner.check("★★ ⑨ stats() 回报 scan_limit 与**布尔结论** scan_limit_reached",
+                 st.containsKey("scan_limit") && st.containsKey("scan_limit_reached"))
+    /*
+     * ⚠ `JsonObject.get` 返回 `?JsonValue` ⇒ **必须先 match 取出、再判类型**。
+     *   （本仓的坑：`asBool()` 是 `JsonValue` 的方法，直接对 `Option` 调会报
+     *    `'asBool' is not a member of enum 'Option<...>'`。）
+     */
+    var reached = true
+    match (st.get("scan_limit_reached")) {
+        case Some(jv) =>
+            if (jv is JsonBool) {
+                reached = jv.asBool().getValue()
+            }
+        case None => ()
+    }
+    runner.check("★★ ⑨ 当前块数远小于上限 ⇒ scan_limit_reached = false（不是恒 true 的假信号）",
+                 !reached)
+    runner.check("★★ ⑨ 且带口径说明（0% 时不能让人以为功能坏了）",
+                 st.containsKey("scan_limit_note") && st.containsKey("embedding_note"))
 }

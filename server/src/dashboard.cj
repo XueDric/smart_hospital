@@ -292,6 +292,58 @@ public class DashboardRepo {
             "`model:invalid` = 模型答了但输出未通过安全检查（要改 Prompt，不是查网络）"))
         o.put("ai", ai)
 
+        /* ---------- ⑥ P5 知识库规模 ---------- */
+        /*
+         * ★★ 这一块为什么必须存在（而不是"知识库自己有 stats 接口就够"）：
+         *   `GET /admin/kb/stats` 只有**知道要去看**的人才会调；而看板的用途是
+         *   **"看清全局"** —— 知识库是分诊说明文案的来源，它的规模与
+         *   **向量覆盖率**直接决定"RAG 增强还能不能更强"。
+         *   放在看板上，运维在例行巡检时就会看到"覆盖率长期 0%"，
+         *   而不是等到有人抱怨"模型说的和院内须知不一致"才发现。
+         *
+         * ⚠ 口径（照 `ai` 那一块的做法，每个数都要能自证）：
+         *   · `docs` / `chunks` —— 库里现有行数（**真实计数，不编造**）
+         *   · `embedding_coverage_pct` —— 有向量的块占比。**0% 是当前常态**
+         *     （DeepSeek 无 embeddings 端点），所以**必须带说明**，
+         *     否则看到 0% 的人会以为"功能坏了"。
+         *   · ★ `scan_limit_reached` —— **布尔结论**：块数是否已超过检索上限
+         *     （`KB_SCAN_LIMIT`）。超了之后**后面的块静默检索不到**，
+         *     这是本仓最忌的形态 ⇒ 必须在看板上**一眼可见**，不能让人自己去比。
+         *
+         * ⚠ 独立容错（与整块看板同一纪律）：`kb_doc` / `kb_chunk` 表不存在
+         *   （例如全新库、或 P5 建表还没跑）时显示 0，而**不是整页 500**。
+         *   ⇒ 用本文件**自带**的 `count1`（内部 catch），
+         *     而**不是** `kb_repo.cj` 的 `kbCount1` —— 后者是裸查询，表的缺失会直接抛。
+         *   📌 教训（写下来免得下一个人顺手换掉）：**同名/近名的两个取数助手，
+         *     容错语义可能完全不同。** 看板这一块的契约是"任何一项取不到都给 0"，
+         *     所以要选**明确带 catch 的那个**，不能按名字像就挑。
+         *     这不只是洁癖：看板恰恰是"系统出问题时给人看的那一页"，
+         *     它自己 500 会让人以为**整个系统**坏了。
+         */
+        let kbStats = JsonObject()
+        let kbDocs = count1("SELECT COUNT(*) FROM kb_doc", Array<DbValue>())
+        let kbDocsOn = count1("SELECT COUNT(*) FROM kb_doc WHERE enabled = 1", Array<DbValue>())
+        let kbChunks = count1("SELECT COUNT(*) FROM kb_chunk", Array<DbValue>())
+        let kbEmbedded = count1("SELECT COUNT(*) FROM kb_chunk WHERE embedding IS NOT NULL", Array<DbValue>())
+        kbStats.put("docs", JsonInt(kbDocs))
+        kbStats.put("docs_enabled", JsonInt(kbDocsOn))
+        kbStats.put("chunks", JsonInt(kbChunks))
+        kbStats.put("chunks_embedded", JsonInt(kbEmbedded))
+        var kbPct: Int64 = 0
+        if (kbChunks > 0) {
+            kbPct = kbEmbedded * 100 / kbChunks
+        }
+        kbStats.put("embedding_coverage_pct", JsonInt(kbPct))
+        kbStats.put("scan_limit", JsonInt(KB_SCAN_LIMIT))
+        kbStats.put("scan_limit_reached", JsonBool(kbChunks > KB_SCAN_LIMIT))
+        kbStats.put("note", JsonString(
+            "docs/chunks 是库中真实计数。`embedding_coverage_pct` 为 0 表示尚无向量" +
+            "（当前走**关键词检索**，`source=keyword`）—— 本版本 DeepSeek 未提供 " +
+            "embeddings 端点，故向量路需另配服务，**0% 不等于功能损坏**。" +
+            "★ `scan_limit_reached=true` 表示块数已超过检索上限，**超出部分不会被检索到**" +
+            "（需要分片或缩库），看板在此**显式报警**而不是让它静默发生。"))
+        o.put("knowledge_base", kbStats)
+
         o.put("generated_at", JsonInt(now))
         return o
     }
