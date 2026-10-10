@@ -247,11 +247,66 @@ authtest      17 项 ✅
 triagetest   108 项 ✅
 accept       442 项 ✅ **连跑 2 次一致**（AC-KB-1…5 + AC-BIND-1）
 kb-check      45 项 ✅（HTTP 端到端：权限/错误码/切块/停用/删除/**看板块**）
-ai-live-check 19 项 ✅（真模型：source=model、密钥不落库、模型绕不过验证层）
+ai-live-check 24 项 ✅（真模型：source=model、密钥不落库、模型绕不过验证层；**结尾自检残留为 0**）
 auth 25 / rate-limit 16 / triage 24 / previsit 86 / emr 54 / base 49 / p1-extra 49  ✅
 ★ 顺序混合验证（复查点名）：base-check ×2 全绿；base-check → triage-check ×2 全绿
+★ ai-live-check ×2 全绿且**两次之间残留为 0**（见下方 §十二）
 doc-counts ✅ 一致（端点 48 -> 55、accept 442、selftest 45）
 ```
+
+---
+
+## 十二、`ai-live-check.ps1` 的夹具残留（P5 收尾自查发现，已修）
+
+**发现**：m01474 的两件任务提交推送之后，收尾时看到 `hospital_test` 里留着
+
+```
+department 1760546  AILive呼吸科  code=AILIVE
+doctor     900192   AILive医生    department_id=1760546
+auth_user  29       ailivepat
+schedule   1 行
+```
+
+**根因**：该脚本**从不清理**，只在建夹具时"建不出来就按名字反查复用"
+（`ai-live-check.ps1` 的 `if ($did -le 0) { … ORDER BY id DESC LIMIT 1 }` 一族）。
+⇒ 残留**不增长**（所以一直没人注意），但**一直留着**。
+
+**危险性**与 `base-check` 那次**完全同源**：`accept` 的 `hResetAll` 只清业务表、
+**不重置 `AUTO_INCREMENT`** ⇒ 下轮 INSERT 可能撞残留行的主键 ⇒ **静默失败** ⇒
+随后"分诊该推荐这个科室"的断言假红，**读起来完全像产品缺陷**。
+⇒ 它违反本仓 P5 阶段刚立的 **AM 纪律**：测试脚本要自检「本脚本的残留为 0」。
+
+**修法**（三处）：
+
+1. **结尾新增 `[6] ★ 结尾自检：本脚本的夹具残留为 0`**：按
+   `schedule → auth_token → auth_user → doctor → department` 顺序删
+   （⚠ **顺序不能换**：本仓**无外键**，被引用方要最后删），再用 4 个 `COUNT(*)`
+   断言全 0。实测残留 `0/0/0/0`。
+2. **断言从"弱"改成"精确"，并自己制造前提**：原来那条
+   `options 仍由规则+数据库给出` 只证明了"推荐项都有号" ——
+   **一个返回空数组的 `options` 也能通过**。补三条 ★★：
+   ① `options` 含规则命中的「AILive呼吸内科」；② 每个 `department_id` 在库里都有号
+   （这是"模型一个字节都改不了 `options`"的**可测形式**：模型若能加料，加的必然是
+   库中无号的科室）；③ `options` 无重复部门。
+   ⚠ 为让 ① 有意义，夹具里**显式建出「AILive呼吸内科」+ 医生 + 有号排班**：
+   主诉"咳嗽三天"经 `deptRules()`（`triage.cj:157-159` 词表含"咳嗽"）命中**「呼吸内科」**，
+   而 `bookableSlotsInDepartment` 是按 `WHERE d.name = ?` **精确匹配**的。
+   实测（2026-10-10）库里**没有**「呼吸内科」这一行 ⇒ 分诊返回的是
+   `TR_ALTERNATIVES` **备选**列表（响应 `810003,1777777` 而库 `810003,1777777,1777779`），
+   我一度写的"`options` = 库里有号部门集合"于是**报红但红得没有意义**
+   ——它红的原因是"库里没有呼吸内科"，与"模型有没有改 `options`"毫无关系。
+   📌 **断言必须建立在自己制造的前提上**，不能建立在"上一轮测试碰巧留下的残留"上
+   —— 那正是 `base-check` 假红的成因（与 `docs/P5-HANDOFF.md` §七 的 AK/AM 同源）。
+3. `ai-live-check.ps1` 的 **UTF-8 BOM 补回**（`edit` 工具会去掉 BOM；不带 BOM 时
+   PS 5.1 按 ANSI 读 ⇒ 中文乱码、脚本可能**假成功**，见 §十一 的工具链记录）。
+
+**验证**：连跑 **2 次均 24 项全绿**（`exit=0`），两次之间全库普查
+`AILive-dept=0 / AILive-doc=0 / AILive-user=0 / orphan-sched=0`。
+⚠ **如实标注一处未治的既有隐患**（本次发现，未在本次修）：
+`accept` 的 `hResetAll` 清 `department` 时**不连带** `schedule` ⇒ 实测存在
+**孤儿排班**（`NOT EXISTS(department)`），而 `bookableSlotsInDepartment` 是
+`JOIN department` 的（孤儿不会被推荐），所以当前**不影响行为**，但它会让
+"按 `department_id` 数有号排班"的核对偏多。
 
 ---
 

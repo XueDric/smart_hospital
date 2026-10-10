@@ -147,6 +147,32 @@ INSERT INTO schedule (doctor_id, department_id, work_date, period, total_num, re
 $sc = One "SELECT COUNT(*) FROM schedule WHERE department_id = $did"
 Check "科室「AILive呼吸科」+ 医生 + 有号排班就绪（schedule=$sc）" ($did -gt 0 -and $docId -gt 0 -and "$sc" -eq '1')
 
+# ★ 规则认出的科室必须**真的有号**，否则分诊会走 `TR_ALTERNATIVES` 备选分支
+#   （`triage.cj` 的 ④：`bookableSlotsInDepartment(guess.deptName,…)` 为空时
+#    "尽力给出**有号的**备选"，options 就变成"其它科室"，本脚本的断言随之失去意义）。
+#
+# ⚠ 为什么这里必须**自己制造前提**：
+#   主诉"咳嗽三天"经 `deptRules()` 命中 **「呼吸内科」**（`triage.cj:157-159` 词表含"咳嗽"），
+#   而 `bookableSlotsInDepartment` 是按 `WHERE d.name = ?` 精确匹配的。
+#   实测（2026-10-10）：库里**没有**「呼吸内科」这一行 ⇒ 分诊返回的是备选列表
+#   （响应=810003,1777777 而库=810003,1777777,1777779），
+#   我先前那条"options = 库里有号部门集合"的断言于是**报红，但红得没有意义**——
+#   它红的原因是"库里没有呼吸内科"，与"模型有没有改 options"毫无关系。
+#   📌 纪律（本仓 AK/AM 同源）：**断言必须建立在自己制造的前提上**，
+#   不能建立在"上一轮测试碰巧留下的残留"上 —— 那正是 `base-check` 假红的成因。
+$null = SqlFile "DELETE FROM schedule WHERE department_id IN (SELECT id FROM department WHERE name = 'AILive呼吸内科');
+INSERT INTO department (name, code, enabled, created_at)
+  VALUES ('AILive呼吸内科', 'AILIVERESP', 1, 0);
+INSERT INTO doctor (name, department_id, title, enabled, created_at)
+  SELECT 'AILive呼吸医生', id, '医师', 1, 0 FROM department WHERE name = 'AILive呼吸内科';
+INSERT INTO schedule (doctor_id, department_id, work_date, period, total_num, remain_num, version, enabled, created_at)
+  SELECT dr.id, dr.department_id, '2027-07-02', 'AM', 10, 10, 0, 1, 0
+    FROM doctor dr WHERE dr.name = 'AILive呼吸医生';"
+$wantDept = [int](One "SELECT id FROM department WHERE name = 'AILive呼吸内科'")
+$wantSch = [int](One "SELECT COUNT(*) FROM schedule WHERE department_id = $wantDept AND remain_num > 0 AND enabled = 1 AND work_date >= '2026-10-10'")
+Check "★ 前提就绪：规则命中的「AILive呼吸内科」确实有号（dept=$wantDept schedule=$wantSch）" `
+      ($wantDept -gt 0 -and $wantSch -ge 1)
+
 $uid = 0
 $r = Req 'mkpat' 'POST' '/api/v1/admin/users' @("Authorization: Bearer $admTok") '{"login_name":"ailivepat","password":"Zq4nRw8t","role":"patient","ref_id":950001}'
 if ($r.Http -eq 201) { $uid = [int](($r.Body | ConvertFrom-Json).data.user_id) }
@@ -172,6 +198,31 @@ Check "options 仍由规则+数据库给出（本脚本建的有号科室在库�
       ("推荐=" + (($j.data.options | ForEach-Object { $_.department_name }) -join ','))
 Check "推荐里没有无号的排班（模型绕不过这条硬性验证层）" `
       ((@($j.data.options | Where-Object { $_.remain_num -le 0 })).Count -eq 0)
+
+# ★ 上一条只证明了"推荐项都有号"，那是**弱**断言：一个返回**空数组**的 options 也能通过。
+#   补一条**精确**断言（前提由 [3] 自己制造，见上方 ★ 说明）：
+#   ① 规则命中的「AILive呼吸内科」**必须**出现在 options 里 —— 它确实有号，没理由不出现；
+#   ② options 里每一个 department_id **都必须**在库里有号 —— 这条是"模型一个字节都改不了
+#      options"（P5 三条硬约束）的**可测形式**：模型若能往里加料，加的必然是一个
+#      库中无号的科室，于是这里就会红。
+$optDept = @($j.data.options | ForEach-Object { [int]$_.department_id })
+$optUniq = @($optDept | Sort-Object -Unique)
+Check "★★ options 含规则命中的「AILive呼吸内科」（它有号，模型没把它吃掉）" `
+      ($optDept -contains $wantDept) `
+      ("响应=" + ($optDept -join ',') + " 规则命中=$wantDept")
+
+# ② 逐个回库核对"这个部门确实有号"。做成一句 SQL 拿回"无号部门"的名单最省事：
+$noSlot = @()
+foreach ($d in $optUniq) {
+    $n = [int](One "SELECT COUNT(*) FROM schedule WHERE department_id = $d AND remain_num > 0 AND enabled = 1 AND work_date >= '2026-10-10'")
+    if ($n -lt 1) { $noSlot += $d }
+}
+Check "★★ options 里每个部门在库里都有号（模型加不进无号的料）" `
+      ($noSlot.Count -eq 0) `
+      ("无号的=" + ($noSlot -join ',') + " 响应=" + ($optUniq -join ','))
+Check "★★ options 无重复部门（同一科只出现一次）" `
+      (@($optDept).Count -eq $optUniq.Count) `
+      ("响应=" + ($optDept -join ','))
 Check "ai_note 非空（模型真的产出了给患者的说明）" ($j.data.ai_note.Length -gt 0) ("ai_note=" + $j.data.ai_note)
 $note = $j.data.ai_note
 $denyPat = 'mg|毫克|剂量|服用|口服|处方|注射|输液|诊断为|确诊|手术|tablet|dose'
@@ -191,6 +242,36 @@ Check "看板 model_calls = $($ai.model_calls)（> 0，不再是硬编码 0）" 
 Check "看板给出 source 分布（rules=$($ai.rules_calls) invalid=$($ai.model_invalid_calls)）" `
       ($null -ne $ai.rules_calls -and $null -ne $ai.model_invalid_calls)
 Check "看板说明了口径（不含预问诊）" ($ai.model_calls_note -match '预问诊')
+
+# ── [6] ★ 清理并自检残留为 0
+#
+# ⚠ 为什么必须清理（AM 纪律，P5 阶段立的）：
+#   本脚本此前**从不清理**，只在建夹具时"建不出来就按名字反查复用"。
+#   后果是残留跨轮累积，而它踩的坑和 `base-check` 那次**一模一样**：
+#   `accept` 的 `hResetAll` 只清业务表**不重置 AUTO_INCREMENT** ⇒
+#   下轮 INSERT 可能撞上残留行的主键 ⇒ **静默失败** ⇒
+#   随后"分诊该推荐这个科室"的断言假红，**读起来完全像产品缺陷**。
+#   （2026-10-10 实测残留：department 1760546 / doctor 900192 / auth_user 29。）
+#
+# ⚠ 删除顺序不能换：本仓**无外键**，全靠应用层守。
+#   被引用的是 department/doctor/user，所以必须先删引用方（schedule），
+#   再删 auth_user 的令牌，最后才删医生、科室、账号。
+$null = SqlFile @"
+DELETE FROM schedule     WHERE department_id IN (SELECT id FROM department WHERE name LIKE 'AILive%');
+DELETE FROM auth_token   WHERE user_id IN (SELECT id FROM auth_user WHERE login_name LIKE 'ailive%');
+DELETE FROM auth_user    WHERE login_name LIKE 'ailive%';
+DELETE FROM doctor       WHERE name LIKE 'AILive%';
+DELETE FROM department   WHERE name LIKE 'AILive%';
+"@
+
+Write-Host ""
+Write-Host "[6] ★ 结尾自检：本脚本的夹具残留为 0"
+$leftDept = [int](One "SELECT COUNT(*) FROM department WHERE name LIKE 'AILive%'")
+$leftDoc = [int](One "SELECT COUNT(*) FROM doctor WHERE name LIKE 'AILive%'")
+$leftUsr = [int](One "SELECT COUNT(*) FROM auth_user WHERE login_name LIKE 'ailive%'")
+$leftSch = [int](One "SELECT COUNT(*) FROM schedule WHERE department_id IN (SELECT id FROM department WHERE name LIKE 'AILive%')")
+Check "★★ 科室/医生/账号/排班残留均为 0（实得 $leftDept/$leftDoc/$leftUsr/$leftSch）" `
+      ($leftDept -eq 0 -and $leftDoc -eq 0 -and $leftUsr -eq 0 -and $leftSch -eq 0)
 
 Write-Host ""
 if ($failed -eq 0) {
