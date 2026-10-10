@@ -708,6 +708,13 @@ public func runAcceptance(db: DbBackend): Int64 {
     acKb3(runner, db)
     acKb4(runner, db)
     acKb5(runner, db)
+    /*
+     * 参数化绑定的写路径（定义在 acceptance_bind.cj）。
+     * ⚠ 排在**最后**：它只碰自己的表 `ac_bind_probe`（开头 DROP、结尾 DROP），
+     *   与别的用例零共享，所以放哪儿都行 —— 放最后是为了不改变既有用例的执行顺序
+     *   （它们之间有共享夹具的隐含顺序）。
+     */
+    acBind1(runner, db)
     println("")
     println("通过 ${runner.passed} 项，失败 ${runner.failed} 项")
     if (runner.failed == 0) {
