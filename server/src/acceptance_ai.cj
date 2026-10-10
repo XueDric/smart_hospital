@@ -214,6 +214,22 @@ public func acP3_3(runner: TestRunner, db: DbBackend): Unit {
         let _e = repo.put(SET_AI_ENDPOINT, "http://api.example.com/v1", now)
         let o4 = repo.options(now)
         runner.check("★ ④ http:// endpoint 被拒（明文调模型 = 密钥裸奔）", !o4.enabled)
+        /*
+         * ★★ ④之二（2026-10-09 第十一份复查后新增）：
+         *   拒绝理由里必须**说清"本版本没有明文放行开关"**。
+         *
+         *   ⚠ 为什么这是一条**要钉住的断言**（而不是"消息文案无所谓"）：
+         *     上一版这里没有这句，而 `AiRuntimeOptions` 的注释写着
+         *     "只能由启动参数置位" —— 那个参数**根本不存在**。
+         *     于是运维（以及复查者本人）会去翻启动参数找一个不存在的开关，
+         *     白白耗时间，最后得到的结论还是"不确定是不是我配错了"。
+         *   📌 判据：**错误消息要能终止排查** —— 明确说"没有这条路"，
+         *     比只说"不支持明文"有用：后者仍让人怀疑是不是有别的开关没找到。
+         */
+        runner.check("★★ ④ 且理由里明确说「不提供明文放行开关」（终止排查，不让人去翻启动参数）",
+                     o4.disabledReason.contains("不提供"))
+        runner.check("★★ ④ 且给出可行的替代（https 或本机反向代理终止 TLS）",
+                     o4.disabledReason.contains("反向代理"))
         let _f = repo.put(SET_AI_ENDPOINT, "https://api.example.com/v1", now)
 
         // ⑤ 越界值必须被拒（照基线口径）
@@ -374,7 +390,49 @@ public func acP3_4(runner: TestRunner, db: DbBackend): Unit {
         // ② ★ endpoint 的**查询串**不得出现（有些网关把 key 放 ?api-key=）
         runner.check("★★ ② 回显不含 endpoint 的查询串（可能含凭据）",
                      !view.contains("SECRET_TOKEN_XYZ"))
-        runner.check("② 回显里的 endpoint 只有 host", view.contains("api.example.com"))
+        /*
+         * ★★ ②之二（2026-10-09 第十一份复查后新增）：**路径必须保留**。
+         *
+         * ⚠ 原来这里断言的是"只有 host"，而那条口径**过度脱敏**了：
+         *   它把路径也抹掉 ⇒ 管理员看不到自己配的是哪条路径。
+         *   复查也确认"生效值没有被截断"（`o.endpoint` 是原样交给 `url(...)`），
+         *   所以抹掉路径**没有安全收益**，只有可用性损失。
+         *
+         * ⚠ 为什么这条断言值得单列（不是"文案偏好"）：
+         *   brief §2.1 第 4 条要求**对话模型与向量模型分开配** ——
+         *   两者很可能是**同一 host 的不同路径**（`/v1/chat/completions` vs
+         *   `/v1/embeddings`）。只回显 host 的话，管理员盯着两个一样的
+         *   `https://api.example.com` **无法确认有没有配反**；
+         *   而配反的后果是"检索永远走关键词 / 模型永远不回答"，
+         *   排查方向与真实原因**完全对不上**（本仓最忌的那类）。
+         *   📌 判据：**回显要足以让配置者核对「我配对了没有」** ——
+         *     该抹的只有**凭据**，路径不是凭据。
+         */
+        runner.check("★★ ② 回显**保留路径**（管理员要能核对配的是哪条，实得含 /v1/chat=${view.contains("/v1/chat")}）",
+                     view.contains("/v1/chat"))
+        runner.check("★ ② 且不含查询串（`token=` 后面的东西一律不出现）", !view.contains("token="))
+        runner.check("② 回显里的 endpoint 含 host", view.contains("api.example.com"))
+        /*
+         * ★★ ②之三：直接钉 `aiSafeHost` 的**四个边界**（它现在多了一道 userinfo 处理）。
+         *
+         * ⚠ userinfo 是**最直白的凭据形态**（`https://user:pass@host/`），
+         *   而它**不是查询串** ⇒ 原来"只取 scheme://host"的实现顺带挡住了它，
+         *   改成"保留路径"之后就必须**显式**挡 —— 否则这次改动会**引入一个泄露**。
+         *   📌 教训：**放宽一个脱敏规则时，要重新检查原来"顺带被挡住"的东西**。
+         *     （原来挡住的可能不止是你想放开的那些。）
+         */
+        runner.check("★★ ② aiSafeHost 抹掉 userinfo 凭据",
+                     !aiSafeHost("https://user:pass@api.example.com/v1/chat").contains("pass"))
+        runner.check("★★ ② 且仍保留 host 与路径",
+                     aiSafeHost("https://user:pass@api.example.com/v1/chat") ==
+                     "https://api.example.com/v1/chat")
+        runner.check("★ ② 密码含 `@` 时也抹干净（取**最后一个** @）",
+                     !aiSafeHost("https://user:p@ss@api.example.com/v1").contains("ss@"))
+        runner.check("★ ② 抹掉查询串与 fragment",
+                     aiSafeHost("https://h/v1/chat?api-key=K#frag") == "https://h/v1/chat")
+        runner.check("★ ② 无路径时就是 scheme://host",
+                     aiSafeHost("https://h") == "https://h")
+        runner.check("★ ② 空串 ⇒ 空串（不抛）", aiSafeHost("").size == 0)
         // ③ 非秘密项的值应当能看到（否则管理员没法核对配置）
         runner.check("③ 非秘密项（endpoint）的值可见", view.contains("api.example.com"))
         // ④ 秘密项只给"设置了没有"与引用类型

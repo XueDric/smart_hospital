@@ -130,9 +130,13 @@ public let SET_AI_CA_BUNDLE: String = "ai.ca_bundle_path"
  * ⚠ 刻意**收哪些、不收哪些**（可解释，不是照抄命令行参数）：
  *   收：开关 / endpoint / model / 超时 / 并发 / max_tokens / 密钥引用 / CA 路径
  *       —— 这些是"运维想调、且改了应该立刻生效"的。
- *   不收：`insecureTrustAll` —— 它是"仅本机开发跳过证书校验"的危险开关，
- *       **不该有"在运行时被改开"的路径**（那是把生产环境变成可被远程关掉 TLS 校验）。
- *       它只能由**启动参数**决定，且启动时就打醒目警告（照基线口径）。
+ *   不收：任何"放行明文 / 跳过 TLS 校验"的开关。
+ *       理由：它**不该有"在运行时被改开"的路径** ——
+ *       那是把生产环境变成**可被远程关掉 TLS 校验**。
+ *       ⚠⚠ 而"由启动参数决定"这条**在本版本并不存在**：
+ *       `AiRuntimeOptions.allowPlaintextEndpoint` 恒为 false，`serve` 也没有对应参数。
+ *       原来的注释在这里承诺了"只能由启动参数决定"，把人引向一个**不存在的开关**
+ *       （第十一份复查照着它去试了）⇒ 已改成如实陈述，见该类上方的完整说明。
  *       📌 这是一条**刻意的遗漏**，不是忘了 —— 写在这里免得将来有人"补齐"。
  */
 public func aiSettingSpecs(): Array<AiSettingSpec> {
@@ -375,8 +379,30 @@ public func keyRefFilePath(ref: String): ?String {
  *   ③ 字段也**刻意不同**：这里**没有** `apiKeyFile` —— 密钥引用在装配时才解析，
  *      不混进"路径"字段（见 `AiSettingsRepo.options` 的注释）。
  *
- * ⚠ `insecureTrustAll` 在这里存在，但**只能由启动参数置位**，
- *   **不可**通过配置项修改（见 `aiSettingSpecs()` 的"刻意的遗漏"说明）。
+ * ⚠⚠ `allowPlaintextEndpoint` —— **本版本恒为 false，没有任何赋值点。**
+ *
+ *   2026-10-09 第十一份复查指出：这里原来叫 `insecureTrustAll`，注释写着
+ *   「**只能由启动参数置位**」，而 `serve` 的参数里**根本没有那一个**
+ *   （只有 `--port` / `--bind` / `--tls-cert` / `--tls-key` / `--tls-files` /
+ *   `--dev-auth` / `--prod`）⇒ 于是那个注释把人引向一个**不存在的开关**，
+ *   复查者本人就照着它去试了。
+ *   这正是本仓反复复抓的那一类：**声称存在的机制没接线**。
+ *
+ *   ⇒ 处置是**改承诺，不是补齐机制**，两个理由：
+ *     ① **名字与用途不符**：`insecureTrustAll` 表达的是「**跳过证书校验**」（TLS 信任），
+ *        而它在这里的实际用途是「**允许明文 http**」—— 两件不同的事混在一个字段上。
+ *        ⇒ 改名 `allowPlaintextEndpoint`，让名字说清它到底放开什么。
+ *     ② **补一个"允许明文"的启动参数 = 新增攻面**，而收益只是"本机跑 Ollama"这类场景。
+ *        对一个医疗系统，"本机回环"这个约束**很难在代码里钉死**
+ *        （配个别的回环别名、或 DNS 变了，约束就悄悄失效）
+ *        ⇒ 不值得为便利换一个**看起来被约束、实际可能没约束住**的开关。
+ *
+ *   ⚠ **失败方向是安全的**（fail-closed）：恒为 false ⇒ 明文 endpoint 一律被拒，
+ *     拿不到"以为放开了其实没放开"的半吊子状态。
+ *
+ *   📌 将来真要支持明文（例如接本机模型），**必须做成独立的一件事**：
+ *     单独的参数 + **只允许回环**的显式校验 + 启动时打醒目警告 + 单独的测试，
+ *     而不是复用一个名字指向别处的旧字段。
  */
 public class AiRuntimeOptions {
     public var endpoint: String = ""
@@ -387,8 +413,8 @@ public class AiRuntimeOptions {
     public var timeoutSecs: Int64 = 30
     public var maxConcurrent: Int64 = 4
     public var maxTokens: Int64 = 2048
-    /* ⚠ 仅启动参数可置位；为真时启动打醒目警告。**不可**由库配置改。 */
-    public var insecureTrustAll: Bool = false
+    /* ⚠ 本版本**恒为 false**（没有任何赋值点，见下方说明）。 */
+    public var allowPlaintextEndpoint: Bool = false
 
     /* 校验结果。 */
     public var enabled: Bool = false
@@ -402,7 +428,10 @@ public class AiRuntimeOptions {
  *
  * 口径照基线 `aiValidate`（那份在 baseline 下不可编译，但**边界条件照抄**，
  * 因为每条边界背后都有一个实测踩出来的理由）：
- *   · endpoint 必须 https://（明文调模型 = 密钥裸奔），除非启动参数显式放行
+ *   · endpoint 必须 https://（明文调模型 = 密钥裸奔）。
+ *     ⚠ 这里**没有**"启动参数显式放行"这条路 —— 见 `AiRuntimeOptions`
+ *       上方关于 `allowPlaintextEndpoint` 的说明（本版本恒为 false，
+ *       原来的注释承诺了一个不存在的参数，已改）。
  *   · timeout 1..300（0 = 无限等待；过大在 Duration 乘法处溢出）
  *   · maxConcurrent 1..64（它直达 Semaphore 计数）
  *   · maxTokens 64..8192（过小会截断输出 ⇒ 非法 JSON ⇒ 静默降级）
@@ -417,9 +446,15 @@ public func aiRuntimeValidate(o: AiRuntimeOptions): Unit {
         o.disabledReason = "未配置 ${SET_AI_ENDPOINT}，AI 功能不可用（其余功能不受影响）"
         return
     }
-    if (!o.insecureTrustAll && !startsWithAscii(o.endpoint.toAsciiLower(), "https://")) {
+    if (!o.allowPlaintextEndpoint && !startsWithAscii(o.endpoint.toAsciiLower(), "https://")) {
         o.enabled = false
-        o.disabledReason = "endpoint 必须是 https://（明文调用大模型 = 密钥裸奔）"
+        /*
+         * ⚠ 错误消息必须**说清"本版本没有放行开关"** ——
+         *   否则运维会去翻启动参数找一个不存在的选项
+         *   （第十一份复查就是这么被上一版注释引偏的）。
+         */
+        o.disabledReason = "endpoint 必须是 https://（明文调用大模型 = 密钥裸奔）；" +
+            "本版本**不提供**明文放行开关，改用 https 或本机反向代理终止 TLS"
         return
     }
     if (o.timeoutSecs <= 0 || o.timeoutSecs > 300) {
@@ -801,12 +836,31 @@ public func aiSettingsJson(repo: AiSettingsRepo, now: Int64): JsonObject {
 }
 
 /*
- * 只取 endpoint 的 `scheme://host`（去掉路径与查询串）。
+ * 把 endpoint 的**凭据部分**抹掉，保留到路径为止（`scheme://host[:port]/path`）。
  *
  * ⚠ 与基线 `aiHostOnly` 同一个理由：完整 URL 可能含查询串里的凭据
  *   （有些网关把 key 放在 `?api-key=`），打进响应/日志就是泄露。
  *   这里自己实现一份而不是复用基线的：基线那份在 `baseline/` 下，**不参与本仓编译**
- *   （见 README「基线只读参考」）。所以这是一个**有意的小重复**。
+ *   （见 README「基线只读参考」）。这是一个**有意的小重复**。
+ *
+ * ★★ 2026-10-09 第十一份复查后**改过一次**：原来只返回 `scheme://host`，
+ *   **连路径也抹掉** ⇒ 管理员看不到自己配的是哪条路径。
+ *   给出的理由是"整条 URL 可能含查询串凭据" —— 那个理由**只支持抹掉查询串**，
+ *   不支持抹掉路径（复查也确认：生效值没有被截断，`o.endpoint` 是原样交给 `url(...)`）。
+ *
+ *   ⚠ 为什么"能看到路径"是**必须**的，而不是讲究：
+ *     brief §2.1 第 4 条明确要求**对话模型与向量模型分开配** ——
+ *     两者的 endpoint 很可能是**同一个 host 的不同路径**
+ *     （`/v1/chat/completions` vs `/v1/embeddings`）。
+ *     只回显 host 的话，管理员盯着两个一模一样的 `https://gw.corp` **无法确认**
+ *     自己有没有把两条配反 —— 而配反的后果是"检索永远走关键词/模型永远不回答"，
+ *     排查方向与真实原因**完全对不上**（这是本仓最忌的那类失败）。
+ *     📌 判据：**回显要足以让配置者核对"我配对了没有"**；
+ *       抹掉的信息里，只有**凭据**是必须抹的。
+ *
+ * ⚠ 仍然抹掉的两处（都是**真的**凭据位置）：
+ *   · `?query` / `#fragment` —— 网关把 key 放这里很常见
+ *   · userinfo（`https://user:pass@host/`）—— 这是最直白的凭据形态
  */
 public func aiSafeHost(url: String): String {
     if (url.size == 0) {
@@ -827,13 +881,59 @@ public func aiSafeHost(url: String): String {
         }
         k = k + 1
     }
-    var end = start
-    while (end < arr.size) {
-        let c = arr[end]
+    /*
+     * ★ 抹掉 userinfo：`scheme://` 之后、**第一个 `/`/`?`/`#` 之前**，
+     *   若其中含 `@`，则 `@` 及之前全是凭据。
+     *   ⚠ 用"第一个 `/`/`?`/`#` 之前的**最后一个** `@`"来定位：
+     *     密码本身可能含 `@`（`https://user:p@ss@host/`）⇒ 用第一个 `@` 会切错。
+     */
+    var hostStart = start
+    var scan = start
+    var lastAt: Int64 = -1
+    while (scan < arr.size) {
+        let c = arr[scan]
         if (c == r'/' || c == r'?' || c == r'#') {
             break
         }
-        end = end + 1
+        if (c == r'@') {
+            lastAt = scan
+        }
+        scan = scan + 1
     }
-    return String(arr[0..end])
+    if (lastAt >= 0) {
+        hostStart = lastAt + 1
+    }
+    /*
+     * ★★ 终点与拼装：**逐 token 收集**，遇到 `?`/`#` 就停（凭据可能出现的地方）；
+     *   **`/` 不停** —— 路径要保留（见上方说明）。
+     *
+     * ⚠ 2026-10-09 改过一次实现：原来是 `String(arr[0..hostStart]) + String(arr[hostStart..end])`，
+     *   本意是"保留 scheme:// 前缀 + host/路径"。但那样**把 userinfo 又拼回来了**——
+     *   `arr[0..hostStart]` 里含 `user:pass@` ⇒ 凭据照样进响应。
+     *   （AC-P3-4 ② 的五条断言当场抓到：`aiSafeHost` 没抹掉 `pass`。）
+     *   📌 教训：**"切一段、再接一段"的脱敏非常容易把刚切掉的东西接回来** ——
+     *     凡是"抹掉中间一段"，就**重新拼装**（逐 token 收集），不要用切片拼接。
+     */
+    let out = ArrayList<Rune>()
+    /* 先拼 `scheme://`（`://` 之前的部分原样保留，它不含凭据）。 */
+    var p: Int64 = 0
+    while (p < start) {
+        out.add(arr[p])
+        p = p + 1
+    }
+    /* 再从 host 起拼到终点，跳过 userinfo。 */
+    var q = hostStart
+    while (q < arr.size) {
+        let c = arr[q]
+        if (c == r'?' || c == r'#') {
+            break
+        }
+        out.add(c)
+        q = q + 1
+    }
+    var s = ""
+    for (r in out.toArray()) {
+        s = s + r.toString()
+    }
+    return s
 }

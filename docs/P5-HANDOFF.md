@@ -245,9 +245,83 @@ POST https://api.deepseek.com/v1/embeddings   -> 404
 selftest      45 项 ✅（表集 12 -> 14 + 知识库域）
 authtest      17 项 ✅
 triagetest   108 项 ✅
-accept       404 项 ✅ **连跑 2 次一致**（AC-KB-1…5）
+accept       442 项 ✅ **连跑 2 次一致**（AC-KB-1…5 + AC-BIND-1）
 kb-check      45 项 ✅（HTTP 端到端：权限/错误码/切块/停用/删除/**看板块**）
+ai-live-check 19 项 ✅（真模型：source=model、密钥不落库、模型绕不过验证层）
 auth 25 / rate-limit 16 / triage 24 / previsit 86 / emr 54 / base 49 / p1-extra 49  ✅
 ★ 顺序混合验证（复查点名）：base-check ×2 全绿；base-check → triage-check ×2 全绿
-doc-counts ✅ 一致（端点 48 -> 55、accept 401、selftest 45）
+doc-counts ✅ 一致（端点 48 -> 55、accept 442、selftest 45）
 ```
+
+---
+
+## 十一、P5 期间修掉的一个**框架级**缺陷（绑定值被静默改写）
+
+这一节单独立出来，因为它**不属于 P5 的功能范围，却是 P5 做知识库正文时撞出来的**，
+而且它的失败方式是本仓最忌的那种：**不报错、不告警、把用户数据写坏**。
+
+### 现象
+
+往任何字段写含 `?` 的值，库里会变成**字面量 `NULL`**：
+
+| 写入 | 库里实际 |
+| --- | --- |
+| `https://h/p?q=1` | `https://h/pNULLq=1` |
+| `q?one` | `qNULLone` |
+| `x'; DROP TABLE t; -- ?` | `x'; DROP TABLE t; -- NULL` |
+
+触发点是"值里含 `?`"，与字段无关 ⇒ **主诉、病历正文、知识库文档、科室名、模型 endpoint
+全都在内**。最初是复查发现「配的 `ai.endpoint` 里查询串不见了」才追下去的。
+
+### 根因：**三个各自独立、口径互不一致的转义层**
+
+| 层 | 位置 | 它管什么 | 它不管什么 |
+| --- | --- | --- | --- |
+| 框架 `sqlEscape` / `sqlQuote` | `server/third_party/qingzhou/src/db.cj:199,209` | 只把 `'` 双写 | **不管 `\`**、不管 `?` |
+| 本仓 `mysqlBindEscapeFor` | `server/third_party/qingzhou/src/db_mysql.cj` | `'` 双写 + `\` 双写 | 由它**保证**值文本里不出现裸 `?` 的语义 |
+| 驱动 `ClientPrepareStatement` | `server/third_party/mariadb-driver/src/cdbc/prepare_statement_client.cj:45-46,144-156` | —— | **按整条 SQL 里 `?` 的字符个数**定参数槽位，**不认识引号** |
+
+第三层是致命的：`this.parameters = Array<Any>(originSql.count("?"), repeat: Option<Any>.None)`
+—— 框架 `bindSql` 把值**内联进 SQL 文本**，值里那个 `?` 于是**多占一个槽位**且无人绑定，
+`buildSql()` 对 `None` 走 `param.asParameter()` ⇒ 写进去的就是字面量 **`NULL`**。
+
+### 修法
+
+1. **去掉 `prepare.mode=client` 连接参数**（`db_mysql.cj:91-98`）⇒ 回落
+   `connection.cj:57-68` 的 `ServerPrepareStatement`：`?` 的语义交给服务端判定，
+   **引号内的 `?` 就是数据**。
+   ⚠ 轻舟 `CHANGELOG.md:282-284` 说「server 模式的 COM_STMT_PREPARE 不支持 DDL」，
+   **实测在本机 MariaDB 11.4.13 上不成立** —— `CREATE TABLE` / `CREATE UNIQUE INDEX
+   ... (username(255))` / `DROP INDEX` 在 client 与 server **两模式下都成功**。
+   （照那句 CHANGELOG 办就会把 client 模式留在原地，而它正是缺陷来源。）
+2. 在 `MySqlBackend` 里**自己实现参数拼装**（`mysqlBindSql` / `mysqlBindLiteral`），
+   `DbStr` 走 `"'" + mysqlBindEscapeFor(s, true) + "'"` —— **不调框架 `sqlQuote`**，
+   否则 `sqlEscape` 会把已双写的 `'` **再双写一遍**。
+3. 转义只放在 **`MySqlBackend`**，**不放进通用 `bindSql`**：`'\?'` 只在 MySQL 反斜杠
+   口径下等于 `?`，换后端未必同义，塞进通用层是污染。
+
+### ★ 三条走过弯路才得到的纪律
+
+- **「写进去了」不等于「写对了」**。这一族缺陷（`?`→`NULL`、`'` 未双写、`\` 未双写）
+  **全都不抛异常**——`exec` 返回成功、行数对、`SELECT` 也查得到，只是**内容被改了**。
+  ⇒ 只断言"没报错"永远发现不了；必须**写进去再逐字节读回来比**（`HEX()` 判等）。
+- **守卫必须做变异测试**。新增的常驻用例 `AC-BIND-1`（`server/src/acceptance_bind.cj`，
+  12 个含 `?`/`\`/`'` 的值逐字节往返）我用**故意把反斜杠双写关掉**验证过：
+  `accept` 立刻 **6 项失败**，失败信息正是 `[5] 入=615C62 出=6108`（`a\b` 成了
+  `a`+退格符）、`[7] 写入抛异常 near ''trail\')'`。**一个永远为真的断言等于没有断言**。
+- **探针自己也是被测系统的一部分**。我曾用 `sqlQuote(v)`（只双写 `'`）当判等字面量去比
+  含 `\` 的值 ⇒ 必然对不上，于是把**探针的错报成了链路的错**，白绕两轮。
+  ⇒ 判等用的字面量必须与被测链路用**同一套转义**。
+
+### 顺带修掉的两处「声称存在但没接线」
+
+| 项 | 问题 | 处置 |
+| --- | --- | --- |
+| `insecureTrustAll` | 注释写"只能由启动参数置位"，而**全仓没有任何赋值点**，`serve` 也没有那个参数 ⇒ 字段恒 `false`，注释把人引向一个**不存在的开关** | 改名 `allowPlaintextEndpoint`，注释**如实陈述**"本版本恒为 false、不提供明文放行"，错误消息给出替代路径（改用 https 或本机反代终止 TLS） |
+| `aiSafeHost` | 原本把**路径也抹掉**，只剩 `scheme://host` ⇒ 对话模型与向量模型很可能是**同一 host 的不同路径**，管理员盯着两个一样的 `https://gw.corp` **无法确认有没有配反** | 保留路径，只抹 userinfo 与 `?query`/`#fragment`。📌 判据：**回显要足以让配置者核对「我配对了没有」**；该抹的只有凭据，路径不是凭据 |
+
+> ⚠ `aiSafeHost` 改造中踩了一个**范式级**的坑：第一版用
+> `String(arr[0..hostStart]) + String(arr[hostStart..end])` 想"保留 scheme + host/路径"，
+> 但 `arr[0..hostStart]` **里含 `user:pass@`** ⇒ 把刚切掉的凭据又拼回来了（5 条断言当场抓到）。
+> 📌 **"切一段、再接一段"的脱敏非常容易把刚切掉的东西接回来** —— 凡是"抹掉中间一段"，
+> 就**重新拼装**（逐 token 收集），不要用切片拼接。
