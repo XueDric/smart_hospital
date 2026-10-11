@@ -1,0 +1,11 @@
+{
+  "name": "feature-patient",
+  "version": "1.0.0",
+  "description": "Patient-facing features",
+  "main": "Index.ets",
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "common-core": "file:../common-core"
+  }
+}

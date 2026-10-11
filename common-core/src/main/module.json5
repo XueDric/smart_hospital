@@ -1,0 +1,10 @@
+{
+  "module": {
+    "name": "common_core",
+    "type": "har",
+    "deviceTypes": [
+      "phone",
+      "tablet"
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "common-core",
+  "version": "1.0.0",
+  "description": "Shared network, auth, storage and routing layer",
+  "main": "Index.ets",
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {}
+}

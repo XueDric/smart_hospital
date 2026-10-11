@@ -1,0 +1,10 @@
+{
+  "module": {
+    "name": "feature_patient",
+    "type": "har",
+    "deviceTypes": [
+      "phone",
+      "tablet"
+    ]
+  }
+}

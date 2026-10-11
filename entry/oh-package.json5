@@ -1,0 +1,12 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "Smart hospital patient application shell",
+  "main": "",
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "common-core": "file:../common-core",
+    "feature-patient": "file:../feature-patient"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "智慧医院患者端"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "智慧医院患者端"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "智慧医院"
+    }
+  ]
+}

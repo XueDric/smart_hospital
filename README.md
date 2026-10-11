@@ -15,13 +15,14 @@
 | **P3** | **AI 能力中心（配置底座）**：`ai_setting` KV 表 + **改配置零重启**（写库→失效缓存）+ ★★ **密钥不引用不落库**（`env:`/`file:` 引用，机制性拒绝裸密钥）+ 脱敏回显。<br>+ **Prompt 模板落库**（缺占位符即拒）+ **AI 工具开关落库**（默认全开、可单独关）。<br>★★ **真模型已接通**（`ai_call.cj` + `ai_triage.cj`；**默认关闭**，配置后 `source=model`）。⚠ 合规决策见 [Q6-合规决策记录](docs/Q6-合规决策记录.md)。见 [P3-HANDOFF](docs/P3-HANDOFF.md) | ✅ **完成** |
 | **P4** | **电子病历 + 运营看板**：七段式病历（草稿 → **提交锁定，锁定后不可改**）+ 医生**接诊队列**（状态机；**完成就诊前必须已锁定病历**）+ 患者只读自己的档案 + **运营看板**（科室/挂号趋势/号源使用率/分诊命中/预问诊完成率/病历进度/AI 配置概览）。<br>★★ **顺带改了一处架构**：`medical_record` **移出内存 Store** 改直接 SQL（[ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) **rev.6**）—— 因为内存 Store 在生产路径上**从未刷盘**（`flushToMysql()` 只有测试调过），而病历是医疗数据。<br>★ **真模型已接通**（分诊）；**看板只出聚合、绝不出明细**。<br>★★ **P4 收尾还清了一笔架构债**：核对"配套域生产不刷盘"时实测发现内存 Store **在生产上从未接线**（零实例化 / 零 `loadAll` / 零 `flushToMysql` / 无写入口）⇒ **整体拆除**（`mem_store.cj` + `sql_recorder.cj` 删除，源码 24→22），全库只剩**一种**数据访问范式（[ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) **rev.7**）。见 [P4-HANDOFF](docs/P4-HANDOFF.md) | ✅ **完成** |
 | **P5** | **RAG 知识库（零向量库）**：文档 + **切块**（按字符、带重叠、**结构性保证不丢内容**）→ 向量存 MySQL JSON（**纯仓颉余弦**）→ **关键词检索为默认路**（不依赖外部服务）+ 向量路（配 embedding 端点即启用）；管理端 CRUD + 检索接口；★ **RAG 片段接进分诊**（过安全层、有界、**改不了 `options`**）+ **看板知识库规模**（含 `scan_limit_reached` 触顶告警）。⚠ 已核实 **DeepSeek 无 embeddings 端点** ⇒ 向量路未做端到端验证（算法与仓储有测试）。见 [P5-HANDOFF](docs/P5-HANDOFF.md) | ✅ **完成** |
-| **客户端** | **鸿蒙患者端**（ArkTS，由客户端同学另行开发） | ⏳ **待实现** —— 接口口径见 **[前端对接说明](docs/FRONTEND-INTEGRATION.md)** |
+| **客户端** | **鸿蒙患者端**（ArkTS，`entry` + `common-core` + `feature-patient`） | ✅ **患者端已实现并可构建**（登录/首页/分诊/预问诊/挂号/我的就诊/医疗档案/医疗公告/我的）—— 接口口径见 **[前端对接说明](docs/FRONTEND-INTEGRATION.md)**，鸿蒙侧开发口径见 **[鸿蒙端对接说明](docs/HARMONY-INTERFACE-GUIDE.md)** |
 
 > **交付说明**：
 > - P0 → **[docs/P0-HANDOFF.md](docs/P0-HANDOFF.md)**（⚠ 内含"本文档为 P0 时点快照 + 勘误表"声明，部分结论已被后续推翻）
 > - P1 → **[docs/P1-HANDOFF.md](docs/P1-HANDOFF.md)**（含两轮外部复查的逐条修复记录）
 > - 架构决策 → **[docs/adr/ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md)**（已到 **rev.7**）
-> - **前端对接** → **[docs/FRONTEND-INTEGRATION.md](docs/FRONTEND-INTEGRATION.md)**（谁要写客户端/网页，先读这一份：鉴权、18 个端点逐字段、SSE 分帧、幂等挂号、服务端缺口）
+> - **前端对接** → **[docs/FRONTEND-INTEGRATION.md](docs/FRONTEND-INTEGRATION.md)**（服务端 HTTP 契约：鉴权、18 个端点逐字段、SSE 分帧、幂等挂号、服务端缺口）
+> - **鸿蒙端对接** → **[docs/HARMONY-INTERFACE-GUIDE.md](docs/HARMONY-INTERFACE-GUIDE.md)**（模块边界、路由、网络/鉴权/SSE 用法、Mock 模式、新增 feature 模块，面向 B / C）
 > - 本机环境 / 数据库 → **[docs/DEV-DB.md](docs/DEV-DB.md)**（仓库自管，端口 3317）
 > - ⚠ **文档里的测试项数以 `server/tests/doc-counts.ps1` 的实测输出为准** —— 这个数字漂移过两次，现已机制化对账，不再靠人记。
 
@@ -45,10 +46,10 @@
 | [docs/P5-HANDOFF.md](docs/P5-HANDOFF.md) | **P5 RAG 知识库**：零向量库做法、三条硬约束、片段上限、踩坑与验证记录 | ✏️ 本项目文档 |
 | [docs/FRONTEND-INTEGRATION.md](docs/FRONTEND-INTEGRATION.md) | ★ **前端对接说明**（唯一口径）：起服务 / 鉴权 / 信封与错误码 / 18 个端点逐字段 / SSE 原始帧 / 幂等挂号与退号语义 / 服务端缺口 / 前端工程纪律 | ✏️ 本项目文档 |
 | [server/](server/README.md) | **智慧医院服务端**（仓颉 + 轻舟，自包含）：`src/` **33 个 `.cj`**（业务）+ `third_party/`（轻舟框架 + MariaDB 驱动，**使用副本**）+ 5 个构建/运维脚本 + `tests/` **13 个测试脚本** + `common.ps1` + README | ✏️ 本项目代码 |
-| `entry/` | ⏳ **留白（预留）** —— 鸿蒙患者端由客户端同学实现；接口口径见 [前端对接说明](docs/FRONTEND-INTEGRATION.md)。⚠ 目录结构以客户端同学实际的工程为准 | — |
+| `entry/` + `common-core/` + `feature-patient/` | **鸿蒙患者端**（ArkTS）：`entry` 壳工程 + `common-core` 公共层 + `feature-patient` 患者端；构建方式与开发口径见 [鸿蒙端对接说明](docs/HARMONY-INTERFACE-GUIDE.md) | ✏️ 鸿蒙端代码 |
 
 > 🔴 **关键约定**：本仓库目前**只有服务端**（`server/`，自包含：框架与数据库驱动都是使用副本，框架快照由 `MANIFEST.sha256` 锚定）。
-> 客户端（鸿蒙患者端）由客户端同学另行开发，接口口径**只以** [docs/FRONTEND-INTEGRATION.md](docs/FRONTEND-INTEGRATION.md) 为准。
+> 客户端（鸿蒙患者端）的接口口径**只以** [docs/FRONTEND-INTEGRATION.md](docs/FRONTEND-INTEGRATION.md) 为准；鸿蒙侧的模块边界、路由与网络层用法见 [docs/HARMONY-INTERFACE-GUIDE.md](docs/HARMONY-INTERFACE-GUIDE.md)。
 > 📌 术语：源码注释里的「**搬迁前**」指本项目移植前所用的服务端实现，只作口径出处说明 —— 那些文件不在本仓库内，也不需要它们才能构建。
 
 ---

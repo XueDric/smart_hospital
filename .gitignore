@@ -61,3 +61,7 @@ Desktop.ini
 
 # ⚠ 若将来引入客户端工程或其构建目录，**不要**把生成的 build/、oh_modules/、
 #   .hvigor/ 入库 —— 它们都能由构建重新生成。
+
+build/
+oh_modules/
+.hvigor/
