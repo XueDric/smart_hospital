@@ -65,10 +65,10 @@ $env:DSN = "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
 > ADR-0001 §4.3「范围锁死」：**直接 SQL 只准落在这 3 张表上**，新增第 4 张必须先开新 ADR ——
 > 这条约定已被 `selftest` 写成可执行断言（`isBookingDomainTable` / `isBookingInfraTable` / `isBookingOwnedTable`）。
 >
-> ⚠ **`booking_idem` 为什么带前缀**：基线内存 Store 自己有一张 `idem` 表
-> （`baseline/server/src/mysql_store.cj:892`），语义与列定义都不同。P1 引入内存 Store 后
-> 整库刷盘的 `replaceBatched("idem", …)` 会与本侧挂号幂等记录**争同一张表**。
-> 改名后「本侧 7 张表 ∩ 基线 10 张表 = ∅」，由 `selftest` + AC-4 双重钉住。
+> ⚠ **`booking_idem` 为什么带前缀**：搬迁前的服务端另有一张同名的 `idem` 表
+> （语义与列定义都不同）。P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)`
+> 会与本侧挂号幂等记录**争同一张表**。改名后两侧表集互不相交，
+> 由 `selftest` + AC-4 双重钉住。
 
 ---
 
@@ -141,16 +141,16 @@ AC-1 当场报 **3 条 `[FAIL]`**；恢复源码后重新全绿。
 
 ### ⚠ 关于这次动了本机 MariaDB（必须交代）
 
-本机那份便携 MariaDB 的 **root 口令未知**，且既有 `club` 账号的授权主机作用域
+本机那份便携 MariaDB 的 **root 口令未知**，且那台上既有业务账号的授权主机作用域
 （`10.194.%`）与**本机当前实际 IP 不匹配** —— 本机现在走**有线网口**，实际 IP 是
 **`10.179.153.237`**（不再是 `10.194.178.115`，也不是 `LAN-CREDS.txt` 里记的 `10.194.233.104`），
-所以 `club` 账号连不上。为了把 P0 验完，我：
+所以那个账号连不上。为了把 P0 验完，我：
 
 1. 用 `--skip-grant-tables --skip-name-resolve` 临时起了一次（**恢复模式，仅本机**）；
 2. 在其中**新建**了专用库 `hospital` 与账号 `hospital`（并 `FLUSH PRIVILEGES` 恢复认证）；
 3. 随后**已停止恢复模式**，用**普通模式**重启 mysqld 并验证 `hospital` 账号可正常登录。
 
-**未做**：没有改 root 口令、没有删改既有 `club_*` 库与账号。
+**未做**：没有改 root 口令、没有删改那台上既有的库与账号。
 现状：mysqld 正在以普通模式运行在 3307 上。
 
 > 若你要停掉它：`Get-Process mysqld | Stop-Process -Force`
@@ -179,9 +179,9 @@ P0 已经把 P1 最难的**数据层**做完并验过了。P1 剩下的主要是
 
 | 任务 | 依赖 |
 | --- | --- |
-| 轻舟 HTTP 路由 + 中间件装配（照 `baseline/docs/qingzhou-api-fact-sheet.md`） | 框架 API 已摸清 |
+| 轻舟 HTTP 路由 + 中间件装配 | 框架 API 已摸清 |
 | 挂号相关 REST：排班查询 / 挂号 / 取消 | `BookingRepo` 已就绪 |
-| 认证与三端角色（令牌 + PBKDF2 + `can()`） | 复用 `baseline/server/src/auth.cj`、机制搬、角色枚举重做 |
+| 认证与三端角色（令牌 + PBKDF2 + 三端守卫） | 走 `server/src/auth_*.cj`，角色枚举重做 |
 | 并发压测（多进程打同一号源）—— 补 AC-1 的真实并发面 | 需接口就绪 |
 | 引入内存 Store → 补 AC-4 完整回归 | 需科室/医生域 |
 
@@ -190,7 +190,6 @@ P0 已经把 P1 最难的**数据层**做完并验过了。P1 剩下的主要是
 ## 6. 参考
 
 - 项目上下文入口：[../smart-hospital-project-brief.md](../smart-hospital-project-brief.md)
-- 只读基线说明：[../baseline/SNAPSHOT.md](../baseline/SNAPSHOT.md)
-- **轻舟 API 事实清单**（每条带 file:line，写接口前必读）：[../baseline/docs/qingzhou-api-fact-sheet.md](../baseline/docs/qingzhou-api-fact-sheet.md)
-- 仓颉编译期踩坑（45 条）：[../baseline/docs/API-NOTES.md](../baseline/docs/API-NOTES.md)
-- 基线 MySQL 接入与坑：[../baseline/docs/mysql-backend.md](../baseline/docs/mysql-backend.md)
+- 服务端接口现状：`server/src/http_app.cj` 与 [FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md)
+- 架构决策：[adr/ADR-0001-号源与挂号独立MySQL路径.md](adr/ADR-0001-号源与挂号独立MySQL路径.md)
+- 本机数据库：[DEV-DB.md](DEV-DB.md)

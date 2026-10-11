@@ -29,4 +29,4 @@ Copy-Item "D:\Program Files\Git\mingw64\bin\libssl-3-x64.dll" .
 ## 部署时
 
 `build.ps1` 会把它们拷进 `server\build\`；`build-package.ps1` 再从 `build\` 打进部署包 ——
-**部署包必须带上这两个 DLL**（`dist\club-server\` 里少一个，密码哈希/TLS 就会在运行时 500）。
+**部署包必须带上这两个 DLL**（部署目录里少一个，密码哈希/TLS 就会在运行时 500）。

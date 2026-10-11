@@ -173,15 +173,15 @@ rev.6 一改就**必然变红**。这暴露了它是"**钉数字**"而不是"钉
 
 ## 1. 背景（Context）
 
-### 1.1 复用基线的持久化范式
+### 1.1 搬迁前服务端的持久化范式
 
-我们从 `cangjie_web` 复用的服务端，持久化范式是：
+搬迁前的服务端，持久化范式是：
 
 > **全量载入内存 + 全局锁 + 每次提交整体替换各表**
-> —— 证据：`baseline/server/src/mysql_store.cj:30-37`（"一次提交要整体替换 7 张表"）、
-> `baseline/docs/...` 与 `baseline/README.md` 未决 #12 / S-14。
+> —— 证据：搬迁前的 `mysql_store.cj:30-37`（"一次提交要整体替换 7 张表"）、
+> 其 `docs/` 与 `README.md` 未决 #12 / S-14。
 
-该范式对**社团管理**是合适的：数据量小（千人档）、读多写少、单实例、业务不要求毫秒级扣减。
+该范式对**早期那类小体量业务**是合适的：数据量小（千人档）、读多写少、单实例、业务不要求毫秒级扣减。
 
 ### 1.2 挂号场景提出的新要求
 
@@ -354,28 +354,28 @@ if (n == 1) {
 （`isBookingOwnedTable()` 是可执行的判定）。
 —— 新增第 4 张仍然必须先开新 ADR：**约束的强度没变，只是把"业务状态"与"基础设施"说清楚。**
 
-#### 4.3.2 ★ 表名与基线内存 Store 的撞名（P1 阻断项，已在 P0 修掉）
+#### 4.3.2 ★ 表名与搬迁前内存 Store 的撞名（P1 阻断项，已在 P0 修掉）
 
-基线内存 Store 自己有一张 **`idem`** 表（`baseline/server/src/mysql_store.cj:892`
+搬迁前的内存 Store 自己有一张 **`idem`** 表（搬迁前 `mysql_store.cj:892`
 的 `PersistedState.idem`；DDL 同名，该文件 §309-311 明说「表名与 `store.cj` 的逻辑表名**一一同名**」）。
-基线完整表名集合是：
+搬迁前完整表名集合是：
 `departments` `members` `plans` `tasks` `invite_links` `tokens` `idem` `meta` `meta_str` `schema_version`。
 
-本侧原本也叫 `idem`，**两张表的语义与列定义都不同**（基线是 `IdemRecord`；本侧是 `idem_key`+`created_at`）。
+本侧原本也叫 `idem`，**两张表的语义与列定义都不同**（那一侧是 `IdemRecord`；本侧是 `idem_key`+`created_at`）。
 P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与本侧的挂号幂等记录**争同一张表**。
 
-> **处置（rev.2）：本侧改名为 `booking_idem`。** 当时「本侧 7 张业务表 ∩ 基线 10 张表 = ∅」，
+> **处置（rev.2）：本侧改名为 `booking_idem`。** 当时「本侧 7 张业务表 ∩ 那侧 10 张表 = ∅」，
 > 由 `selftest` 与 AC-4 双重断言钉住（改名若回退，两条断言当场变红）。
 >
-> ~~原 AC-4 只比 `BOOKING_DOMAIN_TABLES`（2 张）与基线的交集~~ —— 那**恰好**是 0，
-> 但**漏掉了 `booking_idem` 这处真撞名**。现已改为比**全部业务表**与基线**全部**表名。
+> ~~原 AC-4 只比 `BOOKING_DOMAIN_TABLES`（2 张）与那侧的交集~~ —— 那**恰好**是 0，
+> 但**漏掉了 `booking_idem` 这处真撞名**。现已改为比**全部业务表**与那侧**全部**表名。
 >
 > ### ⚠ 后续（rev.4）：这张表**已被删除**，本节只剩"撞名纪律"这一条长期结论
 >
 > 复查后发现 `booking_idem` 在生产路径上**从未被调用**（只有 AC-8 在测），
 > 遂连同实现删除（§7 第 7 条）。所以：
 >   · **已过时**：上文的"改名为 `booking_idem`"—— 现在本侧**没有任何** `idem` 命名的表；
->   · ✅ **仍然有效**：**本侧表名必须避开基线内存 Store 的表名**这条纪律本身
+>   · ✅ **仍然有效**：**本侧表名必须避开搬迁前内存 Store 的表名**这条纪律本身
 >     （`auth_token` 不叫 `tokens` 就是同一个道理，见 §4.3.2 上文）。
 >     现在由 `selftest` 的"DDL 里不得有以 `idem` 命名的表" + AC-4 零交集断言守着。
 
@@ -498,7 +498,7 @@ P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与
 | 5 | 构建链（cjc 1.2.0 + stdx 1.1.3.1） | `server/build.ps1` |
 | 6 | 源码哈希清单（验收锚点，替代不可复现的产物哈希） | `server/build/SOURCE-MANIFEST.sha256`（由 `build.ps1` 生成） |
 | 7 | ✅ **已决策并执行（rev.4，2026-10-07）**：`idemKey`/`putIdem`/`pruneIdem` + `booking_idem` 表**连同 AC-8 一起删除**。<br>**为什么删**：① 幂等已由 `(patient_id, client_token)` 唯一索引完整保证，而唯一索引是**数据库级**约束，比应用级登记表更硬（应用登记与业务写入之间仍有窗口）；② 它**从未**进入生产路径（`book()`/`cancel()` 全程不碰），只有 AC-8 在测 ⇒ 那是一个"绿色的假保证"；③ 它存在的理论价值是"操作本身不幂等"的场景（如支付，无天然唯一键），挂号有天然唯一键，用不上。<br>**代价（如实记录）**：失去"登记与业务写入解耦"的能力。若将来接入无天然唯一键的写操作，需**重新开 ADR**，而不是复活这张表。<br>**迁移**：`migrateSchema()` 里加了显式 `DROP TABLE booking_idem`（`CREATE TABLE IF NOT EXISTS` 只管建、不管删，老库不会自动消失） |
-| 8 | 仓库自管开发库（与社团彻底隔离） | `server/devdb.ps1` + `docs/DEV-DB.md` |
+| 8 | 仓库自管开发库（与本机其它项目隔离） | `server/devdb.ps1` + `docs/DEV-DB.md` |
 
 ---
 

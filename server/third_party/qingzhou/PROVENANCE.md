@@ -48,7 +48,7 @@ v0.12.0 把工具链保持在 cjc 1.2.0，并加入出站 TLS、重试退避、�
 
 `server/build.ps1` 根据目标选择框架文件：
 
-- 默认 `club-server` 排除上游入口、测试、RBAC 存储和 CangDB 工厂，使用项目的 `fw_rbac*.cj` 适配层；MySQL 抽象层与内置驱动仍参与编译。
+- 默认（服务端目标）排除上游入口、测试、RBAC 存储和 CangDB 工厂，使用项目的 `fw_rbac*.cj` 适配层；MySQL 抽象层与内置驱动仍参与编译。
 - `-Target admin` 保留框架 `store.cj` 与 MySQL 后端，排除 CangDB 工厂文件，由项目自己的运维入口接入业务库。
 
 ## 升级纪律

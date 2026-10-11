@@ -146,7 +146,7 @@ flushToMysql() 的全部调用点：
 - 异常是 `SqlException: errorCode: 0` —— **驱动把 MySQL 的报错文本吞了**（`message` 是空串）；
 - 同一条 SQL 用 `mariadb` 客户端**手工重放完全成功**。
 
-定位后才明白：全仓扫过（**含 `baseline/`**）→ `INSERT ... SELECT` **零处使用**，
+定位后才明白：全仓扫过（**含搬迁前带进来的代码**）→ `INSERT ... SELECT` **零处使用**，
 驱动的 `prepare_statement_client.getOrBuildSql()` 那条路径没被验证过。
 
 ⇒ 改为「先读 `appointment` + 纯 `INSERT`」。**那个不变量没有变**：
@@ -249,7 +249,7 @@ e2e 的断言随即全红（HTTP 404 / 队列为空）——**看起来像产品
 
 ### 现象
 
-连接失败时的**处置提示**仍指向 **3307** —— 而 3307 是**社团那台**便携 MariaDB 的端口，
+连接失败时的**处置提示**仍指向 **3307** —— 而 3307 是**本机另一台**便携 MariaDB 的端口，
 本项目自管 devdb 早已迁到 **3317**（见 `docs/DEV-DB.md`）。共 4 处：
 
 | 位置 | 原文 |

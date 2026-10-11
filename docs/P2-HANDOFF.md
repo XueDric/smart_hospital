@@ -74,9 +74,9 @@ WHERE d.name = ? AND s.enabled = 1 AND s.remain_num > 0 AND s.work_date >= ?
 
 ### 2.4 三态与原因码
 
-`source` 目前**只有** `rules`。照 baseline `ai_client.cj` 的 R-8 口径，
+`source` 目前**只有** `rules`（P3 接通真模型后才会有 `model`）。照既有的降级口径，
 **刻意不设 `"none"`** —— "AI 没配置"时的正确表现是 `rules` + **有内容的结论**，
-而不是"什么都没有"。
+而不是"什么都没有"。（本文件是 P2 时点快照；P3 之后的取值见 [P3-HANDOFF](P3-HANDOFF.md) 与 [FRONTEND-INTEGRATION](FRONTEND-INTEGRATION.md)。）
 
 原因码（稳定、可断言，与给患者看的文案分离）：
 
