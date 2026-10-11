@@ -195,3 +195,98 @@ git push gitee main
 ```
 
 （本次**未**配置 Gitee —— 上表只是记录"它有网络可达性"这一事实。）
+
+---
+
+## 5. ★ 2026-10-11：改用**本机 CONNECT 代理**，一次成功（推荐做法）
+
+§2 的 `url.<ip>.insteadOf` 绕不过 301（见 §2 末尾那两段），所以这一次不再跟 DNS 赌运气，
+而是**在本机起一个只做 `CONNECT` 转发的 TCP 代理**，把 git 的代理指到它：
+
+- git 仍然访问 `https://github.com/...` ⇒ **Host 头与 TLS SNI 都是 `github.com`**，
+  所以 GitHub **不会**回 301，证书也能正常校验（**不再需要 `http.sslVerify=false`**）；
+- 代理内部对**候选 IP 并发抢连**，谁先连上就用谁 ⇒ 把"逐次抽签"的可达性问题一次性吃掉；
+- 只监听 `127.0.0.1`，只转发到 GitHub 的 443，**不改任何 git 持久配置**。
+
+### 5.1 代理脚本
+
+存成任意位置（例：`%TEMP%\gh-connect-proxy.mjs`），`node gh-connect-proxy.mjs 8445 [日志文件]`：
+
+```js
+// 本机 CONNECT 代理：把 git 的 HTTPS 流量转到可达的 GitHub IP。
+// Host/SNI 仍是 github.com（不触发 301）；对候选 IP 并发抢连（可达性是逐次抽签的）。
+import net from 'node:net';
+import fs from 'node:fs';
+
+const LISTEN_PORT = Number(process.argv[2] || 8445);
+const LOG = process.argv[3] || '';
+const TARGET_PORT = 443;
+const CANDIDATES = ['20.205.243.166', '20.27.177.113', '140.82.112.3', '140.82.113.3',
+                    '140.82.114.4', '140.82.116.3', '4.237.22.38', '20.200.245.247'];
+
+const log = (m) => { const l = `${new Date().toISOString()} ${m}\n`;
+  if (LOG) { try { fs.appendFileSync(LOG, l); } catch {} } process.stdout.write(l); };
+
+function connectAny(timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const socks = []; let settled = false; let pending = CANDIDATES.length;
+    for (const ip of CANDIDATES) {
+      const s = net.connect({ port: TARGET_PORT, host: ip });
+      socks.push(s); s.setTimeout(timeoutMs);
+      s.on('connect', () => { if (settled) { s.destroy(); return; } settled = true;
+        for (const o of socks) if (o !== s) o.destroy(); log(`upstream picked ${ip}`); resolve(s); });
+      const fail = (why) => { s.destroy(); if (settled) return;
+        if (--pending === 0) { settled = true; reject(new Error(`all candidates failed (${why})`)); } };
+      s.on('timeout', () => fail('timeout'));
+      s.on('error', (e) => fail(e.code || e.message));
+    }
+  });
+}
+
+net.createServer((client) => {
+  client.setNoDelay(true);
+  let handled = false;
+  const onFirst = (buf) => {
+    if (handled) return; handled = true;
+    const head = buf.toString('latin1');
+    log(`first chunk: ${JSON.stringify(head.split('\r\n')[0])}`);
+    if (!/^CONNECT /i.test(head)) { client.end('HTTP/1.1 405 Method Not Allowed\r\n\r\n'); return; }
+    const split = head.indexOf('\r\n\r\n');
+    connectAny(5000).then((up) => {
+      up.setNoDelay(true);
+      client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (split >= 0) { const rest = buf.subarray(split + 4); if (rest.length) up.write(rest); }
+      client.removeListener('data', onFirst);
+      client.pipe(up); up.pipe(client);
+      up.on('error', () => client.destroy());
+      up.on('close', () => client.destroy());
+    }).catch((e) => { log(`connect failed: ${e.message}`); client.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'); });
+  };
+  client.on('data', onFirst);
+  client.on('error', (e) => log(`client error ${e.code || ''}`));
+}).listen(LISTEN_PORT, '127.0.0.1', () => log(`listening 127.0.0.1:${LISTEN_PORT}`));
+```
+
+### 5.2 用法（三步，实测有效）
+
+```powershell
+# ① 起代理（后台；日志落到 %TEMP%\gh-proxy.log）
+Start-Process node -ArgumentList "$env:TEMP\gh-connect-proxy.mjs","8445","$env:TEMP\gh-proxy.log" -WindowStyle Hidden
+
+# ② 先确认这一跳真能用（期望 code=200；若为 000 就重启代理换一批 IP）
+curl.exe -sS -o NUL -w "code=%{http_code}`n" --max-time 30 -x http://127.0.0.1:8445 https://github.com/
+
+# ③ 走代理推送 / 拉取（只作用于这一条命令，不写进配置）
+git -c http.proxy=http://127.0.0.1:8445 -c http.connectTimeout=10 push origin main
+git -c http.proxy=http://127.0.0.1:8445 ls-remote --heads origin   # 只读自检，成功时打印远端 main 的 sha
+```
+
+**2026-10-11 实测**：`curl -x` → `code=200`；`ls-remote` → `exit=0`，
+打印 `be569cd026ceabc5274c523457c4e06854d98567  refs/heads/main`（当时 `origin/main`）。
+代理日志显示抢连选中 `20.27.177.113:443`（而 `140.82.113.3` 在同一时刻 `ETIMEDOUT` ——
+**再次说明"某个 IP 好不好"是逐次抽签，不要再把 §1/§2 的表当固定结论**）。
+
+> 📌 与前几版的差别：**不需要 `http.sslVerify=false`**（SNI 仍是 github.com，证书正常），
+> 也**不需要 `url.insteadOf`**（不产生 301）。push 完记得 `Stop-Process` 掉代理进程。
+> §3 的两条"真正可靠的修法"（SSH / 修 hosts）仍然更长期 —— 但有了本节的代理，
+> 在拿到管理员权限之前**不必再靠重试撞运气**。

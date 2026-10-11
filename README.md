@@ -8,18 +8,20 @@
 
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
-| 准备 | 读取文档 + 从 `cangjie_web` 搬运只读基线到 `baseline/` | ✅ 完成 |
+| 准备 | 读取文档 + 从 `cangjie_web` 搬运只读基线到 `baseline/`（⚠ **该基线已于 2026-10-11 整体移除**，见 [关于已移除的只读基线](#关于已移除的只读基线)） | ✅ 完成 |
 | **P0** | **号源/挂号独立 MySQL 路径**：ADR + 服务端骨架 + 表集 + 原子扣减/幂等/退号 + 验收测试 | ✅ **完成**（经 rev.2 / rev.3 / rev.4 三轮复查修订；**rev.3 推翻了 P0 的乐观锁扣号策略**，rev.4 删掉死代码 `booking_idem`） |
 | **P1** | **挂号闭环 + 令牌鉴权 + HTTPS + 安全加固 + 内存 Store**（⚠ 内存 Store 已于 P4 收尾时**整体拆除**，见下方 rev.7）：中间件装配 + 三端权限矩阵 + **55 个 REST** + 不透明令牌（PBKDF2 100k，3 个公开向量验过）+ **HTTPS（TLS 1.2/1.3，带 SAN 自签）** + **登录限流/失败锁定** + **口令强度校验** + **会话按设备管理** + **内存 Store（配套域）** + **多进程并发压测**（20/30/40/50 抢同数号源全部卖光；并发退号零丢号） | ✅ **P1 代码项全部完成**（剩 2 项运维，见下） |
 | **P2** | **AI 分诊（工程纪律层）**：危急征象兜底（词表 + 否定 + 共现）+ **验证层（绝不给没号的推荐）**+ 三态结论 + `POST /api/v1/triage` + **预问诊多轮采集（SSE 流式）**。<br>★ **真模型已于 P3 收尾时接通**（`ai_call.cj`）；未配置时 `source=rules`（默认关闭），配置后 `source=model`。见 [P2-HANDOFF](docs/P2-HANDOFF.md) | ✅ **完成** |
 | **P3** | **AI 能力中心（配置底座）**：`ai_setting` KV 表 + **改配置零重启**（写库→失效缓存）+ ★★ **密钥不引用不落库**（`env:`/`file:` 引用，机制性拒绝裸密钥）+ 脱敏回显。<br>+ **Prompt 模板落库**（缺占位符即拒）+ **AI 工具开关落库**（默认全开、可单独关）。<br>★★ **真模型已接通**（`ai_call.cj` + `ai_triage.cj`；**默认关闭**，配置后 `source=model`）。⚠ 合规决策见 [Q6-合规决策记录](docs/Q6-合规决策记录.md)。见 [P3-HANDOFF](docs/P3-HANDOFF.md) | ✅ **完成** |
 | **P4** | **电子病历 + 运营看板**：七段式病历（草稿 → **提交锁定，锁定后不可改**）+ 医生**接诊队列**（状态机；**完成就诊前必须已锁定病历**）+ 患者只读自己的档案 + **运营看板**（科室/挂号趋势/号源使用率/分诊命中/预问诊完成率/病历进度/AI 配置概览）。<br>★★ **顺带改了一处架构**：`medical_record` **移出内存 Store** 改直接 SQL（[ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) **rev.6**）—— 因为内存 Store 在生产路径上**从未刷盘**（`flushToMysql()` 只有测试调过），而病历是医疗数据。<br>★ **真模型已接通**（分诊）；**看板只出聚合、绝不出明细**。<br>★★ **P4 收尾还清了一笔架构债**：核对"配套域生产不刷盘"时实测发现内存 Store **在生产上从未接线**（零实例化 / 零 `loadAll` / 零 `flushToMysql` / 无写入口）⇒ **整体拆除**（`mem_store.cj` + `sql_recorder.cj` 删除，源码 24→22），全库只剩**一种**数据访问范式（[ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) **rev.7**）。见 [P4-HANDOFF](docs/P4-HANDOFF.md) | ✅ **完成** |
 | **P5** | **RAG 知识库（零向量库）**：文档 + **切块**（按字符、带重叠、**结构性保证不丢内容**）→ 向量存 MySQL JSON（**纯仓颉余弦**）→ **关键词检索为默认路**（不依赖外部服务）+ 向量路（配 embedding 端点即启用）；管理端 CRUD + 检索接口；★ **RAG 片段接进分诊**（过安全层、有界、**改不了 `options`**）+ **看板知识库规模**（含 `scan_limit_reached` 触顶告警）。⚠ 已核实 **DeepSeek 无 embeddings 端点** ⇒ 向量路未做端到端验证（算法与仓储有测试）。见 [P5-HANDOFF](docs/P5-HANDOFF.md) | ✅ **完成** |
+| ~~客户端~~ | ~~鸿蒙 ArkTS 患者端~~ | ⛔ **已回退并移除**（2026-10-11）：本轮先交付**[前端对接说明](docs/FRONTEND-INTEGRATION.md)**，客户端另立一期 |
 
 > **交付说明**：
 > - P0 → **[docs/P0-HANDOFF.md](docs/P0-HANDOFF.md)**（⚠ 内含"本文档为 P0 时点快照 + 勘误表"声明，部分结论已被后续推翻）
-> - P1 → **[docs/P1-HANDOFF.md](docs/P1-HANDOFF.md)**（**最新**；含两轮外部复查的逐条修复记录）
-> - 架构决策 → **[docs/adr/ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md)**（已到 **rev.4**）
+> - P1 → **[docs/P1-HANDOFF.md](docs/P1-HANDOFF.md)**（含两轮外部复查的逐条修复记录）
+> - 架构决策 → **[docs/adr/ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md)**（已到 **rev.7**）
+> - **前端对接** → **[docs/FRONTEND-INTEGRATION.md](docs/FRONTEND-INTEGRATION.md)**（谁要写客户端/网页，先读这一份：鉴权、18 个端点逐字段、SSE 分帧、幂等挂号、服务端缺口）
 > - 本机环境 / 数据库 → **[docs/DEV-DB.md](docs/DEV-DB.md)**（仓库自管，端口 3317）
 > - ⚠ **文档里的测试项数以 `server/tests/doc-counts.ps1` 的实测输出为准** —— 这个数字漂移过两次，现已机制化对账，不再靠人记。
 
@@ -38,15 +40,16 @@
 | [docs/P1-OPS-HANDOFF.md](docs/P1-OPS-HANDOFF.md) | **P1 运维交接**：证书信任分发 / 轮换与到期监控 —— 两项**本机不可验证**，含判据与具体命令 | ✏️ 本项目文档 |
 | [docs/P2-HANDOFF.md](docs/P2-HANDOFF.md) | **P2 AI 分诊交付**：边界（未接模型及原因）、核心不变式、变异测试、三个"字节/字符混用"缺陷 | ✏️ 本项目文档 |
 | [docs/P3-HANDOFF.md](docs/P3-HANDOFF.md) | **P3 AI 能力中心**：密钥不落库的**机制**、改配置零重启、第五类表、诚实的边界 | ✏️ 本项目文档 |
-'| [docs/Q6-合规决策记录.md](docs/Q6-合规决策记录.md) | ★★ **模型出站的合规事实**：发什么出站 / 默认状态 / 六道闸门 / 未做的六项 / 谁批准 | ✏️ 本项目文档 |
-| [docs/P4-HANDOFF.md](docs/P4-HANDOFF.md) |' **P4 电子病历 + 运营看板**：★ 范式迁移 rev.6（病历为何移出内存 Store）+ ★★ **rev.7（内存 Store 整体拆除）**、看板隐私红线、八处真问题与教训、诚实的边界 | ✏️ 本项目文档 |
-| [server/](server/README.md) | **智慧医院服务端**（仓颉 + 轻舟）：`src/` **22 个 `.cj`** + 5 个构建/运维脚本 + `tests/` **10 个测试脚本** + `common.ps1` + README | ✏️ 本项目代码 |
-| [baseline/](baseline/SNAPSHOT.md) | **只读参考基线** —— 复制自 `cangjie_web`，**352 文件 / 7.53 MB**，基线提交 `07a0922`（上传前已剔除机密材料，见其 §二·补） | 🚫 **只读，勿就地改** |
-| [baseline/SNAPSHOT.md](baseline/SNAPSHOT.md) | 基线说明：来源/提交/排除清单/路径映射表/复用风险 | ✏️ 复制说明 |
-| `entry/` | ⚠️ **目前尚不存在** —— 鸿蒙患者端将来落这里，取用 `baseline/entry/` 作模板 | — |
+| [docs/Q6-合规决策记录.md](docs/Q6-合规决策记录.md) | ★★ **模型出站的合规事实**：发什么出站 / 默认状态 / 六道闸门 / 未做的六项 / 谁批准 | ✏️ 本项目文档 |
+| [docs/P4-HANDOFF.md](docs/P4-HANDOFF.md) | **P4 电子病历 + 运营看板**：★ 范式迁移 rev.6（病历为何移出内存 Store）+ ★★ **rev.7（内存 Store 整体拆除）**、看板隐私红线、八处真问题与教训、诚实的边界 | ✏️ 本项目文档 |
+| [docs/P5-HANDOFF.md](docs/P5-HANDOFF.md) | **P5 RAG 知识库**：零向量库做法、三条硬约束、片段上限、踩坑与验证记录 | ✏️ 本项目文档 |
+| [docs/FRONTEND-INTEGRATION.md](docs/FRONTEND-INTEGRATION.md) | ★ **前端对接说明**（唯一口径）：起服务 / 鉴权 / 信封与错误码 / 18 个端点逐字段 / SSE 原始帧 / 幂等挂号与退号语义 / 服务端缺口 / 前端工程纪律 | ✏️ 本项目文档 |
+| [server/](server/README.md) | **智慧医院服务端**（仓颉 + 轻舟，自包含）：`src/` **33 个 `.cj`**（业务）+ `third_party/`（轻舟框架 + MariaDB 驱动，**使用副本**）+ 5 个构建/运维脚本 + `tests/` **13 个测试脚本** + `common.ps1` + README | ✏️ 本项目代码 |
+| `entry/` | ⚠️ **尚未创建** —— 将来鸿蒙患者端落这里；接口口径见 [前端对接说明](docs/FRONTEND-INTEGRATION.md) | — |
 
-> 🔴 **关键约定**：`baseline/` 是素材库，**只读**。智慧医院的代码写在 `server/`、`entry/`，
-> 需要哪块就从基线取模板**新写**，不要在基线里就地改 —— 基线保持可回查、可比对。
+> 🔴 **关键约定**：本仓库**只有服务端**（`server/`）。只读参考基线 `baseline/`（源项目 cangjie_web 的副本）
+> 已按要求**整体移除**；源项目里能复用的东西早已以**使用副本**形式落在 `server/third_party/` 与 `server/src/`
+> （源码注释里出现的 `baseline/...` 是**历史出处标注**，不是可访问路径）。
 
 ---
 
@@ -55,27 +58,30 @@
 1. **[smart-hospital-project-brief.md](smart-hospital-project-brief.md)** —— 整份读完即可接续，不需要回读原对话
    - ⚠️ §1 是**已决事项**，除非有新的外部约束，**不要重新讨论**
    - ⚠️ 标注「**推断**」的数字（尤其工期）都是**未实测的粗估**，落地前请自行验证
-2. **[docs/P1-HANDOFF.md](docs/P1-HANDOFF.md)** —— **当前进度在这里**：接口清单、权限矩阵、令牌口径、HTTPS、两轮外部复查的逐条修复
-3. **[docs/P0-HANDOFF.md](docs/P0-HANDOFF.md)** —— P0 时点快照（⚠ 文首有勘误表：部分结论已被推翻，对照着看）
-4. **[docs/adr/ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md)** —— 为什么号源/挂号要脱离内存 Store（**rev.7**，含扣号/归还策略与内存 Store 拆除的历次修订论证）
-5. **[docs/DEV-DB.md](docs/DEV-DB.md)** —— 怎么把本机数据库跑起来（仓库自管 devdb，与社团隔离）
-6. [baseline/SNAPSHOT.md](baseline/SNAPSHOT.md) —— 基线里有什么、缺什么、链接怎么对上
-7. [baseline/docs/qingzhou-api-fact-sheet.md](baseline/docs/qingzhou-api-fact-sheet.md) —— **轻舟 API 事实清单**（每条带 file:line，写接口前必读）
-8. [baseline/docs/API-NOTES.md](baseline/docs/API-NOTES.md) —— 编译期 API 事实 + 45 条踩坑（**写仓颉前必读**）
+2. **[docs/FRONTEND-INTEGRATION.md](docs/FRONTEND-INTEGRATION.md)** —— **要写客户端/网页就先读这份**：接口口径、鉴权、SSE、幂等挂号、服务端缺口
+3. **[docs/P1-HANDOFF.md](docs/P1-HANDOFF.md)** —— **服务端接口与安全底子**：接口清单、权限矩阵、令牌口径、HTTPS、两轮外部复查的逐条修复（最新进度看上面的进度表）
+4. **[docs/P0-HANDOFF.md](docs/P0-HANDOFF.md)** —— P0 时点快照（⚠ 文首有勘误表：部分结论已被推翻，对照着看）
+5. **[docs/adr/ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md)** —— 为什么号源/挂号要脱离内存 Store（**rev.7**，含扣号/归还策略与内存 Store 拆除的历次修订论证）
+6. **[docs/DEV-DB.md](docs/DEV-DB.md)** —— 怎么把本机数据库跑起来（仓库自管 devdb，与社团隔离）
+7. **[server/README.md](server/README.md)** —— 服务端自己的说明：构建/运行/测试脚本、踩坑表、各阶段边界（⚠ 它的端点清单比实现旧，端点以 `server/src/http_app.cj` 与 [前端对接说明](docs/FRONTEND-INTEGRATION.md) 为准）
 
 ---
 
-## 基线快照包含什么
+## 关于已移除的只读基线
 
-| 资产 | 落点 | 复用度 |
-| --- | --- | --- |
-| 轻舟框架 v0.12.0（SSE / 出站流式 / DB 抽象 / Trie 路由） | `baseline/server/third_party/qingzhou/` | ⭐⭐⭐⭐⭐ |
-| **AI 编排**（工具白名单 / 三态降级 / 提议确认 / 风控） | `baseline/server/src/ai_*.cj` | ⭐⭐⭐⭐⭐ |
-| 服务端源码 33 个 `.cj`（含 `mysql_store.cj` 1362 行量级） | `baseline/server/src/` | ⭐⭐⭐⭐⭐ |
-| 7 套测试脚本（冒烟 440 / 契约 / 后台 / 运维 / AI 三件套） | `baseline/server/tests/` | ⭐⭐⭐⭐ |
-| 鸿蒙 ArkTS 客户端（21 页面 + api/ + 7 状态仓 + Theme） | `baseline/entry/` | ⭐⭐⭐⭐ |
-| Vue 3 管理端（源码 + 随仓库提交的 `dist`） | `baseline/server/admin-web/` | ⭐⭐⭐ |
-| 29 份中文文档（六轮评审 / 容量基线 / 45 条踩坑） | `baseline/docs/` | ⭐⭐⭐⭐⭐ |
+仓库早期把源项目 **`cangjie_web`（社团管理工具）** 的副本放在 `baseline/`（352 文件 / 7.53 MB，基线提交 `07a0922`）
+作为只读素材库。它已于 **2026-10-11 按要求整体移除**：本仓库现在只保留智慧医院服务端。
+
+| 当初从基线复用什么 | 现在的落点（**使用副本**，不依赖 `baseline/`） |
+| --- | --- |
+| 轻舟框架 v0.12.0（SSE / 出站流式 / DB 抽象 / Trie 路由） | `server/third_party/qingzhou/` |
+| AI 编排（工具白名单 / 三态降级 / 风控）与令牌鉴权口径 | `server/src/ai_*.cj`、`server/src/auth_*.cj`（**自包含重写**，不是直接引用） |
+| MariaDB 驱动与构建/运行脚本口径 | `server/third_party/mariadb-driver/`、`server/build.ps1`、`server/devdb.ps1` |
+| 鸿蒙 ArkTS 客户端（21 页面 + Theme） | 已随本轮回退移除；将来重做前端时按 [前端对接说明](docs/FRONTEND-INTEGRATION.md) 接 |
+
+> ⚠ 源码注释与 `server/README.md` 里仍会出现 `baseline/docs/API-NOTES.md`、`baseline/server/src/...` 这类**出处标注**——
+> 它们记录的是"这条经验/口径从哪来"，**已经不可点击**。需要查历史写法时去源仓库 `cangjie_web`。
+> 备份位置：删除前的完整副本仍在提交历史里（`git show <删除前提交>:baseline/...`）。
 
 ---
 
@@ -85,9 +91,9 @@
 
 | # | 问题 | 状态 |
 | --- | --- | --- |
-| Q1 | fork 本仓库，还是新建空仓再选择性搬运？ | ✅ **已决**：新建工作区 + 选择性搬运 → 基线落在 `baseline/`，不带 `.git` 历史 |
+| Q1 | fork 本仓库，还是新建空仓再选择性搬运？ | ✅ **已决**：新建工作区 + 选择性搬运，不带 `.git` 历史；**搬运进来的只读基线已于 2026-10-11 移除**（结论不变：不 fork，本仓只放自己的服务端代码） |
 | Q2 | 数据模型范围：先建哪几张表？ | ✅ **已决（P0）**：最小 **8 张** = 业务 6（`department` `doctor` `schedule`★ `appointment`★ `patient` `medical_record`）+ 鉴权 2（`auth_user` `auth_token`）。★ = 走直接 SQL。**原有一张 `booking_idem`（幂等登记）已于 2026-10-07 删除**（死代码，见 [ADR-0001 rev.4 §7](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md)） |
-| Q3 | 患者端页面范围：复用哪些既有页面？ | ⏳ 未决 |
-| Q4 | 管理端是否复用 `baseline/server/admin-web`（Vue3）？ | ⏳ 未决 |
+| Q3 | 患者端页面范围：复用哪些既有页面？ | ✅ **已决，但本期实现已回退**：口径是**主闭环 6 页**（登录 / 分诊 / 预问诊 / 约号 / 我的预约 / 我的）；就诊记录、设备管理、自助注册不在本期（服务端也缺注册/改密端点）。本轮**只交付 [前端对接说明](docs/FRONTEND-INTEGRATION.md)**，客户端另立一期 |
+| Q4 | 管理端是否复用 `baseline/server/admin-web`（Vue3）？ | ⏳ 未决（⚠ 该基线已移除；若要复用需回源仓库 `cangjie_web` 取） |
 | Q5 | **单院区量级**：日门诊量？号源放出峰值并发？ | ⏳ 未决 —— **影响 P0 扣号路径是否要加重试/排队**（ADR-0001 §3 方案 C 的后手条件） |
-| Q6 | AI 模型选型与合规 | ⏳ 未决 |
+| Q6 | AI 模型选型与合规 | ⏳ **选型未决；出站合规口径已落档** —— 发什么出站、默认关闭、六道闸门见 [docs/Q6-合规决策记录.md](docs/Q6-合规决策记录.md) |

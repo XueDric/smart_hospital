@@ -5,8 +5,7 @@
 #   /_fetch/       → 一次性抓取的外部资料（结论已固化进文档）
 #   /server/data   → 真实业务数据
 #   /server/dist   → 部署包（内含私钥）
-# 复制基线时**已从 baseline/ 中剔除**上面这些；这里再按扩展名兜一层，
-# 防止将来有人把材料放到别处。
+# 这里按扩展名兜一层，防止将来有人把材料放到别处。
 *.pem
 *.p12
 *.pfx
@@ -17,14 +16,8 @@
 *.crt
 *.p7b
 *.p10
-baseline/server/certs/
-baseline/signing/
-baseline/_fetch/
-baseline/server/data/
-baseline/server/dist/
 # 本项目自己的 TLS 证书与私钥（由 server\new-tls-cert.ps1 生成）
-# ⚠ 私钥入库 = 泄露；基线也因此把 certs/ 整体忽略。
-#   这里同时有目录级与 *.pem 扩展名级两层 —— 防的是"把 key 放到别处"。
+# ⚠ 私钥入库 = 泄露。这里同时有目录级与 *.pem 扩展名级两层 —— 防的是"把 key 放到别处"。
 server/certs/
 
 # ★ 仓库自管的开发数据库（server\devdb，端口 3317）—— 见 docs/DEV-DB.md
@@ -33,8 +26,6 @@ server/devdb/data/
 server/devdb/*.log
 
 # ── 分发制品（二进制，每次重签都会变）──────────────────────────────────
-社团管理工具-*.zip
-安装说明.txt
 .tools/
 
 # ── 构建产物（可重新生成，**不入库**）──────────────────────────────────────
@@ -47,12 +38,9 @@ server/build/
 # 驱动构建产物
 server/build/mysql-driver/
 
-# ── 基线里的构建产物（本来就该在 .gitignore 里）────────────────────────────
-baseline/entry/build/
-baseline/server/build/
-baseline/.hvigor/
-baseline/oh_modules/
-baseline/node_modules/
+# ── 临时文件（不属于仓库内容）──────────────────────────────────────────────
+.scratch-*
+.dsh-*
 
 # ── 运行时/日志 ────────────────────────────────────────────────────────────
 *.log
@@ -71,5 +59,8 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
-# ⚠ 注意：**不要**把 baseline/ 整体忽略 —— 它是本仓库的只读参考基线，
-#   是项目上下文的一部分（见 baseline/SNAPSHOT.md），有意入库。
+# ⚠ 历史说明：仓库早期曾把源项目 cangjie_web（社团管理工具）的副本放在 `baseline/`
+#   作为只读参考基线，已于 2026-10-11 整体移除（见 README「关于已移除的只读基线」）。
+#   轻舟框架与 AI 编排的**实际使用副本**在 `server/third_party/` 与 `server/src/` 里，
+#   不依赖 `baseline/`；需要再查历史写法时从 cangjie_web 取。
+#   若将来又引入客户端或基线目录，**不要**把它的 build/、oh_modules/、.hvigor/ 入库。
