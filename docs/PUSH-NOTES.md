@@ -290,3 +290,41 @@ git -c http.proxy=http://127.0.0.1:8445 ls-remote --heads origin   # 只读自�
 > 也**不需要 `url.insteadOf`**（不产生 301）。push 完记得 `Stop-Process` 掉代理进程。
 > §3 的两条"真正可靠的修法"（SSH / 修 hosts）仍然更长期 —— 但有了本节的代理，
 > 在拿到管理员权限之前**不必再靠重试撞运气**。
+
+### 5.3 ⚠ 同一天晚些时候：窗口会**整个关上**，"抢连成功"也不等于"能用"（2026-10-11 复盘）
+
+§5.2 那次成功之后不到一小时，同一台机器、同一批 IP 出现了下面三种**连续的**失败形态
+（全都记下来，免得下次又把它们当成"脚本坏了"）：
+
+| 现象 | 日志/报错原文 | 说明 |
+| --- | --- | --- |
+| 抢连选中的 IP 连上又被对端关掉 | `git: fatal: unable to access ...: schannel: server closed abruptly (missing close_notify)`；代理日志 `upstream picked 4.237.22.38:443` → 6 秒后 `upstream close` | **TCP 连通 ≠ 能完成 TLS/HTTP 会话**。抢连只看"谁先连上"，选中的未必能服务请求 |
+| 固定 IP 隧道也连不上 | `upstream error: connect ETIMEDOUT 20.27.177.113:443`（就是 §5.2 成功时选中的那个 IP） | 同一个 IP 十几分钟后不可达 ⇒ §1/§2 的 IP 表**确实不能当固定结论** |
+| 所有候选 IP 一起失效 | 抢连版逐条回 `CONNECT tunnel failed, response 502`；TLS 级探测（下）9 个 IP **全部 TIMEOUT** | 这不是"换个 IP 就行"，而是**这一跳整体不通** —— 唯一办法是**等窗口**再重试 |
+
+**更好的筛法：TLS 级探测（比 §2 的 curl 探针更贴近真实可用性）**
+
+```javascript
+// %TEMP%\gh-probe.mjs —— 对每个候选 IP 真做一次 TLS 握手 + 一次 info/refs 请求，报 HTTP 状态码
+// 判据：HTTP 401 = 这一跳现在可用（能完成会话）；TIMEOUT / ERR / CLOSED = 现在不可用
+import tls from 'node:tls';
+const IPS = ['20.205.243.166','20.27.177.113','140.82.112.3','140.82.113.3',
+             '140.82.114.3','140.82.114.4','140.82.116.3','4.237.22.38','20.200.245.247'];
+const probe = (ip, ms) => new Promise((r) => {
+  const t0 = Date.now(); const s = tls.connect({ host: ip, port: 443, servername: 'github.com', timeout: ms });
+  let done = false; const fin = (v) => done || ((done = true), s.destroy(), r(`${ip}\t${v}\t${Date.now() - t0}ms`));
+  s.on('secureConnect', () => s.write('GET /XueDric/smart_hospital.git/info/refs?service=git-receive-pack HTTP/1.1\r\nHost: github.com\r\nConnection: close\r\n\r\n'));
+  let b = ''; s.on('data', (d) => { b += d.toString('latin1'); const m = b.match(/^HTTP\/1\.[01] (\d{3})/); if (m) fin(`HTTP ${m[1]}`); });
+  s.on('timeout', () => fin('TIMEOUT')); s.on('error', (e) => fin(`ERR ${e.code || e.message}`)); s.on('close', () => fin('CLOSED'));
+});
+for (const r of await Promise.all(IPS.map((ip) => probe(ip, 8000)))) console.log(r);
+```
+
+```powershell
+node "$env:TEMP\gh-probe.mjs"     # 有 HTTP 401 才值得起代理；全 TIMEOUT 就别折腾了，等一会儿
+```
+
+> 📌 结论：这套绕过**能用，但是"看天"**。可用窗口内一次成功；窗口关上时
+> 任何 IP / 任何隧道写法都救不回来。此时正确做法是**停下来、过一段时间重试**，
+> 而不是继续换 IP 或加 `sslVerify=false`（那两者都不会改变结果，只会浪费一轮）。
+> 长期解法仍是 §3 的 SSH 或修 hosts/DNS。
