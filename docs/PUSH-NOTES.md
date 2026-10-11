@@ -328,3 +328,33 @@ node "$env:TEMP\gh-probe.mjs"     # 有 HTTP 401 才值得起代理；全 TIMEOU
 > 任何 IP / 任何隧道写法都救不回来。此时正确做法是**停下来、过一段时间重试**，
 > 而不是继续换 IP 或加 `sslVerify=false`（那两者都不会改变结果，只会浪费一轮）。
 > 长期解法仍是 §3 的 SSH 或修 hosts/DNS。
+
+### 5.4 ✅ 2026-10-11 14:13：把 §5.3 的"等窗口"固化成一个自动重试脚本（本次两连推成功）
+
+§5.3 只说了"要等窗口"，但手动等很容易在坏窗口里白试。本次把它做成**先 TLS 级挑 IP、
+再起单 IP 代理、失败就整轮重来**的循环，两次推送（`d0afd6d..f5c164e`、`f5c164e..4646e83`）
+都成功。三个可复用的细节：
+
+1. **挑 IP 用 TLS 级探测，判据是 `HTTP 401`**（§5.3 的 `gh-probe.mjs`；本次脚本 `%TEMP%\gh-pick.mjs`
+   把候选列表写成参数，并只输出一行 `PICK <ip> <HTTP 401>` 或 `NONE`）。探测本身很快（~10s）。
+2. **代理只用一个已验证的 IP**：把 §5.1 脚本里写死的 `CANDIDATES` 换成
+   `const CANDIDATES = (process.env.GH_IPS || '').split(',')...`，用 `GH_IPS=<挑中的 ip>` 起进程。
+   **不要**让抢连版（多 IP 竞争）去跑 push —— 它只看"谁先 TCP 连上"，选中的常常是
+   "连得上但 TLS 被对端掐断"的那种（本次第 1 轮挑到 `140.82.121.3` 后 push 连续
+   502 / `schannel: server closed abruptly`）。
+3. **一轮失败就整轮重来**（重新挑 IP），间隔 40s，最多十几轮。本次时间线：
+   第 1 轮 `140.82.121.3`（吹了）→ 第 2、3 轮 `NONE` → 第 4 轮 `20.27.177.113` **成功**。
+   ⇒ "某个 IP 能用"的寿命只有几分钟，**别把它当常量写进配置**。
+
+**顺带记两条本次新增的环境事实**（用于判断"是这一个 IP 坏了，还是整跳不通"）：
+
+| 目标 | TCP 443 | TLS(SNI=github.com) 完成会话 |
+| --- | --- | --- |
+| `20.205.243.166`（`github.com` 自身） | ❌ 连不上 | ❌ |
+| `20.205.243.160`（`ssh.github.com`） | ✅ | ❌ `ERR_SSL_WRONG_VERSION_NUMBER`（这个口是 **SSH**，不是 TLS —— SSH over 443 是通的，缺的只是本机 SSH key） |
+| `20.205.243.165` / `.168`（codeload / api） | ✅ | ❌ TIMEOUT（TCP 握手成功 ≠ 会话可用） |
+| `185.199.108-111.133`（raw / objects） | ✅ | ❌ TIMEOUT |
+
+> ⚠ **临时 PowerShell 脚本里的中文必须 UTF-8 with BOM**：本次把重试脚本按无 BOM 写出，
+> PS 5.1 按 ANSI 解析中文引号，直接报 `The string is missing the terminator: '`（脚本一句没跑）。
+> 这与 `server/devdb.ps1` 头部记的是同一条铁律，写临时脚本时同样适用。
