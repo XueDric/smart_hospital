@@ -462,7 +462,7 @@ P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与
 | 对象 | 连续两次构建是否一致 |
 | --- | --- |
 | `hospital-server.exe` 的 SHA256 | ❌ **不同** |
-| `build/SOURCE-MANIFEST.sha256` 的 SHA256（43 个源文件） | ✅ **相同** |
+| `build/SOURCE-MANIFEST.sha256` 的 SHA256（当时 43 个源文件；现在是轻舟框架 38 + 业务 33 = **71**） | ✅ **相同** |
 
 **因此：产物哈希不能当验收依据**，可复现的锚点是
 **`build/SOURCE-MANIFEST.sha256`（记录每个参与编译源文件的 SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）
