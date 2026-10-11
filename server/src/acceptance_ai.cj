@@ -178,7 +178,7 @@ public func acP3_2(runner: TestRunner, db: DbBackend): Unit {
 /*
  * AC-P3-3 配置校验：不自洽的配置必须**明确不可用**，而不是"看起来配好了"。
  *
- * ⚠ 边界值照抄基线 `aiValidate`（每条背后都有实测踩出来的理由）——
+ * ⚠ 边界值照抄搬迁前 `aiValidate`（每条背后都有实测踩出来的理由）——
  *   见 `aiRuntimeValidate` 的注释。这里盯的是"**总开关与配置自洽性都参与判定**"：
  *   配置全对但总开关为 0 ⇒ 仍然不可用，且理由要说清是**开关**不是配置错
  *   （否则运维会去改配置，而问题在开关）。
@@ -232,7 +232,7 @@ public func acP3_3(runner: TestRunner, db: DbBackend): Unit {
                      o4.disabledReason.contains("反向代理"))
         let _f = repo.put(SET_AI_ENDPOINT, "https://api.example.com/v1", now)
 
-        // ⑤ 越界值必须被拒（照基线口径）
+        // ⑤ 越界值必须被拒（照搬迁前口径）
         let bounds: Array<(String, String, String)> = [
             (SET_AI_TIMEOUT, "0", "超时 0（无限等待）"),
             (SET_AI_TIMEOUT, "301", "超时 301（超过上界）"),

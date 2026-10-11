@@ -225,7 +225,7 @@ if (-not $SkipTiming) {
     $a2 = ($tNone | Measure-Object -Average).Average
     $ratio = [Math]::Max($a1, $a2) / [Math]::Min($a1, $a2)
     Write-Host ("    账号存在(口令错) 平均 {0:N1} ms ｜ 账号不存在 平均 {1:N1} ms" -f $a1, $a2)
-    Write-Host ("    比值 {0:N2}（基线未防护时约 13 倍）" -f $ratio)
+    Write-Host ("    比值 {0:N2}（搬迁前未防护时约 13 倍）" -f $ratio)
     Check "计时接近（比值 < 2）⇒ 防枚举成立" ($ratio -lt 2)
     # ★ 计时段打了 5+ 次错口令 —— 跑完必须清，否则 admin 被锁着交给下一个脚本
     Reset-LoginAttempts

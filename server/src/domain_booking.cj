@@ -11,7 +11,7 @@
  * 三条不可动摇的纪律（ADR §2.2）：
  *   ① 扣减走**参数化原子 UPDATE**：`remain_num = remain_num - 1` 是列表达式，
  *      所以走手写 SQL 文本；**不用** UpdateQuery.set()（它只接受值，不接受表达式，
- *      见 baseline/server/third_party/qingzhou/src/dbquery.cj:492-556）。
+ *      见 轻舟 dbquery.cj:492-556）。
  *   ② 成败**只看 exec() 返回的受影响行数**，绝不"先 SELECT 再 UPDATE"（那是竞态）。
  *   ③ UPDATE 与挂号单 INSERT 必须**同一个 withTransaction**。
  *

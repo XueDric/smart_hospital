@@ -181,7 +181,7 @@ public func acAiCall3(runner: TestRunner, db: DbBackend): Unit {
      * ② 各种**畸形**形状必须返回 None（而不是抛异常）。
      *   ⚠ 这是"模型是不可信输入源"的具体体现：它可能返回任何东西。
      *   ⚠⚠ 每一层都必须先判类型 —— `asObject()`/`asArray()` 在类型不符时
-     *     **抛异常**而不是返回 None（本仓 API-NOTES 记过），所以
+     *     **抛异常**而不是返回 None（这条语言坑记录过），所以
      *     `if (v is JsonObject)` 这类判断**不能省**。
      */
     let badCases: Array<(String, String)> = [

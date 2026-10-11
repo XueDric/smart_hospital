@@ -8,7 +8,7 @@
  * 落地 P1：排班查询 / 挂号 / 取消 三个 REST，复用 P0 的 `BookingRepo`
  * （原子扣减 + 幂等 + 三态取消），因此并发安全由数据库保证，本文件不引入新锁。
  *
- * ── 中间件顺序（照基线口径，baseline/server/src/main.cj:940-953）──────────
+ * ── 中间件顺序（照搬迁前口径，见搬迁前 main.cj:940-953）──────────
  *   requestId → logger → bodyLimit → bodyParser → cors → timeout → router.middleware
  * 三条硬性理由：
  *   1. `bodyLimit` 必须在 `bodyParser` **之前**：框架的 bodyParser 是"先整个读进内存
@@ -19,9 +19,9 @@
  *
  * ── 三端角色（P1 简化版，如实标注）──────────────────────────────────────
  *   患者 / 医生 / 管理员三种角色，权限判定收敛到**单一函数** `can(role, action)`
- *   （基线铁律：禁止 handler 手写 if 判权限，见 baseline/server/src/perms.cj）。
+ *   （搬迁前铁律：禁止 handler 手写 if 判权限，见搬迁前 perms.cj）。
  *
- *   ⚠ 与基线的差异：基线是"不透明令牌 + PBKDF2 三阶段加锁"，本阶段**尚未搬令牌体系**，
+ *   ⚠ 与搬迁前的差异：搬迁前是"不透明令牌 + PBKDF2 三阶段加锁"，本阶段**尚未搬令牌体系**，
  *     用的是 `--dev-auth` 显式开启的**开发态身份头**（`X-Role` / `X-Patient-Id`）。
  *     这是**刻意的临时形态**：先把接口与权限骨架立起来并测通，
  *     令牌换取/持久化/过期回收放 P1 收尾。**生产启用会直接拒绝启动**（见 requireDevAuth）。
@@ -37,7 +37,7 @@ import stdx.encoding.json.*
 
 /*
  * 三端角色。
- * ⚠ 仓颉的枚举**不能用 `==` 比较**（API-NOTES 坑 4：invalid binary operator '==' on Enum），
+ * ⚠ 仓颉的枚举**不能用 `==` 比较**（语言坑 4：invalid binary operator '==' on Enum），
  *   所以角色比较一律走 `roleName()` 转字符串，或用 match。
  */
 public enum Role {
@@ -133,7 +133,7 @@ public func actionName(a: Action): String {
 }
 
 /*
- * ★ 权限判定的**唯一入口**（基线铁律：收敛到单一函数，禁止 handler 手写 if）。
+ * ★ 权限判定的**唯一入口**（搬迁前铁律：收敛到单一函数，禁止 handler 手写 if）。
  *
  * 权限矩阵（P4 更新）：
  *
@@ -258,7 +258,7 @@ public class Principal {
  * 开发态身份开关。
  *
  * ⚠⚠ 这是**临时形态**，不是最终鉴权：
- *   基线用的是"不透明令牌 + PBKDF2 三阶段加锁"（baseline/server/src/auth.cj），
+ *   搬迁前用的是"不透明令牌 + PBKDF2 三阶段加锁"（搬迁前 auth.cj），
  *   本阶段为把接口与权限骨架先立起来、先测通，改用显式请求头。
  *
  * 三重保险，避免它悄悄上生产：
@@ -269,8 +269,8 @@ public class Principal {
  * ⚠ 为什么用 `--prod` 命令行开关而不是环境变量 `HOSPITAL_ENV`：
  *   本工具链的仓颉 std **没有 `getEnv`/`envVars`**
  *   （框架 config.cj:17-21 逐字核对过："neither std.env nor std.process has them"；
- *    基线 main.cj:24-25 因此也明说"不支持环境变量配置，只能走命令行"）。
- *   所以这里照基线的做法走命令行开关 —— 用环境变量会静默永远不生效，
+ *    搬迁前 main.cj:24-25 因此也明说"不支持环境变量配置，只能走命令行"）。
+ *   所以这里照搬迁前的做法走命令行开关 —— 用环境变量会静默永远不生效，
  *   那比没有更糟（以为生产被保护了，其实没有）。
  */
 public class DevAuthGate {
@@ -346,7 +346,7 @@ public func principalOf(ctx: Context, gate: DevAuthGate, auth: AuthRepo): Princi
     throw apiErrorMsg("AUTH_REQUIRED", "缺少 Authorization: Bearer <token>")
 }
 
-/* 取出 Authorization: Bearer <token>（照基线 auth.cj:136 口径）。 */
+/* 取出 Authorization: Bearer <token>（照搬迁前 auth.cj:136 口径）。 */
 public func bearerToken(ctx: Context): ?String {
     match (ctx.requestHeader("authorization")) {
         case Some(v) =>
@@ -430,7 +430,7 @@ func bookingJson(r: BookingResult): JsonObject {
 /*
  * 装配路由。
  *
- * 路径带 `/api/v1` 前缀（与基线 api-design 口径一致，便于客户端复用同一套 base-url 处理）。
+ * 路径带 `/api/v1` 前缀（与搬迁前的 api-design 口径一致，便于客户端复用同一套 base-url 处理）。
  *
  * ⚠ 三端业务接口的**身份来源**是 `principalOf(ctx, gate, auth)` ——
  *   从开发态头切到令牌，这里只改了这一个调用点的实参，业务逻辑一行未动。
@@ -912,7 +912,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
             case None => ()
         }
         // ref_id：患者/医生必填（指向业务实体），管理员为 0。
-        // ⚠ 仓颉的枚举**不能用 `==`**（API-NOTES 坑 4：invalid binary operator '==' on Enum），
+        // ⚠ 仓颉的枚举**不能用 `==`**（语言坑 4：invalid binary operator '==' on Enum），
         //   所以角色判定一律走 match（或用 roleName() 转字符串比较）。
         match (role) {
             case Patient =>
@@ -1138,7 +1138,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
 
     /* ---------- POST /api/v1/triage —— 智能分诊（P2）---------- */
     /*
-     * ★★ 三条设计口径（brief §5.2 + baseline `ai_client.cj` 口径 2）：
+     * ★★ 三条设计口径（brief §5.2 + 搬迁前 `ai_client.cj` 口径 2）：
      *
      *   ① **结论非流式**：本接口一次性返回**校验过**的结论，绝不流式吐分诊结果。
      *      理由：这是**业务值**（要拿它去挂号）。流式会让客户端先拿到
@@ -1596,9 +1596,9 @@ public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGat
         // bodyLimit 必须排在 bodyParser **之前**（外层）：框架的 bodyParser 是
         // "先把整个 body 读进内存、再比 maxBytes"，只有抢在它前面按 Content-Length
         // 拦，大 body 才进不了内存。
-        // ⚠ 基线的 `bodyLimit()` 是**基线自己写的**（baseline/server/src/limits.cj:83），
+        // ⚠ 搬迁前的 `bodyLimit()` 是**搬迁前自己写的**（搬迁前 limits.cj:83），
         //   不在框架里；这里用框架原生的 `contentLengthLimit(maxBytes)`（bodyparser.cj:168）。
-        //   上限 64 KiB —— 与基线 MAX_BODY_BYTES 同口径（limits.cj:47）。
+        //   上限 64 KiB —— 与搬迁前 MAX_BODY_BYTES 同口径（limits.cj:47）。
         .use(contentLengthLimit(64 * 1024))
         /*
          * ⚠ bodyParser() 的真实上限是**框架默认的 1 MiB**（bodyparser.cj:36

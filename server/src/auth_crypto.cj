@@ -12,9 +12,9 @@
  *   见 `authSelfTest()`，⚠ 这段必须在连库之前跑，它是"这套密码学没写错"的唯一凭据。
  *
  * 令牌：32 字节随机 → 64 位十六进制，服务端存 token → 用户映射。
- *   **不是无状态 JWT**：这样"停用账号"能立即踢下线（基线 api-design §1.4 的决策）。
+ *   **不是无状态 JWT**：这样"停用账号"能立即踢下线（搬迁前的 api-design §1.4 的决策）。
  *
- * 口径来源：baseline/server/src/auth.cj（只读基线），本文件是它的**自包含子集** ——
+ * 口径来源：搬迁前的 auth.cj，本文件是它的**自包含子集** ——
  * 只搬口令与令牌原语，**不搬**绑定内存 Store 的那部分（pruneTokens/issueToken/
  * requireMember），那些在本项目要改成 MySQL 版（见 auth_repo.cj）。
  *
@@ -32,7 +32,7 @@ import stdx.encoding.hex.*
 
 /* ===================== 常量 ===================== */
 
-/* 口令哈希迭代数。与基线同口径。 */
+/* 口令哈希迭代数。与搬迁前同口径。 */
 public let PBKDF2_ITER: Int64 = 100000
 
 /* 令牌有效期：30 天。 */
@@ -102,7 +102,7 @@ public func randBelow(bound: Int64): Int64 {
 /*
  * 易读口令字母表：去掉 0/O、1/I/L、2/Z、5/S、8/B 这类易混字符。
  * 管理员初始口令要能被人**在聊天里口头传达或手抄**，可读性是功能要求，不是美化。
- * （口径与基线 ids.cj:61 的 CODE_ALPHABET 一致。）
+ * （口径与搬迁前 ids.cj:61 的 CODE_ALPHABET 一致。）
  */
 public let CODE_ALPHABET: String = "ACDEFGHJKLMNPQRTUVWXY34679"
 
@@ -228,7 +228,7 @@ func hmacSha256(key: Array<UInt8>, msg: Array<UInt8>): Array<UInt8> {
 /*
  * RFC 2898 PBKDF2，PRF = HMAC-SHA256。
  *
- * ⚠ **参数防线（照基线加固口径）**：本函数**不做业务校验**，非法参数一律
+ * ⚠ **参数防线（照搬迁前加固口径）**：本函数**不做业务校验**，非法参数一律
  *   **返回空数组（fail closed）**，而不是"算出一个看起来合法的弱摘要"：
  *   · `iters <= 0` 时下面的循环一次都不跑，等价于 **1 轮** —— 规范里 c 的最小合法值，
  *     也就是"静默降级成最弱配置"。
@@ -281,7 +281,7 @@ public func newPasswordRecord(pw: String): (String, String, Int64) {
  * 校验口令。任何一步异常都当作"不匹配"，**绝不向上抛**。
  *
  * ⚠ 名字不叫 `verifyPassword`：轻舟框架自己已经有一个同名函数（security.cj），
- *   同包编译会冲突（基线 auth.cj:90 记过同一个坑）。
+ *   同包编译会冲突（搬迁前 auth.cj:90 记过同一个坑）。
  */
 public func verifyPw(pw: String, saltHex: String, hashHex: String, iters: Int64): Bool {
     var salt: Array<UInt8> = Array<UInt8>()
@@ -307,7 +307,7 @@ public let DUMMY_PW_HASH: String = "00000000000000000000000000000000000000000000
  * 取本次登录该用哪一组口令材料（**纯函数**，N-16 的回归闸门）。
  *
  * 账号不存在时返回假材料 + **标准迭代数**，让两条路径的 CPU 成本一致。
- * 基线实测过：如果写成 `if (found) { ok = verifyPw(...) }`，号码不存在时整段
+ * 搬迁前实测过：如果写成 `if (found) { ok = verifyPw(...) }`，号码不存在时整段
  * 10 万次迭代被跳过，响应时间差约 **13 倍**（388ms 对 28ms），
  * 于是登录接口本身成了一个"某手机号是否注册过"的枚举器。
  *

@@ -280,7 +280,7 @@ Check "改医生 → 200" ($r.Http -eq 200) ("HTTP $($r.Http)")
 #       DELETE /api/v1/_probe/123?force=true
 #       -> {"path":"/api/v1/_probe/123","query":"force=true","id_raw":"123","force":"true"}
 #   ⇒ 查询串**没有**混进 path，`paramOr("id")` 与 `queryParamOr("force")` 都正常。
-#     框架的路由**没有**这个问题（`router.cj` 与基线逐字节相同，也不需要改）。
+#     框架的路由**没有**这个问题（`router.cj` 与搬迁前逐字节相同，也不需要改）。
 #
 #   ⇒ 本节现在**如实测两条语义**（这才是本来要测的）：
 #     · 有引用 ⇒ 409 BASE_IN_USE，且行必须还在（拒绝是真的拒绝）；

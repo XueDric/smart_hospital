@@ -1,5 +1,5 @@
 # ── ⚠ 机密材料：绝不能入库 ─────────────────────────────────────────────────
-# 这些是**源仓库 cangjie_web 自己也未入库**的东西（见其 .gitignore）：
+# 机密材料、签名材料与一次性抓取物的落点（一律不入库）：
 #   /server/certs  → 「自签证书的 key.pem 是机密」
 #   /signing/      → 「.p12 一旦提交就等于泄露；.cer/.p7b 按 AppGallery 规则也不得转发」
 #   /_fetch/       → 一次性抓取的外部资料（结论已固化进文档）
@@ -59,8 +59,5 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
-# ⚠ 历史说明：仓库早期曾把源项目 cangjie_web（社团管理工具）的副本放在 `baseline/`
-#   作为只读参考基线，已于 2026-10-11 整体移除（见 README「关于已移除的只读基线」）。
-#   轻舟框架与 AI 编排的**实际使用副本**在 `server/third_party/` 与 `server/src/` 里，
-#   不依赖 `baseline/`；需要再查历史写法时从 cangjie_web 取。
-#   若将来又引入客户端或基线目录，**不要**把它的 build/、oh_modules/、.hvigor/ 入库。
+# ⚠ 若将来引入客户端工程或其构建目录，**不要**把生成的 build/、oh_modules/、
+#   .hvigor/ 入库 —— 它们都能由构建重新生成。

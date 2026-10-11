@@ -459,7 +459,7 @@ public func kbVectorToJson(v: Array<Float64>): String {
  *   库里一行坏 JSON 不该让**整个检索**失败 —— 那一行顶多是"没有向量"，
  *   正好落进关键词降级路径。📌 与 `previsitParseForm` 同一口径
  *   （"库里一条坏 JSON 不该让整个会话不可用"）。
- * ⚠ 每个元素**先判类型**：`asFloat()` 在类型不符时**抛异常**（本仓 API-NOTES 记过）。
+ * ⚠ 每个元素**先判类型**：`asFloat()` 在类型不符时**抛异常**（这条语言坑记录过）。
  */
 public func kbVectorFromJson(s: String): Array<Float64> {
     let out = ArrayList<Float64>()

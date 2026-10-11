@@ -45,7 +45,7 @@ public class MySqlBackend <: DbBackend {
      *      （`prepare.mode=client` 的注释假设"SQL 里无 ? 占位符"，值里含 `?` 时该假设不成立。）
      *   ② MySQL **默认还开着反斜杠转义**，而框架的 `sqlEscape` 只做 SQL 标准的 `''` 双写
      *      ⇒ 值里的 `\` 被服务端当转义符吃掉。
-     *      （基线 `docs/mysql-backend.md` §12.3 已记 ②，用 `mysqlSafe` 双写反斜杠解决；
+     *      （搬迁前的 mysql 接入文档 §12.3 已记 ②，用 `mysqlSafe` 双写反斜杠解决；
      *        那一条**没有覆盖 ①** —— `?` 这一面是本项目才实测到的。）
      *
      * 处置：转义放在**后端**（这里），不放进通用的 `bindSql` ——
@@ -53,12 +53,12 @@ public class MySqlBackend <: DbBackend {
      *   塞进通用层就是污染。参数化 `exec`/`query` 是唯一入口，在这里覆盖即可全局生效。
      *
      * ⚠ 为什么必须**两件事一起做**：两者共用同一个反斜杠机制。
-     *   只补 `?` 而不补 `\`：`"a\"` 结尾会逃逸掉收尾引号 ⇒ **SQL 词法跑飞**（基线已实测）。
+     *   只补 `?` 而不补 `\`：`"a\"` 结尾会逃逸掉收尾引号 ⇒ **SQL 词法跑飞**（搬迁前已实测）。
      *   只补 `\` 而不补 `?`：就是本缺陷。
      *
-     * 口径选择（`false` = 沿用基线 `mysql_store.cj` 的 `noBackslashEscapes: false`）：
+     * 口径选择（`false` = 沿用搬迁前 `mysql_store.cj` 的 `noBackslashEscapes: false`）：
      *   本项目无历史数据包袱，两种口径都能自洽（两种我都验证过）；
-     *   选 `false` 是为了**与基线存储口径一致**，避免同一批数据在两套代码里读法不同。
+     *   选 `false` 是为了**与搬迁前存储口径一致**，避免同一批数据在两套代码里读法不同。
      *   若将来改成 `true`，本类的转义必须**同时**去掉反斜杠双写（`?` 的 `\?` 仍然可以留，
      *   `NO_BACKSLASH_ESCAPES` 下服务端把 `\?` 当两个字面字符，结果不变）。
      */
@@ -270,7 +270,7 @@ func mysqlBindTraceClear(): Unit {
  *   ② MySQL 默认会话还开着**反斜杠转义**，而框架的 `sqlEscape` 只做 SQL 标准的 `''` 双写
  *      ⇒ 值里的 `\` 被服务端吃掉（`a\b`→`a` + 退格符、`a\b\c`→`ac`），
  *        值以 `\` 结尾时更会逃逸掉收尾引号 ⇒ **SQL 词法跑飞**（语法错）。
- *      （基线 `baseline/docs/mysql-backend.md` §12.3 已记 ②，用 `mysqlSafe` 双写反斜杠解决；
+ *      （搬迁前的 mysql 接入文档 §12.3 已记 ②，用 `mysqlSafe` 双写反斜杠解决；
  *        那一条**没有覆盖 ①** —— `?` 这一面是本项目才实测到的。）
  *
  * 处置（**两阶段**，都只碰参数值与最终 SQL 文本，不动 SQL 模板）：
@@ -283,9 +283,9 @@ func mysqlBindTraceClear(): Unit {
  * ⚠ 为什么必须**两件事一起做**：两者都能单独把 SQL 弄坏。
  *   只补 `\` 不补 `?` ⇒ 就是本缺陷；只补 `?` 不补 `\` ⇒ `"a\"` 结尾逃逸收尾引号、SQL 词法跑飞。
  *
- * 口径选择（`backslashEscapes=true` = 沿用基线 `mysql_store.cj` 的 `noBackslashEscapes: false`）：
+ * 口径选择（`backslashEscapes=true` = 沿用搬迁前 `mysql_store.cj` 的 `noBackslashEscapes: false`）：
  *   本项目无历史数据包袱，两种口径都能自洽；
- *   选 `false` 是为了**与基线存储口径一致**，避免同一批数据在两套代码里读法不同。
+ *   选 `false` 是为了**与搬迁前存储口径一致**，避免同一批数据在两套代码里读法不同。
  *
  * 为什么不改驱动 / 不改成真参数绑定：
  *   驱动的 `.cjo` 是**预编译产物**（`server/build/mysql-driver/`，源目录仅作参考副本），

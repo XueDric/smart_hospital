@@ -109,7 +109,7 @@ func kbBodyField(ctx: Context, name: String): String {
 /*
  * 取布尔字段（缺省用 `def`）。
  * ⚠ 用现成的 `bodyBool`（它内部已做类型判定）：
- *   `asBool()` 类型不符会**抛异常**（本仓 API-NOTES 记过），不要自己再写一遍。
+ *   `asBool()` 类型不符会**抛异常**（这条语言坑记录过），不要自己再写一遍。
  */
 func kbBodyBool(ctx: Context, name: String, def: Bool): Bool {
     return bodyBool(ctx, name) ?? def

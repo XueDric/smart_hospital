@@ -5,13 +5,13 @@
  *
  * ===== db_bootstrap.cj —— MySQL 建连与初始化 ==============================
  *
- * 职责：把「连库」这件事做对，并把基线踩过的三个坑一次挡掉：
+ * 职责：把「连库」这件事做对，并把搬迁前踩过的三个坑一次挡掉：
  *
  *   坑 1（致命）**连接字符集**：驱动握手把会话字符集写死成 utf8mb3（id 33），
  *        而库与表都是 utf8mb4 —— 于是**一个 4 字节 UTF-8 字符（emoji）就让之后
  *        所有写入持续报 1366 直到重启**。轻舟框架 db_mysql.cj **没有字符集参数**。
  *        处置：建连后立刻 `SET NAMES utf8mb4`，**失败直接抛，不静默继续**。
- *        依据：baseline/server/src/mysql_store.cj:201-208、baseline/docs/API-NOTES.md 坑 44
+ *        依据：搬迁前 mysql_store.cj:201-208、搬迁前的 API 踩坑记录 坑 44
  *
  *   坑 2 **驱动注册**：db_mysql.cj 是"编译期零驱动依赖、运行时按注册名查找"，
  *        所以驱动必须在**某个被编译的文件里 import 过**才会注册 ——
@@ -20,8 +20,8 @@
  *
  *   坑 3 **反斜杠转义约定**必须二选一、不能都做：
  *        框架默认 `noBackslashEscapes: true`（会话固定 NO_BACKSLASH_ESCAPES，
- *        与框架的 `''` 转义一致）。基线实际传的是 `false` 并自己负责反斜杠加倍。
- *        本项目选择**沿用基线口径 `false`**（与 baseline mysql_store.cj:158 一致），
+ *        与框架的 `''` 转义一致）。搬迁前实际传的是 `false` 并自己负责反斜杠加倍。
+ *        本项目选择**沿用搬迁前口径 `false`**（与 搬迁前 mysql_store.cj:158 一致），
  *        并且**不在业务层做任何反斜杠加倍** —— 参数一律走 DbValue 绑定，
  *        由框架的 bindSql 负责安全字面量化（db.cj:113-131）。
  */
@@ -40,7 +40,7 @@ public class MySqlConfig {
     /*
      * ⚠ 默认端口 = **3306**（MySQL 出厂默认），不是本项目的 3317 —— 这是刻意的。
      *
-     * 原值是 **3307**，那是**社团那台**便携 MariaDB 的端口；本项目自管 devdb
+     * 原值是 **3307**，那是**本机另一台实例**便携 MariaDB 的端口；本项目自管 devdb
      * 后来迁到 **3317**，而这个默认值一直没跟着改。它造成的实际危害是：
      *   ① 它是个**假默认** —— 本项目**没有任何实例**跑在 3307 上，
      *      所以"什么都不传就用了默认值"这条路径必然失败；
@@ -155,7 +155,7 @@ public func parseDsnEx(dsn: String, allowEmptyDb!: Bool): MySqlConfig {
  * 库名白名单校验（标识符）。
  *
  * 库名是**唯一**会进 SQL 文本（DDL/DML 都拼不了参数的地方）的外部输入，
- * 所以必须先过白名单再拼。照基线 mysql_store.cj 的 dbNameChecked 口径：
+ * 所以必须先过白名单再拼。照搬迁前 mysql_store.cj 的 dbNameChecked 口径：
  *   只允许 [A-Za-z0-9_]，且首字符不能是数字，长度 1~64。
  */
 public func dbNameChecked(name: String): String {
@@ -183,7 +183,7 @@ public func dbNameChecked(name: String): String {
 /*
  * 幂等建库：`CREATE DATABASE IF NOT EXISTS <db> CHARACTER SET utf8mb4`。
  *
- * ── 为什么需要它（照基线 mysql_store.cj:248 的同一考量）──────────────────
+ * ── 为什么需要它（照搬迁前 mysql_store.cj:248 的同一考量）──────────────────
  * `MySqlBackend` 的 URL 里带 database，**库不存在时建连就会失败**。
  * 于是"先手工建库"成了部署门槛。但很多账号（例如本项目的 `hospital`）
  * **没有全局权限**，即使先建库也未必能建 —— 所以这个入口只在有权限时有用，
@@ -206,12 +206,12 @@ public func ensureDatabase(cfg: MySqlConfig): Unit {
         /*
          * ⚠ 这里**不能**只说"建库失败"。最常见的原因恰恰不是"没权限"，
          *   而是**端口/主机不对**或**DSN 是空的**（PowerShell 引用未定义变量 = 空串，
-         *   会静默退回默认值）。基线专门为此写过一版把原因按可能性排序的报错，
+         *   会静默退回默认值）。搬迁前专门为此写过一版把原因按可能性排序的报错，
          *   这里沿用同一口径 —— 错误信息本身就是排障文档。
          *
          * ⚠⚠ **这条提示里绝不再写死端口号**（2026-10-07 修，第九份复查发现）。
          *   原文是「本机联调的便携版 MariaDB 是 127.0.0.1:**3307**」——
-         *   而本项目自管 devdb 早已迁到 **3317**（3307 是**社团那台**，
+         *   而本项目自管 devdb 早已迁到 **3317**（3307 是**本机另一台实例**，
          *   本项目不再依赖它，见 `docs/DEV-DB.md`）。
          *   后果很实在：**复查的人、以及我自己在本项目里，都被它误导过** ——
          *   devdb 没起来时，提示让人去查 3307，而正确处置是启动 3317 的 devdb。
@@ -552,7 +552,7 @@ public func canAlterExistingTable(db: DbBackend): Bool {
 public func openDatabase(cfg: MySqlConfig): DbBackend {
     var backend: DbBackend
     try {
-        // noBackslashEscapes: false —— 沿用基线口径（mysql_store.cj:158）
+        // noBackslashEscapes: false —— 沿用搬迁前口径（mysql_store.cj:158）
         backend = MySqlBackend(cfg.host, cfg.port, cfg.user, cfg.pass, cfg.db,
                                noBackslashEscapes: false)
     } catch (e: Exception) {
@@ -570,7 +570,7 @@ public func openDatabase(cfg: MySqlConfig): DbBackend {
     } catch (e: Exception) {
         throw Exception("设置会话字符集失败（SET NAMES utf8mb4）：${e.message}\n" +
             "  **不静默继续** —— 连接字符集是 utf8mb3 时，一个 4 字节字符（emoji）" +
-            "就会让之后每一次写入持续 500。详见 baseline/docs/API-NOTES.md 坑 44。")
+            "就会让之后每一次写入持续 500。详见 搬迁前的 API 踩坑记录 坑 44。")
     }
     return backend
 }

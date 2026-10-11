@@ -5,14 +5,14 @@
  *
  * ===== http_common.cj —— HTTP 响应/错误公共层 ==============================
  *
- * 统一响应口径（与基线一致，便于客户端复用同一套解析代码）：
+ * 统一响应口径（与搬迁前一致，便于客户端复用同一套解析代码）：
  *   成功：200/201 `{"ok":true,"data":{...}}`
  *   失败：`{"ok":false,"error":{"code":"...","message":"...","fields":{...}}}`
  *   —— HTTP 状态码给网络层用（401 直接踢回登录页，不必解析 body），
- *      error.code 给业务层用（客户端 switch 出文案）。这是基线 api-design §1.2 的分工。
+ *      error.code 给业务层用（客户端 switch 出文案）。这是搬迁前的 api-design §1.2 的分工。
  *
  * ⚠ 一处关键纪律：**绝不向客户端暴露内部堆栈**。未列出的异常一律 500 + "服务器内部错误"，
- *   细节只进服务端日志（照 baseline/server/src/main.cj:909-917 的 errHandler）。
+ *   细节只进服务端日志（照搬迁前的 main.cj:909-917 的 errHandler）。
  */
 
 package qingzhou
@@ -220,7 +220,7 @@ public func apiErrorFields(code: String, msg: String, fields: JsonObject): ApiEr
  * ⚠ 必须用 `ctx.status(...).json(...)`：轻舟的 `json()` 会设
  * `content-type: application/json; charset=utf-8`（context.cj:285）。
  * 绝不能先 `body(bytes)` 再 `json()` —— 那样字节体优先，json 被静默丢弃
- * （context.cj:564-568 的选择器规则，是 API-NOTES 记过的坑）。
+ * （context.cj:564-568 的选择器规则，是记录过的语言坑）。
  */
 public func sendOk(ctx: Context, data: JsonObject): Unit {
     sendEnvelope(ctx, 200, data)
@@ -253,7 +253,7 @@ public func sendError(ctx: Context, e: ApiError): Unit {
 }
 
 /*
- * 统一异常出口（挂在 `app.onError(...)`）。照 baseline/server/src/main.cj:909-917。
+ * 统一异常出口（挂在 `app.onError(...)`）。照搬迁前的 main.cj:909-917。
  *
  * 为什么必须自己写而不是用框架的 `jsonErrorHandler()`：
  *   框架那个输出的是它自己的 `{"error":...}` 形状，与我们 `{ok:false,error:{...}}`

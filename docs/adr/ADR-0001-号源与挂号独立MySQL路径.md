@@ -7,14 +7,14 @@
 | **阶段** | P0 —— 架构决策落定 |
 | **决策者** | 项目组（依据 `smart-hospital-project-brief.md` §5.1） |
 | **影响面** | `server/src/` 数据访问层；号源域 `schedule`/`appointment`（rev.4 删除 `booking_idem`）+ 配套域 `department`/`doctor`/`patient`（rev.5 落地内存 Store）+ 病历域 `medical_record`（**rev.6 移出内存 Store，改直接 SQL**） |
-| **关联** | `smart-hospital-project-brief.md` §4 复用映射、§5.1、§7；基线 `mysql_store.cj:30-37` |
+| **关联** | `smart-hospital-project-brief.md` §4 复用映射、§5.1、§7；搬迁前 `mysql_store.cj:30-37` |
 
 ### 修订记录
 
 | 版本 | 日期 | 改了什么 | 触发原因 |
 | --- | --- | --- | --- |
 | rev.1 | 2026-10-07 | 初版 | P0 立项 |
-| **rev.2** | 2026-10-07 | ①§4.3 口径矛盾修订（拆「业务状态」/「幂等基础设施」两层）；②§4.3.2 新增并修掉与基线 `idem` 撞名（→ `booking_idem`）；③§5 补 AC-7/AC-8，AC-4 扩大到全表比对；④§5.1 新增「源码哈希而非产物哈希」；⑤§7 修正验收测试落点笔误（`server/tests/` → `server/src/acceptance.cj`）；⑥§8 补第 5 条复审触发条件 | 用户复查提出的 5 项发现（口径打架、撞名、`cancel()` 边界缺陷、文档笔误、产物不可复现） |
+| **rev.2** | 2026-10-07 | ①§4.3 口径矛盾修订（拆「业务状态」/「幂等基础设施」两层）；②§4.3.2 新增并修掉与搬迁前 `idem` 撞名（→ `booking_idem`）；③§5 补 AC-7/AC-8，AC-4 扩大到全表比对；④§5.1 新增「源码哈希而非产物哈希」；⑤§7 修正验收测试落点笔误（`server/tests/` → `server/src/acceptance.cj`）；⑥§8 补第 5 条复审触发条件 | 用户复查提出的 5 项发现（口径打架、撞名、`cancel()` 边界缺陷、文档笔误、产物不可复现） |
 | **rev.5** | 2026-10-07 | ★ **落地配套域的内存 Store**（`mem_store.cj` + `sql_recorder.cj`），**AC-4 从"结构性"升级为"真跑一次刷盘"**（四层断言 + 两道变异测试）；§4.2 范式表补上"内存 Store 范式"的实现落点 | 用户决策：做「内存 Store + AC-4 完整回归」，还掉 P0 挂到 P1 的验证边界 |
 | **rev.4** | 2026-10-07 | ★ **删除 `booking_idem` 表与 `idemKey`/`putIdem`/`pruneIdem` 实现**（含 AC-8）；表集 9→8（业务 7→6）；新增迁移步骤 DROP 遗留表；`isBookingInfraTable`/`BOOKING_INFRA_TABLES` 一并移除 | 用户决策：该表在生产路径上是死代码，幂等已由 `(patient_id, client_token)` 唯一索引完整保证（见 §7 第 7 条） |
 | **rev.6** | 2026-10-07 | ★★ **`medical_record` 移出内存 Store，改直接 SQL**（`domain_emr.cj` 的 `MedicalRecordRepo` 独占写入）。`MEM_TABLES` 4→3；删除 `MemMedicalRecord` 类与 `replaceMedicalRecords()`；`loadAll()` 不再读病历；`selftest` 加两条否定断言；AC-4 的"4 张表"改为**从 `MEM_TABLES` 派生**（不再硬编码数字）。**新增一类表**：`medical_record` = 病历域（临床数据、直接 SQL） | P4 落地时发现病历划错类（详见下面「rev.6 的核心」） |
@@ -153,7 +153,7 @@ AC-4 是"内存 Store 刷盘**不波及**号源域"。没有刷盘了 ⇒ 它守
 
   ① 分类：每张业务表都归属一个**域**（无孤儿表）；
   ② ★★ 号源域的表**只准 `BookingRepo` 写**，且域清单与表集**不脱节**；
-  ③ ★ 表名与基线内存 Store **零交集**（**从旧 AC-4 保留**：基线若同库运行会争表）；
+  ③ ★ 表名与搬迁前内存 Store **零交集**（**从旧 AC-4 保留**：搬迁前若同库运行会争表）；
   ④ ★★ **反向**：号源域确实**有**数据（否则③是"空比空"的假绿）。
 
 ⚠ 并且**刻意不写**"没有内存 Store"这类运行期断言：
@@ -199,10 +199,10 @@ rev.6 一改就**必然变红**。这暴露了它是"**钉数字**"而不是"钉
 | # | 代价 | 依据 |
 | --- | --- | --- |
 | 1 | **整表替换写放大** —— 每次挂号重写整个排班/订单表 | `mysql_store.cj:30-37` |
-| 2 | **`s.lock` 跨一次网络事务持有** —— 全部挂号串行化，且与整库刷盘争锁 | 基线 S-14：「这把锁是**跨一次网络事务**持有的」 |
+| 2 | **`s.lock` 跨一次网络事务持有** —— 全部挂号串行化，且与整库刷盘争锁 | 搬迁前 S-14：「这把锁是**跨一次网络事务**持有的」 |
 | 3 | **并发扣减被完全串行化** —— 乐观锁的意义被抹掉 | 同上 |
 
-并且基线 README 未决 #12 已明确记载：
+并且搬迁前 README 未决 #12 已明确记载：
 
 > **「跨实例共享同一份数据仍然不成立：内存 Store 是每进程一份、没有失效通知」**
 
@@ -225,7 +225,7 @@ rev.6 一改就**必然变红**。这暴露了它是"**钉数字**"而不是"钉
 //   防超卖只依赖两件事，且都在同一条 UPDATE 内由 InnoDB 原子求值：
 //     · remain_num = remain_num - 1  （原子自减，不丢更新）
 //     · remain_num > 0               （永不减成负数）
-// 利用 DbBackend.exec(sql, params) 的**受影响行数**返回值（基线 db.cj:100-105）。
+// 利用 DbBackend.exec(sql, params) 的**受影响行数**返回值（搬迁前 db.cj:100-105）。
 let n = db.exec(
   "UPDATE schedule SET remain_num = remain_num - 1, version = version + 1 " +
   "WHERE id = ? AND remain_num > 0 AND enabled = 1",
@@ -246,14 +246,14 @@ if (n == 1) {
 
 | # | 细节 | 理由 |
 | --- | --- | --- |
-| ① | `remain_num = remain_num - 1` 走**参数化 SQL 文本**，不用 `UpdateQuery.set()` | `set` **只接受值、不接受列表达式**（基线 `dbquery.cj:492-556`）；需要列表达式时必须手写 SQL（`dbquery.cj:89`） |
+| ① | `remain_num = remain_num - 1` 走**参数化 SQL 文本**，不用 `UpdateQuery.set()` | `set` **只接受值、不接受列表达式**（搬迁前 `dbquery.cj:492-556`）；需要列表达式时必须手写 SQL（`dbquery.cj:89`） |
 | ② | 判定成败**只看 `exec` 返回的受影响行数 `n`**，不先 `SELECT` 再 `UPDATE` | 先读后写会把原子操作拆成竞态窗口（TOCTOU） |
 | ③ | `UPDATE` 与挂号单 `INSERT` **同一个 `withTransaction`** | 否则会出现"扣了号没挂号单"或反之 |
 | ④ | 幂等键 **按患者隔离**（`patient_id + client_token` 唯一索引），且**退号时释放**（置 NULL） | rev.2 只用全局 `client_token` ⇒ **跨患者泄露**（实测：患者 B 用 A 的 token 会拿到 A 的单且不扣号）；且已取消的单占着 token 会导致重挂 **500** |
 
 ### 2.3 为什么新表不会被整体替换波及
 
-`writeDbToMysql(s, cur)` 只遍历 `Snapshot.entities` 里的表（基线 `mysql_store.cj:1097`）。
+`writeDbToMysql(s, cur)` 只遍历 `Snapshot.entities` 里的表（搬迁前 `mysql_store.cj:1097`）。
 **新表不进 `PersistedState` ⇒ 整体替换不会碰它 ⇒ 无双写冲突。**
 
 > ⚠️ 此推论**基于 `mysql_store.cj` 的替换语义阅读得出，属推断**（`smart-hospital-project-brief.md`
@@ -417,12 +417,12 @@ P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与
 > 那是**乐观锁时代**的断言；扣号策略改了（见顶部 rev.3），该措辞已随之改写。
 >
 > **AC-4 的验证边界（2026-10-07 已闭合）**：P0 时尚未引入内存 Store，故只完成**结构性**验证
-> （**全部 7 张业务表**与基线**全部 10 张表**名零交集 ⇒ 整体替换不会遍历到它们）。
+> （**全部 7 张业务表**与搬迁前**全部 10 张表**名零交集 ⇒ 整体替换不会遍历到它们）。
 > 完整回归（真的跑一次整库刷盘再断言逐值不变）**已于 2026-10-07 在 P1 完成**。
 >
 > ### ★ AC-4 现在做到了什么（四层，逐层加强）
 >
-> `mem_store.cj` 落地了配套域的内存 Store（照基线 `store.cj` + `writeDbToMysql` 的本质：
+> `mem_store.cj` 落地了配套域的内存 Store（照搬迁前 `store.cj` + `writeDbToMysql` 的本质：
 > **一个事务内整体替换清单里的表**），于是 AC-4 可以真跑一次刷盘。四层断言：
 >
 > | 层 | 验什么 | 为什么必须有这一层 |
@@ -436,7 +436,7 @@ P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与
 >   · 把 `TABLE_SCHEDULE` 混进 `MEM_TABLES` → ① 层 4 项 FAIL；
 >   · 让刷盘顺手 `SELECT COUNT(*) FROM schedule` → ② 层 FAIL。
 >
-> ⚠ 仍如实标注的差异：本 Store 的刷盘是**整表替换**（简化），基线是**脏行裁剪**。
+> ⚠ 仍如实标注的差异：本 Store 的刷盘是**整表替换**（简化），搬迁前是**脏行裁剪**。
 > 两边都不碰号源域 ⇒ AC-4 的不变量成立；且整表替换是**更强**的写放大，
 > 连它都不波及号源域，脏行裁剪版更不会。性能差异不在 AC-4 范围。
 >
@@ -466,7 +466,7 @@ P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与
 
 **因此：产物哈希不能当验收依据**，可复现的锚点是
 **`build/SOURCE-MANIFEST.sha256`（记录每个参与编译源文件的 SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）
-配合测试结果**。`build.ps1` 每次构建都会重写该清单，口径与基线 `MANIFEST.sha256` 一致。
+配合测试结果**。`build.ps1` 每次构建都会重写该清单，口径与框架副本的 `MANIFEST.sha256` 一致。
 
 ---
 
@@ -482,7 +482,7 @@ P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与
 | 事务超时 | `withTransaction` 允许时长 | **≤ 3s** | 事务内**禁止**调用外部模型/HTTP —— 见下 |
 
 🚫 **铁律**：`withTransaction` 内**绝不允许**出站网络调用（AI 模型/HTTP）。
-基线已立此纪律（`h_ai.cj` 的 `aiAgentLoop`：锁外调模型 → 锁内跑 1 个工具 → 锁外回灌）。
+搬迁前已立此纪律（`h_ai.cj` 的 `aiAgentLoop`：锁外调模型 → 锁内跑 1 个工具 → 锁外回灌）。
 挂号事务里同理 —— **不允许"调 AI 判断该挂哪个科"再扣号**。
 
 ---

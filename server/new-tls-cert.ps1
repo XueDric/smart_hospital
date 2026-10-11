@@ -2,7 +2,7 @@
 #
 # ── 为什么必须带 SAN ───────────────────────────────────────────────────────
 # **现代 TLS 客户端完全忽略 CN（Common Name），只看 subjectAltName。**
-# 基线踩过这个坑：证书 SAN 只写 127.0.0.1/localhost，而联调用的是**局域网 IP**，
+# 搬迁前踩过这个坑：证书 SAN 只写 127.0.0.1/localhost，而联调用的是**局域网 IP**，
 # 于是 `tls-check` 的 SAN 断言必失败 —— 那不是 TLS 实现的问题，是证书签得不够。
 # 所以本脚本默认把 **127.0.0.1 / ::1 / localhost / 本机所有 IPv4** 都写进 SAN。
 #
@@ -15,7 +15,7 @@
 #   server\certs\cert.pem   证书（PEM）
 #   server\certs\key.pem    私钥（PEM）
 # ⚠ **两者都不入库**（见 .gitignore）：私钥入库等于泄露。
-#   基线就是因此把 certs/ 整体忽略的。
+#   搬迁前就是因此把 certs/ 整体忽略的。
 #
 # 用法：
 #   .\new-tls-cert.ps1                          # 自动收集本机 IP
@@ -251,7 +251,7 @@ function Get-SanEntries([System.Security.Cryptography.X509Certificates.X509Exten
 $sanEntries = Get-SanEntries $sanExt
 Write-Host "  SAN     : $((($sanEntries | ForEach-Object { "$($_.Kind)=$($_.Value)" })) -join ', ')"
 
-# ★ 硬断言：必须有 IP SAN，且含 127.0.0.1 —— 这是基线踩过的坑
+# ★ 硬断言：必须有 IP SAN，且含 127.0.0.1 —— 这是搬迁前踩过的坑
 #   （只写 CN 或只写 localhost，现代客户端会全部拒绝）。
 $sanIps = @($sanEntries | Where-Object { $_.Kind -eq "IP" } | ForEach-Object { $_.Value })
 $sanDns = @($sanEntries | Where-Object { $_.Kind -eq "DNS" } | ForEach-Object { $_.Value })
@@ -277,7 +277,7 @@ Write-Host "  私钥 $keyPath"
 # ── 额外产出一份**纯 ASCII 路径**的运行用副本 ──────────────────────────────
 # ★ 为什么必须这样：**本工具链的仓颉运行时无法接受含非 ASCII 的 argv** ——
 #   在 main 之前就抛 `IllegalArgumentException: Invalid unicode scalar value`
-#   （基线 API-NOTES 坑 6）。而本仓库路径含中文（`智能医院客户端`），
+#   （搬迁前的 API 踩坑记录 坑 6）。而本仓库路径含中文（`智能医院客户端`），
 #   所以 `--tls-cert "<含中文的路径>"` **必然启动失败**（实测确认）。
 #
 #   试过的两条"看起来能绕"的路，实测**都不行**，记下来省下次时间：

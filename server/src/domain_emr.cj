@@ -459,7 +459,7 @@ public class MedicalRecordRepo {
          *     · 异常是 `SqlException: errorCode: 0` —— **消息是空的**
          *       （驱动把 MySQL 的报错文本吞了）；
          *     · 同一条 SQL 用 mariadb 客户端手工重放**完全成功**。
-         *   ⇒ 定位后才明白：**本仓（含基线）从来没用过 `INSERT ... SELECT`**，
+         *   ⇒ 定位后才明白：**本仓（含搬迁前带进来的代码）从来没用过 `INSERT ... SELECT`**，
          *     驱动的 `prepare_statement_client.getOrBuildSql()` 那条路径
          *     对"带占位符的 INSERT + SELECT 子句"没有被验证过。
          *   📌 教训：**不要在一个项目里第一次使用某条 SQL 形态**（尤其当失败

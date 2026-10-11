@@ -16,14 +16,14 @@
  *   - 其余表（department / doctor / patient / medical_record）为配套最小集，
  *     本阶段只建表，业务路径在 P1+ 落地。
  *
- * 基线依据（只读，见 baseline/）：
- *   - SCHEMA_DDL 写法照 baseline/server/src/mysql_store.cj:313
- *   - 参数化 exec(sql, Array<DbValue>) 见 baseline/server/third_party/qingzhou/src/db.cj:128
+ * 口径依据（搬迁前的服务端，只读参考）：
+ *   - SCHEMA_DDL 写法照搬迁前的 mysql_store.cj:313
+ *   - 参数化 exec(sql, Array<DbValue>) 见 轻舟 db.cj:128
  *   - bindSql 会把 ? 按序替换为类型感知安全字面量（db.cj:113-131），
  *     所以 DDL 走无参 exec，数据操作走带 ? 的 exec
  *
- * ⚠ 字符集：全表 utf8mb4。基线踩过"驱动握手写死 utf8mb3 → 一个 emoji 让之后
- *   所有写入持续 500"的坑（baseline/docs/mysql-backend.md §12.10），
+ * ⚠ 字符集：全表 utf8mb4。搬迁前踩过"驱动握手写死 utf8mb3 → 一个 emoji 让之后
+ *   所有写入持续 500"的坑（搬迁前的 mysql 接入文档 §12.10），
  *   建连后必须 SET NAMES utf8mb4（见 db_bootstrap.cj）。
  */
 
@@ -40,11 +40,11 @@ import std.collection.*
  * ★ 域划分（ADR-0001 §4.2/§4.3）：
  *   `BOOKING_DOMAIN_TABLES` = 号源/挂号**业务状态**表，走直接 SQL（**仅此两张**）。
  *
- * ⚠ **表名必须避开基线的内存 Store 表名**（P1 口径隐患；这条纪律**长期有效**）：
- *   基线内存 Store 占用了一批表名（`idem`、`tokens` 等，见
- *   `baseline/server/src/mysql_store.cj:891-892` 的 `PersistedState`，DDL 同名）。
+ * ⚠ **表名必须避开搬迁前的内存 Store 表名**（P1 口径隐患；这条纪律**长期有效**）：
+ *   搬迁前的内存 Store 占用了一批表名（`idem`、`tokens` 等，见
+ *   `搬迁前 mysql_store.cj:891-892` 的 `PersistedState`，DDL 同名）。
  *   P1 引入内存 Store 后，整库刷盘会 `replaceBatched(<表名>, …)` ——
- *   本侧若用了同名表，就会与基线**争同一张表**。
+ *   本侧若用了同名表，就会与搬迁前**争同一张表**。
  *   所以本侧一律另起名字：`auth_token`（不是 `tokens`）。
  *
  *   📌 历史上本侧曾有一张 `booking_idem`（挂号幂等登记表）。它在 2026-10-07
@@ -62,8 +62,8 @@ public let TABLE_MEDICAL_RECORD: String = "medical_record"
 /*
  * 鉴权表（P1 令牌体系）。
  *
- * ⚠ 命名同样避开基线：基线内存 Store 占用了 `tokens`（`mysql_store.cj:891`）。
- *   所以本侧叫 **`auth_token`**；账号表叫 `auth_user`（基线没有同名表，
+ * ⚠ 命名同样避开搬迁前：搬迁前的内存 Store 占用了 `tokens`（`mysql_store.cj:891`）。
+ *   所以本侧叫 **`auth_token`**；账号表叫 `auth_user`（搬迁前没有同名表，
  *   但加 auth_ 前缀是为了让"这是鉴权域"一眼可辨）。
  */
 public let TABLE_AUTH_USER: String = "auth_user"
@@ -81,7 +81,7 @@ public let TABLE_AUTH_TOKEN: String = "auth_token"
  *   ① 防的是"库被读走后拿到一份'谁被撞过库'的名单"；
  *   ② 让"不存在的登录名"与"存在的登录名"在**存储层**也无法区分（口径统一）。
  *
- * ⚠ 表名同样避开基线内存 Store 的表名（见文件头纪律）—— 基线没有这张表。
+ * ⚠ 表名同样避开搬迁前的内存 Store 的表名（见文件头纪律）—— 搬迁前没有这张表。
  */
 public let TABLE_AUTH_ATTEMPT: String = "auth_login_attempt"
 
@@ -389,7 +389,7 @@ public let SCHEMA_DDL: Array<String> = [
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 
     // ── 鉴权令牌（P1 令牌体系）───────────────────────────────────────────
-    // ⚠ 刻意**不叫** `tokens`：基线内存 Store 已占用该表名（mysql_store.cj:891）。
+    // ⚠ 刻意**不叫** `tokens`：搬迁前的内存 Store 已占用该表名（mysql_store.cj:891）。
     // 令牌是 64 个十六进制字符（32 字节随机），用 VARCHAR(64) 主键。
     // 服务端存 token → user 映射 ⇒ **不是无状态 JWT**，所以"停用账号"能立即踢下线。
     "CREATE TABLE IF NOT EXISTS auth_token (" +
@@ -432,7 +432,7 @@ public let SCHEMA_DDL: Array<String> = [
      *   last_fail_at 最近一次失败时刻（锁定从这里起算）
      *
      * ⚠ 为何开 `idx_auth_attempt_lastfail`：清理过期行按 last_fail_at 扫，
-     *   否则表只增不减（基线 tokens 表"只增不减"就是这个坑，见 auth_repo.pruneTokens）。
+     *   否则表只增不减（搬迁前 tokens 表"只增不减"就是这个坑，见 auth_repo.pruneTokens）。
      */
     "CREATE TABLE IF NOT EXISTS auth_login_attempt (" +
     "login_hash VARCHAR(64) NOT NULL, " +
@@ -549,7 +549,7 @@ public let KB_SCHEMA_DDL: Array<String> = [
  *
  * 为什么不用框架 `ensureTable(name, columns)`：它的入参是**列定义片段**，
  * 表达不了唯一索引、复合索引与 ENGINE/CHARSET；而幂等（AC-3）恰恰依赖唯一索引。
- * 所以这里直接用完整 DDL 文本，与基线 mysql_store.cj:384 同一写法。
+ * 所以这里直接用完整 DDL 文本，与搬迁前 mysql_store.cj:384 同一写法。
  *
  * 返回：实际执行的语句数（便于启动日志与测试断言）。
  */

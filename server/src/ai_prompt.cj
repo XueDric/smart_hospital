@@ -298,7 +298,7 @@ public class AiToolToggle {
 public let AI_TOOL_KEY_PREFIX: String = "ai.tool."
 
 /*
- * 六条**只读**工具 —— 照 baseline `aiToolSpecs()` 的"静态白名单"纪律：
+ * 六条**只读**工具 —— 照搬迁前的 `aiToolSpecs()` 的"静态白名单"纪律：
  *   模型既不能新增工具，也不能改参数语义。
  *
  * ⚠ 全部 `defaultOn = true`：白名单里列出的默认可用。

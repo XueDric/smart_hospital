@@ -461,7 +461,7 @@ public func aiReadAll(body: InputStream): String {
  * 从 OpenAI 兼容响应里取 `choices[0].message.content`。
  *
  * ⚠ 每一层都**先判类型再取值**：`asXxx()` 在类型不符时**抛异常**而不是返回 None
- *   （本仓 API-NOTES 记过这条），所以 `if (v is JsonString)` 这类判断不能省。
+ *   （项目里记过这条），所以 `if (v is JsonString)` 这类判断不能省。
  */
 public func aiExtractContent(body: String): ?String {
     try {

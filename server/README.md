@@ -228,9 +228,9 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
 >   ⚠ 这句话要留着 —— 否则读者会以为"系统会自动积累科室/医生数据"。
 > 详见 [../docs/adr/ADR-0001](../docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) rev.7。
 
-> ⚠ `auth_token` **刻意不叫** `tokens`：基线内存 Store 已占用该表名
+> ⚠ `auth_token` **刻意不叫** `tokens`：搬迁前内存 Store 已占用该表名
 > （`mysql_store.cj:891`），列定义也不同。
-> 现「本侧 8 张表 ∩ 基线 10 张表 = ∅」，由 `selftest` + AC-4 钉住，
+> 现「本侧 8 张表 ∩ 搬迁前 10 张表 = ∅」，由 `selftest` + AC-4 钉住，
 > 并额外断言"表集里没有任何以 `idem` 命名的表"（防止已删除的死代码被复活）。
 >
 > 📌 本表集曾含一张 `booking_idem`（幂等登记），**2026-10-07 连同实现与 AC-8 删除**
@@ -259,7 +259,7 @@ SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是*
 8. **`indexOf` / `lastIndexOf` 返回 `?Int64`**（不是 -1 哨兵），要与 `Int64` 比较必须先 `isNone()`/`getOrThrow()`。
 9. **`Int64.parse` 需要 `import std.convert.*`**。
 10. **`SET NAMES utf8mb4` 不能省**：驱动握手把会话字符集写死成 utf8mb3，
-    一个 emoji 就会让之后**所有写入持续 500** 直到重启（基线 API-NOTES 坑 44）。
+    一个 emoji 就会让之后**所有写入持续 500** 直到重启（搬迁前的 API 踩坑记录 坑 44）。
 11. **OpenSSL 3 DLL 必须与 exe 同目录**，否则运行时 `CryptoException: Can not load openssl library`。
     处置：`setup-runtime.ps1`。
 12. **`SELECT LAST_INSERT_ID()` 与 MySQL `AUTO_INCREMENT` 起点**：清表用 `DELETE` 不重置自增，

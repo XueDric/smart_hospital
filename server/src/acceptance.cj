@@ -374,7 +374,7 @@ public class TestRunner {
              *     ① 分类：每张业务表都归属一个**域**（无孤儿表）；
              *     ② ★★ **机制**：号源域的表**只准 `BookingRepo` 写**（ADR 范围锁死），
              *        且域清单与表集**不脱节**；
-             *     ③ ★ 表名与基线内存 Store **零交集**（**从旧 AC-4 保留**：基线若与本侧
+             *     ③ ★ 表名与搬迁前的内存 Store **零交集**（**从旧 AC-4 保留**：搬迁前若与本侧
              *        同库运行，撞名会争同一张表 —— `auth_token` 不叫 `tokens` 就是为此）；
              *     ④ ★★ **反向**：号源域确实**有**数据（否则③是"空比空"的假绿）。
              */
@@ -406,23 +406,23 @@ public class TestRunner {
 
             /*
              * ★ 从**旧 AC-4** 保留（第一次重写时特意没丢，这次继续保留）：
-             *   全部业务表与基线内存 Store 的**表名零交集**。
-             * 它守的是另一件事：基线若与本侧连同一个库，撞名就会**争同一张表**
+             *   全部业务表与搬迁前的内存 Store 的**表名零交集**。
+             * 它守的是另一件事：搬迁前若与本侧连同一个库，撞名就会**争同一张表**
              * （`auth_token` 不叫 `tokens` 就是为此）。表集变了也要继续守。
              */
-            let baselineTables: Array<String> = ["departments", "members", "plans", "tasks",
+            let legacyTables: Array<String> = ["departments", "members", "plans", "tasks",
                                                  "invite_links", "tokens", "idem",
                                                  "meta", "meta_str", "schema_version"]
             var clash = 0
             for (t in ALL_TABLES) {
-                for (bt in baselineTables) {
+                for (bt in legacyTables) {
                     if (t == bt) {
                         clash = clash + 1
-                        println("  [FAIL] 表 ${t} 与基线内存 Store 撞名")
+                        println("  [FAIL] 表 ${t} 与搬迁前的内存 Store 撞名")
                     }
                 }
             }
-            check("③ ★ 全部 ${ALL_TABLES.size} 张表与基线表名零交集（**从旧 AC-4 保留**）",
+            check("③ ★ 全部 ${ALL_TABLES.size} 张表与搬迁前表名零交集（**从旧 AC-4 保留**）",
                   clash == 0)
 
             /* ④ 反向：号源域**确实有数据**，否则上面是"空比空"的假绿 */

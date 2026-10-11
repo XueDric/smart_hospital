@@ -15,7 +15,7 @@
  *   hospital-server.exe check-db <dsn>  # 连库：建表 + 打印表清单（P0 联调用）
  *
  * ⚠ 入口签名照框架口径：`main(args: Array<String>)`，其中 **args[0] 即第一个参数**
- *   （不含 exe 路径）—— 见 baseline/server/third_party/qingzhou/src/main.cj:15-17。
+ *   （不含 exe 路径）—— 见 轻舟 main.cj:15-17。
  *
  * ⚠ P0 尚未接路由与 HTTP 服务 —— 那属 P1（挂号闭环）。此处**刻意不**先写
  *   一个空壳 listen，避免"看起来能跑其实没接口"的假象。
@@ -24,7 +24,7 @@
 package qingzhou
 
 // ⚠ `exists()` / `File.readFrom()` 来自 std.fs —— TLS 分支要读 PEM 文件，
-//   不加这个 import 会报 undeclared identifier（基线 main.cj 同样 import 了它）。
+//   不加这个 import 会报 undeclared identifier（搬迁前 main.cj 同样 import 了它）。
 import std.fs.*
 
 /* 版本号：与 docs/adr/ADR-0001 同期。 */
@@ -50,7 +50,7 @@ func usage(): Unit {
     /*
      * ⚠ 这里**不写死端口**（2026-10-07 修，第九份复查发现原写的是 3307）。
      *   usage 是使用者**第一眼**看到的东西，写一个本项目不用的端口
-     *   （3307 是**社团那台**，本项目自管 devdb 是 3317）会直接把人引到错地方 ——
+     *   （3307 是**本机另一台实例**，本项目自管 devdb 是 3317）会直接把人引到错地方 ——
      *   复查的人和我都真的被引过。
      *   ⇒ 给**形状**示例，端口与口令等部署事实一律指向 `docs/DEV-DB.md`：
      *     本提示不复制它们，就没有第二次漂移的机会。
@@ -351,8 +351,8 @@ func selftest(): Int64 {
      * （死代码，见 ADR-0001 §7 第 7 条）。这条断言现在的作用变成**防止它被复活** ——
      * 删死代码之后最怕的就是下一个人又加回一张同义表。
      *
-     * 同时它仍然守着原来的撞名风险：基线的内存 Store 占用了 `idem` 表名
-     * （`baseline/server/src/mysql_store.cj:892`），P1 引入整库刷盘后同名表会争同一张表。
+     * 同时它仍然守着原来的撞名风险：搬迁前的内存 Store 占用了 `idem` 表名
+     * （`搬迁前 mysql_store.cj:892`），P1 引入整库刷盘后同名表会争同一张表。
      */
     var staleIdem = false
     for (sql in allSchemaDdl()) {
@@ -360,7 +360,7 @@ func selftest(): Int64 {
             staleIdem = true
         }
     }
-    check("DDL 里没有任何以 idem 命名的表（不得与基线撞名，也不得复活死代码）", !staleIdem)
+    check("DDL 里没有任何以 idem 命名的表（不得与搬迁前撞名，也不得复活死代码）", !staleIdem)
 
     // 4) 全部 DDL 幂等（IF NOT EXISTS）+ utf8mb4
     for (sql in allSchemaDdl()) {
@@ -400,7 +400,7 @@ func selftest(): Int64 {
      *
      * ── 原缺陷 ────────────────────────────────────────────────────────────
      *   连接失败时的处置提示里写死「本机联调的便携版 MariaDB 是 127.0.0.1:**3307**」，
-     *   而本项目自管 devdb 早已迁到 **3317**（3307 是**社团那台**，本项目不再依赖它）。
+     *   而本项目自管 devdb 早已迁到 **3317**（3307 是**本机另一台实例**，本项目不再依赖它）。
      *   ⇒ 复查的人、以及我自己在本项目里**都被它误导过**：devdb 没起来时，
      *     提示让人去查 3307，而正确处置是启动 3317。
      *   📌 根因是"**同一件事两处口径**"：端口的事实来源是 `cfg`，提示里又手写一份。
@@ -421,27 +421,27 @@ func selftest(): Int64 {
      *        **就是实际用的那个**（那才是"配置驱动"的直接证据）。
      */
     let dflt = MySqlConfig()
-    check("★ 默认 MySQL 端口 = 3306（协议标准口）—— 原值曾是**社团那台的端口**，" +
+    check("★ 默认 MySQL 端口 = 3306（协议标准口）—— 原值曾是**本机另一台实例的端口**，" +
           "而本项目没有任何实例在那 ⇒ 是个**假默认**，会让「没拿到 DSN」与「端口写错」长得一样",
           dflt.port == 3306)
     check("★ 默认配置可打印（seed-cfg）且与实测口径一致：${dflt.describe()}",
           dflt.describe() == "hospital@127.0.0.1:3306/hospital")
 
-    // 5b) ★ 与基线内存 Store 的表名**零交集**（P1 整库刷盘不会争表）
-    //     基线表名见 baseline/server/src/mysql_store.cj:309-311
-    let baselineTables: Array<String> = ["departments", "members", "plans", "tasks",
+    // 5b) ★ 与搬迁前的内存 Store 的表名**零交集**（P1 整库刷盘不会争表）
+    //     搬迁前表名见搬迁前 mysql_store.cj:309-311
+    let legacyTables: Array<String> = ["departments", "members", "plans", "tasks",
                                          "invite_links", "tokens", "idem",
                                          "meta", "meta_str", "schema_version"]
     var clash = 0
     for (t in ALL_TABLES) {
-        for (bt in baselineTables) {
+        for (bt in legacyTables) {
             if (t == bt) {
-                println("  [FAIL] 表 ${t} 与基线内存 Store 撞名")
+                println("  [FAIL] 表 ${t} 与搬迁前的内存 Store 撞名")
                 clash = clash + 1
             }
         }
     }
-    check("本侧 ${ALL_TABLES.size} 张表与基线内存 Store 表名零交集", clash == 0)
+    check("本侧 ${ALL_TABLES.size} 张表与搬迁前的内存 Store 表名零交集", clash == 0)
 
     // 6) ★ 防超卖两支柱必须在 DDL 里（ADR AC-2 / AC-1）
     var hasVersion = false
@@ -539,8 +539,8 @@ func unquoteTlsPath(s: String): String {
  *
  * ⚠ 关于 bind：轻舟 `app.serve(port)` 默认 `bindAddr = "0.0.0.0"`
  *   —— **整个局域网都能连**。所以默认**只绑 127.0.0.1**，
- *   要联调再显式 `--bind 0.0.0.0`（照基线的教训，
- *   baseline/server/src/main.cj:968-977 专门为此写过一段提醒）。
+ *   要联调再显式 `--bind 0.0.0.0`（照搬迁前的教训，
+ *   搬迁前 main.cj:968-977 专门为此写过一段提醒）。
  *
  * ⚠ 关于 TLS：**绝不静默降级**。给了 `--tls-cert/--tls-key` 但证书读不到、
  *   或 PEM 解析失败时，**直接退出**，绝不回退到明文 ——
@@ -593,7 +593,7 @@ func serve(args: Array<String>): Int64 {
              *
              * 为什么需要这条：本工具链的仓颉运行时**无法接受含非 ASCII 的 argv** ——
              *   在 main 之前就抛 `IllegalArgumentException: Invalid unicode scalar value`，
-             *   连 usage 都打不出来（基线 API-NOTES 坑 6 记过同一件事）。
+             *   连 usage 都打不出来（搬迁前的 API 踩坑记录 坑 6 记过同一件事）。
              *   而本仓库路径就含中文（`智能医院客户端`），于是
              *   `--tls-cert "E:\...\智能医院客户端\server\certs\cert.pem"` **必然启动失败**。
              *   （实测：把同一份证书拷到 `C:\Temp\...` 纯 ASCII 路径就能起来。）
@@ -772,7 +772,7 @@ func serve(args: Array<String>): Int64 {
     /*
      * ★ TLS 分支 —— 两条纪律：
      *   ① 轻舟的 `serveTls(port, certPem, keyPem)` 收的是 **PEM 字符串**而不是路径，
-     *      所以读文件与异常处理都在**调用方**（基线为此专门写过注释）。
+     *      所以读文件与异常处理都在**调用方**（搬迁前为此专门写过注释）。
      *   ② **绝不静默降级**：任何一步失败都 return，不回退到明文。
      *
      * 只给其中一个（只有 cert 没有 key，或反之）也直接拒绝 ——

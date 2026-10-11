@@ -3,7 +3,7 @@
 # 为什么需要这个脚本：轻舟 v0.7 起有了数据库抽象层（src/db.cj + src/db_mysql.cj），
 # MySQL 后端在**编译期零驱动依赖**、运行时按注册名查找驱动。所以要用 MySQL，
 # 必须另备一个驱动并把它链进来 —— 本脚本就是把 server\third_party\mariadb-driver
-# 编成 `.cjo` + 静态库，供 club-server / admin 链接。
+# 编成 `.cjo` + 静态库，供服务端 / admin 链接。
 #
 # 产物（默认 server\build\mysql-driver\）：
 #   mariadb.protocol.cjo   + mariadb.protocol      （协议层）

@@ -10,7 +10,7 @@
 > 📌 **本仓库现状**：只保留服务端 `server/`（仓颉 + 轻舟，**自包含**：框架与数据库驱动以使用副本形式放在 `server/third_party/`）。
 > **客户端（鸿蒙患者端）由客户端同学另行开发**，接口口径**只以** **[docs/FRONTEND-INTEGRATION.md](docs/FRONTEND-INTEGRATION.md)** 为准；
 > 服务端的实际接口以 `server/src/` 与那份对接说明为准（本文件的端点描述早于 P2–P5）。
-> 源码与脚本注释里保留了少数**搬迁前的历史标注**（旧的出处路径、旧部署事实的说明），在本仓库不可点击、不参与构建。
+> 源码注释里对早期实现的引用已统一写作「**搬迁前**」，只作口径出处说明，不指向本仓库内的任何路径。
 
 ---
 
@@ -97,7 +97,7 @@
 
 | 资产 | 落点 | 等级 |
 | --- | --- | --- |
-| 轻舟 v0.12.0 使用副本（`MANIFEST.sha256` 逐字节校验、连接池、健康检查、生命周期钩子、优雅关闭） | `server/third_party/qingzhou/` | 📄 |
+| 轻舟 v0.12.0 使用副本（框架快照 `MANIFEST.sha256`、连接池、健康检查、生命周期钩子、优雅关闭） | `server/third_party/qingzhou/` | 📄 |
 | **SSE / chunked 流式响应原生支持**：`streamStart(contentType)` + `writeChunk()`（`String` 与 `Array<UInt8>` 两个重载），handler 返回后自动写 last-chunk | `server/third_party/qingzhou/src/context.cj:301`、`:314`、`:325` | ✅ |
 | **出站 SSE / chunked 透传**（边读边转发，用完 `close()` 释放连接） | `server/third_party/qingzhou/src/httpclient.cj` | ✅ |
 | 洋葱中间件、Trie 路由、静态/gzip/Range/ETag/multipart/签名 cookie | `server/third_party/qingzhou/src/` | 📄 |
@@ -152,7 +152,7 @@
 ### 3.6 工程化与测试
 
 - **测试脚本**：`server/tests/` **13 个 `.ps1`** + `common.ps1` —— `auth-check` / `base-check` / `create-db-check` / `emr-check` / `kb-check` / `previsit-check` / `rate-limit-check` / `stress-booking` / `tls-check` / `triage-check` / `ai-live-check` / `p1-extra-check` / `doc-counts`；⚠️ **项数以 `doc-counts.ps1` 的实测输出为准**（这个数字漂移过两次，现已机制化对账）
-- **构建**：`server/build.ps1` 按版本探测 SDK 并校验 `MANIFEST.sha256`，框架与业务**同一次调用、同一个包**
+- **构建**：`server/build.ps1` 按版本探测 SDK，并生成源码哈希清单 `SOURCE-MANIFEST.sha256`，框架与业务**同一次调用、同一个包**
 - **文档文化**：每个阶段一份 HANDOFF（P0–P5）+ 一份架构 ADR（已到 **rev.7**）+ 一份前端对接说明 + 本启动说明
 
 ---

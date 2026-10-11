@@ -1,7 +1,7 @@
 ﻿# 仓库自管的开发数据库（server\devdb）—— 启停脚本
 #
 # 规格与理由见 docs\DEV-DB.md。
-# 与社团那台（3307）**完全隔离**：本实例用 3317、独立数据目录。
+# 与本机另一台实例（3307）**完全隔离**：本实例用 3317、独立数据目录。
 #
 # ⚠ 含中文的 PowerShell 脚本必须 UTF-8 with BOM（PS 5.1 否则按 ANSI 解析 → 语法报错）。
 #
@@ -31,7 +31,7 @@ $outLog    = Join-Path $devdb "mysqld.out.log"
 $errLog    = Join-Path $devdb "mysqld.err.log"
 
 # MariaDB 二进制：显式参数 > 环境变量 > 本机默认落点。
-# ⚠ 与社团那台**共用同一套二进制**（只是数据目录与端口不同），所以不需要再下一份。
+# ⚠ 与本机另一台实例**共用同一套二进制**（只是数据目录与端口不同），所以不需要再下一份。
 if ([string]::IsNullOrEmpty($MariaDbHome)) {
     if ($env:HOSP_MARIADB_HOME) { $MariaDbHome = $env:HOSP_MARIADB_HOME }
     else { $MariaDbHome = "E:\cangjie\mariadb\mariadb-11.4.13-winx64" }

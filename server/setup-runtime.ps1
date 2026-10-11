@@ -2,7 +2,7 @@
 #
 # 为什么需要它：仓颉产物是「exe + 4 个 DLL」，缺一个的典型症状是
 #   运行时 CryptoException: Can not load openssl library or function SHA256_Init
-# —— 而这个错**编译期毫无提示**（基线 API-NOTES 坑 2）。
+# —— 而这个错**编译期毫无提示**（搬迁前的 API 踩坑记录 坑 2）。
 #
 # ⚠ 含中文的 PowerShell 脚本必须 UTF-8 with BOM（PS 5.1 否则按 ANSI 解析 → 语法报错）。
 

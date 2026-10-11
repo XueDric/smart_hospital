@@ -1,11 +1,11 @@
 ﻿# 智慧医院服务端构建脚本 —— cjc 直编（不经 cjpm），框架与业务同一次调用、同一个包。
 #
-# 与基线（baseline\server\build.ps1）保持同一套工具链口径：
+# 与搬迁前的构建脚本保持同一套工具链口径：
 #   cjc **1.2.0** + stdx **1.1.3.1**（静态）+ 内置轻舟源码 + 内置 MariaDB 驱动。
 #
 # 为什么不用 cjpm：驱动自己的 cjpm.toml 没声明 stdx 包，cjpm 会强校验并报
 # 「imports package 'stdx.crypto.digest' but it is not added as a dependency」。
-# 基线已踩过此坑（见 baseline\docs\mysql-backend.md §3.3），故沿用 cjc 直编。
+# 搬迁前已踩过此坑（见 搬迁前的 mysql 接入文档 §3.3），故沿用 cjc 直编。
 #
 # 用法：
 #   .\build.ps1                                   # 自动探测工具链
@@ -116,8 +116,8 @@ $app = Get-ChildItem (Join-Path $src "*.cj") | ForEach-Object { $_.FullName }
 if ($app.Count -eq 0) { throw "没有找到服务端源码：$src" }
 
 # ── MariaDB 驱动 ──────────────────────────────────────────────────────────
-# 驱动不在仓库里（54 个文件、只在构建期需要），从**只读基线**取 .cjo 与静态库。
-# 若基线里没有产物，给出可照做的指引（基线有 build-mysql-driver.ps1 可生成）。
+# 驱动不在仓库里（54 个文件、只在构建期需要），从**搬迁前的工程**取 .cjo 与静态库。
+# 若搬迁前的工程里没有产物，给出可照做的指引（它有 build-mysql-driver.ps1 可生成）。
 $drvDir = Join-Path $tp "mariadb-driver-build"
 if (-not (Test-Path $drvDir)) {
     $drvBuild = Join-Path $root "build\mysql-driver"
@@ -131,12 +131,12 @@ if ($useDriver) {
     $extraImportPath = @("--import-path", $drvDir)
     $extraLibPath    = @("-L", $drvDir)
     # ⚠ 必须用 -l:完整文件名 —— `-lmariadb.cdbc` 会被 cjc 按点号拆开
-    #   （报 invalid file or directory '.cdbc'）。基线 mysql-backend.md §3.3 坑 2。
+    #   （报 invalid file or directory '.cdbc'）。搬迁前的 mysql 接入文档 §3.3 坑 2。
     $extraLibs       = @("-l:mariadb.cdbc", "-l:mariadb.connection", "-l:mariadb.protocol")
     Write-Host "[build] 驱动：$drvDir"
 } else {
     Write-Warning "未找到 MariaDB 驱动产物（$drvDir）。将**不带驱动**编译 —— 可以验证语法与类型，但运行时无法连库。"
-    Write-Warning "  生成驱动：见 baseline\docs\mysql-backend.md §3.1（baseline\server\build-mysql-driver.ps1）"
+    Write-Warning "  生成驱动：先跑 server\build-mysql-driver.ps1（见 server/README.md 与 docs/DEV-DB.md）"
 }
 
 # stdx 各子包的 .a 要**逐个**链上（只给 -L 会报 undefined symbol: ...stdx.encoding.url...）
@@ -168,7 +168,7 @@ Write-Host "[build] ✅ 编译通过：$exe"
 #   所以"产物哈希对不对"**不能**用来判验收。可复现的锚点是：
 #       源码哈希 + 测试结果
 #   本清单把参与编译的**每一个源文件**的 SHA256 记下来，供验收时比对，
-#   口径与基线的 MANIFEST.sha256 一致（基线拿它锁轻舟框架快照）。
+#   口径与框架副本的 MANIFEST.sha256 一致（它用来锁轻舟框架快照）。
 $manifest = Join-Path $out "SOURCE-MANIFEST.sha256"
 $lines = New-Object System.Collections.ArrayList
 $allSrc = @($app) + @($fw)

@@ -84,7 +84,7 @@ $env:DSN = "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
 | AC-1 | 同一 version 的第二次扣减必然 0 行（原子性） | ✅ |
 | AC-2 | `remain_num=0` 时扣减失败，**绝不出现负数** | ✅ |
 | AC-3 | 同一 `client_token` 只出一张挂号单（幂等） | ✅ |
-| AC-4 | 本侧 **7 张**表与基线 **10 张**表名零交集 | 🟡 **部分**（结构性已验，完整回归待 P1） |
+| AC-4 | 本侧 **7 张**表与搬迁前 **10 张**表名零交集 | 🟡 **部分**（结构性已验，完整回归待 P1） |
 | AC-5 | 挂号失败不留部分状态（无脏单、号源不变） | ✅ |
 | AC-6 | `visit_date` 快照：顺延排班不改已挂号单 | ✅ |
 | **AC-7** | ★ 退号：**取消成功必须如实上报**（不谎报失败） | ✅ |
@@ -96,7 +96,7 @@ $env:DSN = "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
    **数据库层原子性**（过期 version 必返回 0 行）—— 即并发安全的**根因**，而非多线程并发本身。
    真正的并发压测排在 P1（有 HTTP 接口后，多进程打同一号源）。
 2. **AC-4 只完成结构性验证。** P0 还没引入内存 Store，所以只能断言
-   「本侧 7 张表与基线 10 张表名**零交集**」。真的跑一次整库刷盘再断言逐值不变，要等 P1。
+   「本侧 7 张表与搬迁前 10 张表名**零交集**」。真的跑一次整库刷盘再断言逐值不变，要等 P1。
 3. **验收依据是源码哈希，不是产物哈希。** 实测：同一份源码连续两次构建，
    `hospital-server.exe` 的 SHA256 **不同**（cjc 正常现象）；而
    `build/SOURCE-MANIFEST.sha256` 的 SHA256 **完全相同**。
@@ -118,7 +118,7 @@ AC-1 当场报 **3 条 `[FAIL]`**；恢复源码后重新全绿。
 | # | 发现 | 处置 |
 | --- | --- | --- |
 | 1 | ADR §4.3「直接 SQL 仅限两张表」与代码不符（`putIdem`/`pruneIdem` 动了第三张表 `idem`），而 `selftest` 又断言它"不属号源域"——**口径打架** | 拆成「业务状态」（2 张）与「幂等基础设施」（1 张）两层；`isBookingOwnedTable()` 判定；ADR §4.3.1 |
-| 2 | 医院侧 `idem` 与基线内存 Store 的 `idem` **撞名**（基线 `mysql_store.cj:892`），P1 整库刷盘会争表 | **改名 `booking_idem`**；AC-4 从"只比 2 张"扩大到"比全部 7 张 vs 基线全部 10 张"；ADR §4.3.2 |
+| 2 | 医院侧 `idem` 与搬迁前内存 Store 的 `idem` **撞名**（搬迁前 `mysql_store.cj:892`），P1 整库刷盘会争表 | **改名 `booking_idem`**；AC-4 从"只比 2 张"扩大到"比全部 7 张 vs 搬迁前全部 10 张"；ADR §4.3.2 |
 | 3 | `cancel()` 存在「返回 false 但单已取消」路径（`remain_num == total_num` 时归还失败，事务已提交） | 返回类型 `Bool` → 三态 `CancelOutcome`（`Cancelled`/`SlotNotRestored`/`NotFound`）；新增 **AC-7** 钉住 |
 | 4 | ADR §7 第 4 项把验收测试落点写成 `server/tests/`，该目录不存在 | 改为 `server/src/acceptance.cj`（并说明为何不在 `tests/`） |
 | 5 | 编译产物不逐字节可复现 → 产物哈希不能当验收依据 | `build.ps1` 生成 `SOURCE-MANIFEST.sha256`；ADR §5.1 + 本文档 §2 边界 3 |

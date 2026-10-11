@@ -370,12 +370,12 @@ public func keyRefFilePath(ref: String): ?String {
 /*
  * 由**数据库配置**装配出的运行时 AI 选项。
  *
- * ⚠ 为什么不复用基线的 `AiOptions`（`baseline/server/src/ai_config.cj`）：
- *   ① 基线**不参与本仓编译**（`build.ps1` 只编 `server/src` 下的 .cj）——
+ * ⚠ 为什么不复用搬迁前的 `AiOptions`（搬迁前的 ai_config.cj）：
+ *   ① 搬迁前**不参与本仓编译**（`build.ps1` 只编 `server/src` 下的 .cj）——
  *      它是"只读参考"，不是依赖（见根 README 的目录结构说明）。
- *   ② 两者的**来源不同**：基线那份来自命令行参数（含 `--ai-key-file` 路径），
+ *   ② 两者的**来源不同**：搬迁前那份来自命令行参数（含 `--ai-key-file` 路径），
  *      这份来自库里的**引用**（`env:` / `file:`）。硬要同名会让人以为
- *      "改了这里 = 改了基线"，而实际没有任何联动。
+ *      "改了这里 = 改了搬迁前"，而实际没有任何联动。
  *   ③ 字段也**刻意不同**：这里**没有** `apiKeyFile` —— 密钥引用在装配时才解析，
  *      不混进"路径"字段（见 `AiSettingsRepo.options` 的注释）。
  *
@@ -426,7 +426,7 @@ public class AiRuntimeOptions {
 /*
  * 校验运行时选项是否自洽（**只读配置，不做出站调用**）。
  *
- * 口径照基线 `aiValidate`（那份在 baseline 下不可编译，但**边界条件照抄**，
+ * 口径照搬迁前 `aiValidate`（那份不在本仓编译输入里，但**边界条件照抄**，
  * 因为每条边界背后都有一个实测踩出来的理由）：
  *   · endpoint 必须 https://（明文调模型 = 密钥裸奔）。
  *     ⚠ 这里**没有**"启动参数显式放行"这条路 —— 见 `AiRuntimeOptions`
@@ -437,7 +437,7 @@ public class AiRuntimeOptions {
  *   · maxTokens 64..8192（过小会截断输出 ⇒ 非法 JSON ⇒ 静默降级）
  *   · keyRef 非空（否则无法认证）
  *
- * ⚠ 与基线的**唯一差别**：这里多了"密钥引用形状"这一道（`validateKeyRef`），
+ * ⚠ 与搬迁前**唯一**的差别：这里多了"密钥引用形状"这一道（`validateKeyRef`），
  *   因为本设计的密钥来自引用而不是文件路径。
  */
 public func aiRuntimeValidate(o: AiRuntimeOptions): Unit {
@@ -498,7 +498,7 @@ public func aiRuntimeValidate(o: AiRuntimeOptions): Unit {
  * ⚠ 为什么不直接用 `parseInt64Or`：它对垃圾输入返回**兜底值**，
  *   于是 `abc` 与 `-1` 无法区分 —— 而"非数字"与"越界"要给**不同的**拒绝理由
  *   （前者是写错了类型，后者是范围不对）。
- *   基线的 `parseInt64Or` 语义是"尽力解析 + 兜底"，那是**读取**路径该有的宽容；
+ *   搬迁前的 `parseInt64Or` 语义是"尽力解析 + 兜底"，那是**读取**路径该有的宽容；
  *   **写入**路径要的是严格 —— 这正是第七份复查第 1 条的根因。
  */
 func aiIsAllDigits(s: String): Bool {
@@ -720,7 +720,7 @@ public class AiSettingsRepo {
     }
 
     /*
-     * ★ 把配置装配成 `AiRuntimeOptions` 并校验（复用基线的 `aiRuntimeValidate` 口径）。
+     * ★ 把配置装配成 `AiRuntimeOptions` 并校验（复用搬迁前的 `aiRuntimeValidate` 口径）。
      *
      * ⚠ 这一步**只读配置、不做任何出站调用** —— 它回答"配置是否自洽"，
      *   不回答"模型是否可达"。后者要等接上模型才知道。
@@ -838,10 +838,10 @@ public func aiSettingsJson(repo: AiSettingsRepo, now: Int64): JsonObject {
 /*
  * 把 endpoint 的**凭据部分**抹掉，保留到路径为止（`scheme://host[:port]/path`）。
  *
- * ⚠ 与基线 `aiHostOnly` 同一个理由：完整 URL 可能含查询串里的凭据
+ * ⚠ 与搬迁前 `aiHostOnly` 同一个理由：完整 URL 可能含查询串里的凭据
  *   （有些网关把 key 放在 `?api-key=`），打进响应/日志就是泄露。
- *   这里自己实现一份而不是复用基线的：基线那份在 `baseline/` 下，**不参与本仓编译**
- *   （见 README「基线只读参考」）。这是一个**有意的小重复**。
+ *   这里自己实现一份而不是复用搬迁前的：搬迁前那份不在本仓编译输入里，**不参与本仓编译**
+ *   （所以这里允许出现这份小重复。）
  *
  * ★★ 2026-10-09 第十一份复查后**改过一次**：原来只返回 `scheme://host`，
  *   **连路径也抹掉** ⇒ 管理员看不到自己配的是哪条路径。

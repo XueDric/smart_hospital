@@ -53,7 +53,7 @@ import std.collection.*
  * ⚠⚠ 常量与校验**必须定义在使用之前** —— 仓颉**没有 hoisting**。
  *   我第一版把它们放在文件末尾，实测报
  *     variable 'BASE_LOCATION_MAX' is used before being defined
- *   本仓 API-NOTES 早就记过这条（"declare before use"），仍踩了一次，
+ *   项目笔记里早就记过这条（"declare before use"），仍踩了一次，
  *   所以这里放在最前面并把原因写死。
  */
 public let BASE_NAME_MAX: Int64 = 64
