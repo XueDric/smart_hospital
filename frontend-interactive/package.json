@@ -1,0 +1,17 @@
+{
+  "name": "smart-hospital-interactive",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node tools/runner.mjs dev",
+    "build": "node tools/runner.mjs build",
+    "preview": "node tools/serve.mjs",
+    "canvas": "node tools/build-canvas.mjs",
+    "check:reading-aid": "node tools/reading-aid.mjs check",
+    "test": "node tests/interactions.mjs",
+    "test:canvas": "node tests/canvas.mjs"
+  },
+  "dependencies": { "vue": "3.4.38" },
+  "devDependencies": { "@vitejs/plugin-vue": "5.2.4", "vite": "5.4.21", "playwright": "1.56.1" }
+}

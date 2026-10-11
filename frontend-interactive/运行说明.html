@@ -1,0 +1,23 @@
+<!doctype html><html lang="zh-CN"><head><!-- @reading-aid:file 指引 —— 本文件整体是「怎么运行 / 怎么演示 / 数据边界」的阅读说明，不参与任何构建与运行。它只解释工程，被删掉也不影响演示网站本身。 --><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>智慧医院交互页面 · 运行说明</title><style>body{font:15px/1.9 "Microsoft YaHei",sans-serif;background:#f5f8fa;color:#28464c;margin:0;padding:35px 18px}main{max-width:850px;margin:auto;background:white;border:1px solid #e1ebed;border-radius:16px;padding:30px}h1{font-size:25px;color:#007f7d}h2{font-size:18px;margin-top:27px}a{color:#007f7d}code,pre{background:#f1f7f6;border-radius:6px;padding:3px 7px;font-family:Consolas,monospace;overflow-wrap:anywhere}pre{padding:14px;white-space:pre-wrap}p,li{color:#627e85}.notice{border-left:4px solid #00a9a7;padding:12px 16px;background:#edf8f5;border-radius:8px}ul{padding-left:22px}small{color:#96a7ae}</style></head><body><main><h1>智慧医院 · 独立交互工程</h1><p>Vue 3 + Vite / HTML、CSS、JavaScript / 浅色青绿主题 / 桌面与移动自适应</p><div class="notice">最简单的运行方式：双击 <a href="dist/index.html"><code>dist/index.html</code></a>。所有样式、脚本和图标已经内联，不需要网络、安装依赖或启动后端。</div><h2>1. 运行与开发</h2><ul><li>直接体验：打开 <code>dist/index.html</code>；在浏览器中点击侧栏患者端、医生端、管理端切换演示视角。</li><li>本地 HTTP 预览：双击工程内 <code>start-preview.cmd</code>，浏览器打开 <code>http://127.0.0.1:5178</code>；需要 Node.js，关闭终端即停止服务。</li><li>继续开发：在本目录终端执行以下命令，建议 Node.js 22。</li></ul><pre>npm install
+npm run dev        # http://127.0.0.1:5178，Vue 热更新
+npm run build      # 生成 dist/index.html，内联资源
+npm run preview    # 只绑定 127.0.0.1:5178
+npm test           # 浏览器交互回归</pre><p>本机开发依赖已安装到隔离运行时目录，工程脚本会优先读取本项目依赖，找不到时读取隔离目录。下载源码后可以正常 npm install，无需使用本机的绝对路径。若测试机器没有 Chrome，请先执行 <code>npx playwright install chromium</code>，或设置 <code>CHROME_PATH</code> 指向现有 Chrome。测试结果和截图放到相邻 <code>outputs/</code>。PORT 环境变量可调整静态预览端口。</p><h2>2. 演示路径</h2><ol><li>患者端：选择“咳嗽、发热” → 开始智能分诊 → 去挂号 → 预约确认 → 我的预约 → 取消预约。取消成功会归还演示号源。</li><li>危急状态：在分诊右侧点击“体验危急征象提醒”。出现强提醒，不展示普通门诊推荐。</li><li>预问诊：每项输入演示答案或点击“无”，完成 6 项；正文显示打字机效果，空答案不会推进。</li><li>医生端：开始接诊 → 首次预问诊预填 → 填写诊断与处理意见 → 保存草稿 → 提交锁定 → 返回队列 → 完成就诊。</li><li>管理端：科室、医生、排班、账号、知识库支持对应创建和表单反馈；科室或医生有引用不可删。AI 支持配置校验、模板编辑和工具开关。</li><li>设计依据：点击各页右上角“设计依据”，或侧栏“框架与文档依据”，查看技术栈、目录、组件、视觉、构建、文档出处。</li><li>登录页面：演示登录名 <code>demo.patient</code>，口令 <code>Demo123!</code>。错误连续 3 次显示 10 秒禁用倒计时。口令不保存。</li></ol><h2>3. 文件结构</h2><pre>frontend-interactive/
+├── index.html                  Vite 开发入口
+├── package.json                开发、构建与测试命令
+├── src/
+│   ├── main.js / App.vue        装配、导航、搜索、弹窗与反馈
+│   ├── store.js / pages.js      虚构数据、状态机、页面与依据
+│   ├── styles.css              响应式主题和布局
+│   └── components/
+│       ├── Icon.vue            本地 SVG 图标
+│       ├── PatientPages.vue    患者页
+│       ├── DoctorPages.vue     医生页
+│       ├── AdminPages.vue      管理页
+│       └── FrameworkGuide.vue  六类框架说明
+├── tools/runner.mjs             Vite 与离线打包
+├── tools/serve.mjs              无依赖本地 HTTP 服务
+├── tests/interactions.mjs       浏览器回归测试
+├── dist/index.html              可双击运行的完整成品
+├── start-preview.cmd            Windows 便捷预览
+└── 运行说明.html                本文件</pre><h2>4. 数据与真实系统边界</h2><p>这是可交互的前端演示，不是医院生产系统，也不是鸿蒙 HAP 工程。患者 9 页（记录列表与详情合并路由）、医生 2 页、管理 7 页均保留核心内容。所有医院、医生、预约和病历为虚构数据；不连接现有后端、不出站调用模型、不发送患者描述。所有变更仅保存在内存，刷新恢复初始值。端切换为演示工具，不代替真实鉴权。不要输入真实医疗信息、真实口令或真实 API 密钥。</p><p>真实接入需对接 <code>/api/v1</code> 契约、不透明 Bearer 令牌、统一失败解析、真实 SSE、幂等挂号、在线号源和 MySQL 状态。客户端不得借用管理员接口获取科室/医生列表，不能把本地确认作为真实挂号成功。本工程保留这些依据，但没有宣称已完成真实服务端联调。</p><p>原参考文件 <code>docs/frontend-preview.html</code> 未修改。原服务端与第三方工程未修改。所有新增源码在独立文件夹内。</p><small>交付：独立工程源码 + 内联资源运行版 + 测试结果</small></main></body></html>

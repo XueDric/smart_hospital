@@ -1,0 +1,1253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智慧医院 · 前端框架效果预览</title>
+<style>
+:root{
+  --bg:#eef2f5; --surface:#ffffff; --surface-2:#f7f9fb;
+  --ink:#16202e; --ink-2:#55616f; --ink-3:#8b97a5;
+  --line:#e2e8ef; --line-2:#eef2f6;
+  --primary:#00a9a7; --primary-d:#007a79; --primary-s:#e4f6f6;
+  --danger:#e0483f; --danger-s:#fdeceb;
+  --warn:#c97b00; --warn-s:#fdf3e2;
+  --ok:#1d9e75; --ok-s:#e7f7f0;
+  --info:#2f6fb5; --info-s:#eaf2fc;
+  --radius:12px; --radius-s:8px;
+  --shadow:0 1px 2px rgba(20,35,55,.05),0 8px 24px -12px rgba(20,35,55,.14);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+  background:var(--bg); color:var(--ink); font-size:14px; line-height:1.65;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--primary-d);text-decoration:none}
+
+/* ---------- shell ---------- */
+.shell{display:flex;min-height:100vh}
+.sidenav{
+  width:250px;flex:0 0 250px;background:var(--surface);border-right:1px solid var(--line);
+  position:sticky;top:0;height:100vh;overflow-y:auto;padding:20px 0 40px;
+}
+.sidenav .brand{padding:0 20px 16px;border-bottom:1px solid var(--line-2);margin-bottom:12px}
+.sidenav .brand .t{font-size:15px;font-weight:700;letter-spacing:.2px}
+.sidenav .brand .s{font-size:11.5px;color:var(--ink-3);margin-top:3px}
+.nav-group{padding:12px 20px 4px;font-size:11px;font-weight:700;color:var(--ink-3);letter-spacing:.6px;text-transform:uppercase}
+.sidenav a{display:block;padding:7px 20px;font-size:13px;color:var(--ink-2);border-left:3px solid transparent}
+.sidenav a:hover{background:var(--surface-2);color:var(--ink)}
+.sidenav a.on{color:var(--primary-d);border-left-color:var(--primary);background:var(--primary-s);font-weight:600}
+.sidenav .num{display:inline-block;width:22px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+.sidenav a.on .num{color:var(--primary-d)}
+
+.main{flex:1;min-width:0;padding:0 40px 80px}
+.wrap{max-width:1180px;margin:0 auto}
+
+/* ---------- hero ---------- */
+.hero{padding:46px 0 34px;border-bottom:1px solid var(--line);margin-bottom:38px}
+.hero .kicker{display:inline-block;font-size:12px;font-weight:700;color:var(--primary-d);background:var(--primary-s);
+  padding:4px 12px;border-radius:999px;letter-spacing:.4px}
+.hero h1{font-size:30px;font-weight:800;margin:16px 0 10px;letter-spacing:-.4px}
+.hero p.lead{font-size:15px;color:var(--ink-2);max-width:820px}
+.hero .facts{display:flex;flex-wrap:wrap;gap:10px;margin-top:20px}
+.fact{background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:12.5px;color:var(--ink-2)}
+.fact b{color:var(--ink);font-weight:700}
+
+/* ---------- section ---------- */
+section{padding:14px 0 40px;scroll-margin-top:20px}
+h2.sec{font-size:21px;font-weight:800;letter-spacing:-.2px;display:flex;align-items:center;gap:10px;margin-bottom:6px}
+h2.sec .idx{font-size:12px;font-weight:700;color:#fff;background:var(--primary);border-radius:6px;padding:3px 8px;letter-spacing:.5px}
+p.sec-sub{color:var(--ink-2);margin-bottom:22px;max-width:900px}
+h3.sub{font-size:15.5px;font-weight:700;margin:26px 0 12px;padding-left:11px;border-left:3px solid var(--primary)}
+h4.mini{font-size:13.5px;font-weight:700;margin:18px 0 8px;color:var(--ink)}
+
+/* ---------- cards / tables ---------- */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:20px 22px;box-shadow:var(--shadow)}
+.grid{display:grid;gap:16px}
+.g2{grid-template-columns:repeat(2,1fr)}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g4{grid-template-columns:repeat(4,1fr)}
+@media(max-width:1080px){.g3,.g4{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:760px){.g2,.g3,.g4{grid-template-columns:1fr}}
+
+table.tbl{width:100%;border-collapse:collapse;font-size:13px;background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+table.tbl th,table.tbl td{text-align:left;padding:10px 13px;border-bottom:1px solid var(--line-2);vertical-align:top}
+table.tbl th{background:var(--surface-2);color:var(--ink-3);font-weight:700;font-size:12px;letter-spacing:.3px;white-space:nowrap}
+table.tbl tr:last-child td{border-bottom:none}
+table.tbl td code{background:var(--surface-2);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12px;color:#1f4d7a}
+.mono{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;font-size:12.5px}
+
+.pill{display:inline-block;font-size:11.5px;font-weight:700;padding:2px 9px;border-radius:999px;white-space:nowrap}
+.pill.p{background:var(--primary-s);color:var(--primary-d)}
+.pill.d{background:var(--danger-s);color:var(--danger)}
+.pill.w{background:var(--warn-s);color:var(--warn)}
+.pill.o{background:var(--ok-s);color:var(--ok)}
+.pill.i{background:var(--info-s);color:var(--info)}
+.pill.n{background:var(--surface-2);color:var(--ink-3);border:1px solid var(--line)}
+
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.chip{font-family:"SFMono-Regular",Consolas,monospace;font-size:11.5px;background:var(--surface-2);
+  border:1px solid var(--line);border-radius:6px;padding:2px 8px;color:#1f4d7a}
+.chip.post{color:#1d7a52;border-color:#c9e9d9;background:#f2fbf7}
+.chip.get{color:#2f6fb5;border-color:#d3e3f7;background:#f4f9ff}
+
+/* ---------- module tree ---------- */
+.tree{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:20px 22px;
+  font-family:"SFMono-Regular",Consolas,monospace;font-size:12.5px;line-height:1.9;overflow-x:auto}
+.tree .c{color:var(--ink-3)}
+.tree .k{color:var(--primary-d);font-weight:700}
+.tree .n{color:#9a6a1a}
+
+/* ---------- dependency diagram ---------- */
+.dep{display:flex;flex-direction:column;align-items:center;gap:0;margin:8px 0 4px}
+.dep .box{background:var(--surface);border:1.5px solid var(--line);border-radius:10px;padding:12px 18px;text-align:center;min-width:230px}
+.dep .box .t{font-weight:700;font-size:13.5px}
+.dep .box .d{font-size:11.5px;color:var(--ink-3);margin-top:2px}
+.dep .box.hi{border-color:var(--primary);background:var(--primary-s)}
+.dep .box.hi .d{color:var(--primary-d)}
+.dep .arrow{width:2px;height:22px;background:var(--line);position:relative}
+.dep .arrow::after{content:"";position:absolute;bottom:-1px;left:-4px;border:5px solid transparent;border-top-color:var(--line)}
+.dep .row{display:flex;gap:16px;flex-wrap:wrap;justify-content:center}
+
+/* ---------- mockup + spec layout ---------- */
+.duo{display:grid;grid-template-columns:minmax(0,380px) minmax(0,1fr);gap:26px;align-items:start;
+  padding:22px 0;border-top:1px dashed var(--line)}
+.duo.wide{grid-template-columns:minmax(0,1fr);}
+@media(max-width:900px){.duo{grid-template-columns:1fr}}
+.duo-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:2px}
+.duo-head .pid{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;font-weight:700;color:#fff;background:var(--ink);border-radius:6px;padding:2px 8px}
+.duo-head .nm{font-size:16px;font-weight:800}
+.duo-head .rt{font-size:12px;color:var(--ink-3);font-family:"SFMono-Regular",Consolas,monospace}
+
+/* ---------- phone frame ---------- */
+.phone{width:360px;max-width:100%;background:#101820;border-radius:38px;padding:9px;box-shadow:0 18px 44px -20px rgba(15,30,50,.5);margin:0 auto}
+.screen{background:#f4f6f9;border-radius:30px;overflow:hidden;height:700px;display:flex;flex-direction:column;position:relative}
+.sbar{height:26px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;font-size:10.5px;color:#4a5560;background:#fff;flex:0 0 auto}
+.sbar .dots{letter-spacing:2px}
+.navbar{height:48px;display:flex;align-items:center;justify-content:center;position:relative;background:#fff;
+  border-bottom:1px solid #e8ecf1;font-weight:700;font-size:14.5px;flex:0 0 auto}
+.navbar .back{position:absolute;left:14px;color:#5b6673;font-size:16px}
+.body{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
+.tabbar{height:54px;background:#fff;border-top:1px solid #e8ecf1;display:flex;flex:0 0 auto}
+.tabbar .tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:10px;color:#98a2ae}
+.tabbar .tab .ic{font-size:15px;line-height:1}
+.tabbar .tab.on{color:var(--primary-d);font-weight:700}
+
+/* mobile atoms */
+.m-card{background:#fff;border-radius:12px;padding:13px;border:1px solid #e9edf2}
+.m-label{font-size:11.5px;color:#7b8694;margin-bottom:5px;font-weight:600}
+.m-input{background:#fff;border:1px solid #dde3ea;border-radius:10px;padding:11px 13px;font-size:13px;color:#8b97a5}
+.m-input.filled{color:#16202e}
+.m-input.area{min-height:82px;line-height:1.6}
+.m-btn{background:var(--primary);color:#fff;border-radius:10px;padding:12px;text-align:center;font-weight:700;font-size:13.5px}
+.m-btn.ghost{background:#fff;color:var(--primary-d);border:1px solid var(--primary)}
+.m-btn.gray{background:#eef1f5;color:#98a2ae}
+.m-btn.sm{padding:7px 12px;font-size:12px;border-radius:8px;display:inline-block}
+.m-row{display:flex;gap:8px;align-items:center}
+.m-tag{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--primary-s);color:var(--primary-d)}
+.m-tag.gray{background:#eef1f5;color:#8b97a5}
+.m-tag.warn{background:var(--warn-s);color:var(--warn)}
+.m-tag.ok{background:var(--ok-s);color:var(--ok)}
+.m-tag.danger{background:var(--danger-s);color:var(--danger)}
+.m-item{background:#fff;border-radius:12px;padding:12px 13px;border:1px solid #e9edf2;display:flex;flex-direction:column;gap:7px}
+.m-item .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.m-item .tt{font-weight:700;font-size:13.5px}
+.m-item .mt{font-size:11.5px;color:#7b8694}
+.m-item .bt{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.m-sec{font-size:12px;font-weight:700;color:#55616f;margin:2px 0 -2px}
+.banner{border-radius:10px;padding:9px 11px;font-size:11.5px;line-height:1.5}
+.banner.err{background:var(--danger-s);color:#a83a33;border:1px solid #f6d3d0}
+.banner.warn{background:var(--warn-s);color:#8f5900;border:1px solid #f2e0bd}
+.banner.info{background:var(--info-s);color:#26578c;border:1px solid #d5e5f7}
+.bubble{max-width:82%;border-radius:14px;padding:10px 13px;font-size:12.5px;line-height:1.55}
+.bubble.ai{background:#fff;border:1px solid #e9edf2;border-top-left-radius:4px;align-self:flex-start;color:#2c3846}
+.bubble.me{background:var(--primary);color:#fff;border-top-right-radius:4px;align-self:flex-end}
+.progress{height:6px;background:#e6ebf1;border-radius:999px;overflow:hidden}
+.progress i{display:block;height:100%;background:var(--primary);border-radius:999px}
+.slots{display:flex;gap:4px;flex-wrap:wrap}
+.slot{width:26px;height:6px;border-radius:3px;background:#e6ebf1}
+.slot.done{background:var(--primary)}
+.overlay{position:absolute;inset:0;background:rgba(16,24,32,.42);display:flex;align-items:center;justify-content:center;padding:22px;border-radius:30px}
+.dialog{background:#fff;border-radius:16px;padding:20px;width:100%;box-shadow:0 20px 50px -20px rgba(0,0,0,.5);text-align:center}
+.dialog .ic{font-size:30px}
+.dialog h5{font-size:15.5px;font-weight:800;margin:8px 0 6px}
+.dialog p{font-size:12.5px;color:#5a6675;line-height:1.6}
+.dialog .acts{display:flex;gap:10px;margin-top:16px}
+.dialog .acts>div{flex:1}
+.avatar{width:44px;height:44px;border-radius:50%;background:var(--primary-s);color:var(--primary-d);
+  display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;flex:0 0 auto}
+.entry{display:flex;align-items:center;justify-content:space-between;background:#fff;border-radius:12px;padding:13px;border:1px solid #e9edf2;font-size:13px}
+.entry .l{display:flex;align-items:center;gap:10px}
+.entry .chev{color:#c3ccd6}
+.seg{display:flex;gap:6px}
+.seg .s{flex:1;text-align:center;font-size:11.5px;padding:7px 0;border-radius:9px;background:#fff;border:1px solid #e2e8ef;color:#6b7684}
+.seg .s.on{background:var(--primary);color:#fff;border-color:var(--primary);font-weight:700}
+.form-row{display:flex;gap:8px}
+.form-row .m-input{flex:1}
+
+/* pins */
+.pin{position:absolute;top:-9px;right:-9px;width:20px;height:20px;border-radius:50%;background:#16202e;color:#fff;
+  font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.25);z-index:5}
+.rel{position:relative}
+
+/* browser frame */
+.browser{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff;box-shadow:var(--shadow)}
+.browser .bar{height:34px;background:var(--surface-2);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:7px;padding:0 14px}
+.browser .bar i{width:10px;height:10px;border-radius:50%;display:block}
+.browser .bar i:nth-child(1){background:#f0685d}.browser .bar i:nth-child(2){background:#f5bd4f}.browser .bar i:nth-child(3){background:#61c554}
+.browser .url{margin-left:10px;background:#fff;border:1px solid var(--line);border-radius:6px;font-size:11px;color:var(--ink-3);padding:3px 10px;font-family:"SFMono-Regular",Consolas,monospace}
+.adm{display:flex;min-height:430px;background:#f4f6f9}
+.adm .side{width:168px;background:#16202e;color:#fff;flex:0 0 168px;padding:0;display:flex;flex-direction:column}
+.adm .side .bd{font-weight:700;font-size:13px;padding:16px 16px;border-bottom:1px solid rgba(255,255,255,.08)}
+.adm .side a{display:block;padding:9px 16px;font-size:12.5px;color:#b9c4d0}
+.adm .side a.on{background:rgba(0,169,167,.22);color:#fff;border-left:3px solid var(--primary)}
+.adm .content{flex:1;padding:18px;min-width:0}
+.adm .ptitle{font-size:16px;font-weight:800;margin-bottom:14px}
+.statgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.statcard{background:#fff;border:1px solid var(--line);border-radius:10px;padding:13px}
+.statcard .v{font-size:22px;font-weight:800;color:var(--primary-d)}
+.statcard .l{font-size:11.5px;color:var(--ink-3);margin-top:2px}
+.barchart{display:flex;align-items:flex-end;gap:9px;height:118px;padding:10px 4px 0;border-bottom:1px solid var(--line)}
+.barchart .b{flex:1;background:linear-gradient(180deg,#3fc3c1,#00a9a7);border-radius:4px 4px 0 0;position:relative}
+.barchart .b span{position:absolute;bottom:-18px;left:0;right:0;text-align:center;font-size:10px;color:var(--ink-3)}
+.atable{width:100%;border-collapse:collapse;font-size:12.5px;background:#fff;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.atable th,.atable td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line-2)}
+.atable th{background:var(--surface-2);color:var(--ink-3);font-size:11.5px;font-weight:700}
+.atable tr:last-child td{border-bottom:none}
+.abtn{display:inline-block;font-size:11.5px;padding:5px 11px;border-radius:7px;background:var(--primary);color:#fff;font-weight:700}
+.abtn.ghost{background:#fff;color:var(--primary-d);border:1px solid var(--primary)}
+.abtn.danger{background:#fff;color:var(--danger);border:1px solid #f0c8c5}
+.tabs{display:flex;gap:6px;margin-bottom:14px}
+.tabs .t{font-size:12.5px;padding:7px 14px;border-radius:8px;background:#fff;border:1px solid var(--line);color:var(--ink-2)}
+.tabs .t.on{background:var(--primary);color:#fff;border-color:var(--primary);font-weight:700}
+
+/* spec panel */
+.spec{font-size:13px}
+.spec .lbl{font-size:11px;font-weight:800;letter-spacing:.5px;color:var(--primary-d);text-transform:uppercase;margin:16px 0 6px}
+.spec .lbl:first-child{margin-top:0}
+.spec ul{margin:0 0 0 2px;padding-left:16px}
+.spec ul li{margin:4px 0;color:var(--ink-2)}
+.spec p{color:var(--ink-2)}
+.spec .cite{font-size:11.5px;color:var(--ink-3);background:var(--surface-2);border-left:3px solid var(--line);
+  border-radius:0 6px 6px 0;padding:8px 11px;margin-top:14px;font-family:"SFMono-Regular",Consolas,monospace;line-height:1.7}
+.spec .cite b{color:var(--ink-2)}
+.kv{display:flex;gap:8px;font-size:12.5px;padding:5px 0;border-bottom:1px dashed var(--line-2)}
+.kv:last-child{border-bottom:none}
+.kv .k{color:var(--ink-3);width:96px;flex:0 0 auto}
+.kv .v{color:var(--ink);flex:1}
+
+/* redline */
+.redline{border-left:4px solid var(--danger);background:var(--surface);border-radius:0 var(--radius) var(--radius) 0;
+  padding:14px 18px;box-shadow:var(--shadow)}
+.redline .h{font-weight:800;font-size:13.5px;color:var(--danger);margin-bottom:4px}
+.redline p{font-size:12.5px;color:var(--ink-2)}
+
+.footer{margin-top:30px;padding-top:22px;border-top:1px solid var(--line);font-size:12px;color:var(--ink-3);line-height:1.9}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--ink-2);margin:10px 0 0}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend .dot{width:10px;height:10px;border-radius:50%;background:#16202e;display:inline-block}
+.note{font-size:12px;color:var(--ink-3);margin-top:10px}
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- ================= SIDE NAV ================= -->
+  <aside class="sidenav">
+    <div class="brand">
+      <div class="t">智慧医院 · 前端预览</div>
+      <div class="s">框架 / 布局 / 交互区走查稿</div>
+    </div>
+    <div class="nav-group">梳理</div>
+    <a href="#overview" class="on"><span class="num">01</span>项目与前端边界</a>
+    <a href="#stack"><span class="num">02</span>技术栈</a>
+    <a href="#structure"><span class="num">03</span>目录与模块依赖</a>
+    <a href="#components"><span class="num">04</span>组件划分</a>
+    <a href="#style"><span class="num">05</span>样式方案</a>
+    <a href="#build"><span class="num">06</span>构建方式</a>
+    <a href="#inventory"><span class="num">07</span>页面清单</a>
+    <div class="nav-group">患者端 · 鸿蒙</div>
+    <a href="#p1"><span class="num">P1</span>登录</a>
+    <a href="#p2"><span class="num">P2</span>智能分诊</a>
+    <a href="#p3"><span class="num">P3</span>智能预问诊</a>
+    <a href="#p4"><span class="num">P4</span>预约挂号</a>
+    <a href="#p5"><span class="num">P5</span>我的预约</a>
+    <a href="#p6"><span class="num">P6</span>我的</a>
+    <a href="#p78"><span class="num">P7</span>就诊记录</a>
+    <a href="#p9"><span class="num">P9</span>设备会话</a>
+    <div class="nav-group">医生端 · 鸿蒙</div>
+    <a href="#d1"><span class="num">D1</span>接诊队列</a>
+    <a href="#d2"><span class="num">D2</span>电子病历</a>
+    <div class="nav-group">管理端 · Web</div>
+    <a href="#a1"><span class="num">A1</span>运营看板</a>
+    <a href="#a2"><span class="num">A2</span>科室管理</a>
+    <a href="#a6"><span class="num">A6</span>AI 能力中心</a>
+    <div class="nav-group">红线</div>
+    <a href="#redlines"><span class="num">!</span>关键交互红线</a>
+    <a href="#cite"><span class="num">§</span>文档依据索引</a>
+  </aside>
+
+  <!-- ================= MAIN ================= -->
+  <main class="main">
+  <div class="wrap">
+
+    <!-- HERO -->
+    <header class="hero">
+      <span class="kicker">HTML 框架效果预览 · 非真实 App 工程</span>
+      <h1>智慧医院智能导诊就诊系统 · 前端框架</h1>
+      <p class="lead">本页把「服务端唯一事实来源」翻译成一套可视化前端骨架：技术栈、目录与模块依赖、组件划分、样式方案、构建方式，以及<b>患者端 6 页 + 医生端 2 页 + 管理端 7 页</b>的布局结构与关键交互区。每块都标注了对应的文档依据与设计意图。</p>
+      <div class="facts">
+        <span class="fact">闭环：<b>主诉 → 分诊 → 预问诊 → 挂号 → 接诊 → 病历</b></span>
+        <span class="fact">三端角色：<b>patient / doctor / admin</b></span>
+        <span class="fact">患者端形态：<b>鸿蒙 App（ArkTS + ArkUI）</b></span>
+        <span class="fact">管理端：<b>另立一期，技术栈待定</b></span>
+        <span class="fact">服务端：<b>仓颉 + 轻舟，56 条路由</b></span>
+      </div>
+      <div class="legend">
+        <span><i class="dot"></i> 黑色数字圆点 = 该页的关键交互区，右侧「关键交互」逐条对应</span>
+      </div>
+    </header>
+
+    <!-- ============ 01 概览 ============ -->
+    <section id="overview">
+      <h2 class="sec"><span class="idx">01</span>项目与前端边界</h2>
+      <p class="sec-sub">本仓库<b>只有服务端</b>（<span class="mono">server/</span>，仓颉 + 轻舟，自包含）；<b>客户端为留白预留</b>，由客户端同学另行开发。前端只消费后端 HTTP 契约，契约的唯一口径是 <span class="mono">docs/FRONTEND-INTEGRATION.md</span>。</p>
+
+      <div class="grid g2">
+        <div class="card">
+          <h4 class="mini" style="margin-top:0">前后端划分</h4>
+          <table class="tbl" style="box-shadow:none">
+            <tr><th>侧</th><th>现状</th><th>边界</th></tr>
+            <tr><td><b>后端</b></td><td><span class="pill o">P0–P5 完成</span></td><td>55+ REST；三端权限由单一函数 <span class="mono">can(role, action)</span> 强制</td></tr>
+            <tr><td><b>前端</b></td><td><span class="pill w">待实现</span></td><td>只消费 HTTP 契约；<b>不得</b>出现患者无权调用的 <span class="mono">/admin/**</span>、<span class="mono">/doctor/**</span></td></tr>
+          </table>
+          <div class="note">依据：《前端开发梳理与页面清单》§4；《FRONTEND-INTEGRATION》§5–§6</div>
+        </div>
+        <div class="card">
+          <h4 class="mini" style="margin-top:0">契约边界的 5 条关键约定</h4>
+          <div class="kv"><span class="k">前缀</span><span class="v">业务接口全部 <span class="mono">/api/v1</span>；唯一例外 <span class="mono">GET /health</span>（根路径、不鉴权、不走信封）</span></div>
+          <div class="kv"><span class="k">成功信封</span><span class="v"><span class="mono">{"ok":true,"data":{…}}</span>（200/201）</span></div>
+          <div class="kv"><span class="k">失败信封</span><span class="v"><span class="mono">{"ok":false,"error":{code,message,fields?}}</span></span></div>
+          <div class="kv"><span class="k">平铺失败</span><span class="v">还有两种<b>无 ok 字段</b>的框架层形状（非法 JSON / 路由不匹配）</span></div>
+          <div class="kv"><span class="k">传输</span><span class="v">release <b>必须 HTTPS</b>；服务端 TLS 绝不静默降级</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 02 技术栈 ============ -->
+    <section id="stack">
+      <h2 class="sec"><span class="idx">02</span>技术栈</h2>
+      <p class="sec-sub">前端为「鸿蒙患者端（待建）」+「管理端（另立一期）」两块；下方同时列出已就绪的服务端与作为设计参照的既有 Vue 3 工程。</p>
+      <table class="tbl">
+        <tr><th>层</th><th>技术</th><th>备注 / 设计意图</th></tr>
+        <tr><td><b>客户端（待建）</b></td><td><span class="pill p">ArkTS + ArkUI 原生</span>（HarmonyOS）</td><td>从零重写，<b>不复用 Vue UI 代码</b>，但复用接口协议与业务逻辑设计</td></tr>
+        <tr><td>状态管理</td><td><span class="pill p">ArkTS 状态管理 V2</span></td><td><span class="mono">@Local / @Param / @Event / @Provider / @Consumer</span>，<b>避免 V1/V2 混用</b></td></tr>
+        <tr><td>路由</td><td>统一路由注册表（<span class="mono">common-core</span> 中的 Router）</td><td>各 feature 模块向公共层注册页面，业务模块之间禁止互相 import</td></tr>
+        <tr><td>网络层</td><td>统一 HTTP 客户端 + Bearer Token 注入 + <b>SSE 流式解析</b></td><td>SSE 仅用于预问诊打字机；挂号/AI 在线直连</td></tr>
+        <tr><td>持久化</td><td>偏好存储 / 文件存储</td><td>登录态只存 <span class="mono">token + expires_at + role + ref_id</span>，<b>绝不存口令</b></td></tr>
+        <tr><td>服务端（已就绪）</td><td>仓颉 1.2.0 + 轻舟 v0.12.0</td><td>单进程、单 package；直接 SQL + 事务；MySQL/MariaDB 11.4</td></tr>
+        <tr><td>鉴权</td><td>不透明令牌（32B → 64 hex）+ PBKDF2-HMAC-SHA256 100k</td><td><b>不是 JWT</b>，客户端不得解析；30 天 TTL + 服务端滑动续期，无 refresh 接口</td></tr>
+        <tr><td>管理端（另立一期）</td><td><span class="pill n">技术栈待定</span></td><td>服务端已提供看板 / 基础数据 / AI 中心 / 知识库接口；参照 <span class="mono">qingzhou/admin-web</span>（Vue 3 + Vite）</td></tr>
+        <tr><td>参考系统（设计参照）</td><td>Vue 3 + Vue Router + Vite + Element Plus（主题 <span class="mono">#00a9a7</span>）</td><td>已完成的交互设计与业务逻辑梳理，鸿蒙端参照其页面结构与交互流程</td></tr>
+      </table>
+      <div class="note">依据：《前端开发梳理与页面清单》§3；《分工.md》§3.3 / §4.4</div>
+    </section>
+
+    <!-- ============ 03 目录结构 ============ -->
+    <section id="structure">
+      <h2 class="sec"><span class="idx">03</span>目录结构与模块依赖</h2>
+      <p class="sec-sub">鸿蒙工程按「<b>依赖单向</b>：<span class="mono">app → feature → common-core</span>，业务模块之间禁止互相 import」组织。仓库当前 <span class="mono">entry/</span> 为留白预留。</p>
+
+      <div class="grid g2">
+        <div>
+          <h4 class="mini">仓库现状（本仓库）</h4>
+          <div class="tree">
+<span class="c">smart_hospital/</span>
+├── README.md                        <span class="c"># 进度表 + 目录 + 阅读顺序</span>
+├── smart-hospital-project-brief.md  <span class="c"># ★ 唯一上下文入口</span>
+├── docs/
+│   ├── <span class="k">FRONTEND-INTEGRATION.md</span>       <span class="c"># ★★ 前端对接唯一口径</span>
+│   ├── <span class="k">前端开发梳理与页面清单.md</span>      <span class="c"># ★ 本预览的主要依据</span>
+│   ├── 分工.md                        <span class="c"># 三人团队分工与工程约束</span>
+│   ├── DEV-DB.md / Q6-合规决策记录.md
+│   ├── P0-HANDOFF.md … P5-HANDOFF.md
+│   └── adr/ADR-0001-…                 <span class="c"># 唯一架构级决策 rev.7</span>
+├── <span class="n">server/</span>                            <span class="c"># ★ 服务端（仓颉 + 轻舟，自包含）</span>
+│   ├── src/                           <span class="c"># 33 个 .cj（业务 + 验收自检）</span>
+│   ├── tests/                         <span class="c"># 14 个 .ps1</span>
+│   └── third_party/                   <span class="c"># 轻舟框架 + MariaDB 驱动 + admin-web 参照</span>
+└── <span class="n">entry/</span>                             <span class="c"># ⏳ 留白（预留）—— 鸿蒙患者端</span>
+          </div>
+        </div>
+        <div>
+          <h4 class="mini">鸿蒙工程建议结构（待建）</h4>
+          <div class="tree">
+<span class="n">HarmonyOS 工程</span>
+├── <span class="k">entry/</span>              <span class="c"># 壳工程：App 入口、装配、签名</span>
+├── <span class="k">common-core/</span>        <span class="c"># 公共层（唯一被依赖方）</span>
+│   ├── router/        <span class="c"># 统一路由注册表</span>
+│   ├── net/           <span class="c"># HTTP 客户端 + Token 注入 + SSE 解析器</span>
+│   ├── ui/            <span class="c"># 公共组件库（按钮/输入/卡片/列表项/标签…）</span>
+│   ├── state/         <span class="c"># 状态管理 V2 规范与示例</span>
+│   ├── store/         <span class="c"># 偏好 / 文件存储封装</span>
+│   ├── theme/         <span class="c"># 颜色资源 + 深/浅色切换</span>
+│   └── session/       <span class="c"># 登录态、401 拦截、登录拦截</span>
+├── <span class="k">feature-patient/</span>    <span class="c"># 患者端（登录/分诊/预问诊/约号/我的）</span>
+├── <span class="k">feature-doctor/</span>     <span class="c"># 医生端（接诊队列 / 电子病历）</span>
+└── <span class="k">feature-admin/</span>      <span class="c"># 管理端（另立一期，视技术栈而定）</span>
+          </div>
+        </div>
+      </div>
+
+      <h3 class="sub">模块依赖（单向，无环）</h3>
+      <div class="dep">
+        <div class="box hi"><div class="t">entry · 壳工程</div><div class="d">App 入口 / 装配 / 打包签名</div></div>
+        <div class="arrow"></div>
+        <div class="row">
+          <div class="box"><div class="t">feature-patient</div><div class="d">患者端页面</div></div>
+          <div class="box"><div class="t">feature-doctor</div><div class="d">医生端页面</div></div>
+          <div class="box"><div class="t">feature-admin</div><div class="d">管理端页面</div></div>
+        </div>
+        <div class="arrow"></div>
+        <div class="box hi" style="min-width:340px"><div class="t">common-core · 公共层</div><div class="d">router / net / ui / state / store / theme / session</div></div>
+      </div>
+      <p class="note">设计意图：A、B 的功能模块通过 <span class="mono">common-core</span> 的路由与网络层通信，<b>不直接互相依赖</b> —— 保证 3 人并行开发互不阻塞。<br>依据：《分工.md》§3.1.1 / §4.1；《前端开发梳理与页面清单》§5.2</p>
+    </section>
+
+    <!-- ============ 04 组件划分 ============ -->
+    <section id="components">
+      <h2 class="sec"><span class="idx">04</span>组件划分</h2>
+      <p class="sec-sub">公共组件库封装在 <span class="mono">common-core/ui</span>，供 A、B 复用；业务模块只做组合，不重复造基础件。下表的「使用页面」标出该组件在本次预览中的落点。</p>
+      <div class="grid g3">
+        <div class="card"><h4 class="mini" style="margin-top:0">基础控件</h4>
+          <div class="kv"><span class="k">HButton</span><span class="v">主/次/灰/危险 四态；热区 ≥ 40vp×40vp</span></div>
+          <div class="kv"><span class="k">HInput</span><span class="v">单行 / 多行；聚焦态、错误态</span></div>
+          <div class="kv"><span class="k">HCard</span><span class="v">圆角 12、1px 描边、轻阴影</span></div>
+          <div class="kv"><span class="k">HListItem</span><span class="v">左图标 + 主标题 + 副标题 + 右侧箭头/标签</span></div>
+          <div class="kv"><span class="k">HTag</span><span class="v">状态标签：默认 / 成功 / 警告 / 危险 / 灰</span></div>
+        </div>
+        <div class="card"><h4 class="mini" style="margin-top:0">反馈与状态</h4>
+          <div class="kv"><span class="k">HBanner</span><span class="v">错误 / 警告 / 信息条（如 429 倒计时、dev_auth 红色告警、退号 warning）</span></div>
+          <div class="kv"><span class="k">HDialog</span><span class="v">二次确认弹窗（挂号确认、退号确认、危急征象强提醒）</span></div>
+          <div class="kv"><span class="k">HEmpty</span><span class="v">空态（无预约 / 无就诊记录）</span></div>
+          <div class="kv"><span class="k">HLoading</span><span class="v">分诊 loading（分诊是一次性 JSON，无流式）</span></div>
+          <div class="kv"><span class="k">HProgress</span><span class="v">进度条 / 槽位点阵（预问诊 filled/total_slots）</span></div>
+        </div>
+        <div class="card"><h4 class="mini" style="margin-top:0">业务复合件</h4>
+          <div class="kv"><span class="k">TriageOptionCard</span><span class="v">分诊结果号源卡（科室/医生/职称/号源/去挂号）</span></div>
+          <div class="kv"><span class="k">ChatBubble</span><span class="v">预问诊对话气泡（AI 左 / 患者右 + 打字机光标）</span></div>
+          <div class="kv"><span class="k">ScheduleItem</span><span class="v">号源列表项（含「已约满」置灰）</span></div>
+          <div class="kv"><span class="k">AppointmentItem</span><span class="v">挂号单条目（状态标签 + 退号按钮）</span></div>
+          <div class="kv"><span class="k">EmrSection</span><span class="v">病历七段分区（含字数上限 / 必填标记 / 只读态）</span></div>
+        </div>
+      </div>
+      <div class="note">依据：《分工.md》C2-1「基于设计规范封装基础组件（按钮、输入框、卡片、列表项、标签等）」；《前端开发梳理与页面清单》§8「所需组件」列</div>
+    </section>
+
+    <!-- ============ 05 样式方案 ============ -->
+    <section id="style">
+      <h2 class="sec"><span class="idx">05</span>样式方案</h2>
+      <p class="sec-sub">核心纪律：<b>颜色走资源体系、禁止硬编码色值</b>；尺寸全局 <b>vp</b> 单位 + <b>8vp 基线网格</b>；手机端基准 <b>16fp</b>；配置浅色/深色双模式。</p>
+      <div class="grid g2">
+        <div class="card">
+          <h4 class="mini" style="margin-top:0">颜色资源体系（医疗青绿）</h4>
+          <div class="grid" style="grid-template-columns:repeat(2,1fr);gap:10px;margin-top:4px">
+            <div class="rel" style="background:var(--primary);color:#fff;border-radius:10px;padding:12px"><b>Primary</b><div class="mono" style="font-size:11.5px;opacity:.9">#00A9A7</div></div>
+            <div class="rel" style="background:var(--primary-d);color:#fff;border-radius:10px;padding:12px"><b>Primary Dark</b><div class="mono" style="font-size:11.5px;opacity:.9">#007A79</div></div>
+            <div class="rel" style="background:var(--primary-s);color:var(--primary-d);border-radius:10px;padding:12px"><b>Primary Soft</b><div class="mono" style="font-size:11.5px">#E4F6F6</div></div>
+            <div class="rel" style="background:var(--danger);color:#fff;border-radius:10px;padding:12px"><b>Danger</b><div class="mono" style="font-size:11.5px;opacity:.9">#E0483F</div></div>
+            <div class="rel" style="background:var(--warn-s);color:var(--warn);border-radius:10px;padding:12px;border:1px solid #f2e0bd"><b>Warning</b><div class="mono" style="font-size:11.5px">#C97B00</div></div>
+            <div class="rel" style="background:var(--ok-s);color:var(--ok);border-radius:10px;padding:12px;border:1px solid #cbeadd"><b>Success</b><div class="mono" style="font-size:11.5px">#1D9E75</div></div>
+          </div>
+          <div class="note">主题色 <span class="mono">#00a9a7</span> 沿用参考系统；深色模式只换资源值，不改组件代码。</div>
+        </div>
+        <div class="card">
+          <h4 class="mini" style="margin-top:0">尺寸 / 字体 / 主题</h4>
+          <div class="kv"><span class="k">单位</span><span class="v">全局 <b>vp</b>（虚拟像素），随屏幕密度自适应</span></div>
+          <div class="kv"><span class="k">网格</span><span class="v"><b>8vp 基线网格</b>：间距取 8 / 12 / 16 / 24 …</span></div>
+          <div class="kv"><span class="k">热区</span><span class="v">可点击控件最小 <b>40vp × 40vp</b></span></div>
+          <div class="kv"><span class="k">字号</span><span class="v">手机端基准 <b>16fp</b>，使用鸿蒙动态字阶（随系统字号缩放）</span></div>
+          <div class="kv"><span class="k">圆角/描边</span><span class="v">卡片 12vp、控件 8–10vp；1px 描边 + 轻阴影表达层级</span></div>
+          <div class="kv"><span class="k">主题</span><span class="v">深色/浅色模式切换（颜色资源体系驱动）</span></div>
+        </div>
+      </div>
+      <p class="note">依据：《分工.md》C1-1「颜色资源体系（禁止硬编码色值，浅/深双模式）」、C1-2「vp / 8vp 网格 / 热区」、C1-3「16fp / 动态字阶」、C2-4「主题切换」</p>
+    </section>
+
+    <!-- ============ 06 构建方式 ============ -->
+    <section id="build">
+      <h2 class="sec"><span class="idx">06</span>构建方式</h2>
+      <div class="grid g2">
+        <div class="card">
+          <h4 class="mini" style="margin-top:0">鸿蒙端（患者端 / 医生端）</h4>
+          <div class="kv"><span class="k">IDE</span><span class="v">DevEco Studio 多模块工程</span></div>
+          <div class="kv"><span class="k">构建</span><span class="v">hvigor 构建链；<span class="mono">entry</span> 为主 HAP，feature/common-core 为模块</span></div>
+          <div class="kv"><span class="k">调试</span><span class="v">预览器 + Inspector 双向预览（代码 / UI / 组件树三者联动）</span></div>
+          <div class="kv"><span class="k">签名</span><span class="v">应用打包 / 签名配置 / 华为 AGC 平台</span></div>
+          <div class="kv"><span class="k">BaseURL</span><span class="v">由构建配置（product 维度）<b>写死</b> http/https，<b>不靠探测</b>；release 走 HTTPS</span></div>
+        </div>
+        <div class="card">
+          <h4 class="mini" style="margin-top:0">管理端 Web（另立一期，参照实现）</h4>
+          <div class="kv"><span class="k">技术栈</span><span class="v">Vue 3 + Vue Router + Vite（参照 <span class="mono">third_party/qingzhou/admin-web</span>）</span></div>
+          <div class="kv"><span class="k">开发</span><span class="v"><span class="mono">vite</span> dev server（端口 5173），<span class="mono">/api</span> 代理到后端避免跨域</span></div>
+          <div class="kv"><span class="k">构建</span><span class="v"><span class="mono">vite build</span> → <span class="mono">dist/</span></span></div>
+          <div class="kv"><span class="k">注意</span><span class="v">参考实现的响应壳是 <span class="mono">{code,message,data}</span>，<b>与本项目 <span class="mono">{ok,data,error}</span> 信封不同</b>，需改解析器</span></div>
+        </div>
+      </div>
+      <p class="note">依据：《分工.md》B3-2、C1-7「设计标注交付 A、B」；<span class="mono">server/third_party/qingzhou/admin-web/{package.json,vite.config.js}</span>；《FRONTEND-INTEGRATION》§10.1</p>
+    </section>
+
+    <!-- ============ 07 页面清单 ============ -->
+    <section id="inventory">
+      <h2 class="sec"><span class="idx">07</span>页面清单（18 页）</h2>
+      <p class="sec-sub">优先级：<b>MVP</b> = 主闭环必做（患者端 6 页，对应已决事项 Q3）；<b>P1</b> = 本期必做；<b>P2</b> = 可延后。</p>
+      <table class="tbl">
+        <tr><th>#</th><th>页面</th><th>端</th><th>路由（建议）</th><th>依赖后端接口（摘要）</th><th>优先级</th></tr>
+        <tr><td>P-1</td><td>登录页</td><td>患者</td><td class="mono">pages/patient/Login</td><td class="mono">POST /auth/login · GET /health</td><td><span class="pill d">MVP</span></td></tr>
+        <tr><td>P-2</td><td>智能分诊</td><td>患者</td><td class="mono">pages/patient/Triage</td><td class="mono">POST /triage</td><td><span class="pill d">MVP</span></td></tr>
+        <tr><td>P-3</td><td>智能预问诊</td><td>患者</td><td class="mono">pages/patient/Previsit</td><td class="mono">GET /previsit/stream(SSE) · POST /previsit/answer · GET /previsit/:id</td><td><span class="pill d">MVP</span></td></tr>
+        <tr><td>P-4</td><td>预约挂号</td><td>患者</td><td class="mono">pages/patient/Booking</td><td class="mono">GET /schedules · GET /schedules/:id · POST /appointments</td><td><span class="pill d">MVP</span></td></tr>
+        <tr><td>P-5</td><td>我的预约</td><td>患者</td><td class="mono">pages/patient/Appointments</td><td class="mono">GET /appointments · POST /appointments/:id/cancel</td><td><span class="pill d">MVP</span></td></tr>
+        <tr><td>P-6</td><td>我的（个人中心）</td><td>患者</td><td class="mono">pages/patient/Profile</td><td class="mono">GET /auth/me · POST /auth/logout(-all) · GET /medical-records</td><td><span class="pill d">MVP</span></td></tr>
+        <tr><td>P-7/8</td><td>就诊记录 列表 / 详情</td><td>患者</td><td class="mono">…/MedicalRecords(Detail)</td><td class="mono">GET /medical-records · GET /medical-records/:appointmentId</td><td><span class="pill w">P1</span></td></tr>
+        <tr><td>P-9</td><td>设备会话管理</td><td>患者</td><td class="mono">pages/patient/Sessions</td><td class="mono">GET /auth/sessions · POST /auth/sessions/revoke</td><td><span class="pill n">P2</span></td></tr>
+        <tr><td>D-1</td><td>接诊队列</td><td>医生</td><td class="mono">pages/doctor/VisitQueue</td><td class="mono">GET /doctor/visits · POST …/start|/finish|/no-show</td><td><span class="pill w">P1</span></td></tr>
+        <tr><td>D-2</td><td>电子病历编辑</td><td>医生</td><td class="mono">pages/doctor/MedicalRecord</td><td class="mono">GET|PUT …/record · POST …/record/lock</td><td><span class="pill w">P1</span></td></tr>
+        <tr><td>A-1</td><td>运营看板</td><td>管理</td><td class="mono">pages/admin/Dashboard</td><td class="mono">GET /admin/dashboard</td><td><span class="pill w">P1</span></td></tr>
+        <tr><td>A-2</td><td>科室管理</td><td>管理</td><td class="mono">pages/admin/Departments</td><td class="mono">GET|POST /admin/departments · GET|PUT|DELETE /…/:id</td><td><span class="pill w">P1</span></td></tr>
+        <tr><td>A-3</td><td>医生管理</td><td>管理</td><td class="mono">pages/admin/Doctors</td><td class="mono">GET|POST /admin/doctors · GET|PUT|DELETE /…/:id</td><td><span class="pill w">P1</span></td></tr>
+        <tr><td>A-4</td><td>排班 / 号源管理</td><td>管理</td><td class="mono">pages/admin/Schedules</td><td class="mono">POST /admin/schedules · GET /schedules</td><td><span class="pill w">P1</span></td></tr>
+        <tr><td>A-5</td><td>账号管理</td><td>管理</td><td class="mono">pages/admin/Users</td><td class="mono">POST /admin/users · GET /admin/users?login_name= · POST /…/:id/password</td><td><span class="pill w">P1</span></td></tr>
+        <tr><td>A-6</td><td>AI 能力中心</td><td>管理</td><td class="mono">pages/admin/AiCenter</td><td class="mono">/admin/ai/settings · /prompts · /tools</td><td><span class="pill n">P2</span></td></tr>
+        <tr><td>A-7</td><td>知识库管理</td><td>管理</td><td class="mono">pages/admin/KnowledgeBase</td><td class="mono">/admin/kb/docs · /admin/kb/stats · GET /kb/search</td><td><span class="pill n">P2</span></td></tr>
+      </table>
+      <p class="note">依据：《前端开发梳理与页面清单》§8.1–§8.4。本次预览覆盖 P1–P6、P7/8、P9、D1、D2、A1、A2、A6（A3/A4/A5/A7 与 A2 结构同族，按同一表格/表单范式实现）。</p>
+    </section>
+
+    <!-- ================= 患者端 ================= -->
+    <section id="p1">
+      <h2 class="sec"><span class="idx">患者端</span>鸿蒙 App · 主闭环 6 页 + P1/P2</h2>
+      <p class="sec-sub">患者端 6 页为 <b>MVP</b>（已决事项 Q3）。手机端采用「状态栏 + 标题栏 + 滚动内容 + 底部 Tab」的固定骨架；分诊 / 预问诊 / 约号 / 我的预约 / 我的 五个业务页共用底部 Tab。</p>
+
+      <!-- P1 登录 -->
+      <div class="duo">
+        <div>
+          <div class="duo-head"><span class="pid">P-1</span><span class="nm">登录页</span><span class="rt">pages/patient/Login</span><span class="pill d">MVP</span></div>
+          <div class="phone">
+            <div class="screen">
+              <div class="sbar"><span>9:41</span><span class="dots">●●●</span><span>100%</span></div>
+              <div class="navbar">登录</div>
+              <div class="body" style="justify-content:center;gap:14px">
+                <div style="text-align:center;margin-bottom:6px">
+                  <div class="avatar" style="margin:0 auto 10px;width:56px;height:56px;font-size:20px;border-radius:16px">医</div>
+                  <div style="font-weight:800;font-size:17px">智慧医院</div>
+                  <div style="font-size:11.5px;color:#7b8694;margin-top:2px">智能导诊就诊系统 · 患者端</div>
+                </div>
+                <div class="banner err rel"><span class="pin">1</span>账号或密码错误</div>
+                <div class="rel"><span class="pin">2</span>
+                  <div class="m-label">登录名（手机号）</div>
+                  <div class="m-input filled">138****6021</div>
+                </div>
+                <div class="rel"><span class="pin">3</span>
+                  <div class="m-label">密码</div>
+                  <div class="m-input">••••••••</div>
+                </div>
+                <div class="m-btn rel"><span class="pin">4</span>登 录</div>
+                <div class="banner warn rel"><span class="pin">5</span>开发鉴权模式已开启（dev_auth=true），请勿用于正式环境</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="spec">
+          <div class="lbl">用途</div>
+          <p>账号口令登录，换取令牌并持久化；登录后按 <span class="mono">role</span> 分流。</p>
+          <div class="lbl">关键交互（对应左侧圆点）</div>
+          <ul>
+            <li><b>①错误提示条</b>：401 <span class="mono">AUTH_BAD_CREDENTIALS</span> 显示服务端 message；429 时改为 <b>读 <span class="mono">retry-after</span> 做倒计时并禁用登录按钮</b>。</li>
+            <li><b>②登录名输入</b>：字段名必须是 <span class="mono">login_name</span> —— 写成 <span class="mono">username</span>/<span class="mono">pass_word</span> 会得到 <b>400 而非 401</b>（最常见对接事故）。</li>
+            <li><b>③密码输入</b>：字段名必须是 <span class="mono">password</span>；登录态持久化<b>只存 token/expires_at/role/ref_id，绝不存口令</b>。</li>
+            <li><b>④登录按钮</b>：请求带可选设备头 <span class="mono">X-Device-Id</span> / <span class="mono">X-Device-Name</span>（各截断 64，仅用于会话列表展示，不参与授权）。</li>
+            <li><b>⑤dev_auth 红色告警</b>：<span class="mono">GET /health</span> 返回 <span class="mono">dev_auth:true</span> 时显示（该模式下身份头可绕过认证）。</li>
+          </ul>
+          <div class="lbl">依赖接口</div>
+          <div class="chips"><span class="chip post">POST /api/v1/auth/login</span><span class="chip get">GET /health</span></div>
+          <div class="lbl">设计意图</div>
+          <p>登录是唯一换令牌入口；<span class="mono">/health</span> 不走信封，需单独解析。错误码优先于文案分支（服务端文案可能变）。</p>
+          <div class="cite"><b>依据：</b>《页面清单》§8.1 P-1；《FRONTEND-INTEGRATION》§4.2 / §2.3 / §3.4 / §10.5</div>
+        </div>
+      </div>
+
+      <!-- P2 分诊 -->
+      <div class="duo" id="p2">
+        <div>
+          <div class="duo-head"><span class="pid">P-2</span><span class="nm">智能分诊</span><span class="rt">pages/patient/Triage</span><span class="pill d">MVP</span></div>
+          <div class="phone">
+            <div class="screen">
+              <div class="sbar"><span>9:41</span><span class="dots">●●●</span><span>100%</span></div>
+              <div class="navbar">智能分诊</div>
+              <div class="body">
+                <div class="m-label">请描述您的不适</div>
+                <div class="m-input area rel filled"><span class="pin">1</span>咳嗽三天，有黄痰，晚上有点发热</div>
+                <div class="m-btn rel"><span class="pin">2</span>开始分诊</div>
+                <div class="m-sec" style="margin-top:4px">推荐号源 <span style="font-weight:400;color:#8b97a5">· 每一个都已校验真实有号</span></div>
+                <div class="m-item rel"><span class="pin">3</span>
+                  <div class="top"><span class="tt">呼吸内科</span><span class="m-tag">剩 5 号</span></div>
+                  <div class="mt">李医生 · 副主任医师</div>
+                  <div class="mt">2026-11-20 上午（AM）</div>
+                  <div class="bt" style="margin-top:2px"><span class="mt">备选 · 共 1 个号源</span><span class="m-btn sm">去挂号</span></div>
+                </div>
+                <div class="m-item" style="opacity:.55">
+                  <div class="top"><span class="tt">呼吸内科</span><span class="m-tag gray">已约满</span></div>
+                  <div class="mt">王医生 · 主治医师</div>
+                  <div class="mt">2026-11-20 下午（PM）</div>
+                </div>
+              </div>
+              <div class="tabbar">
+                <div class="tab on"><span class="ic">✦</span>分诊</div>
+                <div class="tab"><span class="ic">💬</span>预问诊</div>
+                <div class="tab"><span class="ic">＋</span>约号</div>
+                <div class="tab"><span class="ic">📋</span>我的预约</div>
+                <div class="tab"><span class="ic">👤</span>我的</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="spec">
+          <div class="lbl">用途</div>
+          <p>输入主诉 → 展示推荐科室 / 医生 / 号源。分诊是<b>一次性 JSON（无流式）</b>，用 loading 态即可。</p>
+          <div class="lbl">关键交互（对应左侧圆点）</div>
+          <ul>
+            <li><b>①主诉输入</b>：本地限制输入长度；服务端超长会<b>按字符</b>截断到 500 字并置 <span class="mono">truncated=true</span>（不报错）。患者身份取自令牌，body 传 <span class="mono">patient_id</span> 无效。</li>
+            <li><b>②提交</b>：仅 <span class="mono">patient</span> 可调（医生/管理员 → 403 <span class="mono">FORBIDDEN_ROLE</span>，<b>属正常不是 bug</b>）。</li>
+            <li><b>③结果卡片列表</b>：<span class="mono">options[]</span> 是患者端<b>唯一</b>能拿到科室名 / 医生姓名的来源（服务端无患者可读的科室/医生列表）；<span class="mono">schedule_id</span> 直接拿去挂号。按 <span class="mono">reason_code</span> 分支文案（OK / ALTERNATIVES / NO_BOOKABLE / NEED_CLARIFY / NO_SUCH_DEPT / NO_COMPLAINT）。</li>
+          </ul>
+          <div class="banner err" style="margin-top:8px;font-weight:600">④ 危急征象强提醒弹层（red_flag=true）：<b>options 必为空</b>，只引导急诊/人工，<b>绝不展示或自拼号源</b> —— 产品级红线。服务端刻意不返回命中的关键词，前端不得复述"因为您说了胸痛"。</div>
+          <div class="lbl">依赖接口</div>
+          <div class="chips"><span class="chip post">POST /api/v1/triage</span></div>
+          <div class="lbl">设计意图</div>
+          <p>「先取证后结论」：模型永远不能改 <span class="mono">options</span>，每个推荐都已用真实数据库验证 <span class="mono">remain_num &gt; 0</span>。</p>
+          <div class="cite"><b>依据：</b>《页面清单》§8.1 P-2；《FRONTEND-INTEGRATION》§5.8 / §10.2；《Q6-合规决策记录》</div>
+        </div>
+      </div>
+
+      <!-- P3 预问诊 -->
+      <div class="duo" id="p3">
+        <div>
+          <div class="duo-head"><span class="pid">P-3</span><span class="nm">智能预问诊</span><span class="rt">pages/patient/Previsit</span><span class="pill d">MVP</span></div>
+          <div class="phone">
+            <div class="screen">
+              <div class="sbar"><span>9:41</span><span class="dots">●●●</span><span>100%</span></div>
+              <div class="navbar">智能预问诊</div>
+              <div class="body">
+                <div class="rel" style="background:#fff;border:1px solid #e9edf2;border-radius:12px;padding:11px">
+                  <span class="pin">1</span>
+                  <div style="display:flex;justify-content:space-between;font-size:11.5px;color:#55616f;margin-bottom:7px">
+                    <span>采集进度</span><span><b>2 / 6</b> 项</span>
+                  </div>
+                  <div class="progress"><i style="width:33%"></i></div>
+                  <div class="slots" style="margin-top:8px">
+                    <span class="slot done"></span><span class="slot done"></span><span class="slot"></span>
+                    <span class="slot"></span><span class="slot"></span><span class="slot"></span>
+                  </div>
+                </div>
+                <div class="bubble ai rel"><span class="pin">2</span>明白了，您主要是「咳嗽三天」。为了帮医生更快了解情况，我再问几个问题，一共 6 项。</div>
+                <div class="bubble me">3 天</div>
+                <div class="bubble ai">第 3/6 项：对日常生活影响大吗？<span style="color:#00a9a7">▍</span></div>
+                <div style="flex:1"></div>
+                <div class="rel"><span class="pin">3</span>
+                  <div class="form-row">
+                    <div class="m-input" style="flex:1">请输入…</div>
+                    <div class="m-btn sm" style="align-self:center">发送</div>
+                  </div>
+                  <div class="m-row" style="margin-top:8px">
+                    <span class="m-tag gray rel"><span class="pin">4</span>「无」</span>
+                    <span class="m-tag gray">跳过此项</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="spec">
+          <div class="lbl">用途</div>
+          <p>多轮对话采集 6 个槽位（chief / duration / severity / associated / history / allergy），SSE 流式打字机；完成后生成预问诊单，可预填医生端病历。</p>
+          <div class="lbl">关键交互（对应左侧圆点）</div>
+          <ul>
+            <li><b>①进度指示</b>：用 <span class="mono">filled / total_slots</span>；<span class="mono">form</span> <b>仅在 complete 后出现</b>，未完成时只给进度，不下发半成品表单。</li>
+            <li><b>②流式气泡</b>：SSE 四条硬性要求 —— 严格按 <span class="mono">\n\n</span> 分帧、整段 UTF-8 解码、<span class="mono">meta</span> 帧先取 <span class="mono">session_id</span> 并<b>持久化复用</b>、未收 <span class="mono">done</span> 帧视为失败并设超时。帧内业务对象在 <b>内层 data</b>（外层是 <span class="mono">{event,data}</span>）。</li>
+            <li><b>③输入 / 发送</b>：<b>空串 = 跳过，不提交</b>（不落库、不推进 turn）；给流设超时，连接关闭不等于完成。</li>
+            <li><b>④「无」快捷项</b>：<b>「无」是有效阴性答案</b>，与「没答」语义不同，必须提供快捷项，<b>不要用空串代替</b>。</li>
+          </ul>
+          <div class="lbl">依赖接口</div>
+          <div class="chips"><span class="chip get">GET /api/v1/previsit/stream</span><span class="chip post">POST /api/v1/previsit/answer</span><span class="chip get">GET /api/v1/previsit/:id</span></div>
+          <div class="lbl">设计意图</div>
+          <p>进页先 <span class="mono">GET /previsit/:id</span>（404 才开新流）—— 反复开新流会挤掉最旧的未完成会话（上限 5 个未完成 / 30 分钟闲置回收）。对话文本可流式，但<b>业务值（answer）刻意非流式</b>：流错了对话只是看到半句，流错了业务值是状态污染。</p>
+          <div class="cite"><b>依据：</b>《页面清单》§8.1 P-3；《FRONTEND-INTEGRATION》§5.9–§5.11 / §7 全章</div>
+        </div>
+      </div>
+
+      <!-- P4 约号 -->
+      <div class="duo" id="p4">
+        <div>
+          <div class="duo-head"><span class="pid">P-4</span><span class="nm">预约挂号</span><span class="rt">pages/patient/Booking</span><span class="pill d">MVP</span></div>
+          <div class="phone">
+            <div class="screen">
+              <div class="sbar"><span>9:41</span><span class="dots">●●●</span><span>100%</span></div>
+              <div class="navbar">预约挂号</div>
+              <div class="body">
+                <div class="rel"><span class="pin">1</span>
+                  <div class="form-row">
+                    <div class="m-input" style="flex:1.3">科室：呼吸内科 ▾</div>
+                    <div class="m-input" style="flex:1">11-20 ▾</div>
+                  </div>
+                </div>
+                <div class="m-sec">可约号源</div>
+                <div class="m-item rel"><span class="pin">2</span>
+                  <div class="top"><span class="tt">李医生 · 副主任医师</span><span class="m-tag">剩 5 号</span></div>
+                  <div class="mt">2026-11-20 上午（AM） · 共 20 号</div>
+                  <div class="bt" style="margin-top:2px"><span class="mt">序号 6</span><span class="m-btn sm">预约</span></div>
+                </div>
+                <div class="m-item" style="opacity:.55">
+                  <div class="top"><span class="tt">王医生 · 主治医师</span><span class="m-tag gray">已约满</span></div>
+                  <div class="mt">2026-11-20 下午（PM）</div>
+                </div>
+                <div class="m-item" style="opacity:.55">
+                  <div class="top"><span class="tt">科室 #3 / 医生 #9</span><span class="m-tag gray">无名称</span></div>
+                  <div class="mt">⚠ 号源列表只回 id，无医生/科室名</div>
+                </div>
+              </div>
+              <div class="overlay">
+                <div class="dialog rel"><span class="pin">3</span>
+                  <div class="ic">📅</div>
+                  <h5>确认挂号</h5>
+                  <p>呼吸内科 · 李医生<br>2026-11-20 上午 · 序号 6</p>
+                  <p style="margin-top:6px;font-size:11px;color:#8b97a5">client_token 已生成（本次意图唯一）</p>
+                  <div class="acts"><div class="m-btn gray">取消</div><div class="m-btn">确认挂号</div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="spec">
+          <div class="lbl">用途</div>
+          <p>按科室 / 日期筛选号源并挂号。因服务端缺「患者可读的科室/医生列表」，<b>建议从分诊结果进入</b>（那里才有科室名/医生名）。</p>
+          <div class="lbl">关键交互（对应左侧圆点）</div>
+          <ul>
+            <li><b>①筛选栏</b>：<span class="mono">GET /schedules</span> 不含医生/科室名，且<b>不做未来过滤</b> —— 客户端必须自己按 <span class="mono">work_date</span> 过滤历史排班（注意服务端"今天"用 UTC）。</li>
+            <li><b>②号源列表项</b>：<span class="mono">remain_num = 0</span> 的行也会返回，客户端自行显示「已约满」并置灰；<span class="mono">enabled</span> 在列表里恒 true。</li>
+            <li><b>③确认弹窗（幂等键）</b>：<span class="mono">client_token</span> = 幂等键，<b>点一次生成一次、失败重试复用同一个值、换号源必须换新 token</b>（复用只会回放原单）。首次成功 201、幂等回放 200；<b>409 SLOT_GONE → 刷新列表，不要自己重试</b>。</li>
+          </ul>
+          <div class="lbl">依赖接口</div>
+          <div class="chips"><span class="chip get">GET /api/v1/schedules</span><span class="chip get">GET /api/v1/schedules/:id</span><span class="chip post">POST /api/v1/appointments</span></div>
+          <div class="lbl">设计意图</div>
+          <p>挂号是<b>在线强一致</b>操作：<b>绝不进离线队列</b>（离线补发会造脏单）。扣号靠 MySQL 原子 UPDATE（受影响行数即判据）。</p>
+          <div class="cite"><b>依据：</b>《页面清单》§8.1 P-4 / §9 缺口 1–3、9；《FRONTEND-INTEGRATION》§5.12–§5.15 / §8.1 / §8.4 / §10.3–§10.4</div>
+        </div>
+      </div>
+
+      <!-- P5 我的预约 -->
+      <div class="duo" id="p5">
+        <div>
+          <div class="duo-head"><span class="pid">P-5</span><span class="nm">我的预约</span><span class="rt">pages/patient/Appointments</span><span class="pill d">MVP</span></div>
+          <div class="phone">
+            <div class="screen">
+              <div class="sbar"><span>9:41</span><span class="dots">●●●</span><span>100%</span></div>
+              <div class="navbar">我的预约</div>
+              <div class="body">
+                <div class="seg rel"><span class="pin">1</span><span class="s on">进行中</span><span class="s">含已取消</span></div>
+                <div class="banner warn rel"><span class="pin">2</span>号源归还异常，请联系人工处理</div>
+                <div class="m-item rel"><span class="pin">3</span>
+                  <div class="top"><span class="tt">呼吸内科 · 李医生</span><span class="m-tag">已挂号</span></div>
+                  <div class="mt">2026-11-20 上午 · 序号 6</div>
+                  <div class="bt" style="margin-top:2px"><span class="mt mono" style="font-size:11px">status: booked</span><span class="m-btn sm ghost">退号</span></div>
+                </div>
+                <div class="m-item">
+                  <div class="top"><span class="tt">骨科 · 张医生</span><span class="m-tag ok">已完成</span></div>
+                  <div class="mt">2026-11-12 上午 · 序号 3</div>
+                  <div class="bt" style="margin-top:2px"><span class="mt mono" style="font-size:11px">status: done</span><span class="m-btn sm gray">已就诊</span></div>
+                </div>
+                <div class="m-item">
+                  <div class="top"><span class="tt">皮肤科 · 陈医生</span><span class="m-tag danger">已取消</span></div>
+                  <div class="mt">2026-11-05 下午 · 序号 9</div>
+                </div>
+              </div>
+              <div class="tabbar">
+                <div class="tab"><span class="ic">✦</span>分诊</div>
+                <div class="tab"><span class="ic">💬</span>预问诊</div>
+                <div class="tab"><span class="ic">＋</span>约号</div>
+                <div class="tab on"><span class="ic">📋</span>我的预约</div>
+                <div class="tab"><span class="ic">👤</span>我的</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="spec">
+          <div class="lbl">用途</div>
+          <p>我的挂号列表 + 退号。列表按 <span class="mono">created_at DESC</span> 排序（但响应不含 <span class="mono">created_at</span>，客户端无法复现顺序）。</p>
+          <div class="lbl">关键交互（对应左侧圆点）</div>
+          <ul>
+            <li><b>①筛选</b>：<span class="mono">include_cancelled</span> 必须正好是字符串 <span class="mono">"true"</span> 才生效。</li>
+            <li><b>②告警条</b>：<span class="mono">slot_restored === false</span> 时展示 <span class="mono">warning</span>（提示联系人工，别让用户反复点退号）。</li>
+            <li><b>③退号</b>：<b>退号永远返回 200，成功与否必须看 <span class="mono">data.status === 'cancelled'</span></b>（不能只看 HTTP 码）。服务端无「这单能不能退」字段，用 <span class="mono">status === 'booked'</span> 粗略置灰 + 403/404 兜底。重复退同一单仍 200（幂等）。</li>
+          </ul>
+          <div class="lbl">依赖接口</div>
+          <div class="chips"><span class="chip get">GET /api/v1/appointments</span><span class="chip post">POST /api/v1/appointments/:id/cancel</span></div>
+          <div class="lbl">设计意图</div>
+          <p>退号把 <span class="mono">client_token</span> 置 NULL（键可复用），但本页<b>仍建议退后重挂换新 token</b>：退号终结了那次意图，重挂是新的一次。</p>
+          <div class="cite"><b>依据：</b>《页面清单》§8.1 P-5 / §9 缺口 12；《FRONTEND-INTEGRATION》§5.14 / §5.16 / §8.2–§8.3</div>
+        </div>
+      </div>
+
+      <!-- P6 我的 -->
+      <div class="duo" id="p6">
+        <div>
+          <div class="duo-head"><span class="pid">P-6</span><span class="nm">我的（个人中心）</span><span class="rt">pages/patient/Profile</span><span class="pill d">MVP</span></div>
+          <div class="phone">
+            <div class="screen">
+              <div class="sbar"><span>9:41</span><span class="dots">●●●</span><span>100%</span></div>
+              <div class="navbar">我的</div>
+              <div class="body">
+                <div class="m-card rel" style="display:flex;gap:12px;align-items:center"><span class="pin">1</span>
+                  <div class="avatar">张</div>
+                  <div>
+                    <div style="font-weight:800;font-size:15px">张三</div>
+                    <div style="font-size:11.5px;color:#7b8694">138****6021 · <span class="m-tag" style="font-size:10px">patient</span></div>
+                  </div>
+                </div>
+                <div class="entry rel"><span class="pin">2</span><div class="l"><span>📋</span>我的预约</div><span class="chev">›</span></div>
+                <div class="entry"><div class="l"><span>📄</span>就诊记录</div><span class="chev">›</span></div>
+                <div class="entry"><div class="l"><span>💻</span>设备管理</div><span class="chev">›</span></div>
+                <div class="entry"><div class="l"><span>ℹ️</span>关于</div><span class="chev">›</span></div>
+                <div style="flex:1"></div>
+                <div class="m-btn ghost rel"><span class="pin">3</span>退出登录</div>
+              </div>
+              <div class="tabbar">
+                <div class="tab"><span class="ic">✦</span>分诊</div>
+                <div class="tab"><span class="ic">💬</span>预问诊</div>
+                <div class="tab"><span class="ic">＋</span>约号</div>
+                <div class="tab"><span class="ic">📋</span>我的预约</div>
+                <div class="tab on"><span class="ic">👤</span>我的</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="spec">
+          <div class="lbl">用途</div>
+          <p>身份展示 + 各入口聚合 + 登出。</p>
+          <div class="lbl">关键交互（对应左侧圆点）</div>
+          <ul>
+            <li><b>①用户卡片</b>：<b>判角色只看 <span class="mono">role</span></b>；<span class="mono">patient_id</span> 不能用来判"是不是患者"（医生登录时它等于 <span class="mono">doctor.id</span>，管理员时为 0）。</li>
+            <li><b>②功能入口</b>：就诊记录入口依赖 <span class="mono">GET /medical-records</span>；无患者自助注册、无改密入口（服务端无此端点，账号由院内前台建）。</li>
+            <li><b>③登出</b>：<span class="mono">POST /auth/logout</span>（当前令牌）/ <span class="mono">logout-all</span>（本人全部，<span class="mono">revoked</span> 含当前这条）。令牌无效时服务端<b>不会假装成功</b>（401）。</li>
+          </ul>
+          <div class="lbl">依赖接口</div>
+          <div class="chips"><span class="chip get">GET /api/v1/auth/me</span><span class="chip post">POST /api/v1/auth/logout</span><span class="chip post">POST /api/v1/auth/logout-all</span><span class="chip get">GET /api/v1/medical-records</span></div>
+          <div class="lbl">设计意图</div>
+          <p>登录后按 <span class="mono">role</span> 分流：非 patient 提示「本 App 仅面向患者」并登出。401 统一拦截器清 token → 回登录页（不在每页各写一次）。</p>
+          <div class="cite"><b>依据：</b>《页面清单》§8.1 P-6；《FRONTEND-INTEGRATION》§4.2 / §4.3 / §10.5</div>
+        </div>
+      </div>
+
+      <!-- P7/8 就诊记录 -->
+      <div class="duo" id="p78">
+        <div>
+          <div class="duo-head"><span class="pid">P-7/8</span><span class="nm">就诊记录 · 列表 / 详情</span><span class="rt">…/MedicalRecords(Detail)</span><span class="pill w">P1</span></div>
+          <div class="phone">
+            <div class="screen">
+              <div class="sbar"><span>9:41</span><span class="dots">●●●</span><span>100%</span></div>
+              <div class="navbar"><span class="back">‹</span>就诊记录</div>
+              <div class="body">
+                <div class="m-sec">列表（不含正文，只有进度/时间）</div>
+                <div class="m-item rel"><span class="pin">1</span>
+                  <div class="top"><span class="tt">2026-11-12 · 骨科</span><span class="m-tag ok">已锁定</span></div>
+                  <div class="mt">已填 7/7 段 · 2026-11-12 更新</div>
+                </div>
+                <div class="m-item">
+                  <div class="top"><span class="tt">2026-11-05 · 皮肤科</span><span class="m-tag gray">草稿</span></div>
+                  <div class="mt">已填 2/7 段 · 尚未提交</div>
+                </div>
+                <div class="m-sec">详情（七段正文）</div>
+                <div class="m-item rel"><span class="pin">2</span>
+                  <div class="mt" style="font-weight:700;color:#16202e">主诉</div>
+                  <div class="mt">咳嗽三天，有黄痰</div>
+                </div>
+                <div class="m-item"><div class="mt" style="font-weight:700;color:#16202e">现病史</div><div class="mt">三天前受凉后出现…</div></div>
+                <div class="m-item"><div class="mt" style="font-weight:700;color:#16202e">诊断 <span class="m-tag danger" style="font-size:9.5px">必填</span></div><div class="mt">急性支气管炎</div></div>
+                <div class="m-item" style="opacity:.5"><div class="mt" style="font-weight:700;color:#16202e">处理意见</div><div class="mt">—</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="spec">
+          <div class="lbl">用途</div>
+          <p>列表看进度，详情看七段正文（主诉 / 现病史 / 既往史 / 过敏史 / 体格检查 / 诊断 / 处理意见）。</p>
+          <div class="lbl">关键交互（对应左侧圆点）</div>
+          <ul>
+            <li><b>①列表项</b>：<span class="mono">GET /medical-records</span> 的列表<b>不含正文</b>（无 sections），只有进度与时间。</li>
+            <li><b>②七段详情</b>：<b>草稿未锁定一律 404 <span class="mono">EMR_NOT_FOUND</span></b> —— 文案应是「病历尚未提交，暂不可查看」而不是「不存在」（服务端刻意让"不存在"与"未锁定"不可区分）。无单查挂号接口，详情参数从列表带入。</li>
+          </ul>
+          <div class="lbl">依赖接口</div>
+          <div class="chips"><span class="chip get">GET /api/v1/medical-records</span><span class="chip get">GET /api/v1/medical-records/:appointmentId</span></div>
+          <div class="lbl">设计意图</div>
+          <p>患者只能读<b>自己的</b>档案（SQL 层带 <span class="mono">patient_id</span> 过滤）；<span class="mono">patient_id</span> 刻意不脱敏，因为消费方就是数据主体本人。</p>
+          <div class="cite"><b>依据：</b>《页面清单》§8.1 P-7/P-8；《FRONTEND-INTEGRATION》§5.17–§5.18 / §14.3</div>
+        </div>
+      </div>
+
+      <!-- P9 设备会话 -->
+      <div class="duo" id="p9">
+        <div>
+          <div class="duo-head"><span class="pid">P-9</span><span class="nm">设备会话管理</span><span class="rt">pages/patient/Sessions</span><span class="pill n">P2</span></div>
+          <div class="phone">
+            <div class="screen">
+              <div class="sbar"><span>9:41</span><span class="dots">●●●</span><span>100%</span></div>
+              <div class="navbar"><span class="back">‹</span>设备管理</div>
+              <div class="body">
+                <div class="m-item rel"><span class="pin">1</span>
+                  <div class="top"><span class="tt">Mate 60 <span class="m-tag" style="font-size:10px">本机</span></span><span class="m-btn sm ghost">踢出</span></div>
+                  <div class="mt">最近活跃 2 分钟前 · 2026-11-20 到期</div>
+                </div>
+                <div class="m-item">
+                  <div class="top"><span class="tt">未知设备</span><span class="m-btn sm ghost">踢出</span></div>
+                  <div class="mt">device_id 为空，无法按设备踢</div>
+                </div>
+                <div style="flex:1"></div>
+                <div class="m-btn ghost rel"><span class="pin">2</span>退出全部设备</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="spec">
+          <div class="lbl">用途</div>
+          <p>查看 / 踢除本账号的设备会话。</p>
+          <div class="lbl">关键交互（对应左侧圆点）</div>
+          <ul>
+            <li><b>①会话项</b>：<b>绝不返回 token 明文</b>；<span class="mono">device_id</span> 为空的会话<b>无法</b>按设备踢（只能本地忽略或走 logout-all）。</li>
+            <li><b>②登出全部</b>：<span class="mono">logout-all</span>；<span class="mono">revoke</span> 的 <span class="mono">device_id</span> 传空串 → 400。</li>
+          </ul>
+          <div class="lbl">依赖接口</div>
+          <div class="chips"><span class="chip get">GET /api/v1/auth/sessions</span><span class="chip post">POST /api/v1/auth/sessions/revoke</span><span class="chip post">POST /api/v1/auth/logout-all</span></div>
+          <div class="lbl">设计意图</div>
+          <p>会话是有状态的（落库、可吊销）；客户端<b>不能</b>只凭本地 <span class="mono">expires_at</span> 判断令牌有效。</p>
+          <div class="cite"><b>依据：</b>《页面清单》§8.1 P-9；《FRONTEND-INTEGRATION》§4.3 / §3.4</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 医生端 ================= -->
+    <section id="d1">
+      <h2 class="sec"><span class="idx">医生端</span>鸿蒙 App · 接诊与病历</h2>
+      <p class="sec-sub">医生端 2 页为 <b>P1</b>。核心不变式：<span class="mono">doctor_id</span> <b>只从令牌派生</b>；<b>完成就诊前必须已提交锁定病历</b>。</p>
+
+      <div class="duo">
+        <div>
+          <div class="duo-head"><span class="pid">D-1</span><span class="nm">接诊队列</span><span class="rt">pages/doctor/VisitQueue</span><span class="pill w">P1</span></div>
+          <div class="phone">
+            <div class="screen">
+              <div class="sbar"><span>9:41</span><span class="dots">●●●</span><span>100%</span></div>
+              <div class="navbar">接诊队列（李医生）</div>
+              <div class="body">
+                <div class="seg rel"><span class="pin">1</span><span class="s on">今日</span><span class="s">上午</span><span class="s">下午</span></div>
+                <div class="m-item rel"><span class="pin">2</span>
+                  <div class="top"><span class="tt">序号 6 · 患者 #7</span><span class="m-tag">待就诊</span></div>
+                  <div class="mt">病历进度：已填 7/7 · 已锁定</div>
+                  <div class="bt" style="margin-top:2px"><span class="mt">2026-11-20 AM</span><span class="m-btn sm">开始接诊</span></div>
+                </div>
+                <div class="m-item">
+                  <div class="top"><span class="tt">序号 7 · 患者 #12</span><span class="m-tag warn">接诊中</span></div>
+                  <div class="mt">病历进度：已填 3/7 · 草稿</div>
+                  <div class="bt" style="margin-top:2px"><span class="mt">2026-11-20 AM</span><span class="m-btn sm ghost">完成就诊</span></div>
+                </div>
+                <div class="m-item" style="opacity:.6">
+                  <div class="top"><span class="tt">序号 8 · 患者 #15</span><span class="m-tag gray">已完成</span></div>
+                  <div class="mt">病历进度：已填 7/7 · 已锁定</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="spec">
+          <div class="lbl">用途</div>
+          <p>查看本人挂号队列并流转状态（开始 / 完成 / 爽约）。</p>
+          <div class="lbl">关键交互（对应左侧圆点）</div>
+          <ul>
+            <li><b>①筛选</b>：<span class="mono">doctor_id</span> 只从令牌派生（<span class="mono">doctorId &gt; 0</span>），前端不可传。</li>
+            <li><b>②队列项 + 操作</b>：状态机 <span class="mono">booked → visiting → done</span>（或 <span class="mono">no_show</span>）。<b>「完成就诊」前必须已提交锁定病历</b>，否则 409 <span class="mono">EMR_NOT_LOCKED</span>；状态冲突 409 <span class="mono">VISIT_BAD_STATE</span>。列表项还带 <span class="mono">record_status</span>（无病历时为展示值 <span class="mono">"none"</span>）。</li>
+          </ul>
+          <div class="lbl">依赖接口</div>
+          <div class="chips"><span class="chip get">GET /api/v1/doctor/visits</span><span class="chip post">POST /api/v1/doctor/visits/:id/start</span><span class="chip post">…/finish</span><span class="chip post">…/no-show</span></div>
+          <div class="lbl">设计意图</div>
+          <p>病历是「完成就诊」的前置条件，把「先写病历再结束」做成服务端强约束，而不是靠医生自觉。</p>
+          <div class="cite"><b>依据：</b>《页面清单》§8.2 D-1；《FRONTEND-INTEGRATION》§6.2 / §14.3</div>
+        </div>
+      </div>
+
+      <div class="duo" id="d2">
+        <div>
+          <div class="duo-head"><span class="pid">D-2</span><span class="nm">电子病历编辑（七段式）</span><span class="rt">pages/doctor/MedicalRecord</span><span class="pill w">P1</span></div>
+          <div class="phone">
+            <div class="screen">
+              <div class="sbar"><span>9:41</span><span class="dots">●●●</span><span>100%</span></div>
+              <div class="navbar"><span class="back">‹</span>电子病历 · 序号 6</div>
+              <div class="body">
+                <div class="banner info rel"><span class="pin">1</span>可由预问诊单预填（use_intake_session，仅首次）</div>
+                <div class="rel"><span class="pin">2</span>
+                  <div class="m-label">主诉 <span style="float:right;color:#b0b8c4">0/2000</span></div>
+                  <div class="m-input filled">咳嗽三天，有黄痰</div>
+                </div>
+                <div>
+                  <div class="m-label">现病史 <span style="float:right;color:#b0b8c4">0/4000</span></div>
+                  <div class="m-input filled">三天前受凉后…</div>
+                </div>
+                <div>
+                  <div class="m-label">既往史 / 过敏史 / 体格检查</div>
+                  <div class="m-input">…</div>
+                </div>
+                <div class="rel"><span class="pin">3</span>
+                  <div class="m-label">诊断 <span class="m-tag danger" style="font-size:9.5px">必填锁定</span></div>
+                  <div class="m-input filled">急性支气管炎</div>
+                </div>
+                <div>
+                  <div class="m-label">处理意见 <span class="m-tag danger" style="font-size:9.5px">必填锁定</span></div>
+                  <div class="m-input filled">止咳化痰，三天后复诊</div>
+                </div>
+                <div style="flex:1"></div>
+                <div class="m-row rel"><span class="pin">4</span>
+                  <div class="m-btn ghost" style="flex:1">保存草稿</div>
+                  <div class="m-btn" style="flex:1">提交锁定</div>
+                </div>
+                <div class="banner warn">锁定后不可修改（409 EMR_LOCKED），仅管理员可 reopen</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="spec">
+          <div class="lbl">用途</div>
+          <p>七段式病历：草稿保存 + 提交锁定；锁定后只读。</p>
+          <div class="lbl">关键交互（对应左侧圆点）</div>
+          <ul>
+            <li><b>①预填</b>：可选 <span class="mono">use_intake_session</span> 用预问诊单预填（<b>仅首次</b>）。</li>
+            <li><b>②分段表单</b>：每段带字符上限（主诉/现病史/既往史/过敏史/体格检查/诊断/处理意见 = 2000/4000/2000/2000/2000/2000/4000），超长 400。</li>
+            <li><b>③必填段</b>：仅 <span class="mono">diagnosis</span> / <span class="mono">treatment</span> 是 <span class="mono">required_to_lock</span>；未填时 <span class="mono">missing_required</span> 非空 → 不可锁定。</li>
+            <li><b>④保存 / 锁定</b>：病历"作者"只能是医生；<b>锁定后不可改</b>（409 <span class="mono">EMR_LOCKED</span>，<b>reopen 是管理员动作，医生也 403</b>）。</li>
+          </ul>
+          <div class="lbl">依赖接口</div>
+          <div class="chips"><span class="chip get">GET /api/v1/doctor/visits/:id/record</span><span class="chip">PUT …/record</span><span class="chip post">POST …/record/lock</span></div>
+          <div class="lbl">设计意图</div>
+          <p>病历是医疗数据：<b>提交即锁定</b>，把"改病历"收敛为管理员动作，保证可追溯。</p>
+          <div class="cite"><b>依据：</b>《页面清单》§8.2 D-2；《FRONTEND-INTEGRATION》§5.18 / §6.2 / §14.3</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 管理端 ================= -->
+    <section id="a1">
+      <h2 class="sec"><span class="idx">管理端</span>Web · 另立一期（技术栈待定）</h2>
+      <p class="sec-sub">服务端接口已全部就绪；技术栈留给写前端的一方决定，本页按 Web 桌面布局展示（参照既有 <span class="mono">qingzhou/admin-web</span>）。管理端硬红线：<b>只出聚合、绝不出明细</b>。</p>
+
+      <div class="duo wide">
+        <div>
+          <div class="duo-head"><span class="pid">A-1</span><span class="nm">运营看板</span><span class="rt">pages/admin/Dashboard</span><span class="pill w">P1</span></div>
+          <div class="browser">
+            <div class="bar"><i></i><i></i><i></i><span class="url">https://admin.smart-hospital.local/dashboard</span></div>
+            <div class="adm">
+              <div class="side">
+                <div class="bd">智慧医院 · 管理端</div>
+                <a class="on">运营看板</a><a>科室管理</a><a>医生管理</a><a>排班/号源</a><a>账号管理</a><a>AI 能力中心</a><a>知识库</a>
+              </div>
+              <div class="content">
+                <div class="ptitle">运营看板</div>
+                <div class="statgrid rel"><span class="pin">1</span>
+                  <div class="statcard"><div class="v">1,284</div><div class="l">累计挂号</div></div>
+                  <div class="statcard"><div class="v">86%</div><div class="l">号源使用率</div></div>
+                  <div class="statcard"><div class="v">73%</div><div class="l">分诊命中率</div></div>
+                  <div class="statcard"><div class="v">91%</div><div class="l">预问诊完成率</div></div>
+                </div>
+                <div class="rel" style="background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px"><span class="pin">2</span>
+                  <div style="font-size:12.5px;font-weight:700;margin-bottom:6px">近 7 日挂号趋势</div>
+                  <div class="barchart">
+                    <div class="b" style="height:46%"><span>周一</span></div>
+                    <div class="b" style="height:62%"><span>周二</span></div>
+                    <div class="b" style="height:38%"><span>周三</span></div>
+                    <div class="b" style="height:78%"><span>周四</span></div>
+                    <div class="b" style="height:88%"><span>周五</span></div>
+                    <div class="b" style="height:34%"><span>周六</span></div>
+                    <div class="b" style="height:22%"><span>周日</span></div>
+                  </div>
+                  <div style="height:18px"></div>
+                </div>
+                <div class="banner info" style="margin-top:14px">响应不含任何 <span class="mono">patient_id / doctor_id / phone / name</span> —— 只出聚合计数</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="spec">
+          <div class="lbl">用途</div>
+          <p>关键指标可视化：科室 / 挂号趋势 / 号源使用率 / 分诊命中 / 预问诊完成率 / 病历进度 / AI 配置概览。</p>
+          <div class="lbl">关键交互</div>
+          <ul>
+            <li><b>①指标卡</b>：全部来自 <span class="mono">GET /admin/dashboard</span> 的聚合值。</li>
+            <li><b>②趋势图</b>：<b>只出聚合、绝不出明细</b> —— 响应里没有任何患者标识字段。</li>
+          </ul>
+          <div class="lbl">依赖接口</div>
+          <div class="chips"><span class="chip get">GET /api/v1/admin/dashboard</span></div>
+          <div class="lbl">设计意图</div>
+          <p>隐私红线写在服务端（<span class="mono">dashboard.cj</span>），前端不应试图请求明细字段。</p>
+          <div class="cite"><b>依据：</b>《页面清单》§8.3 A-1；《FRONTEND-INTEGRATION》§6.1</div>
+        </div>
+      </div>
+
+      <div class="duo wide" id="a2">
+        <div>
+          <div class="duo-head"><span class="pid">A-2</span><span class="nm">科室管理（基础数据范式代表）</span><span class="rt">pages/admin/Departments</span><span class="pill w">P1</span></div>
+          <div class="browser">
+            <div class="bar"><i></i><i></i><i></i><span class="url">https://admin.smart-hospital.local/departments</span></div>
+            <div class="adm">
+              <div class="side">
+                <div class="bd">智慧医院 · 管理端</div>
+                <a>运营看板</a><a class="on">科室管理</a><a>医生管理</a><a>排班/号源</a><a>账号管理</a><a>AI 能力中心</a><a>知识库</a>
+              </div>
+              <div class="content">
+                <div class="ptitle">科室管理</div>
+                <div class="rel" style="background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:14px"><span class="pin">1</span>
+                  <div style="display:flex;gap:9px;flex-wrap:wrap">
+                    <input class="m-input" style="flex:1;min-width:120px" value="呼吸内科">
+                    <input class="m-input" style="flex:1;min-width:120px" value="RESP">
+                    <input class="m-input" style="flex:1;min-width:120px" value="门诊楼 3F">
+                    <span class="abtn" style="align-self:center">新增科室</span>
+                  </div>
+                </div>
+                <table class="atable rel"><span class="pin">2</span>
+                  <tr><th>ID</th><th>名称</th><th>编码</th><th>位置</th><th>状态</th><th>操作</th></tr>
+                  <tr><td>3</td><td>呼吸内科</td><td class="mono">RESP</td><td>门诊楼 3F</td><td><span class="pill o">启用</span></td><td><span class="abtn ghost">编辑</span> <span class="abtn danger">删除</span></td></tr>
+                  <tr><td>4</td><td>骨科</td><td class="mono">ORTH</td><td>门诊楼 2F</td><td><span class="pill o">启用</span></td><td><span class="abtn ghost">编辑</span> <span class="abtn danger">删除</span></td></tr>
+                  <tr><td>5</td><td>皮肤科</td><td class="mono">DERM</td><td>门诊楼 4F</td><td><span class="pill n">停用</span></td><td><span class="abtn ghost">编辑</span> <span class="abtn danger">删除</span></td></tr>
+                </table>
+                <div class="banner err rel" style="margin-top:12px"><span class="pin">3</span>该记录正被引用，不能删除（409 BASE_IN_USE）</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="spec">
+          <div class="lbl">用途</div>
+          <p>科室 CRUD。A-3 医生管理 / A-4 排班 / A-5 账号 / A-7 知识库均沿用<b>同一「列表 + 表单 + 确认」范式</b>，故此处作为基础数据范式代表。</p>
+          <div class="lbl">关键交互</div>
+          <ul>
+            <li><b>①新增表单</b>：<span class="mono">name</span> / <span class="mono">code</span> 均唯一 —— 同名 409 <span class="mono">BASE_NAME_TAKEN</span>、同码 409 <span class="mono">BASE_CODE_TAKEN</span>。</li>
+            <li><b>②列表</b>：需 <span class="mono">manage_base_data</span> 权限；软删走 <span class="mono">force</span>。</li>
+            <li><b>③删除确认</b>：有引用不可删（409 <span class="mono">BASE_IN_USE</span>）。</li>
+          </ul>
+          <div class="lbl">依赖接口</div>
+          <div class="chips"><span class="chip get">GET /api/v1/admin/departments</span><span class="chip post">POST …/departments</span><span class="chip">PUT/DELETE /…/:id</span></div>
+          <div class="lbl">设计意图</div>
+          <p>科室 <span class="mono">name</span>/<span class="mono">code</span> 唯一 —— 分诊按科室名查，重名会分裂口径，故在基础数据层强制唯一。</p>
+          <div class="cite"><b>依据：</b>《页面清单》§8.3 A-2；《FRONTEND-INTEGRATION》§6.1；《前端开发梳理与页面清单》§6 数据模型</div>
+        </div>
+      </div>
+
+      <div class="duo wide" id="a6">
+        <div>
+          <div class="duo-head"><span class="pid">A-6</span><span class="nm">AI 能力中心</span><span class="rt">pages/admin/AiCenter</span><span class="pill n">P2</span></div>
+          <div class="browser">
+            <div class="bar"><i></i><i></i><i></i><span class="url">https://admin.smart-hospital.local/ai</span></div>
+            <div class="adm">
+              <div class="side">
+                <div class="bd">智慧医院 · 管理端</div>
+                <a>运营看板</a><a>科室管理</a><a>医生管理</a><a>排班/号源</a><a>账号管理</a><a class="on">AI 能力中心</a><a>知识库</a>
+              </div>
+              <div class="content">
+                <div class="ptitle">AI 能力中心</div>
+                <div class="tabs rel"><span class="pin">1</span><span class="t on">模型配置</span><span class="t">Prompt 模板</span><span class="t">工具开关</span></div>
+                <table class="atable rel"><span class="pin">2</span>
+                  <tr><th>配置键</th><th>值</th><th>操作</th></tr>
+                  <tr><td class="mono">ai.endpoint</td><td class="mono">https://api.example.com/v1</td><td><span class="abtn ghost">编辑</span></td></tr>
+                  <tr><td class="mono">ai.model</td><td class="mono">deepseek-chat</td><td><span class="abtn ghost">编辑</span></td></tr>
+                  <tr><td class="mono">ai.api_key</td><td><span class="pill i">已设置（引用类型：env）</span></td><td><span class="abtn ghost">编辑</span></td></tr>
+                </table>
+                <div class="banner info" style="margin-top:12px">改配置零重启：写库 → 失效缓存；密钥<b>只存引用</b>（env: / file:），裸密钥被机制性拒绝，回显一律脱敏</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="spec">
+          <div class="lbl">用途</div>
+          <p>模型配置 / Prompt 模板 / 工具开关。</p>
+          <div class="lbl">关键交互</div>
+          <ul>
+            <li><b>①Tab</b>：三块配置分页（settings / prompts / tools）。</li>
+            <li><b>②KV 表单</b>：<b>密钥绝不回显</b>（只回"是否已设置 + 引用类型"）；Prompt 缺占位符即拒；<span class="mono">enabled</span> 只接受 JSON 布尔。</li>
+          </ul>
+          <div class="lbl">依赖接口</div>
+          <div class="chips"><span class="chip">/api/v1/admin/ai/settings</span><span class="chip">/api/v1/admin/ai/prompts</span><span class="chip">/api/v1/admin/ai/tools</span></div>
+          <div class="lbl">设计意图</div>
+          <p>把 AI 配置从「命令行参数」改为「数据库驱动」并保证<b>密钥不落库</b>（安全红线机制化）。</p>
+          <div class="cite"><b>依据：</b>《页面清单》§8.3 A-6；《FRONTEND-INTEGRATION》§6.1；《P3-HANDOFF》</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 红线 ================= -->
+    <section id="redlines">
+      <h2 class="sec"><span class="idx">!</span>关键交互红线</h2>
+      <p class="sec-sub">这三条是「写错了就是安全事故」的约定，必须在编码前对齐。</p>
+      <div class="grid g3">
+        <div class="redline">
+          <div class="h">① 分诊 red_flag</div>
+          <p><span class="mono">red_flag=true</span> 时 <span class="mono">options</span> 必空 ⇒ <b>只引导急诊/人工，绝不展示或自拼号源</b>。服务端不返回命中的关键词，前端不得复述。</p>
+        </div>
+        <div class="redline">
+          <div class="h">② 挂号 client_token 幂等</div>
+          <p>点一次生成一次、<b>重试复用同一个值</b>、<b>换号源换新 token</b>。409 <span class="mono">SLOT_GONE</span> → 刷新列表，不重试。</p>
+        </div>
+        <div class="redline">
+          <div class="h">③ 在线直连，不进离线队列</div>
+          <p>挂号与 AI 调用必须在线直连 + 强一致确认；退号成功必须看 <span class="mono">data.status === 'cancelled'</span>。</p>
+        </div>
+      </div>
+      <p class="note">依据：《前端开发梳理与页面清单》§10 结论 3；《FRONTEND-INTEGRATION》§8 / §10.2 / §10.3</p>
+    </section>
+
+    <!-- ================= 依据索引 ================= -->
+    <section id="cite">
+      <h2 class="sec"><span class="idx">§</span>文档依据索引</h2>
+      <p class="sec-sub">本预览的每一条结论都来自下列文档；与其冲突时，以 <span class="mono">server/src/*.cj</span> 源码为准。</p>
+      <table class="tbl">
+        <tr><th>文档</th><th>在本预览中支撑的内容</th></tr>
+        <tr><td><b>docs/前端开发梳理与页面清单.md</b></td><td>技术栈、目录结构、路由与状态管理、数据模型、接口约定、<b>18 页页面清单与优先级</b>、服务端缺口 14 条</td></tr>
+        <tr><td><b>docs/FRONTEND-INTEGRATION.md</b></td><td>信封与三种失败形状、鉴权全流程、18 个端点逐字段、SSE 专章、挂号幂等与退号语义、错误码总表、枚举值</td></tr>
+        <tr><td><b>docs/分工.md</b></td><td>模块依赖单向约束、公共组件库划分、状态管理 V2、样式规范（颜色/vp/8vp/16fp）、构建与签名、3 人分工</td></tr>
+        <tr><td><b>smart-hospital-project-brief.md</b></td><td>项目定位、已决事项 Q1–Q6、技术路线、目标架构、硬骨头（§5）</td></tr>
+        <tr><td><b>docs/Q6-合规决策记录.md</b></td><td>模型出站合规口径（分诊/预问诊的敏感信息处理）</td></tr>
+        <tr><td><b>server/third_party/qingzhou/admin-web/</b></td><td>管理端参照实现（Vue 3 + Vite 工程结构、API 封装、路由守卫）</td></tr>
+      </table>
+      <div class="footer">
+        <b>说明</b>：本页是<b>框架效果预览（走查稿）</b>，用 HTML 近似呈现鸿蒙 ArkUI 与管理端 Web 的布局骨架与交互区，<b>不是</b>可运行的鸿蒙工程，也不代表最终视觉稿。<br>
+        手机端骨架（状态栏 + 标题栏 + 滚动内容 + 底部 Tab）与各页字段命名均对齐服务端契约；正式实现请以 ArkTS + ArkUI 重写，并按《分工.md》C1 的设计规范替换视觉层。
+      </div>
+    </section>
+
+  </div>
+  </main>
+</div>
+
+<script>
+// 侧栏滚动高亮
+(function(){
+  var links = Array.prototype.slice.call(document.querySelectorAll('.sidenav a'));
+  var targets = links.map(function(a){ return document.querySelector(a.getAttribute('href')); });
+  function onScroll(){
+    var y = window.scrollY + 90;
+    var idx = 0;
+    for (var i=0;i<targets.length;i++){
+      if (targets[i] && targets[i].offsetTop <= y) idx = i;
+    }
+    links.forEach(function(a,i){ a.classList.toggle('on', i===idx); });
+  }
+  window.addEventListener('scroll', onScroll, {passive:true});
+  onScroll();
+})();
+</script>
+</body>
+</html>
