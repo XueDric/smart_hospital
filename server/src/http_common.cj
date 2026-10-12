@@ -114,6 +114,18 @@ public func apiErrorSpec(code: String): (Int64, String) {
     if (code == "SLOT_NOT_RESTORED") {
         return (409, "已退号，但号源归还异常，请联系人工处理")
     }
+    /*
+     * ★ 2026-10-12（代码检查报告第 1 条）：退号必须走状态机，只有 `booked` 能退。
+     *
+     * 为什么是 **409** 而不是 404：这张单**确实存在**，只是当前状态不允许这个操作 ——
+     *   用 404 会把"已就诊完成，不能退号"说成"挂号单不存在"，
+     *   患者拿着这句提示去问谁都查不出原因（报告里点名的误报就在这里）。
+     * 文案刻意**不含状态名**：具体状态由 handler 用 `visitStatusLabel` 拼进消息
+     *   （这一层只给"说不出状态时"的兜底文案）。
+     */
+    if (code == "APPOINTMENT_NOT_CANCELLABLE") {
+        return (409, "该挂号单当前状态不允许退号（只有「已挂号」可以退）")
+    }
     if (code == "ROUTE_NOT_FOUND") {
         return (404, "接口不存在")
     }

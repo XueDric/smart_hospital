@@ -763,8 +763,19 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | --- | --- | --- |
 | 404 | `APPOINTMENT_NOT_FOUND` | 无此单 |
 | 403 | `FORBIDDEN_ROLE` | 退别人的单。服务端**明知**这里用 403 会泄露"该单存在"仍选 403，理由是让患者能自我诊断（`http_app.cj:1483-1488`） |
+| 409 | `APPOINTMENT_NOT_CANCELLABLE` | ★ **2026-10-12 新增**：单存在、也是自己的，但当前状态**不允许退号**。`message` 里带中文状态名，如 `该挂号单当前状态为「接诊中」，不能退号` |
 | 400 | `VALIDATION_FAILED` | `:id` 非正整数 |
 
+> ★ **只有 `status = 'booked'` 的单能退**（2026-10-12 修，见 `docs/CODE-REVIEW-2026-10-12.md` 第 1 条）。
+> `visiting`（接诊中）/ `done`（已完成）/ `no_show`（爽约）/ `cancelled` 都退不了：
+> 前三个返回 **409 `APPOINTMENT_NOT_CANCELLABLE`**（`cancelled` 仍走下面的幂等 200）。
+> 口径唯一来自状态机的显式流转表（`domain_emr.cj` 的 `visitTransitionAllowed`），
+> 且**原子 UPDATE 带 `WHERE status = 'booked'`** —— 所以医生点"开始接诊"与患者点"退号"
+> 并发时，两边只会有一个成功，不会出现"状态被回退/号源凭空多出"。
+>
+> ⇒ 客户端提示建议直接用服务端 `message`（它已经带状态名），不必自己再查一次 `status`
+>   去猜为什么不能退；若要自己置灰按钮，判据是 `status === 'booked'`（见 §9 缺口 12）。
+>
 > * **重复退同一单仍是 200**（幂等）：状态已是 `cancelled` 时不再动号源（`domain_booking.cj:757-772`）。
 > * 若上一次 `slot_restored = false`，重试**仍会如实**返回 `slot_restored:false` + `warning`
 >   （告警不会被重试抹掉，`domain_booking.cj:757-772`）。
@@ -1136,8 +1147,13 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 
 ### 8.2 退号
 
-* `POST /api/v1/appointments/:id/cancel` **永远返回 200**（单存在且权限通过时）：
+* `POST /api/v1/appointments/:id/cancel` 在**单是自己的、且状态是 `booked`** 时返回 **200**：
   成功与否**必须看返回体的 `status === 'cancelled'`**。
+* ★ **2026-10-12 起**：状态不是 `booked` 的单**退不了**，返回 **409 `APPOINTMENT_NOT_CANCELLABLE`**，
+  `message` 带中文状态名（如「当前状态为「已完成」，不能退号」）。
+  ⇒ 客户端**必须处理这个 409**（旧代码只判 200/404 会把这类拒绝显示成"未知错误"）；
+  按钮置灰判据用 `status === 'booked'`，但**仍要兜底 409** —— 列表是拉到那一刻的快照，
+  医生随时可能点"开始接诊"（见 §9 缺口 12）。
 * `slot_restored: false` 时要展示 `warning`（`"号源归还异常，请联系人工处理"`）。
 * 重复退同一单仍是 200（幂等），且**不会抹掉**上一次的 `slot_restored:false` 告警
   （`domain_booking.cj:757-772`）。
@@ -1185,7 +1201,7 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 | 9 | **排班不做"未来过滤"** | 「今日可约」会混入历史排班 | `domain_booking.cj:311-326` 无时间条件。⇒ 客户端必须自己按 `work_date` 过滤。**服务端的"今天"已改为 Asia/Shanghai**（§5.25，与北京时间一致） |
 | 10 | **没有按名搜索科室/医生** | 无法做搜索框 | 只能按 `department_id` 精确过滤，且需要先知道 id（而缺口 1 让前端拿不到 id 列表） |
 | 11 | ~~**没有消息 / 推送端点**~~ ✅ **公告已补齐 2026-10-12**（推送仍未做） | 消息中心 / 首页「医疗公告」 | 补了 `GET /api/v1/notices`（三端可读）+ 管理端 CRUD（§5.22/§5.23）。⚠ **到诊提醒这类主动推送仍没有** ⇒ 本地通知 + 本地保存的 `visit_date`/`period` |
-| 12 | **没有"这单还能不能退"的判定字段** | 退号按钮无法准确置灰 | 无 `can_cancel` 字段。`bookingJson` 里只有 `status`；服务端**不校验是否已过就诊时间**。⇒ 用 `status === 'booked'` 粗略判断，并对 403/404 做兜底提示 |
+| 12 | ~~**没有"这单还能不能退"的判定字段**~~ ✅ **服务端已强制校验 2026-10-12**（仍无 `can_cancel` 字段） | 退号按钮置灰 | 无 `can_cancel` 字段，`bookingJson` 里只有 `status`。**但现在服务端会拦**：非 `booked` 一律 409 `APPOINTMENT_NOT_CANCELLABLE`（§5.16/§8.2）。⇒ 置灰用 `status === 'booked'`，**并必须兜底 409**（列表快照会过期：医生随时可能点"开始接诊"） |
 | 13 | **分诊结果无法跳详情** | `options` 给了 `department_id`/`doctor_id`，但没有详情页可取（缺口 1/2） | ⇒ 分诊结果页**直接就地展示号源并允许挂号**，不做"科室详情"跳转 |
 | 14 | **没有 AI 流式分诊** | 分诊页不能做逐字输出 | 只有预问诊是 SSE；`POST /api/v1/triage` 是一次性 JSON（`http_app.cj:1157-1223` 无 stream 分支）。⇒ 分诊页用 loading 态即可 |
 
@@ -1392,6 +1408,7 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 | 404 | `SCHEDULE_NOT_FOUND` | 排班不存在或已停诊 | ✅ |
 | 409 | `SLOT_GONE` | 号源已被抢完，请选择其它排班 | ✅ |
 | 404 | `APPOINTMENT_NOT_FOUND` | 挂号单不存在 | ✅ |
+| 409 | `APPOINTMENT_NOT_CANCELLABLE` | 该挂号单当前状态不允许退号（只有「已挂号」可以退）—— **`message` 实际带中文状态名**，如「该挂号单当前状态为「接诊中」，不能退号」（2026-10-12 新增，§5.16/§8.2） | ✅ |
 | 404 | `PREVISIT_NOT_FOUND` | 预问诊会话不存在或已失效 | ✅ |
 | 404 | `EMR_NOT_FOUND` | 病历不存在或尚未提交 | ✅ |
 | 409 | `EMR_LOCKED` | 病历已提交锁定，不可修改（需管理员解锁） | ❌（医生端） |

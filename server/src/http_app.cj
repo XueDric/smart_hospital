@@ -1729,6 +1729,18 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
                     case None => throw apiError("APPOINTMENT_NOT_FOUND")
                 }
             case NotFound => throw apiError("APPOINTMENT_NOT_FOUND")
+            /*
+             * ★ 2026-10-12（代码检查报告第 1 条）：单**存在**，但当前状态不允许退号。
+             *
+             * ⚠ 与外层 `canCancel` 的 403 是两件事，不能合并：
+             *   403 = "这张单不是你的"（归属/角色问题，换个人登录就能退）；
+             *   409 = "这张单是你的，但它现在不能退"（业务状态问题，谁登录都一样）。
+             * 文案带上中文状态名（`visitStatusLabel`，与流转表同处维护）——
+             * 患者据此能分清该去就诊（接诊中）、还是这单已经结束了（已完成/已退号/爽约）。
+             */
+            case NotCancellable(st) =>
+                throw apiErrorMsg("APPOINTMENT_NOT_CANCELLABLE",
+                                  "该挂号单当前状态为「" + visitStatusLabel(st) + "」，不能退号")
         }
     })
 
