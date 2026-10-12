@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>智慧医院 · 前端预览</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!--
+    ====================================================================
+    【预览专用】顶部预览工具栏（含三端切换器）
+    此工具栏仅用于开发预览，实际软件中不存在——患者端/医生端/管理端
+    在生产环境是相互独立的入口，预览系统为了演示方便合并在同一页面。
+    ====================================================================
+  -->
+  <div class="preview-toolbar">
+    <span class="pt-title">智慧医院 · 前端预览<span class="pt-tag">预览专用</span></span>
+    <div class="role-switch">
+      <button data-role="patient" class="active">患者端（手机）</button>
+      <button data-role="doctor">医生端（手机）</button>
+      <button data-role="admin">管理端（桌面）</button>
+    </div>
+  </div>
+
+  <!-- 三端渲染舞台：患者/医生端渲染为手机壳，管理端渲染为桌面布局 -->
+  <div class="stage" id="stage"></div>
+
+  <script src="js/data.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
