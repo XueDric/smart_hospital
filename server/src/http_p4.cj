@@ -160,6 +160,47 @@ func emrPatchFromBody(ctx: Context): (HashMap<String, String>, String) {
 /* ===================== 路由注册 ===================== */
 
 /*
+ * ★ 2026-10-12：给病历 JSON 补"这次就诊的上下文"——
+ *   科室名 / 医生名 / 职称 / 就诊日 / 时段。
+ *
+ * 为什么必须补（患者端实测）：档案列表与详情此前只有 `doctor_id`，
+ * 患者看到的是「#930813 · 医生 #900003」，**看不出这是哪个科的哪一次就诊**；
+ * 而同一个 app 的挂号页却能显示「P4测试科3 · P4测试医生900003」。
+ * ⇒ 一份说自己"已提交锁定"的病历，患者却认不出是哪次看病 —— 这不可用。
+ *
+ * 数据来源：`medical_record` 表**只有** `appointment_id` / `doctor_id`，
+ *   没有 `department_id` / `visit_date` ⇒ 从挂号单取（那才是就诊事实的快照，
+ *   也与 `/appointments` 返回的是同一条记录，患者能对上）。
+ *
+ * ⚠ 这里**每条病历查一次挂号单**（`findAppointment` 走主键）。
+ *   已知代价：列表有 N 条就有 N 次主键查询。接受它的理由：
+ *   · 本接口是"某个患者自己的档案"，量级是个位数到几十条（不是全院扫描）；
+ *   · 主键查询很便宜，且**绝不能**用"把科室名拼进 SQL JOIN"随手改了
+ *     `domain_emr.cj` 的列映射（那正是本仓栽过的"列顺序只有一处定义"的坑）。
+ *   📌 若将来档案量真的变到几百条以上，正确做法是在 `domain_emr.cj` 里
+ *      **一处** JOIN `appointment`/`department`/`doctor`，而不是在 HTTP 层加缓存。
+ */
+func putVisitContext(o: JsonObject, m: MedicalRecord, booking: BookingRepo, names: NameIndex): Unit {
+    var depId: Int64 = 0
+    match (booking.findAppointment(m.appointmentId)) {
+        case Some(a) =>
+            depId = a.departmentId
+            o.put("department_id", JsonInt(a.departmentId))
+            o.put("visit_date", JsonString(a.visitDate))
+            o.put("period", JsonString(a.period))
+        case None =>
+            /*
+             * 挂号单不在（历史数据/被清理）⇒ **不写**这几个字段，而不是写 0/空串：
+             * 写 `department_id = 0` 会让客户端去查一个不存在的科室，
+             * 写空 `visit_date` 会显示成空白 —— 缺字段至少能被客户端识别为"未知"。
+             */
+            ()
+    }
+    /* 名称永远按**已知的 doctor_id** 补齐（病历表自己有 doctor_id，不依赖上面那次查询）。 */
+    names.putInto(o, depId, m.doctorId)
+}
+
+/*
  * 注册 P4 的全部端点。
  *
  * ⚠ `can(role, action)` 是**唯一**的权限判据；本文件里不出现任何
@@ -168,7 +209,8 @@ func emrPatchFromBody(ctx: Context): (HashMap<String, String>, String) {
 public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
                              booking: BookingRepo, emr: MedicalRecordRepo,
                              visit: VisitRepo, dash: DashboardRepo,
-                             aiSettings: AiSettingsRepo): Unit {
+                             aiSettings: AiSettingsRepo,
+                             dept: DepartmentRepo, doc: DoctorRepo): Unit {
 
     /* ========== 一、医生的接诊队列 ========== */
 
@@ -405,9 +447,13 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
         }
         let limit = parseInt64Or(ctx.queryParamOr("limit", "50"), 50)
         let rows = emr.listForPatient(p.patientId, if (limit > 0 && limit <= 200) { limit } else { 50 })
+        /* ★ 名称/就诊上下文：一次读全科室+医生（见 `nameIndexOf` 的 N+1 说明）。 */
+        let names = nameIndexOf(dept, doc)
         let arr = ArrayList<JsonValue>()
         for (m in rows) {
-            arr.add(medicalRecordJson(m, false))
+            let item = medicalRecordJson(m, false)
+            putVisitContext(item, m, booking, names)
+            arr.add(item)
         }
         let o = JsonObject()
         o.put("items", JsonArray(arr.toArray()))
@@ -444,7 +490,9 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
                      */
                     throw apiErrorMsg("EMR_NOT_FOUND", "病历不存在或尚未提交")
                 }
-                sendOk(ctx, medicalRecordJson(m, true))
+                let o = medicalRecordJson(m, true)
+                putVisitContext(o, m, booking, nameIndexOf(dept, doc))
+                sendOk(ctx, o)
             case None =>
                 throw apiErrorMsg("EMR_NOT_FOUND", "病历不存在或尚未提交")
         }

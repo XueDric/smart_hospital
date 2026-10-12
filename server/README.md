@@ -70,11 +70,11 @@ cd server     # ⚠ cwd 必须是 server/，见下
 
 | 子命令 | 作用 | 需要 MySQL |
 | --- | --- | --- |
-| `selftest` | schema 与 ADR 不变量的**纯本地**自检（**45 项**断言） | ❌ |
+| `selftest` | schema 与 ADR 不变量的**纯本地**自检（**50 项**断言） | ❌ |
 | `triagetest` | P2 分诊 + 预问诊**纯逻辑**自检（**108 项**断言），不碰库不调模型 | ❌ |
 | `authtest` | **口令/令牌原语自检**（含 3 个公开测试向量，**17 项**） | ❌ |
 | `check-db <dsn>` | 连库 + 幂等建表 + 打印表清单（★ 标记号源域） | ✅ |
-| `accept <dsn>` | 验收测试 AC-1…AC-P4-4（**442 项断言**；⚠ 只允许库名含 `test` 的测试库） | ✅ |
+| `accept <dsn>` | 验收测试 AC-1…AC-P4-4（**488 项断言**；⚠ 只允许库名含 `test` 的测试库） | ✅ |
 | `create-db <dsn>` | 幂等建库（utf8mb4）—— 测试库靠它 | ✅ |
 | `create-admin <dsn>` | 建/重置管理员并打印口令（**引导入口**） | ✅ |
 | `serve <dsn>` | **P1**：启动 HTTP / HTTPS 服务（默认只绑 `127.0.0.1`） | ✅ |
@@ -123,6 +123,28 @@ cd server     # ⚠ cwd 必须是 server/，见下
 | GET | `/api/v1/admin/users?login_name=` | 仅管理员（只回非敏感字段） |
 | POST | `/api/v1/admin/users/:id/password` | 仅管理员（**同时吊销该账号全部令牌**） |
 
+#### 2026-10-12：患者端联调补齐的接口（八项）
+
+> 背景：鸿蒙患者端与真服务端在模拟器上联调后，暴露出 8 个"服务端缺"的点，
+> 逐项补掉。**改动全部是加法**（老字段一个没删），因此对既有客户端是兼容的。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/health` | 与 `/health` **同一实现**的别名（客户端统一带 `/api/v1` 前缀时少一个特例） |
+| GET | `/api/v1/schedules?department_id=&work_date=&limit=` | 三端可读；**新增** `department_name` / `doctor_name` / `doctor_title` / `version` |
+| GET | `/api/v1/appointments?include_cancelled=&limit=` | 仅患者；**新增** 科室/医生名称（原先只有 id） |
+| GET | `/api/v1/medical-records?limit=` | 仅患者（自己的）；**新增** `department_id` / `visit_date` / `period` + 科室/医生名称 |
+| GET | `/api/v1/departments?enabled_only=` | 三端可读的**科室字典**（患者端不必再手输 `810003`） |
+| GET | `/api/v1/doctors?department_id=&enabled_only=` | 三端可读的**医生字典**（带 `department_name`） |
+| GET | `/api/v1/notices` | 三端可读的**公告**（仅 `enabled=1` 且 `published_at <= now`） |
+| GET/POST | `/api/v1/admin/notices` | 仅管理员（`?include_disabled=` 可见停用/预排期） |
+| GET/PUT/DELETE | `/api/v1/admin/notices/:id` | 仅管理员（删除是硬删；要留痕就 `PUT enabled=false`） |
+
+> ⚠ **`/auth/me` 现在返回 `display_name`**：此前只回 `{user_id, role, patient_id, doctor_id, device_id}`，
+> 患者端"同步身份信息"因此刷不出姓名（只能显示登录那一刻缓存的旧值）。
+> ⚠ **挂号/退号响应新增 `remain_num` 与科室/医生名称**：客户端挂完号可就地刷新「余 N」，
+> 不必再发一次排班查询。
+
 **鉴权**：`Authorization: Bearer <token>`。令牌 32 字节随机（64 hex），有效期 30 天、
 滑动续期（每天最多写一次）。**有状态**（服务端存 token → user）⇒ 停用/改口令可立即踢下线。
 
@@ -165,8 +187,8 @@ $env:HOSP_ADMIN_PW = "<管理员口令>"
 ### 验收依据：源码哈希，不是产物哈希
 
 cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构建，exe 的 SHA256 不同，行为一致）。
-所以 `build.ps1` 每次构建都会重写 **`build/SOURCE-MANIFEST.sha256`**（轻舟框架 38 + 业务 33 =
-**71 个参与编译源文件**的 SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是**稳定**的。
+所以 `build.ps1` 每次构建都会重写 **`build/SOURCE-MANIFEST.sha256`**（轻舟框架 38 + 业务 35 =
+**73 个参与编译源文件**的 SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是**稳定**的。
 **验收请比 `SOURCE-MANIFEST.sha256` + 测试结果，不要比 exe 哈希。**
 
 ---
@@ -175,7 +197,7 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/schema.cj` | 最小表集 DDL（**12 张 / 7 类**：号源域 2 + **基础数据域 3**（直接 SQL、无写入端点）+ 鉴权域 3 + 预问诊域 1 + AI 配置域 1 + **病历域 1** + **统计域 1**）+ 范围锁死 + 幂等迁移 |
+| `src/schema.cj` | 最小表集 DDL（**15 张 / 9 类**：号源域 2 + **基础数据域 3**（直接 SQL）+ 鉴权域 3 + 预问诊域 1 + AI 配置域 1 + **病历域 1** + **统计域 1** + **知识库域 2** + **公告域 1**）+ 范围锁死 + 幂等迁移 |
 
 
 | `src/domain_booking.cj` | ★ 号源/挂号域：原子扣减、幂等、取消归还（三态 `CancelOutcome`）、`visit_date` 快照 |
@@ -197,16 +219,19 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 | `src/http_p4.cj` | **P4 接口层**：11 个端点（接诊队列 / 病历 / 看板）；路由注册仍集中在 http_app.cj |
 '| `src/acceptance_p4.cj` | AC-P4-1…4：病历锁定不可改 / 状态机 / 看板隐私 / 统计不落敏感文本 |
 | `src/domain_base.cj` | **基础数据域（科室/医生）仓储**：CRUD + 唯一键冲突分类 + **引用保护**（有引用不删）+ **软删**（force） |
-| `src/http_base.cj` | **基础数据域接口**（10 个端点）：科室/医生的管理端 CRUD；仅 `ManageBaseData`（管理员） |
+| `src/http_base.cj` | **基础数据域接口**（12 个端点）：科室/医生的管理端 CRUD（仅 `ManageBaseData`，管理员）+ **患者可读字典** `GET /api/v1/departments`、`GET /api/v1/doctors` |
+| `src/domain_notice.cj` | **公告域仓储**（2026-10-12）：院内公告/健康提示的 CRUD；列顺序单一定义 + 列数守卫；⚠ 公告**不进检索、不出站**（与 `kb_doc` 的边界写在文件头） |
+| `src/http_notice.cj` | **公告域接口**（6 个端点）：`GET /api/v1/notices`（三端可读）+ 管理端 CRUD（仅 `ManageNotice`）；`published_at` 支持预排期 |
 | `src/ai_call.cj` | **真模型出站**（P5 第一步）：TLS 出站 + 密钥**引用**解析 + **脱敏** + 失败不抛异常 |
 | `src/ai_triage.cj` | **模型增强层**：只写 `aiNote`/`aiReason`，**绝不碰 `options`**（硬性验证层不可绕过）+ 安全清理层 |
 | `src/acceptance_base.cj` | AC-BASE-1…3：科室唯一性 / 不许孤儿医生 / 删除的两种语义 |
-| `src/acceptance_ai_call.cj` | AC-AICALL-1…3：可调用性 / **安全清理层（医疗建议一律丢弃）** / 响应解析 + 可选真实出站 |'
+| `src/acceptance_ai_call.cj` | AC-AICALL-1…3：可调用性 / **安全清理层（医疗建议一律丢弃）** / 响应解析 + 可选真实出站 |
+| `src/acceptance_notice.cj` | AC-NOTICE-1…AC-NOTICE-3：同名唯一 / **患者可见性两条件**（含 `published_at == now` 边界与预排期）/ `limit` 夹取与硬删 |
 | `src/main.cj` | 进程入口与子命令分发（含 TLS 分支与 fail-closed） |
 | `new-tls-cert.ps1` | 生成带 SAN 的自签证书 + ASCII 运行副本 + ACL 收紧 |
 | `tests/tls-check.ps1` | TLS 验证（SslStream 真校验、反向验证、HTTPS 业务链路） |
 
-**最小表集（12 张 / 7 域）**：
+**最小表集（15 张 / 9 域）**：
 
 | 表 | 域 · 纪律 | 数据访问 |
 | --- | --- | --- |
@@ -218,6 +243,7 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 | `ai_setting` | **AI 配置域** · 配置 | 直接 SQL（KV；写库即失效缓存 ⇒ 改配置零重启）；⚠ 密钥**只存引用**不存明文 |
 | `medical_record` | **病历域** · 临床数据 | 直接 SQL（仅 `MedicalRecordRepo` 写；锁定后不可改） |
 | `triage_stat` | **统计域** · 聚合 | 直接 SQL（只存计数，**不含任何患者标识**，带 180 天 TTL） |
+| `notice` | **公告域** · 展示内容 | 直接 SQL（仅 `NoticeRepo` 写）；⚠ **不进检索、不随 Prompt 出站**（与 `kb_doc` 的分界）；`published_at` 支持预排期 |
 
 > ★★ **ADR-0001 rev.7（2026-10-07）：内存 Store 已整体拆除，全库只剩一种数据访问范式。**
 > 原"内存 Store 范式"的 `mem_store.cj` / `sql_recorder.cj` **已删除** ——

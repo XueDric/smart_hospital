@@ -40,6 +40,17 @@ import std.time.*
  *   GET    /api/v1/admin/doctors/:id               单个医生
  *   PUT    /api/v1/admin/doctors/:id               改医生
  *   DELETE /api/v1/admin/doctors/:id[?force=]      删（同上）
+ *
+ * ## 患者可读的字典（2026-10-12 新增，`Action.ViewBaseData`，**三端都能读**）
+ *
+ *   GET    /api/v1/departments                     启用中的科室目录
+ *   GET    /api/v1/doctors[?department_id=]        启用中的医生目录（带 department_name）
+ *
+ * ⚠ 为什么"管理接口"之外还要开两个读接口：**同一个科室不该有两种写法**。
+ *   患者端拿到挂号/档案数据后只有 id，此前只有管理员能查到名字，
+ *   于是患者看到的是「科室 #810003」而挂号页显示「P4测试科3」。
+ *   ⇒ 患者无法确认"我挂的"和"我档案里的"是不是同一个科。
+ *   见 `Action.ViewBaseData` 的注释（权限为何与 `ViewSchedule` 分开）。
  */
 
 /* 科室 → JSON。 */
@@ -158,6 +169,127 @@ public func baseNameOf(depts: Array<Department>, id: Int64): String {
         }
     }
     return ""
+}
+
+/*
+ * ★ 2026-10-12（患者端联调）：把"id → 名称"的解析能力**给到全仓复用**。
+ *
+ * 背景：患者端拿到 `/appointments`、`/schedules`、`/medical-records` 之后
+ * 只有 `department_id` / `doctor_id`，界面上只能显示「科室 #810003 · 医生 #900003」。
+ * 而这些响应**都要补名称**，补法必须是同一套 —— 否则三处各写一份 map 查询，
+ * 迟早出现"同一份数据两个响应里名字不同"（科室改名 / 停用后更明显）。
+ *
+ * ⚠ 为什么**逐个函数**给 `doctor` 也建一次"读全表"：
+ *   医生表不大（几十行），但更重要的是**一致性与避免 N+1**
+ *   （理由同 `baseDepartmentsForNames`：N 次查询之间数据可能变，
+ *     同一个响应里会出现两个版本的名字）。
+ */
+public func baseDoctorsForNames(repo: DoctorRepo): Array<Doctor> {
+    /* 0 = 不限科室（全仓口径，见 `registerBaseRoutes` 里的注释）。 */
+    return repo.listAll(0, includeDisabled: true)
+}
+
+/* 在已读入的医生列表里按 id 找姓名（找不到给空串，**不抛**）。 */
+public func baseDoctorNameOf(docs: Array<Doctor>, id: Int64): String {
+    for (d in docs) {
+        if (d.id == id) {
+            return d.name
+        }
+    }
+    return ""
+}
+
+/* 同上，取职称（`主任医师` 之类）。找不到给空串 —— 界面上显示空比显示"null"好。 */
+public func baseDoctorTitleOf(docs: Array<Doctor>, id: Int64): String {
+    for (d in docs) {
+        if (d.id == id) {
+            return d.title
+        }
+    }
+    return ""
+}
+
+/*
+ * 按 id 取**单个**科室/医生的名称（给"只差一个名称"的响应补字段用）。
+ *
+ * ⚠ 与 `baseNameOf` 的区别：那两个是"已有一批数据时使用"（批量、零查询），
+ *   这里是"只有 id、需要一次查询"的场景（如 `/medical-records` 只带 doctor_id）。
+ *   ⚠ 一次性补齐多处**必须**用批量版 + `baseNameOf`，不要在多条记录上逐个调本函数
+ *     —— 那是 N+1。本函数只在"单条响应"或"每个 id 只出现一次"时使用。
+ */
+public func baseDepartmentNameById(dept: DepartmentRepo, id: Int64): String {
+    match (dept.findById(id)) {
+        case Some(d) => return d.name
+        case None => return ""
+    }
+}
+
+public func baseDoctorNameById(doc: DoctorRepo, id: Int64): String {
+    match (doc.findById(id)) {
+        case Some(d) => return d.name
+        case None => return ""
+    }
+}
+
+public func baseDoctorTitleById(doc: DoctorRepo, id: Int64): String {
+    match (doc.findById(id)) {
+        case Some(d) => return d.title
+        case None => return ""
+    }
+}
+
+/*
+ * ★ "id → 名称"的**解析表**（一次读全，整个请求内复用）。
+ *
+ * 为什么要有这个类（而不是让每个 handler 自己读两张表）：
+ *   ① `NameIndex` 把"读全表 + 按 id 找名字"封成**一次**调用，
+ *      handler 里就不会出现"忘了先读表"或"在循环里查库"（N+1）；
+ *   ② 同一个响应里出现的多个名称**必然来自同一份快照** ——
+ *      否则并发改名时，同一个响应会给出两个版本的名字
+ *      （`baseDepartmentsForNames` 的注释里已经写过这个理由）。
+ * ③ 读全表的成本对"科室/医生"这种几十行的表可以忽略，
+ *    而 `/appointments` 一次返回 N 条时，N 次单查才是真问题。
+ */
+public class NameIndex {
+    private let depts: Array<Department>
+    private let docs: Array<Doctor>
+
+    public init(depts: Array<Department>, docs: Array<Doctor>) {
+        this.depts = depts
+        this.docs = docs
+    }
+
+    public func departmentName(id: Int64): String {
+        return baseNameOf(this.depts, id)
+    }
+
+    public func doctorName(id: Int64): String {
+        return baseDoctorNameOf(this.docs, id)
+    }
+
+    public func doctorTitle(id: Int64): String {
+        return baseDoctorTitleOf(this.docs, id)
+    }
+
+    /*
+     * 把三个名称字段**就地**写进一个已有的 JSON 对象。
+     *
+     * ⚠ 字段名固定为 `department_name` / `doctor_name` / `doctor_title`，
+     *   与 `triage` 响应里 `options[]` 的命名**逐字一致** ——
+     *   客户端因此可以用一套解析逻辑读两种响应（已在患者端实测）。
+     * ⚠ 找不到时写**空串**而不是省略字段：客户端少写一个判空分支；
+     *   省略字段会让"字段不存在"与"名字为空"两种情况无法区分。
+     */
+    public func putInto(o: JsonObject, departmentId: Int64, doctorId: Int64): Unit {
+        o.put("department_name", JsonString(this.departmentName(departmentId)))
+        o.put("doctor_name", JsonString(this.doctorName(doctorId)))
+        o.put("doctor_title", JsonString(this.doctorTitle(doctorId)))
+    }
+}
+
+/* 读全科室 + 全医生（含停用：历史排班/档案里的旧 id 仍要能解析出名字）。 */
+public func nameIndexOf(dept: DepartmentRepo, doc: DoctorRepo): NameIndex {
+    return NameIndex(baseDepartmentsForNames(dept), baseDoctorsForNames(doc))
 }
 
 /*
@@ -340,6 +472,58 @@ public func registerBaseRoutes(r: Router, auth: AuthRepo, gate: DevAuthGate,
         let data = JsonObject()
         data.put("id", JsonInt(id))
         data.put("soft_deleted", JsonBool(force))
+        sendOk(ctx, data)
+    })
+
+    /*
+     * ---------- 患者可读的字典（2026-10-12 新增）----------
+     *
+     * ★ 这两个端点**不带 admin 前缀**，因为它们不是管理接口：
+     *   它们是**字典**（科室目录 / 医生目录），供三端把 id 显示成名称。
+     *
+     * ⚠ 为什么必须在服务端给（客户端自己拼不出来）：
+     *   患者端首页/就诊列表/医疗档案只有 `department_id` / `doctor_id`，
+     *   此前没有任何**患者可读**的接口能把这些 id 变成名字 ——
+     *   患者看到的只能是「科室 #810003 · 医生 #900003」，
+     *   而同一个应用的挂号页却能显示「P4测试科3」。
+     *   ⇒ 结果是"同一个科室，在界面上有两种写法"。这不是美观问题：
+     *     患者无法确认自己挂的是不是同一个科，**也核对不了档案里的就诊记录**。
+     *
+     * ⚠ 刻意**只读、只给展示所需字段**：不含 `enabled`/`created_at` 这类
+     *   管理字段（`baseDepartmentJson` 里已经带了，这里不额外加）。
+     *   停用的科室**不返回**（患者不该看到已下线的科室；
+     *   而历史排班里的旧科室名仍能由 `baseNameOf` 从**含停用**的全量里解析出来）。
+     */
+    r.get("/api/v1/departments", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ViewBaseData)
+        let items = JsonArray()
+        /* `includeDisabled: false` —— 目录只给启用的（见上面的说明）。 */
+        for (d in dept.listAll(includeDisabled: false)) {
+            items.add(baseDepartmentJson(d))
+        }
+        let data = JsonObject()
+        data.put("items", items)
+        data.put("count", JsonInt(Int64(items.size())))
+        sendOk(ctx, data)
+    })
+
+    r.get("/api/v1/doctors", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ViewBaseData)
+        /*
+         * ⚠ 与 admin 版一样的 `parseInt64Or(..., 0)` 口径：0 = 不过滤。
+         *   患者端目前按科室过滤可选（如"这个科有哪些医生"）。
+         */
+        let depFilter = parseInt64Or(ctx.queryParamOr("department_id", "0"), 0)
+        let depts = baseDepartmentsForNames(dept)
+        let items = JsonArray()
+        for (d in doc.listAll(depFilter, includeDisabled: false)) {
+            items.add(baseDoctorJson(d, baseNameOf(depts, d.departmentId)))
+        }
+        let data = JsonObject()
+        data.put("items", items)
+        data.put("count", JsonInt(Int64(items.size())))
         sendOk(ctx, data)
     })
 }

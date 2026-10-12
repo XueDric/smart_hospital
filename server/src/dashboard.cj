@@ -355,10 +355,14 @@ public class DashboardRepo {
  * ⚠ 复用 `civilFromDays` / `triagePad2`（hTodayDate 的实现）而不是另写一份日期换算：
  *   日期换算是最容易写错且"错了也看不出来"的一类代码（闰年、月末边界），
  *   本仓只有一处实现，这里沿用。
+ * ⚠ 2026-10-12：天序改用 `hDaysFromSecondsShanghai`（Asia/Shanghai，UTC+8）——
+ *   与 `hTodayDate()` 同一口径。此前这里按 UTC 算，
+ *   会让看板趋势的窗口边界与"今天"的定义**不一致**（差 8 小时，
+ *   而统计是按 `visit_date` 这类**本地日期字符串**分组的）。
+ *   📌 两处口径分家正是本次要修的病灶，所以这里必须同一个函数。
  */
 func dashCutoffDate(now: Int64, daysBack: Int64): String {
-    let daySecs: Int64 = 86400
-    let days = now / daySecs - daysBack
+    let days = hDaysFromSecondsShanghai(now) - daysBack
     let (y, mo, d) = civilFromDays(days)
     return "${y}-${triagePad2(mo)}-${triagePad2(d)}"
 }

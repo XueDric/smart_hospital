@@ -172,7 +172,8 @@ func accept(dsn: String): Int64 {
         let cfg = parseDsn(dsn)
         if (!isTestDatabase(cfg.db)) {
             println("❌ 拒绝执行：目标库 '${cfg.db}' 不是显式测试库。")
-            println("   accept 会**清空 6 张业务表**，所以只允许库名含 `test` 的库。")
+            println("   accept 会**清空业务表**（挂号/病历/排班/科室/医生/患者/公告），")
+            println("   所以只允许库名含 `test` 的库。")
             println("   例：mysql://.../<your>_test  （或先建一个 hospital_test 库）")
             return 2
         }
@@ -286,9 +287,18 @@ func selftest(): Int64 {
      * 📌 分类按**纪律是否相同**分，不按"是不是同一批加的"分。
      */
     let kbTables = 2        // kb_doc / kb_chunk（知识库，P5）
+    /*
+     * ★ 公告域（2026-10-12 契约补齐）。
+     *   `notice` —— 院内公告/健康提示，**给人看**的展示内容：
+     *     不进检索、不出站、不含患者个人信息、带 `published_at`（可预排期）。
+     *   ⚠ 为什么不并进 `kbTables`：知识库会被**检索并随 Prompt 出站**，
+     *     公告不会。纪律不同就单列一类 —— 这条分类的意义正是"让纪律可见"。
+     *     （已在 `TABLE_NOTICE` 上方写明这两者的边界。）
+     */
+    let noticeTables = 1
     let totalTables = bookingTables + baseTables + authTables + previsitTables + aiTables +
-                      emrTables + statTables + kbTables
-    check("表集共 ${totalTables} 张 = 号源域 ${bookingTables} + 基础数据域 ${baseTables}（department/doctor/patient，直接 SQL、无写入端点） + 鉴权域 ${authTables} + 预问诊域 ${previsitTables} + AI 配置域 ${aiTables} + 病历域 ${emrTables} + 统计域 ${statTables} + 知识库域 ${kbTables}（★ 无「内存 Store 域」：rev.7 已拆除）",
+                      emrTables + statTables + kbTables + noticeTables
+    check("表集共 ${totalTables} 张 = 号源域 ${bookingTables} + 基础数据域 ${baseTables}（department/doctor/patient，直接 SQL、无写入端点） + 鉴权域 ${authTables} + 预问诊域 ${previsitTables} + AI 配置域 ${aiTables} + 病历域 ${emrTables} + 统计域 ${statTables} + 知识库域 ${kbTables} + 公告域 ${noticeTables}（★ 无「内存 Store 域」：rev.7 已拆除）",
           ALL_TABLES.size == totalTables)
     check("号源/挂号域恰好 ${bookingTables} 张（schedule / appointment）",
           BOOKING_DOMAIN_TABLES.size == bookingTables)
@@ -506,6 +516,31 @@ func selftest(): Int64 {
         }
     }
     check("★ ${dsnCases.size} 条 DSN（含中文用户名/密码/主机/库名）解析正确", dsnAllOk)
+
+    /*
+     * ---- ★★ 医院时区：Asia/Shanghai（本次联调修的第 6 项）----
+     *
+     * 病灶：服务端算"今天"用的是 **UTC**，而患者端用本机日期。
+     *   在中国（UTC+8）每天 **00:00–08:00** 这 8 小时里两者差一天：
+     *   服务端认为"今天"还是昨天 ⇒ 患者早上打开 App，
+     *   当天上午的号会被判成"过去"而**排不出来**（挂不了当天的号）。
+     *
+     * ⚠ 为什么用**固定 epoch** 断言而不是"比较 now()"：
+     *   用 now() 只有在"恰好处于那 8 小时窗口内"时才会发现差异，
+     *   其余 16 小时它**恒绿**（一个永远为真的测试比没有测试更坏）。
+     *   固定 epoch 把那个窗口**钉死**在测试里，任何时刻跑都能证明。
+     */
+    println("")
+    println("=== 医院时区（Asia/Shanghai）===")
+    // 1791736200 = 2026-10-11T16:30:00Z = 北京时间 2026-10-12 00:30
+    //   ⇒ UTC 还是 10-11，上海已经跨到 10-12：这就是那 8 小时窗口。
+    check("★★ 跨零点：UTC 10-11T16:30 在上海应算 2026-10-12", hDateStringOf(1791736200) == "2026-10-12")
+    // 1791732600 = 2026-10-11T15:30:00Z = 北京时间 2026-10-11 23:30（未跨零点）
+    check("★ 未跨零点：UTC 10-11T15:30 在上海应算 2026-10-11", hDateStringOf(1791732600) == "2026-10-11")
+    // 1791763200 = 2026-10-12T00:00:00Z = 北京时间 2026-10-12 08:00（整点边界）
+    check("★ 整点边界：UTC 10-12T00:00 在上海应算 2026-10-12", hDateStringOf(1791763200) == "2026-10-12")
+    check("★★ 「今天」与日期格式化同一口径（hTodayDate == hDateStringOf(now)）",
+          hTodayDate() == hDateStringOf(hNowEpoch()))
 
     println("")
     if (failed == 0) {
@@ -738,8 +773,14 @@ func serve(args: Array<String>): Int64 {
     let doc = DoctorRepo(db)
     // P5 知识库仓储（文档 CRUD + 切块 + 检索）
     let kb = KbRepo(db)
+    /*
+     * ★ 2026-10-12：公告域仓储（患者端首页「医疗公告」的数据源）。
+     *   在此之前服务端**没有公告表也没有接口**，患者端只能显示写死的假公告
+     *   —— 联调实测发现的（见 `domain_notice.cj` 文件头）。
+     */
+    let notices = NoticeRepo(db)
     let app = buildHospitalApp(repo, auth, gate, triage, previsit, aiSettings, prompts,
-                               emr, visit, dash, triageStat, dept, doc, kb)
+                               emr, visit, dash, triageStat, dept, doc, kb, notices)
     let box = HandleBox()
 
     println("")
@@ -758,14 +799,19 @@ func serve(args: Array<String>): Int64 {
     println("")
     println("接口：")
     println("  GET  /health                              探活（无需认证）")
+    println("  GET  /api/v1/health                       探活（同上，api 前缀别名）")
     println("  POST /api/v1/auth/login                   登录换令牌（无需认证）")
     println("  POST /api/v1/auth/logout                  登出（吊销当前令牌）")
-    println("  GET  /api/v1/auth/me                      当前身份")
+    println("  GET  /api/v1/auth/me                      当前身份（含 display_name）")
     println("  GET  /api/v1/schedules/:id                查排班（三端可读）")
     println("  POST /api/v1/appointments                 挂号（仅患者）")
     println("  POST /api/v1/appointments/:id/cancel      退号（患者退自己的 / 管理员退任意）")
     println("  POST /api/v1/admin/schedules              建排班（仅管理员）")
     println("  POST /api/v1/admin/users                  建账号（仅管理员）")
+    println("  GET  /api/v1/departments                  科室目录（三端可读，患者端取科室名）")
+    println("  GET  /api/v1/doctors                      医生目录（三端可读，带 department_name）")
+    println("  GET  /api/v1/notices                      公告（三端可读）")
+    println("  GET  /api/v1/admin/notices                公告管理（仅管理员）")
     println("")
     println("鉴权：Authorization: Bearer <token>（令牌 30 天，滑动续期）")
 

@@ -178,6 +178,32 @@ public let TABLE_KB_DOC: String = "kb_doc"
 public let TABLE_KB_CHUNK: String = "kb_chunk"
 
 /*
+ * ===================== 公告（2026-10-12 契约补齐）=====================
+ *
+ * 背景（实测缺口，不是"想加个功能"）：患者端首页有「医疗公告」区，
+ *   但服务端**既没有表也没有端点** ⇒ 客户端只能无条件显示本地假公告
+ *   （`PatientRepository.notices()` 直接返回 `MockPatientRepository.notices()`，
+ *   实测在线模式下首页那两条公告是写死的）。这不是"少个 CRUD"，
+ *   而是首页那一块**永远是假的**。
+ *
+ * ★ 为什么单开一张表，而不是复用 `kb_doc`：
+ *   `kb_doc` 是**被检索**的运营资料（会被切块、可能被向量化、命中片段随 Prompt 出站），
+ *   而公告是**给人看**的展示内容（不进检索、不出站、不需要切块）。
+ *   两者读者、生命周期、合规边界都不同 ⇒ 合成一张表就会让
+ *   "公告被当成知识库召回"（那正是本仓在 kb 上写死过的合规红线）。
+ *
+ * ⚠ `title` 唯一：公告最容易出的问题是**同一件事发了两条**
+ *   （一条说 A、一条说 B），患者看到互相矛盾的两条。
+ *   让"重名"在写入那一刻失败，比事后人工比对可靠 —— 与 `kb_doc.title` 同一条理由。
+ * ⚠ `enabled` 而不是删除（同 department / kb_doc）：停用的公告**历史仍可解释**，
+ *   直接 DELETE 会让"上周那条去哪了"变成不可回答的问题。
+ * ⚠ `published_at`：公告需要能**预排期**（先写好，到点才出现）
+ *   ⇒ 患者侧查询条件是 `enabled = 1 AND published_at <= now`，
+ *     而不是只看 `enabled`。只看 enabled 会让"提前写好的公告"立刻曝光。
+ */
+public let TABLE_NOTICE: String = "notice"
+
+/*
  * 全部业务表。
  * ⚠ rev.7 起内存 Store 已整体拆除 ⇒ 这张清单就是"库里有几张表"的唯一答案。
  */
@@ -186,7 +212,7 @@ public let ALL_TABLES: Array<String> = [
     TABLE_APPOINTMENT, TABLE_PATIENT, TABLE_MEDICAL_RECORD,
     TABLE_AUTH_USER, TABLE_AUTH_TOKEN, TABLE_AUTH_ATTEMPT, TABLE_PREVISIT,
     TABLE_AI_SETTING, TABLE_TRIAGE_STAT,
-    TABLE_KB_DOC, TABLE_KB_CHUNK
+    TABLE_KB_DOC, TABLE_KB_CHUNK, TABLE_NOTICE
 ]
 
 /* ===================== DDL ===================== */
@@ -542,6 +568,42 @@ public let KB_SCHEMA_DDL: Array<String> = [
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
 ]
 
+/* ===================== 公告 DDL（拼在 SCHEMA_DDL 上）===================== */
+
+/*
+ * ⚠ 与 `KB_SCHEMA_DDL` 同一手法：**单独一个数组 + 末尾拼接**，建表入口一处不改
+ *   （`ensureSchema` / `allSchemaDdl` 各多一个循环）。
+ *   理由也一样：本表有自己的设计说明（见 `TABLE_NOTICE` 上方），
+ *   塞进那个 14 张表的长数组会被淹掉。
+ *
+ * ⚠ 新表**不需要** `migrateSchema`：那是给"改了**既有**表结构"用的
+ *   （`CREATE TABLE IF NOT EXISTS` 对已存在的表完全无效）。
+ *   这里是从无到有，`ensureSchema` 在 serve / check-db / accept 启动路径上
+ *   都会跑，存量库启动时自动补建。
+ */
+public let NOTICE_SCHEMA_DDL: Array<String> = [
+    "CREATE TABLE IF NOT EXISTS notice (" +
+    "id BIGINT NOT NULL AUTO_INCREMENT, " +
+    "title VARCHAR(128) NOT NULL, " +
+    "body TEXT NOT NULL, " +
+    "category VARCHAR(32) NOT NULL DEFAULT '通知', " +
+    "sort BIGINT NOT NULL DEFAULT 0, " +
+    "enabled TINYINT NOT NULL DEFAULT 1, " +
+    "published_at BIGINT NOT NULL DEFAULT 0, " +
+    "updated_by BIGINT NOT NULL DEFAULT 0, " +
+    "created_at BIGINT NOT NULL DEFAULT 0, " +
+    "updated_at BIGINT NOT NULL DEFAULT 0, " +
+    "PRIMARY KEY (id), " +
+    "UNIQUE KEY uk_notice_title (title), " +
+    /*
+     * 患者侧查询固定是「enabled = 1 AND published_at <= now ORDER BY sort, published_at DESC」
+     * ⇒ 索引按这条语句的前两列建。列表本身很短（几十条），
+     * 不加这个索引也能跑，但"查询形状与索引一致"能让将来公告变多时不必回头改。
+     */
+    "KEY idx_notice_visible (enabled, published_at)" +
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+]
+
 /* ===================== 建表入口 ===================== */
 
 /*
@@ -565,6 +627,11 @@ public func ensureSchema(db: DbBackend): Int64 {
      *   但"有哪些表"仍然只有一处可数（便于 selftest 与 doc-counts 对账）。
      */
     for (sql in KB_SCHEMA_DDL) {
+        db.exec(sql, Array<DbValue>())
+        n = n + 1
+    }
+    /* ★ 公告表（同上：单独数组、末尾拼接）。 */
+    for (sql in NOTICE_SCHEMA_DDL) {
         db.exec(sql, Array<DbValue>())
         n = n + 1
     }
@@ -597,6 +664,9 @@ public func allSchemaDdl(): Array<String> {
         out.add(sql)
     }
     for (sql in KB_SCHEMA_DDL) {
+        out.add(sql)
+    }
+    for (sql in NOTICE_SCHEMA_DDL) {
         out.add(sql)
     }
     return out.toArray()

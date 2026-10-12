@@ -492,8 +492,22 @@ public func triageComplaint(repo: TriageRepo, chiefComplaint: String, today: Str
     if (alts.size > 0) {
         v.options = toOptions(alts.toArray())
         v.reasonCode = TR_ALTERNATIVES
+        /*
+         * ★ 2026-10-12：去掉 `**`（原为 Markdown 粗体标记）。
+         *
+         * 实测：患者端把这句**原样**显示成
+         *   「以下是**其它有号**的科室，如需尽快就诊可考虑。」
+         * —— 两个星号直接怼在字上，看着像出错或漏转义。
+         * 根因：`patientNote` 是**给人看的纯文本**（客户端不做 Markdown 渲染，
+         * 它只 `Text()` 直出），而这里按"Markdown 源文"写。
+         *   ⇒ 契约是"纯文本"，那强调就**不该用标记**表达：
+         *     纯文本里的强调靠**用词与语序**（本句改成"以下这些科室当前有号"
+         *     已经足够清楚），而不是靠符号。
+         * 📌 一般规律：**输出格式由消费方决定**。
+         *    本字段的消费方是原生 UI 文本控件，不是 Markdown 渲染器。
+         */
         v.patientNote = "建议就诊：${guess.deptName}（该科当前无可挂号源）。" +
-                        "以下是**其它有号**的科室，如需尽快就诊可考虑。"
+                        "以下这些科室当前有号，如需尽快就诊可考虑。"
         return v
     }
 

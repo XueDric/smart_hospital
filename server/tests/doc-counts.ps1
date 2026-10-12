@@ -65,6 +65,12 @@ $acP3Nums = [regex]::Matches($accSrc + $accAiSrc, '\bacP3_(\d+)\(') | ForEach-Ob
 # P4 用例在 acceptance_p4.cj 里（acP4_N）—— 同上，不数进来就没人对账
 $accP4Src = [System.IO.File]::ReadAllText((Join-Path $serverDir 'src\acceptance_p4.cj'), [System.Text.UTF8Encoding]::new($false))
 $acP4Nums = [regex]::Matches($accSrc + $accP4Src, '\bacP4_(\d+)\(') | ForEach-Object { [int]$_.Groups[1].Value }
+# 公告域用例在 acceptance_notice.cj 里（acNoticeN）—— 第五套体系，同样要有人对账，
+# 否则"新加了用例但文档没提"会悄悄过去（这正是本脚本存在的理由）。
+$accNoticeSrc = [System.IO.File]::ReadAllText((Join-Path $serverDir 'src\acceptance_notice.cj'), [System.Text.UTF8Encoding]::new($false))
+$acNoticeNums = [regex]::Matches($accNoticeSrc, '\bacNotice(\d+)\(') | ForEach-Object { [int]$_.Groups[1].Value }
+$acNoticeMax = 0
+if ($acNoticeNums.Count -gt 0) { $acNoticeMax = ($acNoticeNums | Measure-Object -Maximum).Maximum }
 $acMax = ($acNums | Measure-Object -Maximum).Maximum
 $acP2Max = 0
 if ($acP2Nums.Count -gt 0) { $acP2Max = ($acP2Nums | Measure-Object -Maximum).Maximum }
@@ -81,7 +87,7 @@ elseif ($acP2Max -gt 0) { $acMaxLabel = "AC-P2-$acP2Max" }
 #   所以文档里 `AC-1…AC-P2-4` 与 `AC-1…AC-12` 表达的是**同一个上限概念**）。
 #   正则接受两种写法，取到的数字都应等于对应体系的最大 N。
 foreach ($k in $actual.Keys) { Write-Host ("  {0,-9} = {1}" -f $k, $actual[$k]) }
-Write-Host "  AC 编号上限（四套体系各自）= AC-$acMax / AC-P2-$acP2Max / AC-P3-$acP3Max / AC-P4-$acP4Max"
+Write-Host "  AC 编号上限（五套体系各自）= AC-$acMax / AC-P2-$acP2Max / AC-P3-$acP3Max / AC-P4-$acP4Max / AC-NOTICE-$acNoticeMax"
 
 # ★ REST 端点数 —— 这个数字最容易漂：
 #   每加一个端点都得回头改 README，而"加了但忘了改文档"正是本项目漂过两次的病。
@@ -94,7 +100,7 @@ Write-Host "  AC 编号上限（四套体系各自）= AC-$acMax / AC-P2-$acP2Ma
 #   ⇒ 现在：扫**全部注册文件**（清单显式给出，与"路由注册集中可见"这条约定配套）。
 #     并覆盖 `delete`。📌 教训：**计数脚本本身也要能被"加了东西"这件事验证到** ——
 #     否则它会给一个恒定的旧数字，而所有人都以为它对。
-$regFiles = @("src\http_app.cj", "src\http_p4.cj", "src\http_base.cj", "src\http_kb.cj")
+$regFiles = @("src\http_app.cj", "src\http_p4.cj", "src\http_base.cj", "src\http_kb.cj", "src\http_notice.cj")
 $epCount = 0
 foreach ($rf in $regFiles) {
     $p = Join-Path $serverDir $rf
@@ -123,7 +129,8 @@ $checks = @(
     @{ File = "server\README.md";     Pattern = '`triagetest` \| P2 分诊.*?自检（\*\*\s*(?<n>\d+) 项\*\*'; Want = 'triagetest' },
     @{ File = "docs\P1-HANDOFF.md";   Pattern = '验收（AC-1…AC-(?:P[234]-)?(?<ac>\d+)） \| `hospital-server\.exe accept <dsn>` \| ✅ \*\*(?<n>\d+) 项\*\*'; Want = 'accept' },
     @{ File = "docs\adr\ADR-0001-号源与挂号独立MySQL路径.md"; Pattern = '`hospital-server\.exe selftest` \| ✅ \*\*(?<n>\d+) 项\*\*'; Want = 'selftest' },
-    @{ File = "docs\adr\ADR-0001-号源与挂号独立MySQL路径.md"; Pattern = '`hospital-server\.exe accept <dsn>` \| ✅ \*\*(?<n>\d+) 项 / 失败 0\*\*'; Want = 'accept' }
+    @{ File = "docs\adr\ADR-0001-号源与挂号独立MySQL路径.md"; Pattern = '`hospital-server\.exe accept <dsn>` \| ✅ \*\*(?<n>\d+) 项 / 失败 0\*\*'; Want = 'accept' },
+    @{ File = "server\README.md";     Pattern = '`src/acceptance_notice\.cj` \| AC-NOTICE-1…AC-NOTICE-(?<ac>\d+)'; Want = 'accept' }
 )
 
 # ── 3) 对账 ───────────────────────────────────────────────────────────────
@@ -168,12 +175,14 @@ foreach ($c in $checks) {
     if ($hasAc) {
         $gotAc = [int]$m.Groups['ac'].Value
         # 文档里若是 `AC-…AC-P2-N`，该与 P2 用例的最大编号比；否则与 AC-N 的比
+        # 公告域写 `AC-NOTICE-1…AC-NOTICE-N`，与 acNoticeN 的最大编号比。
         $isP2Label = $m.Value -match 'P2-'
         $isP3Label = $m.Value -match 'P3-'
         $isP4Label = $m.Value -match 'P4-'
-        $wantAc = if ($isP4Label) { $acP4Max } elseif ($isP3Label) { $acP3Max } elseif ($isP2Label) { $acP2Max } else { $acMax }
+        $isNoticeLabel = $m.Value -match 'NOTICE-'
+        $wantAc = if ($isNoticeLabel) { $acNoticeMax } elseif ($isP4Label) { $acP4Max } elseif ($isP3Label) { $acP3Max } elseif ($isP2Label) { $acP2Max } else { $acMax }
         if ($gotAc -eq $wantAc) {
-            Write-Host "  [OK]   $($c.File) —— AC 编号上限 = AC-$gotAc（$(if ($isP2Label) { "P2 体系" } else { "主体系" })）"
+            Write-Host "  [OK]   $($c.File) —— AC 编号上限 = AC-$gotAc（$(if ($isNoticeLabel) { "公告域" } elseif ($isP2Label) { "P2 体系" } else { "主体系" })）"
         } else {
             Write-Host "  [DRIFT] $($c.File) —— 文档写 AC-$gotAc，实测上限 $acMaxLabel"
             $bad++
@@ -216,7 +225,13 @@ if ($Fix) {
             #   写 C 风格 `/* */` 会被当命令执行（实测报 "无法将 /* 项识别为 cmdlet"）。
             $out = $mm.Value
             if ($mm.Groups['ac'].Success) {
-                $out = $out.Replace("AC-" + $mm.Groups['ac'].Value, "AC-" + "$acMax")
+                # 公告域的行写作 `AC-NOTICE-1…AC-NOTICE-N`，按值替换时要连前缀一起换，
+                # 否则 `AC-3` 在 `AC-NOTICE-3` 里根本匹配不到（-Fix 会静默不修）。
+                if ($mm.Value -match 'NOTICE-') {
+                    $out = $out.Replace("AC-NOTICE-" + $mm.Groups['ac'].Value, "AC-NOTICE-" + "$acNoticeMax")
+                } else {
+                    $out = $out.Replace("AC-" + $mm.Groups['ac'].Value, "AC-" + "$acMax")
+                }
             }
             # 端点数（ep 组）也要能 -Fix
             if ($mm.Groups['ep'].Success) {

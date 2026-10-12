@@ -113,6 +113,33 @@ public enum Action {
      */
     | QueryKnowledgeBase      // 检索知识库（医生 + 管理员；**患者不给**）
     | ManageKnowledgeBase     // 维护知识库文档（仅管理员）
+    /*
+     * ★ 2026-10-12（患者端联调发现的契约缺口）新增三条。
+     *
+     * 背景不是"想加功能"，而是**实测出来的窟窿**：患者端首页/就诊列表/医疗档案
+     * 拿到 `/appointments`、`/schedules` 之后只有 `department_id` / `doctor_id`，
+     * 界面上只能显示「科室 #810003 · 医生 #900003」——
+     * 因为**患者角色拿不到任何科室/医生字典**（那两个列表此前只在
+     * `/api/v1/admin/departments|doctors` 下、仅管理员）。
+     * 公告更彻底：**服务端没有这张表、也没有这个端点**，首页那块只能是写死的假数据。
+     *
+     * ⚠ 为什么 `ViewBaseData` 与 `ViewSchedule` 分开（而不是复用后者）：
+     *   `ViewSchedule` 管的是**排班号源**（会变、与挂号强相关），
+     *   本动作管的是**科室/医生主数据**（相对稳定、与挂号无关）。
+     *   合成一条的后果不是"现在出错"，而是**将来无法只放开其中一个**
+     *   （例如"只让患者看科室介绍，但不开放排班查询"就必须拆开）。
+     *   📌 本仓纪律（见上面 ManageBaseData 的注释）：权限动作按**语义**分，
+     *     不按"当前谁能做"分 —— 那是这条纪律的第二次应用，不是例外。
+     *
+     * ⚠ `ViewNotice` 为什么给**三端**：公告是**面向所有人**的院内通知
+     *   （就诊提醒、健康提示、服务说明），本来就是"公开信息"。
+     *   它不属知识库：知识库会被检索并随 Prompt 出站，
+     *   公告只是展示（见 schema.cj `TABLE_NOTICE` 的边界说明）。
+     *   写侧（`ManageNotice`）同理只给管理员 —— 读与写分开，与 P4/P5 一致。
+     */
+    | ViewBaseData            // 读科室/医生目录（三端都能看）
+    | ViewNotice              // 读公告（三端都能看）
+    | ManageNotice            // 维护公告（仅管理员）
 }
 
 public func actionName(a: Action): String {
@@ -128,6 +155,9 @@ public func actionName(a: Action): String {
         case ManageBaseData => return "manage_base_data"
         case QueryKnowledgeBase => return "query_knowledge_base"
         case ManageKnowledgeBase => return "manage_knowledge_base"
+        case ViewBaseData => return "view_base_data"
+        case ViewNotice => return "view_notice"
+        case ManageNotice => return "manage_notice"
         case ViewDashboard => return "view_dashboard"
     }
 }
@@ -147,6 +177,12 @@ public func actionName(a: Action): String {
  *   write_own_medical_record    ❌     ✅     ❌   ← P4（病历的临床作者只能是医生）
  *   manage_visit                ❌     ✅     ❌   ← P4（接诊队列）
  *   view_dashboard              ❌     ❌     ✅   ← P4（运营看板含全院聚合）
+ *
+ * 权限矩阵（2026-10-12 契约补齐新增三行）：
+ *
+ *   view_base_data              ✅     ✅     ✅   ← 读科室/医生目录（患者要它才能显示科室名）
+ *   view_notice                 ✅     ✅     ✅   ← 读公告（面向所有人的院内通知）
+ *   manage_notice               ❌     ❌     ✅   ← 维护公告
  *
  * ⚠ 三条刻意的选择，都值得说清：
  *   ① **管理员不能写病历** —— 病历的"作者"必须是临床人员。若管理员可写，
@@ -217,6 +253,23 @@ public func can(role: Role, action: Action): Bool {
                 case _ => return false
             }
         case ManageKnowledgeBase =>
+            match (role) {
+                case Admin => return true
+                case _ => return false
+            }
+        /*
+         * ★ 2026-10-12 新增三条。
+         *
+         * ⚠ 前两条**三端都给**，与 `ViewSchedule` 同侧：
+         *   科室/医生目录与公告都是"没有患者私有信息"的公开数据 ——
+         *   患者在界面上要显示"呼吸内科 / 张医生"就必须读得到它。
+         *   若不给患者，客户端只能显示 `科室 #810003`（正是本次要修的窟窿）。
+         * ⚠ 第三条只给管理员：公告面向全院发布，能改它的人越少越好
+         *   （错发的公告比错发的排班更难收回 —— 患者已经看到了）。
+         */
+        case ViewBaseData => return true
+        case ViewNotice => return true
+        case ManageNotice =>
             match (role) {
                 case Admin => return true
                 case _ => return false
@@ -425,6 +478,33 @@ func bookingJson(r: BookingResult): JsonObject {
     return o
 }
 
+/*
+ * ★ 2026-10-12：挂号/退号响应的**完整形状** = `bookingJson` + 名称 + 当前余号。
+ *
+ * 为什么 `remain_num` 要在这里补（而不是加进 `BookingResult`）：
+ *   `BookingResult` 是**这一次事务的结果**（扣了几个号、序号多少），
+ *   而 `remain_num` 是**事务之后的库存快照** —— 两者语义不同：
+ *   并发下"我扣了 1 个"与"还剩 N 个"之间别人可能又挂了号，
+ *   把快照塞进事务结果会让人误以为它属于那一次事务。
+ *   ⇒ 这里在写成功**之后**重读排班，拿的是"此刻的真相"。
+ *
+ * ⚠ 重读失败（排班被删）时**不写这个字段**，而不是写 0：
+ *   `remain_num = 0` 的含义是"**已约满**"，而"排班不存在"是另一回事
+ *   —— 写 0 会让界面显示"已约满"，而真实情况是这张排班已经没了。
+ *   客户端按"字段不存在 = 未知，请看错误/重新查询"处理。
+ *
+ * ⚠ 名称取自 `names`（请求内的一次性快照），与响应里其它字段同源。
+ */
+func bookingJsonFull(repo: BookingRepo, r: BookingResult, names: NameIndex): JsonObject {
+    let o = bookingJson(r)
+    names.putInto(o, r.departmentId, r.doctorId)
+    match (repo.findSchedule(r.scheduleId)) {
+        case Some(s) => o.put("remain_num", JsonInt(s.remainNum))
+        case None => ()
+    }
+    return o
+}
+
 /* ===================== 路由 ===================== */
 
 /*
@@ -564,22 +644,79 @@ func triagePad2(n: Int64): String {
 }
 
 /*
- * 今天的日期（UTC），格式 `YYYY-MM-DD`。
+ * ★★ 全服务端**唯一的时区口径**：Asia/Shanghai（UTC+8）。
  *
- * ⚠ 用 **UTC** 而不是本地时区：这个值会参与 `work_date >= today` 的**字符串比较**，
- *   而字符串比较隐含"格式固定宽度"（见 `pad2` 的注释）。
- *   用 UTC 让同一份数据在任何时区的机器上给出相同结果 ——
- *   测试因此可复现（本地时区会让 CI 与开发机在同一天的边界上产生不同结论）。
- *   单院区场景下 UTC 与本地最多差几小时，"今天"的偏差对分诊无实质影响，
- *   而**可复现性**的收益是实打实的。
+ * 背景（实测发现的口径不一致，2026-10-12 修）：
+ *   此前 `hTodayDate()` 用 **UTC** 的"天序"，于是：
+ *     · 服务端"今天"在北京时间 00:00~08:00 之间**还是昨天**；
+ *     · 而客户端 `ui/Theme.ets:131 todayString()` 用的是**设备本地日期**。
+ *   ⇒ 每天有 8 小时窗口，两端对"今天"的答案不同：
+ *     患者端把"今天"的排班当今天查，服务端却按昨天过滤 `work_date >= today`
+ *     ⇒ **当天上午的号查不出来**（"明明有号却说没有"），
+ *     而这恰好是门诊最忙、最不能出错的时段。
+ *
+ * ⚠ 为什么是**固定 +8** 而不是"取服务器时区"：
+ *   ① 中国全境单一时区（Asia/Shanghai），**没有夏令时** ⇒ 固定偏移永远正确，
+ *      不需要引入时区数据库；
+ *   ② 服务端可能部署在任何时区的机器上（CI 是 UTC、开发机是 UTC+8），
+ *      "按宿主机时区"会让**同一份数据在不同机器上给出不同答案**，
+ *      而测试因此不可复现。固定偏移让结论与部署位置无关。
+ *   📌 一般化：**"今天"是一个业务概念（医院的今天），不是机器属性。**
+ *
+ * ⚠ 与 `civilFromDays` / `triagePad2` 的关系：偏移**只在这里加一次**，
+ *   日期换算仍然只有那两处实现（本仓写明"日期换算是最容易写错且错了也看不出来"）。
+ */
+public let HOSPITAL_TZ_OFFSET_SECONDS: Int64 = 8 * 3600
+
+/*
+ * epoch **毫秒** → Asia/Shanghai 的"天序"（1970-01-01 起的天数）。
+ * ⚠ 负数（1970 年之前）向下取整：`-1 / 86400000` 在仓颉里是 0（截断），
+ *   而正确结果是 -1。虽然现实中不会有 1970 年前的排班，
+ *   但**取整方向错**这类 bug 一旦出现极难定位 ⇒ 显式处理并写明。
+ */
+func hDaysFromMillisShanghai(ms: Int64): Int64 {
+    let shifted = ms + HOSPITAL_TZ_OFFSET_SECONDS * 1000
+    var days = shifted / 86400000
+    if (shifted < 0 && shifted % 86400000 != 0) {
+        days = days - 1
+    }
+    return days
+}
+
+/* epoch **秒** → Asia/Shanghai 的"天序"（同上，负数同样向下取整）。 */
+func hDaysFromSecondsShanghai(secs: Int64): Int64 {
+    let shifted = secs + HOSPITAL_TZ_OFFSET_SECONDS
+    var days = shifted / 86400
+    if (shifted < 0 && shifted % 86400 != 0) {
+        days = days - 1
+    }
+    return days
+}
+
+/*
+ * 今天的日期（**Asia/Shanghai**），格式 `YYYY-MM-DD`。
+ *
+ * ⚠ 这个值会参与 `work_date >= today` 的**字符串比较**，而字符串比较隐含
+ *   "格式固定宽度"（见 `triagePad2` 的注释）—— 所以补零不能省。
+ * ⚠ 时区口径见 `HOSPITAL_TZ_OFFSET_SECONDS` 上方：改成 +8 就是为了与
+ *   患者端设备上的本地日期**一致**（此前用 UTC，每天有 8 小时窗口对不上）。
  */
 func hTodayDate(): String {
     let ms = DateTime.now().toUnixTimeStamp().toMilliseconds()
-    var days = ms / 86400000
-    if (ms < 0 && ms % 86400000 != 0) {
-        days = days - 1
-    }
-    let (y, m, d) = civilFromDays(days)
+    let (y, m, d) = civilFromDays(hDaysFromMillisShanghai(ms))
+    return "${y}-${triagePad2(m)}-${triagePad2(d)}"
+}
+
+/*
+ * epoch **秒** → `YYYY-MM-DD`（Asia/Shanghai）。
+ *
+ * 用途：把库里存的时间戳渲染成**给人看的日期**（公告的 `date` 字段）。
+ * ⚠ 与 `hTodayDate()` 共用同一个偏移与同一套换算 —— 这是刻意的：
+ *   如果这里另写一份，公告显示的日期与"今天"的判定就会再次分家
+ *   （那正是本次要修的病灶）。
+ */
+public func hDateStringOf(secs: Int64): String {
+    let (y, m, d) = civilFromDays(hDaysFromSecondsShanghai(secs))
     return "${y}-${triagePad2(m)}-${triagePad2(d)}"
 }
 
@@ -727,21 +864,45 @@ func previsitSessionJson(s: PrevisitSession): JsonObject {
     }
     return o
 }
+/*
+ * 健康检查的响应体（`/health` 与 `/api/v1/health` 共用**同一份实现**）。
+ *
+ * ⚠ 只回"服务活着 + 版本 + 数据后端 + 是否开着开发态鉴权"，
+ *   **不查库**：探活接口查询库会让"库慢"表现成"服务挂了"，
+ *   而这两件事的处置完全不同（重启进程 vs 查数据库）。
+ */
+func healthJson(gate: DevAuthGate): String {
+    let o = JsonObject()
+    o.put("ok", JsonBool(true))
+    o.put("service", JsonString("hospital-server"))
+    o.put("version", JsonString(SERVER_VERSION))
+    o.put("data_backend", JsonString("mysql"))
+    o.put("dev_auth", JsonBool(gate.enabled))
+    return o.toString()
+}
+
 public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate, triage: TriageRepo, previsit: PrevisitRepo, aiSettings: AiSettingsRepo, prompts: PromptRepo,
                            emr: MedicalRecordRepo, visit: VisitRepo,
                            dash: DashboardRepo, triageStat: TriageStatRepo,
-                           dept: DepartmentRepo, doc: DoctorRepo, kb: KbRepo): Router {
+                           dept: DepartmentRepo, doc: DoctorRepo, kb: KbRepo,
+                           notices: NoticeRepo): Router {
     let r = Router()
 
     /* ---------- 健康检查（无需认证，供压测与探活）---------- */
+    /*
+     * ⚠ 路径**不在 `/api/v1` 下**（历史原因：它比 api 前缀更早就存在，
+     *   压测脚本与部署探针都按 `/health` 写）。
+     * ★ 2026-10-12：**再加一个 `/api/v1/health` 别名**。
+     *   起因：患者端的 `ApiConfig` 会把所有请求拼在 `/api/v1` 之后，
+     *   于是客户端想探活只能特判这一个路径 —— 一个"客户端要多写一个 if"的
+     *   历史包袱。两个路径都留着（老探针不破），新代码可以走 api 前缀。
+     *   两个 handler 都调同一个 `healthJson`，**不存在两份实现**。
+     */
     r.get("/health", { ctx: Context, _: () -> Unit =>
-        let o = JsonObject()
-        o.put("ok", JsonBool(true))
-        o.put("service", JsonString("hospital-server"))
-        o.put("version", JsonString(SERVER_VERSION))
-        o.put("data_backend", JsonString("mysql"))
-        o.put("dev_auth", JsonBool(gate.enabled))
-        ctx.status(200).json(o.toString())
+        ctx.status(200).json(healthJson(gate))
+    })
+    r.get("/api/v1/health", { ctx: Context, _: () -> Unit =>
+        ctx.status(200).json(healthJson(gate))
     })
 
     /* ===================== 鉴权接口 ===================== */
@@ -883,6 +1044,24 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         o.put("role", JsonString(roleName(p.role)))
         o.put("patient_id", JsonInt(p.patientId))
         o.put("doctor_id", JsonInt(p.doctorId))
+        /*
+         * ★ 2026-10-12：补 `display_name`（此前只有登录响应里有）。
+         *
+         * 实测踩到的后果：患者端「我的 → 同步身份信息」调的就是本接口，
+         * 而它不回姓名 ⇒ 改过姓名（或换设备登录）后按"同步"**刷不出新名字**，
+         * 界面上一直是登录那一刻的旧值（客户端把它缓存在 SessionStore 里）。
+         *   ⇒ 一个叫"同步身份信息"的按钮做不了它名字里写的事。
+         *
+         * ⚠ 取法：`principalByToken` 只填 userId/role/patientId/doctorId
+         *   （**不查 auth_user 的其余字段**，见 auth_repo.cj 的注释），
+         *   所以这里按 userId 补一次查询。
+         * ⚠ 查不到（账号在登录后被删）**不报错**，只是不带这个字段：
+         *   令牌还有效就说明会话成立，此时回 404 会让客户端卡在登录态里出不去。
+         */
+        match (auth.findUserById(p.userId)) {
+            case Some(u) => o.put("display_name", JsonString(u.displayName))
+            case None => ()
+        }
         // 回显本次请求的设备标识：客户端据此在会话列表里标出"这台设备"
         let (devId, _devName) = deviceOf(ctx)
         o.put("device_id", JsonString(devId))
@@ -1356,6 +1535,22 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
             throw apiErrorMsg("VALIDATION_FAILED", "work_date 格式应为 YYYY-MM-DD")
         }
         let list = repo.listSchedules(departmentId: depId, workDate: date, limit: lim)
+        /*
+         * ★ 2026-10-12：补 `department_name` / `doctor_name` / `doctor_title` 与 `version`。
+         *
+         * 为什么名称必须**服务端**给（而不是客户端拿 id 自己拼）：
+         *   患者端此前只能显示「科室 #810003 · 医生 #900003」——
+         *   因为库里的名字在 `department` / `doctor` 表，而**患者角色读不到**
+         *   （那两个接口挂在 `/api/v1/admin` 下且仅管理员）。
+         *   ⇒ 结果:同一个科室，挂号页显示「P4测试科3」、就诊列表显示「#810003」。
+         *   这不是美观问题：患者**无法核对**自己挂的科与档案里的科是不是同一个。
+         *
+         * ⚠ `version` 一并给：客户端做"号源已变化"提示要用它
+         *   （`/schedules/:id` 早就回了，列表却不给 —— 同一份数据两种形状）。
+         * ⚠ 名称解析走 `nameIndexOf`（**一次读全表**），不是每行查一次库：
+         *   `/schedules` 一次返回几十行，逐行查就是几十次往返（N+1）。
+         */
+        let names = nameIndexOf(dept, doc)
         let arr = ArrayList<JsonValue>()
         for (s in list) {
             let o = JsonObject()
@@ -1366,7 +1561,9 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
             o.put("period", JsonString(s.period))
             o.put("total_num", JsonInt(s.totalNum))
             o.put("remain_num", JsonInt(s.remainNum))
+            o.put("version", JsonInt(s.version))
             o.put("enabled", JsonBool(s.enabled))
+            names.putInto(o, s.departmentId, s.doctorId)
             arr.add(o)
         }
         let o = JsonObject()
@@ -1401,9 +1598,17 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         let inc = ctx.queryParamOr("include_cancelled", "") == "true"
         let lim = parseInt64Or(ctx.queryParamOr("limit", "50"), 50)
         let list = repo.listAppointmentsByPatient(p.patientId, includeCancelled: inc, limit: lim)
+        /*
+         * ★ 2026-10-12：每条挂号补科室名/医生名/职称（理由同 `/schedules`）。
+         *   患者端首页「下一次就诊」与「我的就诊」都靠这三个字段，
+         *   此前只有 id ⇒ 界面只能显示「科室 #810003 · 医生 #900003」。
+         */
+        let names = nameIndexOf(dept, doc)
         let arr = ArrayList<JsonValue>()
         for (a in list) {
-            arr.add(bookingJson(a))
+            let item = bookingJson(a)
+            names.putInto(item, a.departmentId, a.doctorId)
+            arr.add(item)
         }
         let o = JsonObject()
         o.put("appointments", JsonArray(arr.toArray()))
@@ -1434,6 +1639,12 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         o.put("remain_num", JsonInt(s.remainNum))
         o.put("version", JsonInt(s.version))
         o.put("enabled", JsonBool(s.enabled))
+        /*
+         * ★ 2026-10-12：单个排班也补名称 —— `/schedules`（列表）与这里
+         *   返回**同一份数据**，形状必须一致（否则客户端要为同一实体的两个端点
+         *   写两套解析，且"列表里有名字、详情里没有"这种差异迟早变成 bug）。
+         */
+        nameIndexOf(dept, doc).putInto(o, s.departmentId, s.doctorId)
         sendOk(ctx, o)
     })
 
@@ -1455,9 +1666,10 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         let result = repo.book(p.patientId, scheduleId, clientToken, now,
                                maxRetry: HTTP_BOOKING_RETRY)
         // 幂等命中按 200 返回（不是 201）：没有新建资源
+        let names = nameIndexOf(dept, doc)
         match (result.outcome) {
-            case Booked(_) => sendCreated(ctx, bookingJson(result))
-            case AlreadyBooked(_) => sendOk(ctx, bookingJson(result))
+            case Booked(_) => sendCreated(ctx, bookingJsonFull(repo, result, names))
+            case AlreadyBooked(_) => sendOk(ctx, bookingJsonFull(repo, result, names))
             case SlotGone => throw apiError("SLOT_GONE")
             case ScheduleNotFound => throw apiError("SCHEDULE_NOT_FOUND")
         }
@@ -1487,6 +1699,12 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
                               "无权取消该挂号单（管理员可退任意单；患者只能退自己的）")
         }
         match (repo.cancel(id, hNowEpoch())) {
+            /*
+             * ★ 2026-10-12：退号响应同样带 `remain_num`。
+             *   理由与挂号同源，但**更关键**：退号的整个意义就是"把号还回去"，
+             *   客户端要立刻显示归还后的余号（此前它只能自己再发一次
+             *   `/schedules` 查询，而实测那次刷新没做 ⇒ 界面一直显示旧数字）。
+             */
             case Cancelled =>
                 /*
                  * ⚠ 必须**取消后重读**，不能用上面那个 appt 快照。
@@ -1495,7 +1713,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
                  *   自相矛盾的响应比不返回还糟。
                  */
                 match (repo.findAppointment(id)) {
-                    case Some(after) => sendOk(ctx, bookingJson(after))
+                    case Some(after) => sendOk(ctx, bookingJsonFull(repo, after, nameIndexOf(dept, doc)))
                     case None => throw apiError("APPOINTMENT_NOT_FOUND")
                 }
             case SlotNotRestored =>
@@ -1503,7 +1721,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
                 //   但带一个显式标记让客户端提示"需人工处理"，绝不谎报失败。
                 match (repo.findAppointment(id)) {
                     case Some(after) =>
-                        let o = bookingJson(after)
+                        let o = bookingJsonFull(repo, after, nameIndexOf(dept, doc))
                         o.put("status", JsonString("cancelled"))
                         o.put("slot_restored", JsonBool(false))
                         o.put("warning", JsonString("号源归还异常，请联系人工处理"))
@@ -1547,7 +1765,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      *   接诊状态机、"看板只出聚合"）。这里只**注册** ——
      *   于是"有哪些端点"仍然只有一处可数（便于 doc-counts 对账）。
      */
-    registerP4Routes(r, auth, gate, repo, emr, visit, dash, aiSettings)
+    registerP4Routes(r, auth, gate, repo, emr, visit, dash, aiSettings, dept, doc)
 
     /*
      * ★ 2026-10-09：基础数据域（科室/医生）的管理端 CRUD。
@@ -1567,6 +1785,13 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      *   ⇒ 新增文件必须**同时**更新 `doc-counts.ps1` 的清单（端点 48 -> 55）。
      */
     registerKbRoutes(r, auth, gate, kb)
+    /*
+     * ★ 2026-10-12：公告域（患者可读 + 管理员维护）。
+     * ⚠ 同样登记在这里：`doc-counts.ps1` 的 `$regFiles` 已加入 `http_notice.cj`
+     *   —— 新增**文件**必须同时更新那个清单，否则端点总数会静默少算
+     *   （本仓已因"计数脚本漏扫文件"踩过一次）。
+     */
+    registerNoticeRoutes(r, auth, gate, notices)
 
     return r
 }
@@ -1587,9 +1812,10 @@ public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGat
                              aiSettings: AiSettingsRepo, prompts: PromptRepo,
                              emr: MedicalRecordRepo, visit: VisitRepo,
                              dash: DashboardRepo, triageStat: TriageStatRepo,
-                             dept: DepartmentRepo, doc: DoctorRepo, kb: KbRepo): QingZhouApp {
+                             dept: DepartmentRepo, doc: DoctorRepo, kb: KbRepo,
+                             notices: NoticeRepo): QingZhouApp {
     let router = buildHospitalRouter(repo, auth, gate, triage, previsit, aiSettings, prompts,
-                                     emr, visit, dash, triageStat, dept, doc, kb)
+                                     emr, visit, dash, triageStat, dept, doc, kb, notices)
     return QingZhouApp()
         .use(requestId())
         .use(logger())

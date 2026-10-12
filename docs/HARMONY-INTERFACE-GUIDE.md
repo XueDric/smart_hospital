@@ -80,6 +80,15 @@ const health = await HttpClient.getInstance().getRoot('/health');         // 根
 | `getRoot(path)` | 根级、免鉴权（如 `/health`） |
 | `buildHeaders(authenticated)` | 需要时可复用（SSE 也用它取 token） |
 
+> ★ **服务端接口在 2026-10-12 有增量**（患者端联调后补的，全部是加法，老字段一个没删）：
+> `GET /api/v1/departments`、`GET /api/v1/doctors`（患者可读的科室/医生字典）、
+> `GET /api/v1/notices`（首页「医疗公告」的真实数据源）、`GET /api/v1/health`（`/health` 的
+> `/api/v1` 别名）；`/schedules`、`/appointments`、`/medical-records`、挂号与退号响应**新增**
+> `department_name`/`doctor_name`/`doctor_title`（挂号/退号另有 `remain_num`），
+> `/auth/me` **新增** `display_name`；分诊 `patient_note` 去掉了 Markdown `**`；
+> 服务端「今天」口径改为 **Asia/Shanghai**。
+> 逐字段说明见 [`FRONTEND-INTEGRATION.md`](FRONTEND-INTEGRATION.md) §5.19–5.25。
+
 **它替你做的四件事**
 
 1. 拼 base URL（`ApiConfig.url`）、注入 `Authorization: Bearer <token>`、`X-Device-Id`、`X-Device-Name`。

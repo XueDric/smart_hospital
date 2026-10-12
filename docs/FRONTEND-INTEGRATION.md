@@ -456,6 +456,11 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | 5.16 | `POST /api/v1/appointments/:id/cancel` | 是 | patient（自己的）/ admin（任意） | 退号 |
 | 5.17 | `GET /api/v1/medical-records` | 是 | patient / doctor | 我的就诊记录（**无正文**） |
 | 5.18 | `GET /api/v1/medical-records/:appointmentId` | 是 | patient / doctor | 某次就诊病历（锁定后含七段正文） |
+| 5.19 | `GET /api/v1/health` | 否 | 任何人 | 探活（`/health` 的 **`/api/v1` 别名**） |
+| 5.20 | `GET /api/v1/departments` | 是 | **三端都可** | 科室字典（患者端取科室名） |
+| 5.21 | `GET /api/v1/doctors` | 是 | **三端都可** | 医生字典（带 `department_name`） |
+| 5.22 | `GET /api/v1/notices` | 是 | **三端都可** | 公告列表（首页「医疗公告」） |
+| 5.23 | `GET/POST /api/v1/admin/notices`、`GET/PUT/DELETE /api/v1/admin/notices/:id` | 是 | **仅 admin** | 公告维护（§6.1） |
 
 > 权限判定收敛在**单一函数** `can(role, action)`（`http_app.cj:162-230`）。相关动作与角色：
 > `book` = 仅 patient；`view_schedule` = 三端；`query_own_medical_record` = patient | doctor；
@@ -845,6 +850,128 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 ---
 
+## 5.19+ 2026-10-12 补齐：名称 / 字典 / 公告 / 时区
+
+> 背景：鸿蒙患者端在模拟器上与真服务端联调后，暴露出 8 个"服务端缺"的点，逐项补掉。
+> **全部是加法**（老字段一个没删）：既有客户端不改也能继续跑，但要**用上**这些数据
+> 需要客户端配合（见每节末尾的「客户端要做什么」）。
+
+### 5.19 `GET /api/v1/health` —— 探活（`/api/v1` 别名）
+
+与 `GET /health` **同一份实现**（`http_app.cj` 的 `healthJson`），响应体一字不差：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `ok` | Bool | 恒 `true`（能回就是活着） |
+| `service` | String | `hospital-server` |
+| `version` | String | 如 `0.2.0-p1` |
+| `data_backend` | String | `mysql` |
+| `dev_auth` | Bool | 服务端是否开着 `--dev-auth` |
+
+⚠ 它**刻意不查库**：探活接口查询库会让"库慢"表现成"服务挂了"，而两者的处置完全不同。
+⚠ 客户端此前定义了 `HttpClient.getRoot()` 却**没有调用方** ⇒ 建议在启动/保存服务地址时探活一次。
+
+### 5.20 `GET /api/v1/departments` —— 科室字典（三端可读）
+
+| 参数 | 位置 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| `enabled_only` | query | Bool | 缺省 `false`；`true` 只回启用科室（**患者端应传 `true`**） |
+
+**成功 `200`**：`data = { items: [...], count: N }`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | Int64 | 科室 id（挂号页 `department_id` 就是它） |
+| `name` | String | 科室名（此前患者端只能显示 `科室 #810003`） |
+| `code` | String | 科室编码 |
+| `location` | String | 位置，可能为空串 |
+| `sort` | Int64 | 人工排序权重（小的在前） |
+| `enabled` | Bool | |
+| `created_at` | Int64 | epoch 秒 |
+
+> **客户端要做什么**：预约页/首页把"手输科室编号"换成**选科室**；就诊列表与病历详情的
+> `department_id` 用这里的 `name` 渲染（或直接用 §5.12/§5.14 已经带回的 `department_name`）。
+
+### 5.21 `GET /api/v1/doctors` —— 医生字典（三端可读）
+
+| 参数 | 位置 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| `department_id` | query | Int64 | 可选；`0`/缺省 = 全部 |
+| `enabled_only` | query | Bool | 缺省 `false` |
+
+**成功 `200`**：`data = { items: [...], count: N }`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | Int64 | 医生 id |
+| `name` | String | 医生姓名 |
+| `department_id` | Int64 | 所属科室 |
+| `department_name` | String | **已拼好**（服务端一次性读全科室建 map，刻意不做 N+1） |
+| `title` | String | 职称，如 `主任医师` |
+| `specialty` | String | 擅长，可能为空串 |
+| `enabled` | Bool | |
+| `created_at` | Int64 | epoch 秒 |
+
+> **客户端要做什么**：预约页按科室联动选医生；`doctor_title` 可用于列表副标题。
+
+### 5.22 `GET /api/v1/notices` —— 公告（三端可读）
+
+| 参数 | 位置 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| `limit` | query | Int64 | `0`/缺省 = 服务端默认（20）；上限 200 |
+
+**可见性**：只回 `enabled = 1` **且** `published_at <= now` 的公告（支持预排期）。
+
+**成功 `200`**：`data = { items: [...], count: N }` —— 字段与客户端 `PatientNotice` 模型对齐
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | Int64 | |
+| `title` | String | 标题（**唯一**：同名公告不允许重复建，避免两条互相矛盾） |
+| `body` | String | 正文（纯文本，不含 Markdown） |
+| `category` | String | 分组标签，如 `就诊提醒` / `健康提示` / `服务说明`（缺省 `通知`） |
+| `date` | String | `YYYY-MM-DD`，**Asia/Shanghai**（直接显示用这个） |
+| `published_at` | Int64 | epoch 秒（需要精确排序时用） |
+| `sort` | Int64 | 人工权重（小的在前） |
+
+> **客户端要做什么**：把 `PatientRepository.notices()` 从"无条件 `MockPatientRepository.notices()`"
+> 改成在线模式走本端点（离线/演示模式仍可用 mock）。
+
+### 5.23 管理端公告（仅 admin）
+
+`GET /api/v1/admin/notices?include_disabled=&limit=` / `POST /api/v1/admin/notices` /
+`GET|PUT|DELETE /api/v1/admin/notices/:id`。管理端 JSON **多出**
+`enabled` / `updated_by` / `created_at` / `updated_at`。
+**PUT 不传 `published_at` 时保持原发布时间**（改错别字不会把预排期公告提前发出）。
+>` 客户端**不得**出现这些路径（见 §6.1）。
+
+### 5.24 本次变更的既有端点字段（增量）
+
+| 端点 | 新增字段 | 为什么 |
+| --- | --- | --- |
+| `GET /api/v1/auth/me`（§5.3） | `display_name` | 此前只回 id/role，患者端「同步身份信息」刷不出姓名 |
+| `GET /api/v1/schedules`（§5.12） | `department_name` `doctor_name` `doctor_title` `version` | 患者端此前只能显示 `科室 #810003 · 医生 #900003`；`version` 供"号源已变化"提示（`/schedules/:id` 早就给了） |
+| `GET /api/v1/appointments`（§5.14） | 同上三个名称 | 首页「下一次就诊」/就诊列表 |
+| `POST /api/v1/appointments`（§5.15） | 名称三个 + `remain_num` | 挂完号**就地刷新「余 N」**，不必再发一次排班查询 |
+| `POST /api/v1/appointments/:id/cancel`（§5.16） | 名称三个 + `remain_num` | 同上（退号后号源归还数） |
+| `GET /api/v1/medical-records`（§5.17） | `department_id` `visit_date` `period` + 名称三个 | 档案列表此前连"看的哪个科、哪天"都没有 |
+| `POST /api/v1/triage`（§5.8） | —（文案变更） | `patient_note` 里的 Markdown `**` 已去掉：原样显示会变成 `以下是**其它有号**的科室` |
+
+### 5.25 时间口径：服务端「今天」= **Asia/Shanghai**
+
+此前服务端算"今天"用的是 **UTC**，而客户端用本机日期 ⇒ 在中国（UTC+8）每天
+**00:00–08:00** 这 8 小时里两者**差一天**：服务端认为"今天"还是昨天，
+患者早上打开 App 时**当天上午的号会被判成"过去"而排不出来**。
+
+现已在服务端统一为 `HOSPITAL_TZ_OFFSET_SECONDS = 8 * 3600`（`http_app.cj`），
+`hTodayDate()` / `hDateStringOf()` / 看板的默认日期窗（`dashboard.cj`）全部同一口径，
+并由 `selftest` 用**固定 epoch** 钉住（含"UTC 10-11T16:30 在上海应算 2026-10-12"这条跨零点断言）。
+
+⚠ 客户端 `Theme.todayString()` 用的是**设备本地日期**：设备时区若被设成非中国时区，
+仍可能出现跨零点不一致（建议客户端显示"今天"时以服务端 `date` 字段为准）。
+
+---
+
 ## 6. 不能调的端点（前端不应出现这些路径）
 
 以下端点**确实存在**，但权限矩阵把它们挡在患者之外（`http_app.cj:162-230`）。
@@ -864,6 +991,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | `GET/POST /api/v1/admin/departments`、`GET/PUT/DELETE /…/:id` | 科室 CRUD（`manage_base_data`） | `http_base.cj:172-256` |
 | `GET/POST /api/v1/admin/doctors`、`GET/PUT/DELETE /…/:id` | 医生 CRUD | `http_base.cj:260-333` |
 | `GET/POST /api/v1/admin/kb/docs`、`GET/PUT/DELETE /…/:id`、`GET /api/v1/admin/kb/stats` | 知识库 CRUD | `http_kb.cj:146-250` |
+| `GET/POST /api/v1/admin/notices`、`GET/PUT/DELETE /api/v1/admin/notices/:id` | 公告 CRUD（`manage_notice`）；`?include_disabled=` 可见停用/预排期；**PUT 不传 `published_at` 则保持原发布时间** | `http_notice.cj:167-243` |
 | `GET /api/v1/admin/dashboard` | 运营看板，**只出计数、绝不含患者 id/姓名/电话** | `http_p4.cj:466`、`dashboard.cj:240-245` |
 
 ### 6.2 医生端 `/api/v1/doctor/**`
@@ -1046,17 +1174,17 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 
 | # | 缺口 | 影响哪个页面 | 现在的替代做法 / 证据 |
 | --- | --- | --- | --- |
-| 1 | **没有患者可读的科室列表** | 「选科室挂号」无法独立构建 | 科室接口全部在 `/api/v1/admin/departments`（需 admin，`http_base.cj:172-256`）。唯一替代：分诊 `options[].department_name` 间接得到"有号的科室"。⇒ 建议把"选科室"页面**改为"从分诊进入"**，或让服务端补一个 `GET /api/v1/departments` |
-| 2 | **没有患者可读的医生列表 / 详情** | 号源列表无法显示「李医生 副主任医师」 | 医生接口只有 `/api/v1/admin/doctors`（`http_base.cj:260-333`）。`GET /schedules` 只回 `doctor_id`。唯一医生姓名来源是分诊 `options[].doctor_name` / `doctor_title`。⇒ **号源列表页只能显示 `科室 #3 / 医生 #9`**，或干脆只让用户从分诊 `options` 点进挂号 |
-| 3 | **排班无科室名/医生名联表** | 同上 | `http_app.cj:1361-1371` 只有 8 个字段，无 name |
+| 1 | ~~**没有患者可读的科室列表**~~ ✅ **已补齐 2026-10-12** | 「选科室挂号」现在可以独立构建 | 补了 `GET /api/v1/departments`（三端可读，见 §5.20）。管理端仍走 `/api/v1/admin/departments` |
+| 2 | ~~**没有患者可读的医生列表 / 详情**~~ ✅ **已补齐 2026-10-12** | 号源列表可以显示「P4测试医生900003 主任医师」 | 补了 `GET /api/v1/doctors`（三端可读、带 `department_name`，见 §5.21） |
+| 3 | ~~**排班无科室名/医生名联表**~~ ✅ **已补齐 2026-10-12** | 同上 | `GET /api/v1/schedules` 现在回 `department_name` / `doctor_name` / `doctor_title` / `version`；`GET /appointments`、`/medical-records`、挂号与退号响应同样补齐（§5.24） |
 | 4 | **没有 `GET /api/v1/appointments/:id` 单查** | 无法深链到单张挂号单；从推送直接打开详情做不到 | 只有列表 `GET /api/v1/appointments`。⇒ 详情页要么从列表点入带上完整对象，要么本地缓存 |
 | 5 | **没有患者自助注册** | 无法做注册页 | 只有 `POST /api/v1/admin/users`（`http_base.cj` 文件头明确记录 patient CRUD 被刻意排除，PII / 个保法）。⇒ 患者账号必须由院内前台建 |
 | 6 | **没有患者改密 / 忘记密码** | 无法做"安全设置"页 | 只能找管理员走 `POST /api/v1/admin/users/:id/password`（会踢下线） |
 | 7 | **没有令牌刷新接口**（且不需要） | —— | 30 天 TTL + 服务端滑动续期（`auth_repo.cj:754-792`）。**不要去实现 `/auth/refresh`** |
 | 8 | **没有真正的分页** | 长列表无法"加载更多" | 只有 `limit`（超限**静默夹住**），无 `total` / `cursor` / `page`。⇒ 只能靠 `count == limit` 猜"可能还有更多"，并用 `work_date` 等条件把结果集收窄 |
-| 9 | **排班不做"未来过滤"** | 「今日可约」会混入历史排班 | `domain_booking.cj:311-326` 无时间条件。⇒ **客户端必须自己按 `work_date` 过滤**，并与服务端 UTC 的"今天"对齐（见 §10.4） |
+| 9 | **排班不做"未来过滤"** | 「今日可约」会混入历史排班 | `domain_booking.cj:311-326` 无时间条件。⇒ 客户端必须自己按 `work_date` 过滤。**服务端的"今天"已改为 Asia/Shanghai**（§5.25，与北京时间一致） |
 | 10 | **没有按名搜索科室/医生** | 无法做搜索框 | 只能按 `department_id` 精确过滤，且需要先知道 id（而缺口 1 让前端拿不到 id 列表） |
-| 11 | **没有消息 / 推送端点** | 无法做消息中心、到诊提醒 | 全路由表里没有 message/notice/push 类路径（`docs/PUSH-NOTES.md` 只是备忘）。⇒ 前端若要做提醒，**只能靠本地通知 + 本地保存的 `visit_date`/`period`**，服务端给不了 |
+| 11 | ~~**没有消息 / 推送端点**~~ ✅ **公告已补齐 2026-10-12**（推送仍未做） | 消息中心 / 首页「医疗公告」 | 补了 `GET /api/v1/notices`（三端可读）+ 管理端 CRUD（§5.22/§5.23）。⚠ **到诊提醒这类主动推送仍没有** ⇒ 本地通知 + 本地保存的 `visit_date`/`period` |
 | 12 | **没有"这单还能不能退"的判定字段** | 退号按钮无法准确置灰 | 无 `can_cancel` 字段。`bookingJson` 里只有 `status`；服务端**不校验是否已过就诊时间**。⇒ 用 `status === 'booked'` 粗略判断，并对 403/404 做兜底提示 |
 | 13 | **分诊结果无法跳详情** | `options` 给了 `department_id`/`doctor_id`，但没有详情页可取（缺口 1/2） | ⇒ 分诊结果页**直接就地展示号源并允许挂号**，不做"科室详情"跳转 |
 | 14 | **没有 AI 流式分诊** | 分诊页不能做逐字输出 | 只有预问诊是 SSE；`POST /api/v1/triage` 是一次性 JSON（`http_app.cj:1157-1223` 无 stream 分支）。⇒ 分诊页用 loading 态即可 |

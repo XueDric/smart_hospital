@@ -580,6 +580,16 @@ public func baseClassifyDuplicate(message: String, out: BaseWriteOutcome): BaseW
     if (message.contains("uk_department_code")) {
         return out.markDuplicate("code")
     }
+    /*
+     * 公告域（2026-10-12 新增）用的是同一个分类器 —— 不认它的索引名会落到下面的
+     * 兜底分支（`markDuplicate("")`），表现为"HTTP 层只能给通用文案"，
+     * 而这个字段存在的意义正是"**说清是哪个字段冲突**，便于使用者自己修"。
+     * ⚠ 教训：**加一张带唯一键的表，就要回来认它的索引名** ——
+     *   唯一键是各自定义的，分类器却是共用的一处。
+     */
+    if (message.contains("uk_notice_title")) {
+        return out.markDuplicate("title")
+    }
     if (message.contains("Duplicate entry")) {
         /* 消息在但索引名不认识 ⇒ 按"重复"处理，字段留空（HTTP 层给通用文案）。 */
         return out.markDuplicate("")

@@ -49,6 +49,13 @@ func hResetAll(db: DbBackend): Unit {
     db.exec("DELETE FROM doctor", Array<DbValue>())
     db.exec("DELETE FROM department", Array<DbValue>())
     db.exec("DELETE FROM patient", Array<DbValue>())
+    /*
+     * 公告（2026-10-12 新增）。
+     * ⚠ 必须在这里清：`AC-NOTICE-*` 的可见性断言是按"列表里有几条"数的，
+     *   而库是**共享**的（HTTP 联调也会往 notice 写）。
+     *   不清就会出现"上次联调留下的公告把上限占满"，表现为随机红。
+     */
+    db.exec("DELETE FROM notice", Array<DbValue>())
 }
 
 /*
@@ -715,6 +722,15 @@ public func runAcceptance(db: DbBackend): Int64 {
      *   （它们之间有共享夹具的隐含顺序）。
      */
     acBind1(runner, db)
+    /*
+     * 公告域（定义在 acceptance_notice.cj）。
+     * ⚠ 排在**最后**：它的夹具自建自清（标题前缀 `ACNOTICE`），
+     *   不依赖别的用例留下的状态，也不给别的用例留状态
+     *   —— 与 P5 知识库（`ACKB`）同一手法。
+     */
+    acNotice1(runner, db)
+    acNotice2(runner, db)
+    acNotice3(runner, db)
     println("")
     println("通过 ${runner.passed} 项，失败 ${runner.failed} 项")
     if (runner.failed == 0) {
