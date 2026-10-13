@@ -9,6 +9,19 @@ export class RouteName {
   static readonly RECORD_DETAIL: string = 'record-detail';
   static readonly NOTICE: string = 'notice';
   static readonly PROFILE: string = 'profile';
+  // 医生端
+  static readonly DOCTOR_LOGIN: string = 'doctor-login';
+  static readonly DOCTOR_QUEUE: string = 'doctor-queue';
+  static readonly DOCTOR_RECORD: string = 'doctor-record';
+  // 管理端
+  static readonly ADMIN_LOGIN: string = 'admin-login';
+  static readonly ADMIN_DASHBOARD: string = 'admin-dashboard';
+  static readonly ADMIN_DEPARTMENTS: string = 'admin-departments';
+  static readonly ADMIN_DOCTORS: string = 'admin-doctors';
+  static readonly ADMIN_SCHEDULES: string = 'admin-schedules';
+  static readonly ADMIN_USERS: string = 'admin-users';
+  static readonly ADMIN_AI: string = 'admin-ai';
+  static readonly ADMIN_KB: string = 'admin-kb';
 }
 
 export class AppRouter {

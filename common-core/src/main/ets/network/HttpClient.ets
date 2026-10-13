@@ -6,7 +6,9 @@ import { ApiError, ErrorCode } from './ApiError';
 
 export enum HttpMethod {
   GET = 'GET',
-  POST = 'POST'
+  POST = 'POST',
+  PUT = 'PUT',
+  DELETE = 'DELETE'
 }
 
 export class HttpClient {
@@ -22,6 +24,14 @@ export class HttpClient {
 
   async post(path: string, body: Object, authenticated: boolean = true): Promise<Object> {
     return this.request(HttpMethod.POST, path, body, authenticated);
+  }
+
+  async put(path: string, body: Object, authenticated: boolean = true): Promise<Object> {
+    return this.request(HttpMethod.PUT, path, body, authenticated);
+  }
+
+  async delete(path: string, authenticated: boolean = true): Promise<Object> {
+    return this.request(HttpMethod.DELETE, path, undefined, authenticated);
   }
 
   async getRoot(path: string): Promise<Object> {
@@ -46,7 +56,7 @@ export class HttpClient {
     const request = http.createHttp();
     try {
       const options: http.HttpRequestOptions = {
-        method: method === HttpMethod.POST ? http.RequestMethod.POST : http.RequestMethod.GET,
+        method: this.requestMethod(method),
         header: this.buildHeaders(authenticated),
         readTimeout: 20000,
         connectTimeout: 10000,
@@ -69,6 +79,19 @@ export class HttpClient {
     } finally {
       request.destroy();
     }
+  }
+
+  private requestMethod(method: HttpMethod): http.RequestMethod {
+    if (method === HttpMethod.POST) {
+      return http.RequestMethod.POST;
+    }
+    if (method === HttpMethod.PUT) {
+      return http.RequestMethod.PUT;
+    }
+    if (method === HttpMethod.DELETE) {
+      return http.RequestMethod.DELETE;
+    }
+    return http.RequestMethod.GET;
   }
 
   private parseResponse(status: number, text: string, retryAfter: number): Object {
@@ -132,8 +155,15 @@ export class HttpClient {
 
   private handleAuthStatus(code: string, status: number): void {
     if (status === 401 || code === ErrorCode.AUTH_REQUIRED || code === ErrorCode.AUTH_TOKEN_EXPIRED) {
+      const role = SessionStore.getRole();
       SessionStore.clearLogin();
-      AppRouter.getInstance().replace(RouteName.LOGIN);
+      if (role === 'doctor') {
+        AppRouter.getInstance().replace(RouteName.DOCTOR_LOGIN);
+      } else if (role === 'admin') {
+        AppRouter.getInstance().replace(RouteName.ADMIN_LOGIN);
+      } else {
+        AppRouter.getInstance().replace(RouteName.LOGIN);
+      }
     }
   }
 

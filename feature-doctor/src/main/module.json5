@@ -1,0 +1,10 @@
+{
+  "module": {
+    "name": "feature_doctor",
+    "type": "har",
+    "deviceTypes": [
+      "phone",
+      "tablet"
+    ]
+  }
+}

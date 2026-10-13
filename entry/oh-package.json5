@@ -7,6 +7,8 @@
   "license": "Apache-2.0",
   "dependencies": {
     "common-core": "file:../common-core",
-    "feature-patient": "file:../feature-patient"
+    "feature-patient": "file:../feature-patient",
+    "feature-doctor": "file:../feature-doctor",
+    "feature-admin": "file:../feature-admin"
   }
 }

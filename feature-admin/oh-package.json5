@@ -1,0 +1,11 @@
+{
+  "name": "feature-admin",
+  "version": "1.0.0",
+  "description": "Admin-facing features (dashboard, base data, AI center, knowledge base)",
+  "main": "Index.ets",
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "common-core": "file:../common-core"
+  }
+}

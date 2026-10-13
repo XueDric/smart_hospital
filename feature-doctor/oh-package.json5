@@ -1,0 +1,11 @@
+{
+  "name": "feature-doctor",
+  "version": "1.0.0",
+  "description": "Doctor-facing features (visit queue + EMR)",
+  "main": "Index.ets",
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "common-core": "file:../common-core"
+  }
+}

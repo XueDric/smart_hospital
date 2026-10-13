@@ -1,0 +1,50 @@
+import { AppColor, AppRouter, RouteName, SessionStore } from 'common-core';
+import { DoctorLoginPage } from './pages/DoctorLoginPage';
+import { EmrEditPage } from './pages/EmrEditPage';
+import { VisitQueuePage } from './pages/VisitQueuePage';
+
+@ComponentV2
+export struct DoctorRoot {
+  @Param route: string = RouteName.DOCTOR_LOGIN;
+
+  aboutToAppear(): void {
+    if (this.route !== RouteName.DOCTOR_LOGIN && !SessionStore.hasToken()) {
+      AppRouter.getInstance().reset(RouteName.DOCTOR_LOGIN);
+    }
+  }
+
+  build() {
+    Stack() {
+      if (this.route === RouteName.DOCTOR_LOGIN) {
+        DoctorLoginPage()
+          .width('100%')
+          .height('100%')
+      } else if (this.route === RouteName.DOCTOR_QUEUE) {
+        VisitQueuePage()
+          .width('100%')
+          .height('100%')
+      } else if (this.route === RouteName.DOCTOR_RECORD) {
+        EmrEditPage()
+          .width('100%')
+          .height('100%')
+      } else {
+        this.placeholder()
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(AppColor.BACKGROUND)
+  }
+
+  @Builder
+  placeholder() {
+    Column() {
+      Text('页面建设中')
+        .fontSize(18)
+        .fontColor(AppColor.TEXT_SECONDARY)
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+  }
+}

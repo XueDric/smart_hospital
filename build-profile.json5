@@ -45,6 +45,14 @@
     {
       "name": "feature_patient",
       "srcPath": "./feature-patient"
+    },
+    {
+      "name": "feature_doctor",
+      "srcPath": "./feature-doctor"
+    },
+    {
+      "name": "feature_admin",
+      "srcPath": "./feature-admin"
     }
   ]
 }

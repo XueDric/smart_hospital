@@ -1,5 +1,7 @@
 import { AppRouter, RouteName } from 'common-core';
 import { PatientRoot } from 'feature-patient';
+import { DoctorRoot } from 'feature-doctor';
+import { AdminRoot } from 'feature-admin';
 
 @Entry
 @ComponentV2
@@ -15,9 +17,19 @@ struct Index {
 
   build() {
     Stack() {
-      PatientRoot({ route: this.route })
-        .width('100%')
-        .height('100%')
+      if (this.route.startsWith('doctor-')) {
+        DoctorRoot({ route: this.route })
+          .width('100%')
+          .height('100%')
+      } else if (this.route.startsWith('admin-')) {
+        AdminRoot({ route: this.route })
+          .width('100%')
+          .height('100%')
+      } else {
+        PatientRoot({ route: this.route })
+          .width('100%')
+          .height('100%')
+      }
     }
       .width('100%')
       .height('100%')

@@ -1,0 +1,10 @@
+{
+  "module": {
+    "name": "feature_admin",
+    "type": "har",
+    "deviceTypes": [
+      "phone",
+      "tablet"
+    ]
+  }
+}
