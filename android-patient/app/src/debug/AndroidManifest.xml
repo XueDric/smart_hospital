@@ -1,0 +1,9 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- debug 变体刻意放宽为允许明文 HTTP（仅本机联调）。
+         必须显式 tools:replace：main manifest 声明了 usesCleartextTraffic="false"，
+         两个值冲突会让 manifest merger 直接失败（processDebugMainManifest FAILED）。 -->
+    <application
+        android:usesCleartextTraffic="true"
+        tools:replace="android:usesCleartextTraffic" />
+</manifest>

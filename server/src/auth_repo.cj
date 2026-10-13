@@ -459,7 +459,7 @@ public class AuthRepo {
         u.loginName = rs.getString(0, 1)
         u.role = match (roleOf(rs.getString(0, 2))) {
             case Some(r) => r
-            case None => Role.Patient
+            case None => return None
         }
         u.refId = rs.getInt(0, 3)
         u.displayName = rs.getString(0, 4)
@@ -490,7 +490,7 @@ public class AuthRepo {
         u.loginName = rs.getString(0, 1)
         u.role = match (roleOf(rs.getString(0, 2))) {
             case Some(r) => r
-            case None => Role.Patient
+            case None => return None
         }
         u.refId = rs.getInt(0, 3)
         u.displayName = rs.getString(0, 4)
@@ -517,6 +517,10 @@ public class AuthRepo {
         if (existing.isSome()) {
             return existing.getOrThrow().id
         }
+        // 业务账号必须绑定真实实体；停用医生仍存在，不在鉴权层否定其历史访问。
+        if (!authReferenceExists(role, refId)) {
+            throw UserFacingError("账号绑定的业务档案不存在：${refId}")
+        }
         /*
          * ★ 建号也强制口令强度（不只是"重置口令"那条路）。
          *   放在这里而不是 HTTP 层，是为了让 `create-admin` 这个 CLI 入口
@@ -539,6 +543,25 @@ public class AuthRepo {
             return 0
         }
         return rs.getInt(0, 0)
+    }
+
+    /* 只校验业务实体存在性，启停状态由业务权限与排班入口处理。 */
+    private func authReferenceExists(role: Role, refId: Int64): Bool {
+        match (role) {
+            case Patient =>
+                if (refId <= 0) {
+                    return false
+                }
+                let rs = db.query("SELECT id FROM patient WHERE id = ?", [DbInt(refId)])
+                return rs.rowCount() > 0
+            case Doctor =>
+                if (refId <= 0) {
+                    return false
+                }
+                let rs = db.query("SELECT id FROM doctor WHERE id = ?", [DbInt(refId)])
+                return rs.rowCount() > 0
+            case Admin => return true
+        }
     }
 
     /* 账号是否存在（按 id）。用于"重置口令"前确认，避免 UPDATE 影响 0 行却回 200。 */
@@ -621,6 +644,9 @@ public class AuthRepo {
                 ok = verifyPw(password, creds[0], creds[1], creds[2])
                 if (ok && u.status != "active") {
                     return out                 // 账号停用：既不计失败也不签发
+                }
+                if (ok && !authReferenceExists(u.role, u.refId)) {
+                    return out                 // 幽灵业务身份：不签发令牌，不泄露缺失原因
                 }
                 if (ok) {
                     out.userId = u.id
@@ -785,17 +811,20 @@ public class AuthRepo {
             return None
         }
 
-        // 滑动续期（节流：每天最多一次）
-        if (expiresAt - now < TOKEN_TTL - RENEW_AFTER && now - lastRenew >= RENEW_AFTER) {
-            db.exec("UPDATE auth_token SET expires_at = ?, last_renew_at = ? WHERE token = ?",
-                    [DbInt(now + TOKEN_TTL), DbInt(now), DbStr(token)])
-        }
-
         let p = Principal()
         p.userId = userId
         p.role = match (roleOf(roleStr)) {
             case Some(r) => r
-            case None => Role.Patient
+            case None => return None
+        }
+        if (!authReferenceExists(p.role, refId)) {
+            return None
+        }
+
+        // 仅有效身份才滑动续期（节流：每天最多一次）。
+        if (expiresAt - now < TOKEN_TTL - RENEW_AFTER && now - lastRenew >= RENEW_AFTER) {
+            db.exec("UPDATE auth_token SET expires_at = ?, last_renew_at = ? WHERE token = ?",
+                    [DbInt(now + TOKEN_TTL), DbInt(now), DbStr(token)])
         }
         /*
          * 角色 → 业务实体 id 的映射。

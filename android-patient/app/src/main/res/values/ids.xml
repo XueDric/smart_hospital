@@ -1,0 +1,8 @@
+<resources>
+    <item name="login_name" type="id" />
+    <item name="login_password" type="id" />
+    <item name="login_submit" type="id" />
+    <item name="login_message" type="id" />
+    <item name="cooldown_banner" type="id" />
+    <item name="appointment_outcome" type="id" />
+</resources>

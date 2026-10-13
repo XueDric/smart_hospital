@@ -579,6 +579,42 @@ func isDateLike(s: String): Bool {
     return true
 }
 
+/* 写入排班必须是日历中真实存在的日期；形状检查仍供只读筛选使用。 */
+func hIsCalendarDate(s: String): Bool {
+    if (!isDateLike(s)) {
+        return false
+    }
+    let a = s.toArray()
+    let year = (Int64(a[0]) - 0x30) * 1000 + (Int64(a[1]) - 0x30) * 100 +
+               (Int64(a[2]) - 0x30) * 10 + Int64(a[3]) - 0x30
+    let month = (Int64(a[5]) - 0x30) * 10 + Int64(a[6]) - 0x30
+    let day = (Int64(a[8]) - 0x30) * 10 + Int64(a[9]) - 0x30
+    if (year <= 0 || month < 1 || month > 12 || day < 1) {
+        return false
+    }
+    var maxDay: Int64 = 31
+    if (month == 4 || month == 6 || month == 9 || month == 11) {
+        maxDay = 30
+    } else if (month == 2) {
+        maxDay = if (year % 400 == 0 || (year % 4 == 0 && year % 100 != 0)) { 29 } else { 28 }
+    }
+    return day <= maxDay
+}
+
+/* 两个已校验的固定宽度日期按 ASCII 比较，医院日期不依赖宿主机时区。 */
+func hScheduleDateIsPast(s: String): Bool {
+    let date = s.toArray()
+    let today = hTodayDate().toArray()
+    var i: Int64 = 0
+    while (i < 10) {
+        if (date[i] != today[i]) {
+            return Int64(date[i]) < Int64(today[i])
+        }
+        i = i + 1
+    }
+    return false
+}
+
 func truncate64(s: String): String {
     if (s.size <= 64) {
         return s
@@ -1534,7 +1570,12 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         if (date.size > 0 && !isDateLike(date)) {
             throw apiErrorMsg("VALIDATION_FAILED", "work_date 格式应为 YYYY-MM-DD")
         }
-        let list = repo.listSchedules(departmentId: depId, workDate: date, limit: lim)
+        let bookableOnly = match (p.role) {
+            case Patient => true
+            case _ => false
+        }
+        let list = repo.listSchedules(departmentId: depId, workDate: date, limit: lim,
+                                      bookableOnly: bookableOnly)
         /*
          * ★ 2026-10-12：补 `department_name` / `doctor_name` / `doctor_title` 与 `version`。
          *
@@ -1624,7 +1665,10 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         if (sid <= 0) {
             throw apiErrorMsg("VALIDATION_FAILED", "排班 id 必须是正整数")
         }
-        let found = repo.findSchedule(sid)
+        let found = match (p.role) {
+            case Patient => repo.findBookableSchedule(sid)
+            case _ => repo.findSchedule(sid)
+        }
         if (found.isNone()) {
             throw apiError("SCHEDULE_NOT_FOUND")
         }
@@ -1759,8 +1803,29 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         let workDate = requireStr(ctx, "work_date")
         let period = requireStr(ctx, "period")
         let total = requireInt(ctx, "total_num")
-        if (total < 0) {
-            throw apiErrorMsg("VALIDATION_FAILED", "total_num 不能为负")
+        if (total <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "total_num 必须是正整数")
+        }
+        if (!hIsCalendarDate(workDate) || hScheduleDateIsPast(workDate)) {
+            throw apiErrorMsg("VALIDATION_FAILED", "work_date 必须是 YYYY-MM-DD 格式的有效日期，且不能早于医院今天")
+        }
+        if (period != "AM" && period != "PM") {
+            throw apiErrorMsg("VALIDATION_FAILED", "period 只能是 AM 或 PM")
+        }
+        let department = dept.findById(departmentId)
+        if (department.isNone()) {
+            throw apiErrorMsg("VALIDATION_FAILED", "department_id 对应的科室不存在")
+        }
+        if (!department.getOrThrow().enabled) {
+            throw apiErrorMsg("VALIDATION_FAILED", "不能为停用科室创建排班")
+        }
+        let doctor = doc.findById(doctorId)
+        if (doctor.isNone()) {
+            throw apiErrorMsg("VALIDATION_FAILED", "doctor_id 对应的医生不存在")
+        }
+        let selectedDoctor = doctor.getOrThrow()
+        if (!selectedDoctor.enabled || selectedDoctor.departmentId != departmentId) {
+            throw apiErrorMsg("VALIDATION_FAILED", "医生必须启用且属于所选科室")
         }
         let now = hNowEpoch()
         repo.insertSchedule(doctorId, departmentId, workDate, period, total, now)

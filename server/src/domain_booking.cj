@@ -78,6 +78,26 @@ public let MAX_BOOKING_RETRY: Int64 = 3
  */
 public let HTTP_BOOKING_RETRY: Int64 = 6
 
+/*
+ * 患者可售排班的共同 SQL 谓词。alias 只由源码内的固定表名/别名传入；
+ * 最后一个日期占位符由调用方绑定医院日期，不使用数据库时区。
+ * EXISTS 不扩展结果列，避免挂号/退号曾出现的 JOIN 列名歧义。
+ * CASE 先守住日期形状再做日历运算，历史脏日期不会进入日期转换。
+ */
+func bookingSchedulePredicate(alias: String): String {
+    let s = alias + "."
+    return s + "enabled = 1 AND " + s + "total_num > 0 AND " +
+        s + "period IN ('AM', 'PM') AND " +
+        "CASE WHEN " + s + "work_date REGEXP '^[1-9][0-9]{3}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$' " +
+        "THEN CAST(SUBSTRING(" + s + "work_date, 9, 2) AS UNSIGNED) <= " +
+        "DAY(LAST_DAY(CONCAT(SUBSTRING(" + s + "work_date, 1, 7), '-01'))) ELSE 0 END = 1 AND " +
+        s + "work_date >= ? AND " +
+        "EXISTS (SELECT 1 FROM department booking_dep WHERE booking_dep.id = " +
+        s + "department_id AND booking_dep.enabled = 1) AND " +
+        "EXISTS (SELECT 1 FROM doctor booking_doc WHERE booking_doc.id = " +
+        s + "doctor_id AND booking_doc.enabled = 1 AND booking_doc.department_id = " + s + "department_id)"
+}
+
 /* ===================== 结果类型 ===================== */
 
 /*
@@ -191,12 +211,36 @@ public class BookingRepo {
 
     /* ---------- 读 ---------- */
 
-    /* 按 id 读排班；不存在返回 None。 */
+    /* 原始排班读取：供退号归还/历史与管理读取，不能加可售过滤。 */
     public func findSchedule(scheduleId: Int64): ?ScheduleRow {
         let rs = db.query(
             "SELECT id, doctor_id, department_id, work_date, period, " +
             "total_num, remain_num, version, enabled FROM schedule WHERE id = ?",
             [DbInt(scheduleId)])
+        if (rs.rowCount() < 1) {
+            return None
+        }
+        let row = ScheduleRow()
+        row.id = rs.getInt(0, 0)
+        row.doctorId = rs.getInt(0, 1)
+        row.departmentId = rs.getInt(0, 2)
+        row.workDate = rs.getString(0, 3)
+        row.period = rs.getString(0, 4)
+        row.totalNum = rs.getInt(0, 5)
+        row.remainNum = rs.getInt(0, 6)
+        row.version = rs.getInt(0, 7)
+        row.enabled = rs.getInt(0, 8) != 0
+        return Some(row)
+    }
+
+    /* 患者读取与新挂号使用；停用/过期/关联无效排班等同不可售。 */
+    public func findBookableSchedule(scheduleId: Int64, today!: String = ""): ?ScheduleRow {
+        let date = if (today.size > 0) { today } else { hTodayDate() }
+        let rs = db.query(
+            "SELECT s.id, s.doctor_id, s.department_id, s.work_date, s.period, " +
+            "s.total_num, s.remain_num, s.version, s.enabled FROM schedule s " +
+            "WHERE s.id = ? AND " + bookingSchedulePredicate("s"),
+            [DbInt(scheduleId), DbStr(date)])
         if (rs.rowCount() < 1) {
             return None
         }
@@ -308,7 +352,8 @@ public class BookingRepo {
      * ── 筛选语义（都**可选**，给了才加条件）────────────────────────────────
      *   · departmentId > 0 → 该科室
      *   · workDate 非空    → 该就诊日（精确匹配；日期区间查询属 P4 排班视图）
-     *   一律 `enabled = 1`（停用的排班不该出现在患者端可挂列表里），
+     *   患者列表遵守共同可售谓词（启用/有效日期时段/关联启用与归属）；
+     *   管理/医生读取保留原 `enabled = 1` 范围，以便维护历史或失效的关联。
      *   并在 SQL 层按 `work_date, period, id` 排序（稳定，不靠应用层再排）。
      *
      * ⚠ **不做"只显示有号"的过滤**：`remain_num = 0` 的排班也要返回，
@@ -316,20 +361,24 @@ public class BookingRepo {
      *   是否可挂由 `remain_num` 字段自行判断。
      */
     public func listSchedules(departmentId!: Int64 = 0, workDate!: String = "",
-                              limit!: Int64 = 100): Array<ScheduleRow> {
+                              limit!: Int64 = 100, bookableOnly!: Bool = true): Array<ScheduleRow> {
         let cap = if (limit <= 0) { 100 } else if (limit > 500) { 500 } else { limit }
-        var sql = "SELECT id, doctor_id, department_id, work_date, period, total_num, " +
-                  "remain_num, version, enabled FROM schedule WHERE enabled = 1"
+        var sql = "SELECT s.id, s.doctor_id, s.department_id, s.work_date, s.period, s.total_num, " +
+                  "s.remain_num, s.version, s.enabled FROM schedule s WHERE " +
+                  (if (bookableOnly) { bookingSchedulePredicate("s") } else { "s.enabled = 1" })
         let params = ArrayList<DbValue>()
+        if (bookableOnly) {
+            params.add(DbStr(hTodayDate()))
+        }
         if (departmentId > 0) {
-            sql = sql + " AND department_id = ?"
+            sql = sql + " AND s.department_id = ?"
             params.add(DbInt(departmentId))
         }
         if (workDate.size > 0) {
-            sql = sql + " AND work_date = ?"
+            sql = sql + " AND s.work_date = ?"
             params.add(DbStr(workDate))
         }
-        sql = sql + " ORDER BY work_date ASC, period ASC, id ASC LIMIT ?"
+        sql = sql + " ORDER BY s.work_date ASC, s.period ASC, s.id ASC LIMIT ?"
         params.add(DbInt(cap))
         let rs = db.query(sql, params.toArray())
         let out = ArrayList<ScheduleRow>()
@@ -436,7 +485,7 @@ public class BookingRepo {
     /*
      * ★ 核心：**一次成功**的原子扣减（不带 version 条件）。
      *
-     * 返回 true = 扣号成功（受影响行数 1）；false = 号已放完（`remain_num > 0` 不成立）。
+     * 返回 true = 扣号成功（受影响行数 1）；false = 号已放完或排班已不可售。
      *
      * ── 为什么去掉 `version = ?`（2026-10-07 修，第三方复查发现的严重少卖）────
      * 原实现是乐观锁：`WHERE id = ? AND version = ? AND remain_num > 0`，
@@ -463,11 +512,12 @@ public class BookingRepo {
      *   （管理员改排班时防止覆盖别人的改动），不再是扣号路径的前置条件。
      *   语义变化已记入 ADR-0001（rev.3）。
      */
-    public func tryDeductSlot(scheduleId: Int64): Bool {
+    public func tryDeductSlot(scheduleId: Int64, today!: String = ""): Bool {
+        let date = if (today.size > 0) { today } else { hTodayDate() }
         let n = db.exec(
             "UPDATE schedule SET remain_num = remain_num - 1, version = version + 1 " +
-            "WHERE id = ? AND remain_num > 0 AND enabled = 1",
-            [DbInt(scheduleId)])
+            "WHERE id = ? AND remain_num > 0 AND " + bookingSchedulePredicate("schedule"),
+            [DbInt(scheduleId), DbStr(date)])
         return n == 1
     }
 
@@ -618,6 +668,7 @@ public class BookingRepo {
     public func book(patientId: Int64, scheduleId: Int64, clientToken: String,
                      now: Int64, maxRetry!: Int64 = MAX_BOOKING_RETRY): BookingResult {
         let r = BookingResult()
+        let today = hDateStringOf(now)
 
         // 1) 幂等快路径：该患者**当前有效**的单 → 直接返回（只读，不开事务）
         let dup = findAppointmentByToken(patientId, clientToken)
@@ -628,23 +679,19 @@ public class BookingRepo {
         // 2) 读一次排班（拿 doctor/department/就诊日快照；**version 不再参与扣号**）
         var attempt: Int64 = 0
         while (attempt <= maxRetry) {
-            let cur = findSchedule(scheduleId)
+            let cur = findBookableSchedule(scheduleId, today: today)
             if (cur.isNone()) {
                 r.outcome = BookingOutcome.ScheduleNotFound
                 return r
             }
             let s = cur.getOrThrow()
-            if (!s.enabled) {
-                r.outcome = BookingOutcome.ScheduleNotFound
-                return r
-            }
 
             // ★ 事务：扣号 + 写单必须同事务（ADR §2.2 细节 ③）。
             // 结果经 TxResult 回传 —— 仓颉闭包不能捕获外部可变 var。
             let tx = TxResult()
             try {
                 db.withTransaction({ =>
-                    if (tryDeductSlot(scheduleId)) {
+                    if (tryDeductSlot(scheduleId, today: today)) {
                         /*
                          * ★ 把真正写进库的那个 seq **带出来**（存进 tx），
                          *   供响应回填使用 —— 不要回填时另算一遍（2026-10-07 修）。
@@ -699,11 +746,15 @@ public class BookingRepo {
             }
 
             /*
-             * 扣号返回 0 行 = **号真的放完了**（`remain_num > 0` 不成立）。
+             * 扣号返回 0 行：号已放完，或排班/关联实体在读取后被停用。
              * ⚠ 这里**不能重试**：重试只会再拿到 0 行，却把"号已售完"这个
              *   明确结论拖成"重试耗尽后的 SlotGone"—— 结果一样，但白烧预算，
              *   而且在高并发下会掩盖真正的问题（少卖就是被这个掩盖出来的）。
              */
+            if (findBookableSchedule(scheduleId, today: today).isNone()) {
+                r.outcome = BookingOutcome.ScheduleNotFound
+                return r
+            }
             r.outcome = BookingOutcome.SlotGone
             return r
         }

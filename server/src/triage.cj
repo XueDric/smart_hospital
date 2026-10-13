@@ -294,8 +294,8 @@ public class TriageRepo {
     /*
      * 查某科室**当前可挂号**的号源（按就诊日/时段升序）。
      *
-     * 过滤条件（三个都要，缺一个就会推荐出挂不上的号）：
-     *   · `s.enabled = 1`  —— 排班没被停用
+     * 过滤条件：共同可售谓词守住排班/科室/医生启用、归属与真实日期时段，
+     *   再要求余额与调用方的医院日期：
      *   · `s.remain_num > 0` —— **真的有余额**（这就是 AC-P2-2 的根）
      *   · `s.work_date >= today` —— 别把过期排班推给患者
      *
@@ -315,7 +315,7 @@ public class TriageRepo {
             "FROM schedule s " +
             "JOIN department d ON d.id = s.department_id " +
             "JOIN doctor dr ON dr.id = s.doctor_id " +
-            "WHERE d.name = ? AND s.enabled = 1 AND s.remain_num > 0 AND s.work_date >= ? " +
+            "WHERE d.name = ? AND s.remain_num > 0 AND " + bookingSchedulePredicate("s") + " " +
             "ORDER BY s.work_date ASC, s.period ASC, s.id ASC LIMIT ?",
             [DbStr(deptName), DbStr(today), DbInt(cap)])
         let out = ArrayList<BookableSlot>()
