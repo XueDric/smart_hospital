@@ -592,6 +592,75 @@ public class TestRunner {
         })
     }
 
+    /* ---------- AC-13：退号必须走状态机（代码检查报告第 1 条）---------- */
+    /*
+     * 修的是什么：原实现退号的原子条件是 `status <> 'cancelled'` ⇒
+     * `visiting` / `done` / `no_show` **都能被退掉并归还号源**。
+     * 后果：① 患者能退掉一张已经看完的单（覆盖就诊结果 + 凭空多出号源）；
+     *      ② 医生"完成就诊"与患者退号并发时各改一次，落库结果取决于谁后写。
+     *
+     * ⚠ 本用例只能证明**行为**（返回 NotCancellable + 库中的状态与号源纹丝不动）。
+     *   "并发下也不会被改掉"靠的是 `cancel()` 里那条带 `status = ?` 的**原子 UPDATE**，
+     *   属于结构性护栏 —— 没有注入点就在单进程测试里造不出那个窗口。
+     *   ⇒ 这里显式记下这个覆盖边界，而不是装作已经测得。
+     */
+    public func ac13(): Unit {
+        println("=== AC-13 退号状态机：只有「已挂号」能退 ===")
+        section("AC-13", { =>
+            hResetAll(db)
+            hSeedSchedule(db, 9401, 4, "2026-12-24")
+            let now = hNowEpoch()
+            let a = repo.book(1, 9401, "tok-ac13-visiting", now)
+            let b = repo.book(1, 9401, "tok-ac13-done", now)
+            let c = repo.book(1, 9401, "tok-ac13-noshow", now)
+            let d = repo.book(1, 9401, "tok-ac13-booked", now)
+            check("四张单都建成功（夹具就位）", isBooked(a) && isBooked(b) && isBooked(c) && isBooked(d))
+            /*
+             * 直接把三张单拨到"不该被退"的状态。
+             * ⚠ 用 SQL 而不是走业务流程：本用例要测的是**退号这一侧**的护栏，
+             *   不应该依赖接诊/爽约流程是否已经实现（那是 P4 的事）。
+             */
+            db.exec("UPDATE appointment SET status = 'visiting' WHERE id = ?", [DbInt(a.appointmentId)])
+            db.exec("UPDATE appointment SET status = 'done' WHERE id = ?", [DbInt(b.appointmentId)])
+            db.exec("UPDATE appointment SET status = 'no_show' WHERE id = ?", [DbInt(c.appointmentId)])
+            let (remainBefore, _) = hScheduleState(db, 9401)
+
+            let c1 = repo.cancel(a.appointmentId, now)
+            let c2 = repo.cancel(b.appointmentId, now)
+            let c3 = repo.cancel(c.appointmentId, now)
+
+            check("★ 接诊中的单不能退（NotCancellable）", isNotCancellable(c1))
+            check("★ 已完成的单不能退（NotCancellable）", isNotCancellable(c2))
+            check("★ 爽约的单不能退（NotCancellable）", isNotCancellable(c3))
+            /*
+             * ★ 只判"是这一态"还不够 —— 这一态的**全部对外价值**就是那个状态字符串
+             *   （handler 用它拼 409 文案）。不看状态等于没测。
+             */
+            check("★ 返回值带上真实状态（visiting / done / no_show）",
+                  cancelStateOf(c1) == "visiting" && cancelStateOf(c2) == "done" &&
+                  cancelStateOf(c3) == "no_show")
+
+            let stA = db.query("SELECT status FROM appointment WHERE id = ?",
+                               [DbInt(a.appointmentId)]).getString(0, 0)
+            let stB = db.query("SELECT status FROM appointment WHERE id = ?",
+                               [DbInt(b.appointmentId)]).getString(0, 0)
+            let stC = db.query("SELECT status FROM appointment WHERE id = ?",
+                               [DbInt(c.appointmentId)]).getString(0, 0)
+            /* ★ 终态被覆盖正是报告点名的后果之一 ⇒ 必须逐张核实库里的状态没被动过。 */
+            check("★★ 库中状态未被改写（visiting / done / no_show 原样保留）",
+                  stA == "visiting" && stB == "done" && stC == "no_show")
+            let (remainAfter, _) = hScheduleState(db, 9401)
+            /* ★ 凭空多出可售号源是另一条后果 ⇒ 号源必须一个都没回来。 */
+            check("★★ 号源未被归还（拒绝退号不能改号源）", remainAfter == remainBefore)
+
+            /* 反向证明：真正"已挂号"的单**仍然可以正常退**（别把护栏修成"谁都退不了"）。 */
+            let c4 = repo.cancel(d.appointmentId, now)
+            let (remainFinal, _) = hScheduleState(db, 9401)
+            check("★ 已挂号的单仍可正常退号（护栏没有误伤）", isCancelled(c4))
+            check("★ 该单退号后号源 +1（归还路径未被破坏）", remainFinal == remainBefore + 1)
+        })
+    }
+
     /*
      * ⚠ 原先这里是 **AC-8：`booking_idem` 表可正常读写**。
      *   **2026-10-07 连同表与实现一起删除**（决策见 ADR-0001 §7 第 7 条）。
@@ -641,6 +710,27 @@ func isSlotNotRestored(c: CancelOutcome): Bool {
     match (c) {
         case SlotNotRestored => return true
         case _ => return false
+    }
+}
+
+/*
+ * ★ 2026-10-12：第四态 `NotCancellable(st)` 的判定与取值（代码检查报告第 1 条）。
+ *
+ * 为什么要一个"把状态取出来"的小工具：这一态的**全部对外价值就是那个状态字符串** ——
+ * handler 用它拼 409 的中文文案（"当前状态为「接诊中」，不能退号"）。
+ * 只断言"属于这一态"而不看状态，等于把这一态修成什么样都能过。
+ */
+func isNotCancellable(c: CancelOutcome): Bool {
+    match (c) {
+        case NotCancellable(_) => return true
+        case _ => return false
+    }
+}
+
+func cancelStateOf(c: CancelOutcome): String {
+    match (c) {
+        case NotCancellable(st) => return st
+        case _ => return ""
     }
 }
 
@@ -731,6 +821,13 @@ public func runAcceptance(db: DbBackend): Int64 {
     acNotice1(runner, db)
     acNotice2(runner, db)
     acNotice3(runner, db)
+    /*
+     * AC-13 退号状态机（定义在 TestRunner 里，因为要用它的 repo/check/section）。
+     *
+     * ⚠ 排在**最后**：它开头就 `hResetAll`（清空全部业务表 + 公告），
+     *   放前面会把别人的夹具清掉 —— 与所有"自建自清"的用例同一取舍。
+     */
+    runner.ac13()
     println("")
     println("通过 ${runner.passed} 项，失败 ${runner.failed} 项")
     if (runner.failed == 0) {

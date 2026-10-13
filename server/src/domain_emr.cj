@@ -694,6 +694,32 @@ public func visitIsTerminal(s: String): Bool {
     return s == VISIT_DONE || s == VISIT_CANCELLED || s == VISIT_NO_SHOW
 }
 
+/*
+ * 状态 → 面向使用者的中文名（2026-10-12 增）。
+ *
+ * 为什么需要：拒绝一次状态不允许的操作时，**必须说清"现在是什么状态"** ——
+ * 否则使用者只看到"不允许退号"，不知道是该去就诊、还是单子已经结束了。
+ * 与状态常量放同一处：新增状态时**不可能忘记**给它取名字（漏了就会在这里被看到）。
+ */
+public func visitStatusLabel(s: String): String {
+    if (s == VISIT_BOOKED) {
+        return "已挂号"
+    }
+    if (s == VISIT_VISITING) {
+        return "接诊中"
+    }
+    if (s == VISIT_DONE) {
+        return "已完成"
+    }
+    if (s == VISIT_CANCELLED) {
+        return "已退号"
+    }
+    if (s == VISIT_NO_SHOW) {
+        return "已爽约"
+    }
+    return s
+}
+
 /* 接诊操作的结果。 */
 public class VisitOutcome {
     public var ok: Bool = false

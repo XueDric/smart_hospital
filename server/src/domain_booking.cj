@@ -93,14 +93,21 @@ public enum BookingOutcome {
 }
 
 /*
- * 取消（退号）结果 —— **三态**，刻意不用 Bool。
+ * 取消（退号）结果 —— **四态**，刻意不用 Bool。
  *
  * 理由见 `cancel()` 的注释：把"单子取消了"与"号还回去了"压进一个 bool，
  * 必然丢掉"单已取消但号未归还"这一真实存在的中间状态，导致对外**报错方向与事实相反**。
+ *
+ * ★ 2026-10-12 增第四态 `NotCancellable`：退号是**状态机的一条边**，只有 `booked` 能走
+ *   （见 domain_emr.cj 的显式流转表）。原来这里没有"状态不允许"这一态，于是把
+ *   `visiting` / `done` / `no_show` 也一并退掉并归还号源 —— 覆盖就诊结果、凭空多出号源。
+ *   这一态与 `NotFound` 必须分开：**"这张单不存在"与"存在但不能退"是两件事**，
+ *   对外一个是 404、一个是 409，客户端要提示的话术也完全不同。
  */
 public enum CancelOutcome {
     | Cancelled                            // 单已取消，且号源已归还（或本就无需归还）
     | SlotNotRestored                     // ★ 单**已取消**，但号源未归还（需运维介入）
+    | NotCancellable(String)              // ★ 当前状态不允许退号（携带该状态，供上层如实说明）
     | NotFound                            // 挂号单不存在
 }
 
@@ -739,11 +746,13 @@ public class BookingRepo {
      *   此时事务**已经提交** —— 挂号单 status 已是 cancelled，号源却没加回去，
      *   而调用方收到 `false`，会以为"取消失败"从而**再去重试或误报**。
      *
-     * 两件事的状态被压进一个 bool，就必然丢失信息。改为三态：
+     * 两件事的状态被压进一个 bool，就必然丢失信息。改为四态：
      *   · `Cancelled`        —— 单已取消且号已归还（正常路径）
      *   · `SlotNotRestored`  —— **单已取消**（已提交，不可回滚），但号源未归还
      *                           → 调用方应告知用户"已退号"，并把号源不一致**记进运维告警**，
      *                             由管理员用重置号源修，**不要**让用户重复点击退号
+     *   · `NotCancellable`   —— ★ 单在，但当前状态**不允许**退号（只有 `booked` 能退，
+     *                           见 domain_emr.cj 的流转表）；对外是 409，不是 404
      *   · `NotFound`         —— 单不存在
      *
      * 幂等：已取消的单再次取消，返回 `Cancelled`（不重复动号源）。
@@ -771,6 +780,28 @@ public class BookingRepo {
             }
             return CancelOutcome.Cancelled
         }
+        /*
+         * ★★ 2026-10-12：**退号必须走状态机** —— 只有 `booked` 可以退。
+         *
+         * 修的是什么（代码检查报告第 1 条，高优先级）：
+         *   原实现的原子 UPDATE 条件是 `status <> 'cancelled'`，于是
+         *   `visiting`（接诊中）/ `done`（已完成）/ `no_show`（爽约）**都能被改成 cancelled**
+         *   并把号源加回去。后果有两条，都很实在：
+         *     ① 患者可以退掉一张**已经看完**的单 —— 覆盖就诊结果，且凭空多出一个可售号源；
+         *     ② 医生点"完成就诊"与患者退号并发时，两边各改一次，落库状态取决于谁后写。
+         *
+         * 口径**唯一来自 domain_emr.cj 的显式流转表**（`visitTransitionAllowed`）：
+         *   它只允许 `booked → cancelled`，`done` / `no_show` / `cancelled` 都是终态。
+         *   ⚠ 这里**刻意不写** `status == "booked"` 这样的字面判断 —— 那等于把同一条规则
+         *     抄成第二份，将来流转表放开（比如允许"接诊中"退号）时这份不会跟着变。
+         *
+         * ⚠ 这只是**前置判断**（为了给出准确的对外结果）。真正的护栏是下面那条
+         *   带 `status = ?` 的原子 UPDATE —— 并发下"先读后判"永远可能过期
+         *   （报告里也点明了"仅增加前置 SELECT 检查不能解决并发问题"）。
+         */
+        if (!visitTransitionAllowed(a.status, VISIT_CANCELLED)) {
+            return CancelOutcome.NotCancellable(a.status)
+        }
         let tx = TxResult()
         db.withTransaction({ =>
             /*
@@ -790,8 +821,8 @@ public class BookingRepo {
              */
             let n = db.exec(
                 "UPDATE appointment SET status = 'cancelled', cancelled_at = ?, " +
-                "client_token = NULL WHERE id = ? AND status <> 'cancelled'",
-                [DbInt(now), DbInt(appointmentId)])
+                "client_token = NULL WHERE id = ? AND status = ?",
+                [DbInt(now), DbInt(appointmentId), DbStr(VISIT_BOOKED)])
             if (n == 1) {
                 tx.cancelDone = true
                 tx.released = releaseSlotFor(a.scheduleId)
@@ -805,7 +836,10 @@ public class BookingRepo {
                         [DbInt(flag), DbInt(appointmentId)])
             }
         })
-        // 单没取消成功（并发下别人先取消了）：复查后按幂等处理
+        /*
+         * 单没取消成功：说明事务执行的那一刻它**已经不是 `booked`** 了（并发或状态已流转）。
+         * 复查后如实分派：已取消 → 幂等回报；其它状态 → 状态不允许退号。
+         */
         if (!tx.cancelDone) {
             let again = findAppointment(appointmentId)
             if (again.isNone()) {
@@ -819,7 +853,12 @@ public class BookingRepo {
                 }
                 return CancelOutcome.Cancelled
             }
-            return CancelOutcome.NotFound
+            /*
+             * ⚠ 原实现这里返回 `NotFound` —— 那是**误报**：单子明明在，只是状态不适合退
+             *   （典型的：医生刚好点了"开始接诊"）。把"不能退"说成"不存在"，客户端只能提示
+             *   "挂号单不存在"，患者据此**永远查不出真正原因**。
+             */
+            return CancelOutcome.NotCancellable(b.status)
         }
         if (!tx.released) {
             // ★ 单已取消（已提交）但号源没还回 —— 必须如实上报，不能报 false
