@@ -293,11 +293,33 @@ $rtDir = Join-Path $env:ProgramData "smart-hospital\tls"
 if (-not (Test-Path $rtDir)) { New-Item -ItemType Directory -Path $rtDir -Force | Out-Null }
 
 $me = "$env:USERDOMAIN\$env:USERNAME"
-$aclOk = $true
+# ★★ D4（复查 §D4）：icacls 失败**必须中止**，不能只置一个告警标志然后继续。
+#   紧跟着的几行就要把**服务端私钥**（key.pem）复制进这个目录：
+#   ACL 没收紧意味着它可能对 Users / Authenticated Users 可读 —— 那就是"私钥暴露"。
+#   以前 `$aclOk = $false` 之后照样复制并打一行 ⚠，而 ⚠ 极易淹没在刷屏输出里，
+#   结果就是"私钥写进了一个权限未确认的目录，而使用者以为成功了"。
+#   ⇒ 现在：非 0 退出码直接 throw，**不执行任何复制**，%ProgramData% 下不留副本。
+$icaclsArgs = @(
+    $rtDir, '/inheritance:r', '/grant:r',
+    "${me}:(OI)(CI)F", 'Administrators:(OI)(CI)F', 'SYSTEM:(OI)(CI)F'
+)
 try {
-    icacls $rtDir /inheritance:r /grant:r "${me}:(OI)(CI)F" "Administrators:(OI)(CI)F" "SYSTEM:(OI)(CI)F" 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { $aclOk = $false }
-} catch { $aclOk = $false }
+    $icaclsOut = & icacls @icaclsArgs 2>&1
+    $icaclsCode = $LASTEXITCODE
+} catch {
+    $icaclsOut = @($_.Exception.Message)
+    $icaclsCode = -1
+}
+if ($icaclsCode -ne 0) {
+    $icaclsText = (@($icaclsOut) | ForEach-Object { "    $_" }) -join "`n"
+    throw ("私钥目录 ACL 未收紧，已中止以免私钥暴露。`n" +
+           "  目录  : $rtDir`n" +
+           "  命令  : icacls $($icaclsArgs -join ' ')`n" +
+           "  退出码: $icaclsCode`n" +
+           "  输出  :`n$icaclsText`n" +
+           "  ⇒ 尚未执行任何复制，%ProgramData% 下没有留下私钥副本。`n" +
+           "  处理  : 用管理员 PowerShell 重跑，或先手工收紧该目录 ACL（仅 当前用户 / Administrators / SYSTEM）。")
+}
 
 $rtCert = Join-Path $rtDir "cert.pem"
 $rtKey  = Join-Path $rtDir "key.pem"
@@ -318,7 +340,7 @@ Write-Host "  运行副本（纯 ASCII，供命令行使用）："
 Write-Host "    $rtCert"
 Write-Host "    $rtKey"
 Write-Host "    $rtEnv"
-Write-Host "  运行副本权限: $(if ($aclOk) { '✅ 已收紧为 当前用户/Administrators/SYSTEM' } else { '⚠ icacls 未成功，请手工确认目录权限' })"
+Write-Host "  运行副本权限: ✅ 已收紧为 当前用户/Administrators/SYSTEM（icacls 失败会中止，不会留下副本）"
 Write-Host "  路径是否全 ASCII: $(if (($rtEnv -notmatch '[^\x00-\x7F]')) { '✅ 是' } else { '❌ 否' })"
 Write-Host ""
 Write-Host "⚠ 都不入库（.gitignore 已排除）；私钥请勿外传。"

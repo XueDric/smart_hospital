@@ -26,6 +26,9 @@ package qingzhou
 // ⚠ `exists()` / `File.readFrom()` 来自 std.fs —— TLS 分支要读 PEM 文件，
 //   不加这个 import 会报 undeclared identifier（搬迁前 main.cj 同样 import 了它）。
 import std.fs.*
+// ⚠ `HashSet` 来自 std.collection —— serve 的参数解析用它记"哪些 flag 已经出现过"
+//   （2026-10-14 修 A2：重复 flag 必须报错，不能静默后者覆盖前者）。
+import std.collection.*
 
 /* 版本号：与 docs/adr/ADR-0001 同期。 */
 public let SERVER_VERSION: String = "0.2.0-p1"
@@ -37,11 +40,15 @@ func usage(): Unit {
     println("  hospital-server.exe selftest              纯本地自检（schema 不变量，无需 MySQL）")
     println("  hospital-server.exe authtest              口令/令牌原语自检（含公开测试向量，无需 MySQL）")
     println("  hospital-server.exe check-db <dsn>        连库建表并打印表清单")
-    println("  hospital-server.exe accept <dsn>          跑验收测试（AC-1…AC-10）")
+    println("  hospital-server.exe accept <dsn>          跑验收测试（AC-1…AC-17，只允许库名含 test 的库）")
+    println("  hospital-server.exe triagetest            分诊纯逻辑自检（不碰库、不调模型）")
     println("  hospital-server.exe serve <dsn> [--port N] [--dev-auth] [--prod] [--bind IP]")
     println("                                  [--tls-cert <pem> --tls-key <pem>]")
+    println("                                  [--tls-files <env>]")
     println("                                            启动 HTTP/HTTPS 服务（P1）")
+    println("                                  --tls-files 从文件读 cert=/key= 路径（绕开 argv 的中文限制）")
     println("  hospital-server.exe version               打印版本")
+    println("  hospital-server.exe --help                打印本说明（退出码 0）")
     println("  hospital-server.exe create-admin <dsn> [登录名]")
     println("                                            创建/重置管理员并打印口令（引导用）")
     println("  hospital-server.exe create-db <dsn> [--admin-dsn <dsn>]  建库 + 授权（utf8mb4）")
@@ -60,6 +67,8 @@ func usage(): Unit {
     println("")
     println("⚠ --dev-auth 是**开发态**身份头（X-Role/X-Patient-Id），绕过全部认证；")
     println("  与 --prod 同时传会直接拒绝启动。")
+    println("  ⚠ 且**只接受来自本机回环地址（127.0.0.1 / ::1）的请求**：")
+    println("     仍建议保持默认 --bind 127.0.0.1；绑 0.0.0.0 时远程请求会拿到 401。")
     println("  ⚠ 本工具链仓颉 std 无 getEnv，故生产开关走 --prod 而**不是**环境变量。")
 }
 
@@ -167,6 +176,43 @@ func isTestDatabase(dbName: String): Bool {
 }
 
 /*
+ * 取"某个取值型参数"的值，缺值就报错（2026-10-14 修 A2）。
+ *
+ * 判据是**两条**，缺一不可：
+ *   ① 后面真的还有一个 token（`i + 1 < args.size`）；
+ *   ② 那个 token **不以 `--` 开头** —— 否则 `--bind --prod` 会把 `--prod`
+ *      当成绑定地址吞掉，而这正是"击穿 --prod/--dev-auth 互斥"的走法。
+ */
+func flagValueAt(args: Array<String>, i: Int64, flag: String): ?String {
+    if (i + 1 >= args.size) {
+        println("❌ ${flag} 缺少取值")
+        return None
+    }
+    let v = args[i + 1]
+    if (v.startsWith("--")) {
+        println("❌ ${flag} 缺少取值（下一个 token 是 '${v}'，看起来是另一个参数）")
+        return None
+    }
+    return Some(v)
+}
+
+/*
+ * `path` 存在**且是目录**（2026-10-14 修 D6）。
+ *
+ * 为什么不能用 `exists(path)`：它判的是"任意文件系统条目"。CWD 下若有一个**同名文件**
+ * `admin-web`，`exists` 为真 ⇒ 启动日志说"已挂载管理台"，而每个 `/admin/...` 都 404
+ * —— "目录不对"被伪装成"后台坏了"。
+ */
+func isDirectoryPath(path: String): Bool {
+    try {
+        let fi = FileInfo(path)
+        return fi.isDirectory()
+    } catch (e: Exception) {
+        return false
+    }
+}
+
+/*
  * 找管理台静态目录（2026-10-14）。
  *
  * 候选都是**相对进程工作目录**，覆盖三种真实启动方式：
@@ -176,21 +222,54 @@ func isTestDatabase(dbName: String): Bool {
  *
  * 返回空串 = 没找到（调用方会告警且**不挂载**，见 serve 路径的注释）。
  *
- * ⚠ 判据是"**目录**存在"，不是"`index.html` 存在"。后者会把
- *   "东西没部署全"伪装成"这个功能没做"（都是 404），而前者会让
- *   静态中间件自己去报 404 —— 谁的问题一目了然。
+ * ⚠ 判据是"**目录**存在"（`isDirectoryPath`），不是"任意同名条目存在"。
+ *   失败时会把"找过哪些候选、解析成什么绝对路径"一起打出来 —— 否则
+ *   "找不到"和"路径拼错了"在日志上一模一样。
  */
 func pickAdminWebDir(): String {
     let candidates = ["admin-web", "server/admin-web", "../admin-web"]
     var i = 0
     while (i < candidates.size) {
-        if (exists(candidates[i])) {
+        if (isDirectoryPath(candidates[i])) {
             return candidates[i]
         }
         i = i + 1
     }
     return ""
 }
+
+/*
+ * 找不到管理台目录时的告警（2026-10-14 修 D6）。
+ *
+ * 为什么单列一个函数：这段文案要包含"试过哪些候选 + 解析后的绝对路径"，
+ * 而 CWD 是排障的第一现场 —— 打印 CWD 比让人猜"你在哪个目录启动的"快得多。
+ */
+func printAdminWebMissingHint(): Unit {
+    println("  ⚠ 未找到管理台静态目录。依次试过（相对进程工作目录）：")
+    let candidates = ["admin-web", "server/admin-web", "../admin-web"]
+    for (c in candidates) {
+        var abs = c
+        try {
+            abs = canonicalize(c).toString()
+        } catch (e: Exception) {
+            abs = "(无法解析)"
+        }
+        println("       ${c}   →  ${abs}")
+    }
+    /*
+     * ⚠ 插值里**不能**再写转义引号（`${canonicalize(\".\")}` 会报
+     *   `unterminated string interpolation`）—— 先在语句外把值算好再插进来。
+     */
+    var cwdText = "(无法解析)"
+    try {
+        cwdText = canonicalize(".").toString()
+    } catch (e: Exception) {
+        cwdText = "(无法解析)"
+    }
+    println("    当前工作目录：${cwdText}")
+    println("    API 不受影响，但浏览器后台 /admin/ 不可用。请从 `server/` 目录启动。")
+}
+
 
 func accept(dsn: String): Int64 {
     var db: DbBackend
@@ -621,15 +700,42 @@ func serve(args: Array<String>): Int64 {
     var tlsCert = ""
     var tlsKey = ""
     var tlsFilesGiven = false
+    /*
+     * ★★ 2026-10-14（第三方复查 A2 修）：取值型参数**必须**带走一个值，且 flag 不得重复。
+     *
+     * 原实现里只有 `--port` 是严格的，`--bind`/`--tls-cert`/`--tls-key`/`--tls-files`
+     * 都写成 `... && i + 1 < args.size` 然后**直接吞下一个 token**，于是：
+     *   · `serve <dsn> --dev-auth --bind --prod`
+     *     → `--prod` 被当成绑定地址，`prod` 保持 false ⇒ `DevAuthGate(true, false)` 放行，
+     *       "生产不允许 --dev-auth"这条**唯一安全闸门**输在了参数解析上；
+     *   · `--port`（缺值）落到最后的 else，报"未知参数：--port" —— 明明已知，缺的是值。
+     *
+     * 现在的口径：
+     *   ① 取值型 flag 后面**没有 token**、或**下一个 token 以 `--` 开头** ⇒ 报"缺少取值"退 2；
+     *   ② 任何 flag **重复出现**⇒ 报重复退 2（原先"最后写的赢"是隐式规则，且
+     *      `--tls-cert A --tls-files f.env` 会互相覆盖而毫无提示）。
+     */
+    var seenFlags = HashSet<String>()
     var i = 1
     while (i < args.size) {
-        if (args[i] == "--port" && i + 1 < args.size) {
+        let flag = args[i]
+        if (seenFlags.contains(flag)) {
+            println("❌ 参数重复：${flag}（同一参数只允许给一次；否则\"谁覆盖谁\"会变成隐藏规则）")
+            return 2
+        }
+        seenFlags.add(flag)
+        if (flag == "--port") {
             // ⚠ 严格解析：原先用 `parseUInt16Or(x, 8080)` —— 传个非数字（如 `--port abc`）
             //   会**静默退回 8080** 并照常启动，运维以为换端口了其实没换。
             //   `--port 0` 也是陷阱：parse 成功但 0 不是合法监听端口。
-            let parsedOk = parseUInt16OrNone(args[i + 1])
+            let rawOpt = flagValueAt(args, i, "--port")
+            if (rawOpt.isNone()) {
+                return 2
+            }
+            let raw = rawOpt.getOrThrow()
+            let parsedOk = parseUInt16OrNone(raw)
             if (parsedOk.isNone()) {
-                println("❌ --port 的值不是合法端口号：'${args[i + 1]}'（期望 1~65535）")
+                println("❌ --port 的值不是合法端口号：'${raw}'（期望 1~65535）")
                 return 2
             }
             let pv = parsedOk.getOrThrow()
@@ -639,16 +745,28 @@ func serve(args: Array<String>): Int64 {
             }
             port = pv
             i = i + 2
-        } else if (args[i] == "--bind" && i + 1 < args.size) {
-            bindAddr = args[i + 1]
+        } else if (flag == "--bind") {
+            let vOpt = flagValueAt(args, i, "--bind")
+            if (vOpt.isNone()) {
+                return 2
+            }
+            bindAddr = vOpt.getOrThrow()
             i = i + 2
-        } else if (args[i] == "--tls-cert" && i + 1 < args.size) {
-            tlsCert = args[i + 1]
+        } else if (flag == "--tls-cert") {
+            let vOpt = flagValueAt(args, i, "--tls-cert")
+            if (vOpt.isNone()) {
+                return 2
+            }
+            tlsCert = vOpt.getOrThrow()
             i = i + 2
-        } else if (args[i] == "--tls-key" && i + 1 < args.size) {
-            tlsKey = args[i + 1]
+        } else if (flag == "--tls-key") {
+            let vOpt = flagValueAt(args, i, "--tls-key")
+            if (vOpt.isNone()) {
+                return 2
+            }
+            tlsKey = vOpt.getOrThrow()
             i = i + 2
-        } else if (args[i] == "--tls-files" && i + 1 < args.size) {
+        } else if (flag == "--tls-files") {
             /*
              * ★ 从**文件**读 证书/私钥 路径，而不是从命令行。
              *
@@ -664,7 +782,11 @@ func serve(args: Array<String>): Int64 {
              *     cert=E:\...\certs\cert.pem
              *     key=E:\...\certs\key.pem
              */
-            let cfgPath = args[i + 1]
+            let cfgPathOpt = flagValueAt(args, i, "--tls-files")
+            if (cfgPathOpt.isNone()) {
+                return 2
+            }
+            let cfgPath = cfgPathOpt.getOrThrow()
             tlsFilesGiven = true          // ★ 记下"用户确实要求 TLS"，供后面严格校验用
             if (!exists(cfgPath)) {
                 println("❌ 找不到 TLS 配置文件：${cfgPath}")
@@ -719,14 +841,14 @@ func serve(args: Array<String>): Int64 {
                 return 2
             }
             i = i + 2
-        } else if (args[i] == "--dev-auth") {
+        } else if (flag == "--dev-auth") {
             devAuth = true
             i = i + 1
-        } else if (args[i] == "--prod") {
+        } else if (flag == "--prod") {
             prod = true
             i = i + 1
         } else {
-            println("未知参数：${args[i]}")
+            println("未知参数：${flag}")
             return 2
         }
     }
@@ -744,6 +866,24 @@ func serve(args: Array<String>): Int64 {
     }
     println("")
 
+    /*
+     * ★★ 2026-10-14（第三方复查 A3 修）：**先做组合校验，再连库**。
+     *
+     * 原实现把 `DevAuthGate(devAuth, prod)` 的互斥校验放在 `ensureSchema` +
+     * `migrateSchema` **之后**，于是 `serve <dsn> --prod --dev-auth`（误加或残留参数）
+     * 会先对目标库真实执行一遍建表与迁移，然后才拒绝启动；若 DSN 也有误，则以
+     * "连接失败 exit 1"掩盖真正的拒绝原因。
+     *
+     * 口径：**参数层面的拒绝，一行 DDL 都不许跑**。DDL 是副作用，副作用不能用来做校验。
+     */
+    var gate: DevAuthGate
+    try {
+        gate = DevAuthGate(devAuth, prod)
+    } catch (e: Exception) {
+        println("❌ ${e.message}")
+        return 2
+    }
+
     var db: DbBackend
     var cfg: MySqlConfig
     try {
@@ -760,14 +900,6 @@ func serve(args: Array<String>): Int64 {
     } catch (e: Exception) {
         println("❌ ${e.message}")
         return 1
-    }
-
-    var gate: DevAuthGate
-    try {
-        gate = DevAuthGate(devAuth, prod)
-    } catch (e: Exception) {
-        println("❌ ${e.message}")
-        return 2
     }
 
     let repo = BookingRepo(db)
@@ -834,6 +966,18 @@ func serve(args: Array<String>): Int64 {
      * —— 后者看起来像"后台坏了"，真因却只是启动目录不对。
      */
     let adminWebDir = pickAdminWebDir()
+    /*
+     * ★ 2026-10-14（修 D6）：`--prod` 下找不到管理台目录 = **拒绝启动**。
+     *
+     * 理由：生产启动命令是写死的（部署脚本/工单里那条），"目录没同步过去"是**部署错误**，
+     * 不是运行时选项 —— 让它带着警告继续跑，等于把"管理台打不开"变成几周后的一句
+     * "后台怎么没了"。开发态（非 --prod）仍只告警：联调时不该因为少一个静态目录起不来。
+     */
+    if (adminWebDir.size == 0 && prod) {
+        println("❌ --prod 下没找到管理台静态目录，拒绝启动（管理台属于该部署形态的一部分）。")
+        printAdminWebMissingHint()
+        return 1
+    }
     let app = buildHospitalApp(repo, auth, gate, triage, previsit, aiSettings, aiModels, prompts,
                                emr, visit, dash, triageStat, dept, doc, kb, notices,
                                adminWebDir: adminWebDir)
@@ -848,15 +992,15 @@ func serve(args: Array<String>): Int64 {
     }
     if (devAuth) {
         println("  ⚠ --dev-auth 已开启：X-Role / X-Patient-Id 请求头可直接冒用身份。")
-        println("    仅限本机联调；生产必须走令牌（--prod 会拒绝启动）。")
+        println("    仅限本机联调（服务端只认回环来源 127.0.0.1 / ::1 的这类头）；")
+        println("    生产必须走令牌（--prod 会拒绝启动）。")
     } else {
         println("  （未开 --dev-auth：业务接口会返回 401，仅 /health 可用）")
     }
     if (adminWebDir.size > 0) {
         println("  管理台：http://${bindAddr}:${port}/admin/   （静态页面 + 同源 /api/v1）")
     } else {
-        println("  ⚠ 未找到管理台静态目录（依次找过 admin-web / server/admin-web / ../admin-web）：")
-        println("    API 不受影响，但浏览器后台 /admin/ 不可用。请从 `server/` 目录启动。")
+        printAdminWebMissingHint()
     }
     println("")
     println("接口：")
@@ -978,6 +1122,29 @@ func createAdmin(args: Array<String>): Int64 {
     if (args.size >= 2) {
         loginName = args[1]
     }
+    /*
+     * ★ 2026-10-14（第三方复查 A2/E1 修）：多给的参数**不许静默忽略**，登录名必须是个名字。
+     *
+     * 原实现只读 args[1] 就不管了，于是：
+     *   · `create-admin <dsn> --force` → 建出**登录名字面量为 `--force`** 的管理员并打印口令
+     *     （那个账号随后没人会去登录）；
+     *   · `create-admin <dsn> admin --prod` → `--prod` 被静默吞掉，使用者以为有什么约束生效了。
+     * 这两条都是"命令行写下的东西没生效，却也不报错"。
+     */
+    if (args.size > 2) {
+        println("❌ 参数过多：create-admin 只接受 <dsn> [登录名]，多的参数是 '${args[2]}'。")
+        println("   （这里没有别的开关；如果你以为有，它其实一直没生效。）")
+        return 2
+    }
+    if (loginName.startsWith("--")) {
+        println("❌ 登录名不能以 `--` 开头：'${loginName}' 看起来是一个参数，而不是名字。")
+        println("   要建默认管理员就别传第二个参数（默认登录名 admin）。")
+        return 2
+    }
+    if (loginName.trimAscii().size == 0) {
+        println("❌ 登录名不能为空（空名账号建出来也登不进来）。")
+        return 2
+    }
     var db: DbBackend
     var cfg: MySqlConfig
     try {
@@ -1039,10 +1206,21 @@ func createAdmin(args: Array<String>): Int64 {
     println("")
     println("管理员账号：")
     println("  登录名：${loginName}")
-    println("  口  令：${pw}")
+    /*
+     * ★ 2026-10-14（第三方复查 D5 修）：口令走 **stderr**，并明确禁止重定向。
+     *
+     * 原先三行全走 stdout，而运维的标准写法是 `... > deploy.log 2>&1` ——
+     * 于是"只显示这一次（未落盘）"这句承诺当场失效：口令进了日志文件、CI 输出、
+     * 终端 scrollback。**承诺与实现不一致，比不承诺更危险**（人会相信那句承诺）。
+     *
+     * 走 stderr 的意义：`> log` 只收 stdout，口令不会被顺手写进日志；
+     * 要落盘必须显式 `2>` —— 那是一个"我确实要这么做"的动作。
+     */
+    eprintln("  口  令：${pw}")
     println("  user_id：${uid}   （${if (existed) { "已存在 → 已重置口令并吊销旧令牌" } else { "新建" }}）")
     println("")
     println("⚠ 口令只显示这一次（未落盘）；请立即用 POST /api/v1/auth/login 换令牌。")
+    println("⚠ 口令写在 **stderr** 上：不要用 `2>&1` 重定向本命令的输出到文件/工单/聊天记录。")
     db.close()
     return 0
 }
@@ -1069,7 +1247,20 @@ func createDb(args: Array<String>): Int64 {
     var adminDsn = ""
     var ai = 1
     while (ai < args.size) {
-        if (args[ai] == "--admin-dsn" && ai + 1 < args.size) {
+        if (args[ai] == "--admin-dsn") {
+            // ★ 2026-10-14（第三方复查 A2 同族）：`--admin-dsn` 是**取值型**参数，
+            //   缺值时报"未知参数：--admin-dsn"是**误导**（参数明明认识），
+            //   使用者会去猜"是不是这个名字写错了"，而不是"我忘了给值"。
+            if (ai + 1 >= args.size) {
+                println("❌ --admin-dsn 缺少取值（它需要一个带 GRANT OPTION 的账号 DSN）")
+                println("用法：hospital-server.exe create-db <dsn> [--admin-dsn <管理员 DSN>]")
+                return 2
+            }
+            if (args[ai + 1].startsWith("--")) {
+                println("❌ --admin-dsn 缺少取值：下一项 '${args[ai + 1]}' 看起来是另一个参数。")
+                println("   想写的是 `--admin-dsn mysql://root:***@127.0.0.1:3317/mysql` 这种。")
+                return 2
+            }
             adminDsn = args[ai + 1]
             ai = ai + 2
         } else {
@@ -1124,11 +1315,24 @@ func createDb(args: Array<String>): Int64 {
 
 main(args: Array<String>): Int64 {
     // args[0] 即第一个参数（不含 exe 路径）
+    /*
+     * ★ 2026-10-14（第三方复查 D7 修）：退出码要能被 CI 当判据用。
+     *
+     *   · **无参数** ⇒ usage + `return 2`（原为 0）。无参是**用法错误**，
+     *     而 `deploy.ps1` 里 `hospital-server.exe $cmd ...; if ($LASTEXITCODE -ne 0)` 这类
+     *     判据会把"忘了传子命令"读成"跑成功了"。
+     *   · `--help` / `-h` ⇒ usage + `return 0`（约定俗成：**主动要帮助不是错误**）。
+     *     原实现把它归到"未知子命令"里退 2，脚本里 `--help` 探活会误判失败。
+     */
     if (args.size < 1) {
+        usage()
+        return 2
+    }
+    let cmd = args[0]
+    if (cmd == "--help" || cmd == "-h" || cmd == "help") {
         usage()
         return 0
     }
-    let cmd = args[0]
     // 注：这里用 if 链而非 match —— 仓颉的 match 分支体是**单表达式**，
     // 而这些分支需要多语句（这坑在 domain_booking.cj 也踩过一次）。
     if (cmd == "version") {

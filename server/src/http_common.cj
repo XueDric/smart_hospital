@@ -248,6 +248,30 @@ public func apiErrorSpec(code: String): (Int64, String) {
     if (code == "SCHEDULE_CONFLICT") {
         return (409, "该排班已被他人修改，请刷新后重试")
     }
+    /*
+     * ★ 2026-10-14（第三方复查 A4 修）：把"抛了但没登记"的三个码补齐。
+     *
+     * 它们**已经在抛**，只是没在这张表里 —— 于是走到 :251 的兜底 (500, "服务器内部错误")，
+     * 客户端拿到一个**未文档化的 code**（`INTERNAL_ERROR`），而响应文案却与
+     * 登记表里那个"服务器内部错误"一模一样 ⇒ 看起来像服务端故障，实为契约缺口。
+     *
+     * 三个码的语义都是 500（它们确实是服务端侧的写失败/意外），所以这里补登记
+     * **不改变任何行为**，只是让"响应里的 code"重新等于"文档里的 code"：
+     *   · `INTERNAL_ERROR` —— `http_base.cj` 的 `baseThrowOnFailure`（科室/医生全部写操作）
+     *     与 `http_notice.cj` 的写失败；
+     *   · `KB_WRITE_FAILED` —— `http_kb.cj` 的文档写失败；
+     *   · `INTERNAL` —— `http_common.cj` 自身兜底 handler、`http_app.cj`、`http_p4.cj`
+     *     （与兜底同值，登记它只是为了"客户端看到的 code 集合"有界且可枚举）。
+     */
+    if (code == "INTERNAL_ERROR") {
+        return (500, "服务器内部错误")
+    }
+    if (code == "KB_WRITE_FAILED") {
+        return (500, "知识库写入失败")
+    }
+    if (code == "INTERNAL") {
+        return (500, "服务器内部错误")
+    }
     return (500, "服务器内部错误")
 }
 
@@ -355,7 +379,23 @@ public func hospitalErrorHandler(ctx: Context): Unit {
             println("[ERROR] ${ctx.method()} ${ctx.path()} -> ${e.message}")
             let spec = apiErrorSpec("INTERNAL")
             sendError(ctx, ApiError("INTERNAL", spec[0], spec[1], None))
-        case None => ()
+        case None =>
+            /*
+             * 走到这里有两种情况（2026-10-14 评审 E2）：
+             *   ① 正常路径：请求本来就没抛异常（绝大多数）；
+             *   ② 异常被**某个中间件消费掉**了（`ctx.err()` 被清空），
+             *      但那个中间件忘了写响应 —— 客户端会拿到空 200 或一直挂起，
+             *      比 500 更难排查。
+             * 所以只在"确实一个字都没写过响应"时补一个 500 兜底。
+             * 判据用 `_committed`（已提交）或 body 非空（已写但未提交）：
+             * 只看 `_committed` 会把"已写 body 还没 commit"的响应又写一遍。
+             */
+            let alreadyWritten = ctx._committed || ctx._peekBody().size > 0
+            if (!alreadyWritten) {
+                println("[ERROR] ${ctx.method()} ${ctx.path()} -> 异常被消费但未写响应，兜底回 500")
+                let spec = apiErrorSpec("INTERNAL")
+                sendError(ctx, ApiError("INTERNAL", spec[0], spec[1], None))
+            }
     }
 }
 

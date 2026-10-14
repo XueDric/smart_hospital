@@ -357,14 +357,46 @@ public class DevAuthGate {
  *      令牌是 32 字节随机 → 64 位 hex，服务端存 token → user 映射（不是无状态 JWT），
  *      所以"停用账号/改密码"能立即踢下线。
  *   2. 开发态身份头（`X-Role` / `X-Patient-Id`）—— **仅在 `--dev-auth` 下才看**，
- *      每请求打 `[DEV-AUTH]` 警告。用于本机快速联调。
+ *      **且只接受来自本机回环地址的请求**（见下方 `isLoopbackIp`），每请求打 `[DEV-AUTH]` 警告。
  *   3. 两者都没有 → **401，明确失败**。
  *
  * ⚠ 顺序很重要：先看令牌。这样即使有人误开了 `--dev-auth`，
  *   带合法令牌的正式请求也不会走开发态分支（少一条"以为在用令牌其实在用头"的歧路）。
  *
  * ⚠ 非开发态下**绝不静默放行** —— 静默放行是最危险的失败方式。
+ *
+ * ⚠ 2026-10-14（检查报告 C2 的第二半）：**开发态身份头原来不看到达地址**，
+ *   于是"`--dev-auth` + `--bind 0.0.0.0`"= 任何能连上端口的人都能用 `X-Role: admin`
+ *   拿到管理员身份。现在补上回环判定：**非回环来源即便开了 `--dev-auth` 也不认这两个头**，
+ *   并且**明确 401 报错**（不是静默忽略 —— 静默会让本机联调者以为头生效了）。
  */
+
+/*
+ * 客户端 IP 是否为本机回环。
+ *
+ * 接受的写法（`Context.remoteIp()` 已剥掉端口，但 IPv6 会留下方括号）：
+ *   · `127.0.0.1` / `127.x.y.z` —— 整个 `127.0.0.0/8` 按 RFC 1122 都算回环；
+ *   · `::1` / `[::1]` —— IPv6 回环；
+ *   · `::ffff:127.x.y.z` —— IPv4-mapped IPv6 形式的回环。
+ * 其余（含空串）一律**不是**回环。
+ */
+func isLoopbackIp(ip: String): Bool {
+    let s = ip.trimAscii()
+    if (s.size == 0) {
+        return false
+    }
+    if (s == "::1" || s == "[::1]") {
+        return true
+    }
+    if (startsWithAscii(s, "127.")) {
+        return true
+    }
+    if (startsWithAscii(s, "::ffff:127.")) {
+        return true
+    }
+    return false
+}
+
 public func principalOf(ctx: Context, gate: DevAuthGate, auth: AuthRepo): Principal {
     let now = hNowEpoch()
 
@@ -381,8 +413,22 @@ public func principalOf(ctx: Context, gate: DevAuthGate, auth: AuthRepo): Princi
         case None => ()
     }
 
-    /* 2) 开发态身份头（仅 --dev-auth 下） */
+    /* 2) 开发态身份头（仅 --dev-auth 下，且仅回环来源） */
     if (gate.enabled) {
+        /*
+         * ⚠ 先判来源，再判头：**非回环来源连"有没有 X-Role"都不看**，
+         *   直接 401 —— 否则等于把 "--dev-auth 只能本机用"这条口径交给客户端自觉。
+         * 📌 `remoteIp()` 为空 = 没有 http 传输信息（框架内部直调 handler 的进程内测试）。
+         *   这种情形按"本机"处理（它根本没有网络来源可言），但打一行明显警告。
+         */
+        let remoteIp = ctx.remoteIp()
+        if (remoteIp.size == 0) {
+            println("[DEV-AUTH] ⚠ 无法取得客户端地址（无 http ctx）——按本机处理")
+        } else if (!isLoopbackIp(remoteIp)) {
+            throw apiErrorMsg("AUTH_REQUIRED",
+                              "开发态身份头（X-Role 等）只允许本机回环地址使用" +
+                              "（来源 ${remoteIp}）；远程请走 Authorization: Bearer <token>")
+        }
         match (ctx.requestHeader("X-Role")) {
             case Some(roleStr) =>
                 let role = match (roleOf(roleStr)) {
@@ -1082,10 +1128,14 @@ r.get("/api/v1/auth/sessions", { ctx: Context, _: () -> Unit =>
  */
 r.post("/api/v1/auth/sessions/revoke", { ctx: Context, _: () -> Unit =>
     let p = principalOf(ctx, gate, auth)
-    let body = bodyObj(ctx)
-    let deviceId = match (requireStr(ctx, "device_id")) {
-        case s => s
-    }
+    /*
+     * ⚠ 2026-10-14（第三方复查 B2 修）：这里原先是
+     *     `let body = bodyObj(ctx)` + `let deviceId = match (requireStr(ctx, "device_id")) { case s => s }`
+     *   —— 两处都是噪声：`requireStr` 内部自己会调 `bodyObj`（http_common.cj），
+     *   而那个只有单一 `case s =>` 的 match 等于直接赋值。噪声的代价不是多打几个字，
+     *   而是**读代码的人会以为 body 被解析过一次、后面拿到的就是原始 JSON**。
+     */
+    let deviceId = requireStr(ctx, "device_id")
     if (deviceId.size == 0) {
         throw apiErrorMsg("VALIDATION_FAILED", "device_id 不能为空（踢全部会话请用 /auth/logout-all）")
     }
@@ -1155,7 +1205,6 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
     r.post("/api/v1/admin/users", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.ManageSchedule)
-        let body = bodyObj(ctx)
         let loginName = requireStr(ctx, "login_name")
         let password = requireStr(ctx, "password")
         let roleStr = requireStr(ctx, "role")
@@ -1302,7 +1351,6 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         if (uid <= 0) {
             throw apiErrorMsg("VALIDATION_FAILED", "user_id 必须是正整数")
         }
-        let body = bodyObj(ctx)
         let password = requireStr(ctx, "password")
         // 先确认账号存在（否则 UPDATE 影响 0 行、却回 200 —— 那是撒谎）
         if (!auth.userExists(uid)) {
@@ -1374,7 +1422,6 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
                 "Prompt 模板改走 PUT /api/v1/admin/ai/prompts/:name，" +
                 "工具开关改走 PUT /api/v1/admin/ai/tools/:name")
         }
-        let body = bodyObj(ctx)
         let value = match (bodyStr(ctx, "value")) {
             case Some(v) => v
             case None => ""
@@ -1407,7 +1454,6 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.ManageSchedule)
         let name = ctx.paramOr("name", "")
-        let body = bodyObj(ctx)
         let text = match (bodyStr(ctx, "body")) {
             case Some(v) => v
             case None => ""
@@ -1446,7 +1492,6 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.ManageSchedule)
         let name = ctx.paramOr("name", "")
-        let body = bodyObj(ctx)
         let on = match (bodyBool(ctx, "enabled")) {
             case Some(b) => b
             case None => throw apiErrorMsg("VALIDATION_FAILED", "缺少必填字段 enabled（true/false）")
@@ -1462,6 +1507,25 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.ManageSchedule)
         let key = ctx.paramOr("key", "")
+        /*
+         * ★★ 2026-10-14（第三方复查 B1 修）：**命名空间收窄必须与 PUT 一致**。
+         *
+         * 只信 `aiSettings.remove()` 是不够的：它内部走的是共享的 `aiSettingKeyKnown`，
+         * 而那个函数认**三个**命名空间（`ai.*` / `prompt.*` / `ai.tool.*`）⇒
+         * `DELETE /api/v1/admin/ai/settings/prompt.dept` 会被接受，把 Prompt 行删回默认值。
+         *
+         * 后果本身不是数据洞（删除不写值、绕不过任何校验），但它让
+         * "PUT 收窄了、DELETE 没收窄"这个**口径分裂**留在同一对方法上：
+         * 谁按 PUT 的报错提示去改用 prompts 端点，就会以为 DELETE 也该如此；
+         * 而 DELETE 却照收 —— 自相矛盾的 API 比严格收窄的 API 更难用。
+         * ⇒ 同一张登记表，两个入口用**同一条**闸门（消息里给出正确路径）。
+         */
+        if (aiSettingSpecOf(key).isNone()) {
+            throw apiErrorMsg("VALIDATION_FAILED",
+                "配置项 ${key} 不在本端点的登记表里；" +
+                "Prompt 模板改走 DELETE /api/v1/admin/ai/prompts/:name，" +
+                "工具开关改走 PUT /api/v1/admin/ai/tools/:name（工具没有『删除』语义，只有开关）")
+        }
         if (!aiSettings.remove(key, hNowEpoch())) {
             throw apiErrorMsg("VALIDATION_FAILED", "未知的配置项：${key}")
         }
@@ -1721,7 +1785,6 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         // 同步SQL/规则扫描不可由该截止中断，不能把它当作整体HTTP硬截止。
         let enhancementDeadline = DateTime.now().toUnixTimeStamp().toMilliseconds() +
                                   TRIAGE_ENHANCEMENT_BUDGET_MS
-        let body = bodyObj(ctx)
         let complaint = match (bodyStr(ctx, "chief_complaint")) {
             case Some(v) => v
             case None => throw apiErrorMsg("VALIDATION_FAILED", "缺少必填字段 chief_complaint")
@@ -1857,7 +1920,6 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         requireCan(p.role, Action.Book)
         let sid = requireStr(ctx, "session_id")
         let key = requireStr(ctx, "slot")
-        let body = bodyObj(ctx)
         let value = match (bodyStr(ctx, "value")) {
             case Some(v) => v
             case None => ""
@@ -2048,7 +2110,6 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
     r.post("/api/v1/appointments", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.Book)
-        let body = bodyObj(ctx)
         let scheduleId = requireInt(ctx, "schedule_id")
         let clientToken = requireStr(ctx, "client_token")
         // 患者只能给自己挂号：不接受 body 里的 patient_id，
@@ -2143,13 +2204,18 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
     /* ---------- POST /api/v1/admin/schedules —— 建排班（仅管理员）---------- */
     /*
      * P1 需要有办法造出真实号源才能测"扣号/退号/并发"。
-     * 正式的排班维护界面属 P4（运营看板），这里先给一个**受 --dev-auth + 管理员角色
-     * 双重保护**的最小写入接口；不开 --dev-auth 时它和业务接口一样直接 401。
+     * 正式的排班维护界面属 P4（运营看板），这里先给一个**受认证 + 管理员角色
+     * 双重保护**的最小写入接口。
+     *
+     * ⚠ 更正（2026-10-14，第三方复查 B2）：这里原先写"不开 `--dev-auth` 时它和业务接口
+     *   一样直接 401"——**不对**。`--dev-auth` 只多给一条本地测试用的 `X-Role` 捷径；
+     *   不开它时，带**真实管理员令牌**的请求照样能过（这正是管理台在用的方式，
+     *   生产环境就是不开 `--dev-auth` 的）。把"没有捷径"说成"进不来"，
+     *   会让人以为生产环境没有建排班的口子，从而去开 `--dev-auth`——那才是真危险。
      */
     r.post("/api/v1/admin/schedules", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.ManageSchedule)
-        let body = bodyObj(ctx)
         let doctorId = requireInt(ctx, "doctor_id")
         let departmentId = requireInt(ctx, "department_id")
         let workDate = requireStr(ctx, "work_date")
@@ -2311,6 +2377,12 @@ public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGat
                              notices: NoticeRepo, adminWebDir!: String = ""): QingZhouApp {
     let router = buildHospitalRouter(repo, auth, gate, triage, previsit, aiSettings, aiModels, prompts,
                                      emr, visit, dash, triageStat, dept, doc, kb, notices)
+    /*
+     * ★★ 2026-10-14（第三方复查 D6 修）：让 router **透传未命中的路径**，
+     * 改由本函数末尾自己关的中间件回统一信封（原因见那里的注释）。
+     * 必须在这里就置位（早于 `router.middleware()` 的构造）。
+     */
+    router.passOnNotFound = true
     var app = QingZhouApp()
         .use(requestId())
         .use(logger())
@@ -2404,6 +2476,27 @@ public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGat
     }
     return app
         .use(router.middleware())
+        /*
+         * ★★ 2026-10-14（第三方复查 D6 修）：给**框架自己的 404** 套上本项目的统一信封。
+         *
+         * 原实现：router 未命中就直写 `{"error":"Not Found","path":"/nope"}`
+         * （router.cj:196）—— **没有 `ok`、没有 `error.code`**。
+         * 客户端按 `{ok,error:{code,message}}` 解析时这一条解不开，于是
+         * "接口不存在"在前端表现成"响应解析异常"，排查方向直接跑偏。
+         *
+         * 改法：`passOnNotFound = true`（router.cj:88）让未命中**透传**到
+         * 本中间件，由它回与其它接口同形状的 404（`ROUTE_NOT_FOUND`，
+         * 登记在 http_common.cj:129 ⇒ 404）。中间件必须注册在
+         * `router.middleware()` **之后**：洋葱模型里后注册的要在前者 `next()` 之后才轮到。
+         *
+         * ⚠ 边界（不改、只记明）：`/admin` 下**静态文件**的 404 仍是框架静态层
+         *   自己写的 `{"error":"Not Found"}`（`third_party` 里的 vendored 代码）。
+         *   那条路径只被浏览器访问、不经过 API 客户端，故不为此 fork 框架。
+         */
+        .use({ ctx: Context, _: () -> Unit =>
+            sendError(ctx, apiErrorMsg("ROUTE_NOT_FOUND",
+                                       "接口不存在：${ctx.method()} ${ctx.path()}"))
+        })
         .onError({ ctx: Context, _: () -> Unit => hospitalErrorHandler(ctx) })
 }
 

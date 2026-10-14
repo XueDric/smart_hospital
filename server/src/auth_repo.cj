@@ -601,7 +601,7 @@ public class AuthRepo {
         }
         let rs = db.query(
             "SELECT id, login_name, role, ref_id, display_name, pw_salt, pw_hash, pw_iter, status " +
-            "FROM auth_user WHERE (? = '' OR role = ?) AND (? = '' OR status = ?) " +
+            "FROM auth_user WHERE role <> '' AND (? = '' OR role = ?) AND (? = '' OR status = ?) " +
             "ORDER BY id ASC LIMIT ? OFFSET ?",
             [DbStr(wantRole), DbStr(wantRole), DbStr(wantStatus), DbStr(wantStatus),
              DbInt(limit), DbInt(offset)])
@@ -638,7 +638,7 @@ public class AuthRepo {
             ""
         }
         let rs = db.query(
-            "SELECT COUNT(*) FROM auth_user WHERE (? = '' OR role = ?) AND (? = '' OR status = ?)",
+            "SELECT COUNT(*) FROM auth_user WHERE role <> '' AND (? = '' OR role = ?) AND (? = '' OR status = ?)",
             [DbStr(wantRole), DbStr(wantRole), DbStr(wantStatus), DbStr(wantStatus)])
         if (rs.rowCount() == 0) {
             return 0

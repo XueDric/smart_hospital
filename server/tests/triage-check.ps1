@@ -209,9 +209,14 @@ Write-Host "[5c] ★★ 科室判定必须处理否定（第五份复查缺陷�
 $null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO department (id,name,code,created_at) VALUES (9211,'心血管内科','T9211',0)" -Label "建心内科"
 $null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO doctor (id,name,department_id,title,specialty,created_at) VALUES (9211,'测试心内医生',9211,'主任医师','心血管',0)" -Label "建心内医生"
 $null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO schedule (id,doctor_id,department_id,work_date,period,total_num,remain_num,version,enabled,created_at) VALUES (9211,9211,9211,'2026-12-28','AM',5,5,0,1,0)" -Label "建心内排班"
-$null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO department (id,name,code,created_at) VALUES (9212,'呼吸内科','T9212',0)" -Label "建呼吸科"
-$null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO doctor (id,name,department_id,title,specialty,created_at) VALUES (9212,'测试呼吸医生',9212,'主任医师','呼吸',0)" -Label "建呼吸医生"
-$null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO schedule (id,doctor_id,department_id,work_date,period,total_num,remain_num,version,enabled,created_at) VALUES (9212,9212,9212,'2026-12-28','AM',5,5,0,1,0)" -Label "建呼吸排班"
+# ★ 呼吸内科**复用 §[1] 已建的 9201**，不另插同名科室（2026-10-14，第十一份复查发现）：
+#   `department.name` 上有 UNIQUE 约束，而 §[1]（:106）已经插了一个「呼吸内科」——
+#   再插 id 9212 的「呼吸内科」**在同一次运行里就必然 1062 重复**。
+#   C3 之前 `Invoke-MySqlScalar` 不查退出码，这条 INSERT 一直**静默失败**、
+#   连带下面两条（医生/排班）也失败，于是"呼吸内科有号"这个前提**从未真正建立**，
+#   §5c 的三条断言只是靠 §[1] 留下的 12-15 排班碰巧通过。
+#   ⇒ 现在显式给 9201 补一条 12-28 的排班（id 9202），让前提成立且可复现。
+$null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO schedule (id,doctor_id,department_id,work_date,period,total_num,remain_num,version,enabled,created_at) VALUES (9202,9201,9201,'2026-12-28','AM',5,5,0,1,0)" -Label "建呼吸内科 12-28 排班"
 foreach ($c in @('不胸闷，只是咳嗽', '没有胸闷，就是咳嗽', '否认胸闷，主要咳嗽')) {
     $r = DoReq ('ng' + [Guid]::NewGuid().ToString('N').Substring(0,6)) 'POST' '/api/v1/triage' `
          @("Authorization: Bearer $patTok") ('{"chief_complaint":"' + $c + '"}')

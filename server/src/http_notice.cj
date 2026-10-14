@@ -109,19 +109,46 @@ public func noticeThrowOnFailure(out: BaseWriteOutcome): Unit {
  *     ⚠⚠ 缺省值**由调用方给**（不是这里写死 `hNowEpoch()`）：新建时缺省=现在是对的，
  *       但**修改**时缺省必须是**该行原有的 `published_at`** —— 否则"改个错别字"
  *       会把一条预排期的公告**提前发布**（日期也一起被改掉）。这两件事必须分开。
+ *
+ * ⚠⚠ `existing` 决定语义，两种语义**必须**都在这里实现，不能靠调用方自觉：
+ *   · `None`（POST，新建）= **整体替换**：`title`/`body` 必填，缺失即 400；
+ *   · `Some(old)`（PUT，修改）= **PATCH**：缺失字段**保留旧值**。
+ *
+ *   为什么 PUT 必须是 PATCH：列表行上的「下架／重新发布」按钮只发
+ *   `{enabled: false}`。若 PUT 仍强制 `title`/`body`，那个按钮**必然 400**
+ *   —— 而编辑弹窗传全量字段所以看着是好的，于是这类"功能 100% 坏"能活到
+ *   上线。同名前缀 `/api/v1/admin/...` 下一半是整体替换、一半是 PATCH
+ *   （`ai/models/:id` 就是 PATCH）本身就是坑，这里把公告也对齐成 PATCH。
+ *   📌 同理由见 `ai_model.cj` 的 `update`（"只想改温度"不该清空密钥引用）。
  */
-public func noticeFromBody(ctx: Context, defaultPublishedAt: Int64): Notice {
+public func noticeFromBody(ctx: Context, defaultPublishedAt: Int64, existing!: ?Notice = None): Notice {
     let n = Notice()
-    n.title = requireStr(ctx, "title").trimAscii()
-    n.body = requireStr(ctx, "body")
-    n.category = (bodyStr(ctx, "category") ?? "通知").trimAscii()
-    n.sort = bodyInt64(ctx, "sort") ?? 0
-    n.enabled = bodyBool(ctx, "enabled") ?? true
-    let pub = bodyInt64(ctx, "published_at") ?? 0
-    if (pub <= 0) {
-        n.publishedAt = defaultPublishedAt
-    } else {
-        n.publishedAt = pub
+    match (existing) {
+        case Some(old) =>
+            /* PATCH：只覆盖**确实传了**的字段。传空串仍会被域校验拒（标题不能为空）。 */
+            n.title = (bodyStr(ctx, "title") ?? old.title).trimAscii()
+            n.body = bodyStr(ctx, "body") ?? old.body
+            n.category = (bodyStr(ctx, "category") ?? old.category).trimAscii()
+            n.sort = bodyInt64(ctx, "sort") ?? old.sort
+            n.enabled = bodyBool(ctx, "enabled") ?? old.enabled
+            let pubOld = bodyInt64(ctx, "published_at") ?? 0
+            if (pubOld <= 0) {
+                n.publishedAt = old.publishedAt
+            } else {
+                n.publishedAt = pubOld
+            }
+        case None =>
+            n.title = requireStr(ctx, "title").trimAscii()
+            n.body = requireStr(ctx, "body")
+            n.category = (bodyStr(ctx, "category") ?? "通知").trimAscii()
+            n.sort = bodyInt64(ctx, "sort") ?? 0
+            n.enabled = bodyBool(ctx, "enabled") ?? true
+            let pub = bodyInt64(ctx, "published_at") ?? 0
+            if (pub <= 0) {
+                n.publishedAt = defaultPublishedAt
+            } else {
+                n.publishedAt = pub
+            }
     }
     return n
 }
@@ -206,15 +233,18 @@ public func registerNoticeRoutes(r: Router, auth: AuthRepo, gate: DevAuthGate,
         requireCan(p.role, Action.ManageNotice)
         let id = parseInt64Or(ctx.paramOr("id", "0"), 0)
         /*
-         * ⚠ 先读旧行：`published_at` 的缺省值必须是**原有的发布时间**。
-         *   若像新建那样缺省成"现在"，改个错别字就会把预排期的公告
-         *   **提前发布**，并把 `date`（界面上的发布日期）一起改掉。
+         * ⚠ 先读旧行，原因有两个：
+         *   1. `published_at` 的缺省值必须是**原有的发布时间**。若像新建那样缺省成
+         *      "现在"，改个错别字就会把预排期的公告**提前发布**，并把 `date`
+         *      （界面上的发布日期）一起改掉；
+         *   2. 修改是 **PATCH 语义**（缺失字段保留旧值）—— 列表行的
+         *      「下架／重新发布」只发 `{enabled: false}`，见 `noticeFromBody` 的注释。
          */
         let existing = match (notices.findById(id)) {
             case Some(old) => old
             case None => throw apiErrorMsg("NOTICE_NOT_FOUND", "公告不存在")
         }
-        let n = noticeFromBody(ctx, existing.publishedAt)
+        let n = noticeFromBody(ctx, existing.publishedAt, existing: Some(existing))
         n.updatedBy = p.userId
         /* `updated_at` 由调用方刷新（仓储不自己取时间，测试才能喂固定值）。 */
         n.updatedAt = hNowEpoch()

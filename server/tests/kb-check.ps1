@@ -72,29 +72,55 @@ Write-Host "  目标: $Base"
 Write-Host "  库  : $($My.Db)@$($My.DbHost):$($My.Port)"
 
 # ── [0] 夹具：按自己的标题前缀清残留
+#
+# ★ 夹具纪律之二（2026-10-14，第十一份复查发现）：本脚本必须**自带**它绑定的
+#   业务档案（doctor/patient），不能借库里"碰巧存在的行"。
+#
+#   踩过的坑：这里原来是 `SELECT MAX(id) FROM doctor` 取一个已有医生给 kbchkdoc 绑定。
+#   而**别的脚本的清理会把这行删掉** —— 于是第二次跑时账号还在、`ref_id` 指向的行没了，
+#   登录**按设计**拒绝签发令牌（auth_repo.cj `authReferenceExists` 判"幽灵业务身份"，
+#   见该处注释：不签发、也不泄露缺什么）⇒ 表现为 401 AUTH_BAD_CREDENTIALS，
+#   看上去像"口令被改了"，实则是**夹具不幂等**。
+#   ⇒ 现在：先删旧账号与旧档案，再自建 department/doctor/patient（固定 id），
+#     并在脚本末尾一并清掉。这样本脚本**连跑 N 次结果一致**。
 Write-Host ""
-Write-Host "[0] 夹具（按标题前缀 KBCHK 清残留）"
+Write-Host "[0] 夹具（KBCHK 前缀清残留 + 自建 KBCHK 科室/医生/患者）"
 Sql "DELETE FROM kb_chunk WHERE doc_id IN (SELECT id FROM kb_doc WHERE title LIKE 'KBCHK%');
-DELETE FROM kb_doc WHERE title LIKE 'KBCHK%';"
+DELETE FROM kb_doc WHERE title LIKE 'KBCHK%';
+DELETE FROM auth_token WHERE user_id IN (SELECT id FROM auth_user WHERE login_name IN ('kbchkdoc','kbchkpat'));
+DELETE FROM auth_user WHERE login_name IN ('kbchkdoc','kbchkpat');
+DELETE FROM doctor WHERE id = 900103;
+DELETE FROM patient WHERE id = 960001;
+DELETE FROM department WHERE id = 900103 OR code = 'KBCHK900103';
+INSERT INTO department (id,name,code,location,sort,enabled,created_at) VALUES (900103,'KBCHK测试科室','KBCHK900103','',900103,1,0);
+INSERT INTO doctor (id,name,department_id,title,specialty,enabled,created_at) VALUES (900103,'KBCHK端到端医生',900103,'主任医师','测试',1,0);
+INSERT INTO patient (id,phone,name,gender,birth_date,created_at) VALUES (960001,'13800096001','KBCHK端到端患者','M','1990-01-01',0);"
 $leftover = One "SELECT COUNT(*) FROM kb_doc WHERE title LIKE 'KBCHK%'"
 Check "旧残留已清（剩 $leftover 行）" ("$leftover" -eq '0')
+Check "自建档案就绪（doctor 900103 / patient 960001）" `
+      ("$(One "SELECT COUNT(*) FROM doctor WHERE id = 900103")" -eq '1' -and `
+       "$(One "SELECT COUNT(*) FROM patient WHERE id = 960001")" -eq '1')
 
 $admTok = Tok "admin" $AdminPw
 
 # 建一个医生账号与一个患者账号（验权限边界）
-$docId = [int](One "SELECT IFNULL(MAX(id),0) FROM doctor")
-if ($docId -le 0) { $docId = 1 }
+# ★ 绑定的是**上面刚自建**的档案（固定 id），不是"库里碰巧有的那一行"
+$docId = 900103
 $duid = 0
 $r = Req 'mkdoc' 'POST' '/api/v1/admin/users' @("Authorization: Bearer $admTok") ('{"login_name":"kbchkdoc","password":"Zq4nRw8t","role":"doctor","ref_id":' + $docId + '}')
+Check "建医生账号 → 201（ref_id=$docId）" ($r.Http -eq 201) ("HTTP $($r.Http) $($r.Body)")
 if ($r.Http -eq 201) { $duid = [int](($r.Body | ConvertFrom-Json).data.user_id) }
 if ($duid -le 0) { $duid = [int](One "SELECT id FROM auth_user WHERE login_name = 'kbchkdoc'") }
+Check "医生账号 id 解析出来（$duid）" ($duid -gt 0)
 $null = Req 'setdpw' 'POST' ("/api/v1/admin/users/" + $duid + "/password") @("Authorization: Bearer $admTok") '{"password":"Zq4nRw8t"}'
 $docTok = Tok "kbchkdoc" "Zq4nRw8t"
 
 $puid = 0
 $r = Req 'mkpat' 'POST' '/api/v1/admin/users' @("Authorization: Bearer $admTok") '{"login_name":"kbchkpat","password":"Zq4nRw8t","role":"patient","ref_id":960001}'
+Check "建患者账号 → 201（ref_id=960001）" ($r.Http -eq 201) ("HTTP $($r.Http) $($r.Body)")
 if ($r.Http -eq 201) { $puid = [int](($r.Body | ConvertFrom-Json).data.user_id) }
 if ($puid -le 0) { $puid = [int](One "SELECT id FROM auth_user WHERE login_name = 'kbchkpat'") }
+Check "患者账号 id 解析出来（$puid）" ($puid -gt 0)
 $null = Req 'setppw' 'POST' ("/api/v1/admin/users/" + $puid + "/password") @("Authorization: Bearer $admTok") '{"password":"Zq4nRw8t"}'
 $patTok = Tok "kbchkpat" "Zq4nRw8t"
 Check "三端令牌就绪（管理员/医生/患者 = $($admTok.Length)/$($docTok.Length)/$($patTok.Length) 字符）" `
@@ -232,10 +258,21 @@ Check "★★ ③ 含 scan_limit_reached（看板上**一眼可见**是否触顶
 Check "★★ ③ 且含口径说明（0% 不等于功能损坏）" ($dj.data.knowledge_base.note.Length -gt 0)
 
 # ── 清理
+# ★ 连**账号与业务档案**一起清：只清文档的话，下次跑就又会撞上"账号在、ref_id 指向的行不在"
+#   （见 [0] 夹具纪律之二的注释）。
 Sql "DELETE FROM kb_chunk WHERE doc_id IN (SELECT id FROM kb_doc WHERE title LIKE 'KBCHK%');
-DELETE FROM kb_doc WHERE title LIKE 'KBCHK%';"
+DELETE FROM kb_doc WHERE title LIKE 'KBCHK%';
+DELETE FROM auth_token WHERE user_id IN (SELECT id FROM auth_user WHERE login_name IN ('kbchkdoc','kbchkpat'));
+DELETE FROM auth_user WHERE login_name IN ('kbchkdoc','kbchkpat');
+DELETE FROM doctor WHERE id = 900103;
+DELETE FROM patient WHERE id = 960001;
+DELETE FROM department WHERE id = 900103 OR code = 'KBCHK900103';"
 $final = One "SELECT COUNT(*) FROM kb_doc WHERE title LIKE 'KBCHK%'"
 Check "清理：本脚本的文档已全部删除（剩 $final 行）" ("$final" -eq '0')
+Check "清理：本脚本的账号与档案已删除（不留给下一次跑）" `
+      ("$(One "SELECT COUNT(*) FROM auth_user WHERE login_name IN ('kbchkdoc','kbchkpat')")" -eq '0' -and `
+       "$(One "SELECT COUNT(*) FROM doctor WHERE id = 900103")" -eq '0' -and `
+       "$(One "SELECT COUNT(*) FROM patient WHERE id = 960001")" -eq '0')
 
 Write-Host ""
 if ($failed -eq 0) {

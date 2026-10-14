@@ -171,7 +171,7 @@ ai_call.cj：请求体 model / max_tokens / messages / **temperature**
 | 手段 | 覆盖 |
 | --- | --- |
 | `tests\ai-model-check.ps1`（**45 项**） | 模型配置全链路：鉴权（无令牌 401 / 患者 403）、播种的两条默认行与 `request_url` 拼接、密钥不回显、校验闸门（明文 http / 温度越界 / 空名 / 未知类型 / 非法 `key_ref` / 重名）、PATCH 语义、`is_default` 唯一、连通性测试恒 200 且不受 `ai.enabled` 影响、缓存失效**真的**读到库里的新值、`settings` 闸门（并断言库里没留下那行）、删除与夹具自清 |
-| `tests\admin-web-smoke.mjs` | 无头 Edge + CDP：真实 boot 流程 + **11 个页面逐个渲染**，收集 `console.error` / 未捕获异常 / `>=400` 响应，逐页截图；页脚不得出现"读取失败" |
+| `tests\admin-web-smoke.mjs` | 无头 Edge + CDP：真实 boot 流程 + **11 个页面逐个渲染** + **写路径**（公告新建/下架/重新发布/删除、知识库 PATCH/空正文 400/重切块、必填校验、`DELETE ai/settings/:key` 收窄、`PUT` 不存在模型 404、未注册路径 404 信封、未带令牌 401、登出回登录页）；模态框能开能关；收集 `console.error` / 未捕获异常 / `>=400` 响应，逐页截图。**判定全部计入退出码**：登录遮罩未收起 / 侧栏项数少于页面清单 / `whoami` 为空 / 页脚"读取失败" / 某页正文过短 / 某页有错误框 / 侧栏无高亮——任一为真即 FAIL |
 | `tests\base-check.ps1` | 基础数据域 + 本轮新增的排班可改（不变量 400 / 版本冲突 409 / 停诊 PATCH / 404 / 空改动 400） |
 | `tests\auth-check.ps1` | 令牌域 + 本轮新增的账号列表模式（分页 / 筛选 / 白名单外当不筛 / 不吐 `pw_hash`） |
 | `accept`（AC-16 / AC-17） | 服务端侧的确定性证明：播种幂等、`defaultOf` 与 `request_url`、运行时覆盖与温度、`key_ref` 回落、缓存与 `invalidate`、`listUsers` 不读口令材料、`updateSchedule` 的原子不变量与乐观锁 |
@@ -179,8 +179,14 @@ ai_call.cj：请求体 model / max_tokens / messages / **temperature**
 冒烟脚本用法：
 
 ```powershell
-& $env:NODE tests\admin-web-smoke.mjs --base http://127.0.0.1:8091 --admin admin --pw <口令> --out <截图目录>
+& $env:NODE tests\admin-web-smoke.mjs --base http://127.0.0.1:15001 --admin admin --pw <口令> --out <截图目录>
+# 可选：--port <调试端口>（默认随机，避免并行打架）、--edge <msedge.exe>（默认自动探测常见安装位置）、
+#       --wait / --net-idle / --min-chars（页面静置与正文长度门禁；默认按**网络空闲**等待，不再死等固定毫秒）
 ```
+
+> ⚠ 本机 **1024–15000 是 Windows 动态端口范围**（`netsh int ipv4 show dynamicport tcp`），
+> 显式 bind 该区间会拿到 `WSAEACCES(10013)`「以一种访问权限不允许的方式做了一个访问套接字的尝试」。
+> 服务端/冒烟脚本请用 **≥15001** 的端口（文档里的 8091 是给正常机器写的）。
 
 ---
 
@@ -192,6 +198,13 @@ ai_call.cj：请求体 model / max_tokens / messages / **temperature**
 3. **`ai.ca_bundle_path` 仍不支持**：stdx 1.1.3.1 的 `TlsClientConfig` 只有 mTLS、没有信任锚入口，
    写入会被 400 拒绝（写明"不会生效，故拒绝写入"）。
 4. 管理台**不做**多用户/角色区分：能登录管理台的就是 `admin`（与 `/api/v1/admin/*` 的权限口径一致）。
+5. **权限动作复用（评审 B8，登记不修）**：AI 全套端点、`/admin/users`、`/auth/sessions` 复用
+   `Action.ManageSchedule`（刻意如此：同一个页面不能有两个权限答案）。这条依赖
+   **「`ManageSchedule` ≡ admin-only」这一当前事实** —— 一旦排班权限放开给护士/医生，
+   AI 配置与用户管理会**连带失守**。后续若要放开排班，必须先补 `Action.ManageAi` / `Action.ManageUser`。
+6. **`/admin/departments`、`/admin/doctors` 列表无分页（评审 B9，登记不修）**：
+   只有 `include_disabled` / `department_id`，没有 `limit`/`offset` ⇒ 前端表格无上界。
+   当前是**规模假设**（科室/医生 ≤200 行量级），超过就该加分页参数，而不是继续加内存。
 
 ---
 

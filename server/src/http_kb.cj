@@ -18,7 +18,7 @@ import std.time.*
  *     GET    /api/v1/admin/kb/docs              列表（含块数）
  *     POST   /api/v1/admin/kb/docs              新建（**自动切块**）
  *     GET    /api/v1/admin/kb/docs/:id          单篇
- *     PUT    /api/v1/admin/kb/docs/:id          修改（**自动重切块**）
+ *     PUT    /api/v1/admin/kb/docs/:id          修改（**PATCH 语义 + 自动重切块**）
  *     DELETE /api/v1/admin/kb/docs/:id          删除（连带删块）
  *     GET    /api/v1/admin/kb/stats             规模（文档/块/向量覆盖率）
  *
@@ -95,24 +95,18 @@ func kbRound4(v: Float64): Float64 {
 /* ===================== 请求体解析 ===================== */
 
 /*
- * 从请求体取字符串字段。
+ * 从请求体取字符串字段（**新建**用：缺字段按空串处理，交给 `kbValidate` 拒绝）。
  *
  * ⚠ `missing` 与"空串"要能区分：
  *   `kbValidate` 对空标题的拒绝理由是"标题不能为空"，
  *   而若字段**根本没传**，理由应该是"缺字段"（那是**接口契约**问题，不是内容问题）。
  *   📌 两者混在一起会让调用方分不清"我传错了"还是"内容不合规"。
+ *
+ * 📌 2026-10-14：**只有 POST 还用它**。PUT（修改）已改为 PATCH 语义，
+ *   缺字段 = 保留旧值，所以不需要"缺字段"的判定（见 put 处理块里的注释）。
  */
 func kbBodyField(ctx: Context, name: String): String {
     return bodyStr(ctx, name) ?? ""
-}
-
-/*
- * 取布尔字段（缺省用 `def`）。
- * ⚠ 用现成的 `bodyBool`（它内部已做类型判定）：
- *   `asBool()` 类型不符会**抛异常**（这条语言坑记录过），不要自己再写一遍。
- */
-func kbBodyBool(ctx: Context, name: String, def: Bool): Bool {
-    return bodyBool(ctx, name) ?? def
 }
 
 /* ===================== 错误映射 ===================== */
@@ -193,19 +187,34 @@ public func registerKbRoutes(r: Router, auth: AuthRepo, gate: DevAuthGate, kb: K
         let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.ManageKnowledgeBase)
         let id = kbPathId(ctx)
-        let title = kbBodyField(ctx, "title")
-        let category = kbBodyField(ctx, "category")
-        let body = kbBodyField(ctx, "body")
         /*
-         * ⚠ `enabled` 缺省是 **true**（"改内容"是最常见的意图；
-         *   要停用请显式传 `enabled: false`）。
-         *   ⇒ 但这是**有风险**的缺省：一次"只想改标题"的 PUT 若客户端没带 body，
-         *     会把正文清空（那会被 kbValidate 挡住 ⇒ 400，不会静默毁数据）。
-         *   📌 刻意保持"PUT = 整体替换"的语义，不做"只改传了的字段"的 patch ——
-         *     后者要求客户端知道哪些字段传了，而 JSON 里"没传"与"传了 null"难区分。
+         * ★ 2026-10-14 改口径：**PUT = PATCH**（"没传的字段保留旧值"）。
+         *
+         * 以前这里是"整体替换"：`title`/`category`/`body` 缺一个就 400，
+         * `enabled` 缺省 `true`。它和同一 `/api/v1/admin/...` 前缀下的
+         * `/ai/models/:id`、`/notices/:id`（另一处同类修正）**语义相反**，
+         * 前端按 PATCH 直觉写就会必然失败 —— 公告列表的"下架/重新发布"
+         * 按钮就是这么 100% 报 400 的（检查报告 A1）。
+         * ⇒ 三个端点现在统一为 PATCH：**缺字段 = 保留旧值**，
+         *   `enabled` 缺省也保留旧值（不再有"意外重新启用"的风险缺省）。
+         *
+         * ⚠ 两种情形仍然会 400（都由 `kbValidate` 给出**内容类**理由，
+         *   不与"缺字段"混淆）：字段**传了但为空** / 传了 `null`。
+         * 📌 代价：`kb.update` 仍**无条件重切块**（响应里的 `chunk_count`
+         *   就是这次的切块结果），所以"只改 enabled"的 PUT 也会重切一次。
+         *   这是已知的浪费，换来的是"保存即重切"这条简单口径。
          */
-        let enabled = kbBodyBool(ctx, "enabled", true)
-        let out = kb.update(id, title, category, body, enabled, p.userId, kbNowEpoch())
+        let title = bodyStr(ctx, "title")
+        let category = bodyStr(ctx, "category")
+        let body = bodyStr(ctx, "body")
+        let enabled = bodyBool(ctx, "enabled")
+        let existing = match (kb.findById(id)) {
+            case Some(d) => d
+            case None => throw apiErrorMsg("KB_DOC_NOT_FOUND", "知识库文档不存在")
+        }
+        let out = kb.update(id, title ?? existing.title, category ?? existing.category,
+                            body ?? existing.body, enabled ?? existing.enabled,
+                            p.userId, kbNowEpoch())
         kbThrowOnFailure(out)
         let data = JsonObject()
         data.put("id", JsonInt(out.id))

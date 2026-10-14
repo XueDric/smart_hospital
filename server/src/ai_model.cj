@@ -27,6 +27,11 @@ package qingzhou
 
 import std.collection.*
 import stdx.encoding.json.*
+/*
+ * ⚠ `std.sync.*` 是给 `Mutex` 用的（缓存锁）。`AiSettingsRepo` 在 2026-10-14
+ *   上游那次修复里也加了同一个 import —— 两边口径保持一致。
+ */
+import std.sync.*
 
 /* ===================== 常量 ===================== */
 
@@ -401,6 +406,20 @@ public func aiModelClampLimit(limit: Int64): Int64 {
  */
 public class AiModelRepo {
     private let db: DbBackend
+    /*
+     * ★ 2026-10-14（第三方复查 B4 修）：缓存必须与 `AiSettingsRepo` 同款地加锁。
+     *
+     * 原实现**没有任何锁**：`ensureCache()` 直接给共享的 `cache` 赋值，
+     * 而 `list`/`get`/`defaultOf` 同时在迭代同一个对象。
+     * 本服务端当前不含 `spawn`（见 acceptance.cj），所以这不是已证实的竞态 ——
+     * 但"同一个进程里两个仓储，一个加锁一个不加"本身就是纪律分裂：
+     * 谁把 AI 调用挪到工作线程，谁就会踩到那个"只有一半的锁"。
+     *
+     * 锁序与 `AiSettingsRepo` **完全一致**（仓储锁 → 数据库连接锁，可重入）：
+     *   `ensureCache` 在仓储锁内调 `reload()`；写操作在 `db.exec` 返回后才 `invalidate()`，
+     *   不持有连接锁反向获取仓储锁。
+     */
+    private let cacheLock = Mutex()
     private var cache: ArrayList<AiModel> = ArrayList<AiModel>()
     private var cacheAt: Int64 = 0
 
@@ -442,34 +461,42 @@ public class AiModelRepo {
     }
 
     private func ensureCache(now: Int64): Unit {
-        if (cacheAt == 0 || now - cacheAt > AI_MODEL_CACHE_TTL_SECS) {
-            cache = reload()
-            cacheAt = now
+        synchronized(cacheLock) {
+            if (cacheAt == 0 || now - cacheAt > AI_MODEL_CACHE_TTL_SECS) {
+                cache = reload()
+                cacheAt = now
+            }
         }
     }
 
     /* 主动失效（写操作后调用；管理台的「失效配置缓存」按钮也调它）。 */
     public func invalidate(): Unit {
-        cacheAt = 0
+        synchronized(cacheLock) {
+            cacheAt = 0
+        }
     }
 
     public func list(includeDisabled: Bool, now: Int64): ArrayList<AiModel> {
         ensureCache(now)
         let out = ArrayList<AiModel>()
-        for (m in cache) {
-            if (!includeDisabled && !m.enabled) {
-                continue
+        synchronized(cacheLock) {
+            for (m in cache) {
+                if (!includeDisabled && !m.enabled) {
+                    continue
+                }
+                out.add(m.copy())
             }
-            out.add(m.copy())
         }
         return out
     }
 
     public func get(id: Int64, now: Int64): ?AiModel {
         ensureCache(now)
-        for (m in cache) {
-            if (m.id == id) {
-                return Some(m.copy())
+        synchronized(cacheLock) {
+            for (m in cache) {
+                if (m.id == id) {
+                    return Some(m.copy())
+                }
             }
         }
         return None
@@ -487,15 +514,17 @@ public class AiModelRepo {
         ensureCache(now)
         var firstEnabled: ?AiModel = None
         var explicitDefault: ?AiModel = None
-        for (m in cache) {
-            if (m.kind != kind || !m.enabled) {
-                continue
-            }
-            if (firstEnabled.isNone()) {
-                firstEnabled = Some(m.copy())
-            }
-            if (m.isDefault && explicitDefault.isNone()) {
-                explicitDefault = Some(m.copy())
+        synchronized(cacheLock) {
+            for (m in cache) {
+                if (m.kind != kind || !m.enabled) {
+                    continue
+                }
+                if (firstEnabled.isNone()) {
+                    firstEnabled = Some(m.copy())
+                }
+                if (m.isDefault && explicitDefault.isNone()) {
+                    explicitDefault = Some(m.copy())
+                }
             }
         }
         match (explicitDefault) {
@@ -557,13 +586,26 @@ public class AiModelRepo {
             return r
         }
         /*
-         * ⚠ 用 `execInsert` 而不是 `exec` + `SELECT LAST_INSERT_ID()`：
-         *   新框架的 exec/query **不保证落在同一条连接**（上游因此把两处裸读 LAST_INSERT_ID
-         *   全换成 execInsert，见 domain_booking.cj 的踩坑注释）。分开调用时读到的可能是
-         *   别的连接的上一次自增值，或者干脆是 0 —— 表现是"新建配置成功但 id=0"，
-         *   接着 `clearOtherDefaults` 会把**所有**行都当成别的行处理。
+         * ★★ 2026-10-14（第三方复查 B6 修）：把唯一键冲突**接住**，回 409 而不是 500。
+         *
+         * 上面那句 `nameTaken` 是"先查后写"——两个请求同时查、都没有同名，
+         * 然后一起 INSERT：真正的唯一性由 `uk_ai_model_name` 保证，于是**第二个** INSERT
+         * 抛驱动异常。原实现没人接它 ⇒ 冒到全局兜底 ⇒ 客户端拿到 500「服务器内部错误」，
+         * 而契约与测试声明的是 **409 AI_MODEL_NAME_TAKEN**（"同名配置已存在，是你选的冲突"）。
+         *
+         * 500 与 409 的差别在这里是**可操作性**：500 让人去查服务端日志，
+         * 409 让人改个名字重试。既然表上已经有唯一键，就该让它的语义传到客户端。
          */
-        let id = db.execInsert("INSERT INTO ai_model (name, kind, provider, base_url, model, temperature, " +
+        var id: Int64 = 0
+        try {
+            /*
+             * ⚠ 用 `execInsert` 而不是 `exec` + `SELECT LAST_INSERT_ID()`：
+             *   新框架的 exec/query **不保证落在同一条连接**（上游因此把两处裸读 LAST_INSERT_ID
+             *   全换成 execInsert，见 domain_booking.cj 的踩坑注释）。分开调用时读到的可能是
+             *   别的连接的上一次自增值，或者干脆是 0 —— 表现是"新建配置成功但 id=0"，
+             *   接着 `clearOtherDefaults` 会把**所有**行都当成别的行处理。
+             */
+            id = db.execInsert("INSERT INTO ai_model (name, kind, provider, base_url, model, temperature, " +
                                "max_tokens, key_ref, enabled, is_default, created_at, updated_at, updated_by) " +
                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                                [DbStr(name), DbStr(kind), DbStr(provider), DbStr(url), DbStr(model),
@@ -571,6 +613,18 @@ public class AiModelRepo {
                                 DbInt(if (m.enabled) { 1 } else { 0 }),
                                 DbInt(if (m.isDefault) { 1 } else { 0 }),
                                 DbInt(now), DbInt(now), DbInt(byUserId)])
+        } catch (e: Exception) {
+            /*
+             * ⚠ 这里**只**把"同名"这一种解释成 409，其余异常照旧上抛（退化成 500）——
+             *   把任何写失败都说成"重名"会让真正的故障（库断了、列类型改了）
+             *   显示成"改个名字再试"，那比 500 更难排查。
+             */
+            if (nameTaken(name, 0)) {
+                r.duplicate = true
+                return r
+            }
+            throw e
+        }
         if (m.isDefault) {
             clearOtherDefaults(kind, id, now)
         }
@@ -626,14 +680,40 @@ public class AiModelRepo {
                     r.duplicate = true
                     return r
                 }
-                let _ = db.exec("UPDATE ai_model SET name = ?, kind = ?, provider = ?, base_url = ?, " +
-                                "model = ?, temperature = ?, max_tokens = ?, key_ref = ?, enabled = ?, " +
-                                "is_default = ?, updated_at = ?, updated_by = ? WHERE id = ?",
-                                [DbStr(nName), DbStr(nKind), DbStr(nProvider), DbStr(nUrl), DbStr(nModel),
-                                 DbFloat(nTemp), DbInt(nTokens), DbStr(nKeyRef),
-                                 DbInt(if (nEnabled) { 1 } else { 0 }),
-                                 DbInt(if (nDefault) { 1 } else { 0 }),
-                                 DbInt(now), DbInt(byUserId), DbInt(id)])
+                /*
+                 * ★ 2026-10-14（第三方复查 B3 修）：**不许把影响行数丢进 `let _`**。
+                 *
+                 * 原实现 UPDATE 之后直接 `r.ok = true`。若这一行在
+                 * `get()`（上面的 match）与 UPDATE 之间被别人删掉，UPDATE 影响 0 行，
+                 * 而接口仍然回 200「改成功了」—— **响应在撒谎**。
+                 *
+                 * 这正是本仓为 `setPassword` 明确修过的同类 bug
+                 * （auth_repo.cj 注释："AUTH 先查存在性，否则 UPDATE 影响 0 行却回 200 —— 那是撒谎"）。
+                 * 同一条纪律必须落到这里：0 行受影响 ⇒ 当"没这行"处理（404），
+                 * 由调用方映射成 `AI_MODEL_NOT_FOUND`。
+                 */
+                var affected: Int64 = 0
+                try {
+                    affected = db.exec("UPDATE ai_model SET name = ?, kind = ?, provider = ?, base_url = ?, " +
+                                    "model = ?, temperature = ?, max_tokens = ?, key_ref = ?, enabled = ?, " +
+                                    "is_default = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+                                    [DbStr(nName), DbStr(nKind), DbStr(nProvider), DbStr(nUrl), DbStr(nModel),
+                                     DbFloat(nTemp), DbInt(nTokens), DbStr(nKeyRef),
+                                     DbInt(if (nEnabled) { 1 } else { 0 }),
+                                     DbInt(if (nDefault) { 1 } else { 0 }),
+                                     DbInt(now), DbInt(byUserId), DbInt(id)])
+                } catch (e: Exception) {
+                    /* 与 create 同一条口径：**只有**"确实重名了"才解释成 409，其余照旧上抛。 */
+                    if (nameTaken(nName, id)) {
+                        r.duplicate = true
+                        return r
+                    }
+                    throw e
+                }
+                if (affected <= 0) {
+                    r.notFound = true
+                    return r
+                }
                 if (nDefault) {
                     clearOtherDefaults(nKind, id, now)
                 }
@@ -846,18 +926,33 @@ public func aiModelProbe(m: AiModel, settings: AiSettingsRepo, now: Int64): AiMo
     return out
 }
 
+/*
+ * 按**字符**截断探活样本（2026-10-14 修 B5）。
+ *
+ * ⚠ 原实现取 `s.toArray()` —— 那是 **UInt8 字节数组**，参数名却叫 `maxChars`：
+ *   中文样本（`AI_MODEL_PROBE_SAMPLE_MAX_CHARS = 160`）会在字符中间被切开，
+ *   `String.fromUtf8` 得到非法 UTF-8，再往响应里塞就是坏 JSON / 前端乱码。
+ *
+ * 本仓对同一个坑已有三处成文证据（`triageTruncateChars` / `previsitTruncateChars`
+ * 以及 `triage_redflag.cj` 的"错误做法 `for (ch in text.toArray())`"）——
+ * 这里改成同一口径：逐 `Rune` 收集到第 n 个为止，天然落在字符边界上。
+ */
 func aiModelTruncate(s: String, maxChars: Int64): String {
-    let chars = s.toArray()
-    if (chars.size <= maxChars) {
+    var count: Int64 = 0
+    for (r in s.runes()) {
+        count = count + 1
+    }
+    if (count <= maxChars) {
         return s
     }
-    let out = ArrayList<UInt8>()
-    var i: Int64 = 0
-    while (i < maxChars) {
-        out.add(chars[i])
-        i = i + 1
+    let out = ArrayList<Rune>()
+    for (r in s.runes()) {
+        if (out.size >= maxChars) {
+            break
+        }
+        out.add(r)
     }
-    return String.fromUtf8(out.toArray()) + "…"
+    return String(out.toArray()) + "…"
 }
 
 public func aiModelProbeJson(p: AiModelProbeResult): JsonObject {

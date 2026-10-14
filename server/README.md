@@ -148,8 +148,15 @@ cd server     # ⚠ cwd 必须是 server/，见下
 **鉴权**：`Authorization: Bearer <token>`。令牌 32 字节随机（64 hex），有效期 30 天、
 滑动续期（每天最多写一次）。**有状态**（服务端存 token → user）⇒ 停用/改口令可立即踢下线。
 
-联调备用：`--dev-auth` 开启后可用 `X-Role: patient|doctor|admin` + `X-Patient-Id: <id>`；
+联调备用：`--dev-auth` 开启后可用 `X-Role: patient|doctor|admin` +
+`X-Patient-Id: <id>`（患者）/ `X-Doctor-Id: <id>`（医生，`http_app.cj` 实际会读取）；
 **未开启时这些头被忽略并返回 401**（有测试钉住）。
+
+> ⚠ **这些头只在「本机回环来源」生效**（2026-10-14 加）：即使带着 `--dev-auth`，
+> 从别的机器/网段打过来（来源 IP 非 `127.0.0.1`/`::1`）也会被拒：
+> `401 AUTH_REQUIRED`「开发态身份头（X-Role 等）只允许本机回环地址使用（来源 x.x.x.x）」。
+> 理由：`--dev-auth` 可能被误开到 `--bind 0.0.0.0`，此时任何能访问端口的人都可自封管理员；
+> 回环限制让"误开"最多只影响本机。`health-check.ps1 -Mode dev|prod` 会把这条作为门禁断言。
 
 ### 自动化测试脚本
 

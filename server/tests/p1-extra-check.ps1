@@ -49,6 +49,22 @@ $null = Invoke-MySqlScalar -My $My -Sql "DELETE FROM schedule WHERE department_i
 #   正解：按 (patient_id, schedule_id) 删测试用排班上的单。
 $null = Invoke-MySqlScalar -My $My -Sql "DELETE FROM appointment WHERE schedule_id IN (SELECT id FROM schedule WHERE department_id IN (7,8) AND work_date IN ('2026-12-25','2026-12-26'))" -Label "清测试挂号"
 
+# ★ 依赖的科室**自己建**（2026-10-14，第十一份复查发现）。
+#
+# ⚠ 原来这里假定 id 7/8 的科室"库里已经有"（来自 create-db 的种子数据）。
+#   但 `stress-booking.ps1:109-110` 会 `DELETE FROM doctor; DELETE FROM department;`
+#   —— 跑过压测脚本之后，下面 `POST /api/v1/admin/schedules` 必然因外键失败，
+#   `$sidA/$sidB` 变成空串，接着 `UPDATE ... WHERE id = ` 拼出非法 SQL。
+#   C3 之前那一步的错误被 `2>$null` 吞掉，脚本只是"静默少跑几条断言"；
+#   现在硬失败 —— 这正是夹具该自己保证的事（见上面 :37 的纪律）。
+#   幂等写法：已存在就跳过，不动别的脚本留下的同名/同号数据。
+$null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO department (id,name,code,location,sort,enabled,created_at) SELECT 7,'P1X测试科A','P1XA','',7,1,0 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM department WHERE id = 7)" -Label "确保科室 7"
+$null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO department (id,name,code,location,sort,enabled,created_at) SELECT 8,'P1X测试科B','P1XB','',8,1,0 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM department WHERE id = 8)" -Label "确保科室 8"
+# ⚠ 还要有**属于这两个科室的医生**：`POST /admin/schedules` 会校验
+#   "医生必须启用且属于所选科室"（doctor 1 属内科 1，不能拿去排 7/8 的班）。
+$null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO doctor (id,name,department_id,title,specialty,enabled,created_at) SELECT 7,'P1X测试医生A',7,'主任医师','测试',1,0 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM doctor WHERE id = 7)" -Label "确保医生 7"
+$null = Invoke-MySqlScalar -My $My -Sql "INSERT INTO doctor (id,name,department_id,title,specialty,enabled,created_at) SELECT 8,'P1X测试医生B',8,'主任医师','测试',1,0 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM doctor WHERE id = 8)" -Label "确保医生 8"
+
 $tmp = Join-Path $env:TEMP ("p1x-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
@@ -245,11 +261,17 @@ if ($pl.Http -ne 200) {
 Write-Host ""
 Write-Host "[4] 排班列表（按科室/日期）"
 $r = DoReq 'schmk' 'POST' '/api/v1/admin/schedules' @("Authorization: Bearer $admTok") `
-     '{"doctor_id":1,"department_id":7,"work_date":"2026-12-25","period":"PM","total_num":3}'
+     '{"doctor_id":7,"department_id":7,"work_date":"2026-12-25","period":"PM","total_num":3}'
+# ★ 失败即停：`$sidA` 为空时后面的 UPDATE 会拼出非法 SQL（`WHERE id = `），
+#   而那条 SQL 的报错信息完全指不到"建排班失败"这个真因（第十一份复查的教训）。
+Check "建 12-25 排班 → 201（$($r.Http)）" ($r.Http -eq 201) ($r.Body)
 $sidA = $r.Json.data.schedule_id
+if (-not $sidA) { throw "建排班失败：department_id=7 未返回 schedule_id（HTTP $($r.Http) $($r.Body)）—— 先看科室 7 / 医生 7 是否存在" }
 $r = DoReq 'schmk2' 'POST' '/api/v1/admin/schedules' @("Authorization: Bearer $admTok") `
-     '{"doctor_id":1,"department_id":8,"work_date":"2026-12-26","period":"AM","total_num":3}'
+     '{"doctor_id":8,"department_id":8,"work_date":"2026-12-26","period":"AM","total_num":3}'
+Check "建 12-26 排班 → 201（$($r.Http)）" ($r.Http -eq 201) ($r.Body)
 $sidB = $r.Json.data.schedule_id
+if (-not $sidB) { throw "建排班失败：department_id=8 未返回 schedule_id（HTTP $($r.Http) $($r.Body)）—— 先看科室 8 / 医生 8 是否存在" }
 
 $r = DoReq 'l1' 'GET' '/api/v1/schedules?department_id=7' @("Authorization: Bearer $admTok") $null
 $deps = @()
@@ -314,9 +336,27 @@ if (-not (Test-Path $exe)) {
     $runs = 40      # 原缺陷下期望失败 ≈ 40×7.7% ≈ 3 次，40 次足以让回归可靠地红
     $cliFail = 0; $stackFail = 0; $genPws = @()
     foreach ($i in 1..$runs) {
+        # ⚠ 为什么临时把 EAP 调回 Continue（2026-10-14，第十一份复查）：
+        #   `create-admin` 现在把随机口令打到 **stderr**（用户可见的 stdout 上不再有口令，
+        #   见 main.cj 的 D5 修复），而本脚本必须**读到那行**才能验"生成的口令合法"。
+        #   但 `common.ps1` 为修 C3 已把 `$ErrorActionPreference` 设为 `Stop` ——
+        #   在 PS 5.1 下，"原生命令写 stderr + 2>&1 合并进管道"会被当成**终止性错误**
+        #   （NativeCommandError），于是这里会直接抛，而不是把口令并进 $o。
+        #   ⇒ 仅在这一处按需放宽（读得到 stderr），循环结束立刻还原。
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
         $o = (& $exe create-admin $Dsn 2>&1 | Out-String)
+        $ErrorActionPreference = $prevEap
         if ($o -match '口  令：') {
-            $genPws += (($o -split "`n" | Select-String '口  令：').Line -replace '.*口  令：','').Trim()
+            # ⚠ 用正则取**第一个**匹配（2026-10-14，第十一份复查）：
+            #   `2>&1` 会把同一条 stderr 变成**两条**文本 —— ErrorRecord 的消息行，
+            #   以及下面 `+ CategoryInfo ... (  口  令：XXX:String) ...` 的**复述行**。
+            #   原来用 `Select-String` 逐行取，于是每次 create-admin 往 `$genPws` 里塞 2 个，
+            #   而**最后一个**恰是复述行里的残渣（`XXX:String) [], RemoteException`）⇒
+            #   用它登录必然 401、40 条口令校验全灭（实测 80 条、通过 0 条）。
+            #   正则的**首个**匹配就是那条干净的口令。
+            $m = [regex]::Matches($o, '口\s*令：\s*([A-Za-z0-9]+)')
+            if ($m.Count -gt 0) { $genPws += $m[0].Groups[1].Value } else { $cliFail++ }
         } else {
             $cliFail++
         }
@@ -360,13 +400,30 @@ if (-not (Test-Path $exe)) {
 }
 
 
-# ★ 如实在结尾交代：第 [5] 节已把 admin 口令轮换掉（见文件头说明）
+# ★ 收尾：把 admin 口令**还原**成调用方传进来的那个（2026-10-14，第十一份复查）。
+#
+#   第 [5] 节为了端到端回归调了 40 次 `create-admin`，每次都会把 admin 口令轮换成
+#   一个新的随机值。此前这里只在结尾**提醒**"后续脚本请先重跑 create-admin" ——
+#   但那等于本脚本**污染环境**：套件里 p1-extra-check 之后还有 triage-check /
+#   ai-model-check 等用 `-AdminPw` 的脚本，它们会拿旧口令登录 → 401，
+#   表现为**假红**（不是产品缺陷），而且会让整个批次的结果不可信。
+#   ⇒ 现在用第 [5] 节最后那次登录拿到的令牌把口令设回 `-AdminPw`，脚本可重复跑、
+#     也不再把"运行顺序"变成隐形依赖。
+if ($genPws.Count -gt 0 -and $freshTok.Length -gt 0) {
+    $admUid = ((Invoke-MySqlScalar -My $My -Sql "SELECT id FROM auth_user WHERE login_name='admin'" -Label "取 admin id" | Out-String).Trim())
+    $restore = DoReq 'restorepw' 'POST' ("/api/v1/admin/users/$admUid/password") @("Authorization: Bearer $freshTok") ('{"password":"' + $AdminPw + '"}')
+    Check "收尾：把 admin 口令还原成调用方给的值" ($restore.Http -eq 200) ("HTTP $($restore.Http) $($restore.Body)")
+    $null = Invoke-MySqlScalar -My $My -Sql "DELETE FROM auth_login_attempt" -Label "还原后清计数"
+    $back = DoReq 'backlogin' 'POST' '/api/v1/auth/login' @() ('{"login_name":"admin","password":"' + $AdminPw + '"}')
+    Check "★ 收尾后 `-AdminPw` 仍能登录（后续脚本不再假红）" ($back.Http -eq 200) ("HTTP $($back.Http)")
+}
+
+# ★ 如实在结尾交代（若还原失败，这里就是"下一个脚本会假红"的现场说明）
 if ($genPws.Count -gt 0) {
     Write-Host ""
-    Write-Host "▸ 注意：第 [5] 节跑过 create-admin，admin 口令已轮换为：$($genPws[$genPws.Count - 1])"
-    Write-Host "  （这是该节 40 次端到端回归的必然副作用；要恢复成已知值请重跑 create-admin）"
-    Write-Host "  ⚠ 因此**后续脚本**（triage-check / stress 等用 -AdminPw 的）请先重跑一次 create-admin 取新口令，"
-    Write-Host "     否则它们会用旧口令登录 → 401，表现为假红（不是产品缺陷）。"
+    Write-Host "▸ 第 [5] 节跑过 40 次 create-admin（该节会轮换 admin 口令），最后一次生成的是：$($genPws[$genPws.Count - 1])"
+    Write-Host "  ✅ 已在收尾把它还原为调用方传入的 -AdminPw；若上面那条「收尾后 -AdminPw 仍能登录」失败，"
+    Write-Host "     请重跑 `hospital-server.exe create-admin <dsn>` 取一个新口令再跑后续脚本。"
 }
 
 Remove-Item $tmp -Recurse -Force

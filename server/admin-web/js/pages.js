@@ -1010,7 +1010,7 @@ page({
           { name: 'title', label: '标题', required: true, value: full.title },
           { name: 'category', label: '分类', value: full.category },
           { name: 'body', label: '正文', type: 'textarea', rows: 16, required: true, value: full.body,
-            hint: '⚠ 这里**必须**带上完整正文（服务端是整体替换；不传正文会 400，不会静默清空）' },
+            hint: '⚠ 表单会带上完整正文（保存后**无条件重新切块**）。服务端是 PATCH 语义：**没传**的字段保留旧值，但**传了空正文**会被拒（400），不会静默清空' },
           { name: 'enabled', label: '启用', type: 'checkbox', value: full.enabled },
         ],
         onSubmit: async (v) => {
