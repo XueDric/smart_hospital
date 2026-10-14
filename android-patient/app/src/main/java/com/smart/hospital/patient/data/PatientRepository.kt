@@ -64,7 +64,8 @@ class PatientRepository(private val client: ApiClient, private val session: Sess
             cachedName)
         val d = client.get("/api/v1/auth/me")
         val user = CurrentUser(d.getLong("user_id"), d.getString("role"), d.optLong("patient_id"),
-            d.optLong("doctor_id"), d.optString("device_id"), d.optString("display_name", cachedName))
+            d.optLong("doctor_id"), d.optString("device_id"), d.optString("display_name", cachedName),
+            d.optLong("expires_at"))
         synchronized(session) {
             requireIdentity(expected)
             if (user.role != "patient" || user.userId != session.userId || user.patientId != expected.patientId) {
@@ -79,15 +80,20 @@ class PatientRepository(private val client: ApiClient, private val session: Sess
     }
 
     fun logout() {
-        val expected = identity()
-        if (!session.mockMode) runCatching {
-            client.postWithStatus("/api/v1/auth/logout", JSONObject(), expected.baseUrl, expected.token)
+        val (expected, demo) = synchronized(session) { identity() to session.mockMode }
+        try {
+            if (!demo) client.postWithStatus("/api/v1/auth/logout", JSONObject(), expected.baseUrl, expected.token)
+        } finally {
+            // Match the demo operation lock order; an old logout must not clear a new identity.
+            synchronized(this) {
+                synchronized(session) {
+                    if (identity() == expected) {
+                        session.clearLoginIfCurrent(expected.token, expected.baseUrl)
+                        resetTransientState()
+                    }
+                }
+            }
         }
-        val cleared = synchronized(session) {
-            if (identity() == expected) { session.clearLoginIfCurrent(expected.token, expected.baseUrl); true }
-            else false
-        }
-        if (cleared) resetTransientState()
     }
 
     @Synchronized fun resetTransientState() {
@@ -115,19 +121,24 @@ class PatientRepository(private val client: ApiClient, private val session: Sess
             d.optString("patient_note"), d.optBoolean("truncated"), d.optString("ai_note"), d.optString("ai_reason"), options)
     }
 
+    fun hospitalToday(): String {
+        if (session.mockMode) return LocalDate.now(hospitalZone).toString()
+        val today = client.get("/health").opt("today") as? String
+            ?: throw ApiException(0, "INVALID_RESPONSE", session.text(R.string.data_hospital_date_invalid))
+        return try { parseDate(today).toString() }
+        catch (_: ApiException) { throw ApiException(0, "INVALID_RESPONSE", session.text(R.string.data_hospital_date_invalid)) }
+    }
+
     fun schedules(date: String): List<Schedule> {
         val requested = parseDate(date)
-        if (requested.isBefore(LocalDate.now(hospitalZone))) throw ApiException(400, "VALIDATION_FAILED", session.text(R.string.data_date_not_past))
         if (session.mockMode) return mockSchedules().filter { it.workDate == requested.toString() }
         val encoded = URLEncoder.encode(requested.toString(), "UTF-8")
         val a = client.get("/api/v1/schedules?work_date=$encoded&limit=100").optJSONArray("schedules")
-        return (0 until (a?.length() ?: 0)).mapNotNull { i ->
+        // Patient sellability is decided by the server using the hospital's clock.
+        return (0 until (a?.length() ?: 0)).map { i ->
             val o = a!!.getJSONObject(i)
-            val day = o.getString("work_date")
-            val validDay = runCatching { LocalDate.parse(day) }.getOrNull()
-            if (!o.optBoolean("enabled", false) || validDay == null || validDay.isBefore(LocalDate.now(hospitalZone)) || validDay != requested) null
-            else Schedule(o.getLong("id"), o.getLong("doctor_id"), o.getLong("department_id"), day,
-                o.getString("period"), o.getInt("total_num"), o.getInt("remain_num"), true,
+            Schedule(o.getLong("id"), o.getLong("doctor_id"), o.getLong("department_id"), o.getString("work_date"),
+                o.getString("period"), o.getInt("total_num"), o.getInt("remain_num"), o.getBoolean("enabled"),
                 o.optString("department_name"), o.optString("doctor_name"), o.optString("doctor_title"))
         }
     }
@@ -172,7 +183,7 @@ class PatientRepository(private val client: ApiClient, private val session: Sess
             }
             result
         }
-        val knownId = session.completedBookingId(scheduleId)
+        val knownId = synchronized(session) { requireIdentity(expected); session.completedBookingId(scheduleId) }
         val (status, d) = client.postWithStatus("/api/v1/appointments", JSONObject().put("schedule_id", scheduleId)
             .put("client_token", clientToken), expected.baseUrl, expected.token)
         val result = parseAppointment(d).let { it.copy(replayed = status == 200 || knownId == it.appointmentId) }
@@ -182,7 +193,11 @@ class PatientRepository(private val client: ApiClient, private val session: Sess
         // Keep the original token after success too: retries/re-entry must identify the same order.
         synchronized(session) {
             requireIdentity(expected)
-            if (!session.markBookingCompleted(scheduleId, result.appointmentId, clientToken)) {
+            val accepted = session.markBookingCompleted(scheduleId, result.appointmentId, clientToken) ||
+                ((status == 200 || status == 201) && knownId != null && knownId != result.appointmentId &&
+                    result.status != "cancelled" && session.markBookingReplacementIfCurrent(
+                        scheduleId, result.appointmentId, clientToken, knownId))
+            if (!accepted) {
                 throw ApiException(0, "BOOKING_CHANGED", session.text(R.string.data_booking_response_mismatch))
             }
         }
@@ -191,8 +206,28 @@ class PatientRepository(private val client: ApiClient, private val session: Sess
 
     fun appointments(includeCancelled: Boolean): List<Appointment> {
         if (session.mockMode) return synchronized(this) { mockAppointments.filter { includeCancelled || it.status != "cancelled" } }
+        // Even the active-only UI must learn explicit cancellations so completed IDs recover.
+        val expected = identity()
+        val history = loadAppointments(expected)
+        // Preserve the backend's active-only LIMIT scope: 200 recent cancellations must not
+        // hide older active bookings by filtering a capped history list on the client.
+        return if (includeCancelled) history else loadAppointments(expected, includeCancelled = false)
+    }
+
+    private fun loadAppointments(expected: Identity, includeCancelled: Boolean = true): List<Appointment> {
         val a = client.get("/api/v1/appointments?include_cancelled=$includeCancelled&limit=200").optJSONArray("appointments")
-        return (0 until (a?.length() ?: 0)).map { parseAppointment(a!!.getJSONObject(it)) }
+        val items = (0 until (a?.length() ?: 0)).map { parseAppointment(a!!.getJSONObject(it)) }
+        if (items.any { it.patientId != expected.patientId || it.appointmentId <= 0 || it.scheduleId <= 0 }) {
+            throw ApiException(0, "INVALID_RESPONSE", session.text(R.string.data_booking_response_mismatch))
+        }
+        synchronized(session) {
+            requireIdentity(expected)
+            items.filter { it.status == "cancelled" }.forEach {
+                // Compare-and-retire A plus its tombstone; never clear a newer completed B.
+                session.clearBookingIfCompleted(it.scheduleId, it.appointmentId)
+            }
+        }
+        return items
     }
 
     fun cancel(id: Long): Appointment {

@@ -594,7 +594,7 @@ public class BookingRepo {
      *   **不是**自增 id。把它当 id 返回会让所有新增挂号单的 id 都是 1 ——
      *   于是"两次提交指向同一张单"这类断言会因为 id 都是 1 而**假通过**，
      *   而 visit_date 查询会指向不存在的行（这坑真的发生过）。
-     *   正确做法：INSERT 后紧跟一条 `SELECT LAST_INSERT_ID()`。
+     *   正确做法：execInsert 在同一连接临界区完成 INSERT 与生成 ID 读取。
      *
      * ⚠ `visit_date` 写入的是**调用方传来的快照值**，不是从 schedule 现查的 ——
      *   这正是"顺延不串号"的实现点（AC-6）：管理员之后改 schedule.work_date，
@@ -605,29 +605,13 @@ public class BookingRepo {
     public func insertAppointment(scheduleId: Int64, patientId: Int64, doctorId: Int64,
                                   departmentId: Int64, visitDate: String, period: String,
                                   seqNo: Int64, clientToken: String, now: Int64): Int64 {
-        db.exec(
+        return db.execInsert(
             "INSERT INTO appointment " +
             "(schedule_id, patient_id, doctor_id, department_id, visit_date, period, " +
             " seq_no, status, client_token, created_at, cancelled_at) " +
             "VALUES (?, ?, ?, ?, ?, ?, ?, 'booked', ?, ?, 0)",
             [DbInt(scheduleId), DbInt(patientId), DbInt(doctorId), DbInt(departmentId),
              DbStr(visitDate), DbStr(period), DbInt(seqNo), DbStr(clientToken), DbInt(now)])
-        return lastInsertId()
-    }
-
-    /*
-     * 取本连接上一次 INSERT 生成的自增 id。
-     * 与 insertAppointment 同一连接、紧邻调用，故 LAST_INSERT_ID() 语义成立。
-     *
-     * ⚠ 必须是 public：HTTP 层建完排班要回 `schedule_id` 给客户端，
-     *   而 `exec()` 只返回受影响行数（见上面 insertAppointment 的踩坑注释）。
-     */
-    public func lastInsertId(): Int64 {
-        let rs = db.query("SELECT LAST_INSERT_ID()", Array<DbValue>())
-        if (rs.rowCount() < 1) {
-            return 0
-        }
-        return rs.getInt(0, 0)
     }
 
     /* ---------- 写：排班（管理员） ---------- */
@@ -636,11 +620,11 @@ public class BookingRepo {
      * 新建排班（号源）。
      *
      * 新排班 `version = 0`、`remain_num = total_num` —— 与乐观锁起点一致。
-     * 调用方随后用 `lastInsertId()` 取自增 id。
+     * 返回本次 INSERT 的生成 ID，不能随后单独读取连接的 LAST_INSERT_ID。
      */
     public func insertSchedule(doctorId: Int64, departmentId: Int64, workDate: String,
                                period: String, totalNum: Int64, now: Int64): Int64 {
-        return db.exec(
+        return db.execInsert(
             "INSERT INTO schedule " +
             "(doctor_id, department_id, work_date, period, total_num, remain_num, " +
             " version, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?)",

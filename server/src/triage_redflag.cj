@@ -285,85 +285,52 @@ func redFlagIsNegatedAt(chars: Array<Rune>, chat: Int64): Bool {
  *
  * 返回：命中且未被否定 ⇒ true；并顺带把"命中词/被否定的词"记进 hits / negated。
  *
- * ── 下标口径（本次修好的关键）────────────────────────────────────────────
- *   `seg.indexOf(term, byteFrom)` 返回**字节**偏移；
- *   立刻用 `redFlagByteToChar` 换算成**字符**下标 `chat`；
- *   否定窗口、以及"下一轮从哪里继续找"都用 `chat`（字符空间），
- *   只有再次调用 `indexOf` 时才换算回字节。
- *   ⇒ 全程**没有一处**在字节空间里做算术减法。
+ * 保留 String 入口供常规科室规则复用；完整危急检测用下方 Rune 入口，
+ * 同一片段只转换一次。匹配、否定窗口和下一次起点全部使用字符下标。
  */
 func redFlagHit(seg: String, term: String, hits: ArrayList<String>,
                 negated: ?ArrayList<String>): Bool {
-    let chars = redFlagRunes(seg)
-    var chat: Int64 = 0
-    while (chat < chars.size) {
-        let byteFrom = redFlagCharToByte(chars, chat)
-        let idx = seg.indexOf(term, byteFrom)
-        match (idx) {
-            case Some(byteAt) =>
-                let at = redFlagByteToChar(chars, byteAt)
-                if (at < 0) {
-                    // 换算不出（理论上不会发生：byteAt 来自 indexOf，必在字符边界上）
-                    // ⇒ 保守地当作"没命中"，绝不让非法下标流到切片里
-                    return false
-                }
-                if (redFlagIsNegatedAt(chars, at)) {
-                    match (negated) {
-                        case Some(acc) =>
-                            if (!acc.contains(term)) {
-                                acc.add(term)
-                            }
-                        case None => ()
-                    }
-                } else {
-                    if (!hits.contains(term)) {
-                        hits.add(term)
-                    }
-                    return true
-                }
-                // 从这次命中的**下一个字符**继续找（不是 next 字节 —— 那会切进字符中间）
-                chat = at + 1
-            case None => return false
-        }
-    }
-    return false
-}
-
-/* 字符下标 → 该位置的**字节**偏移（用于再次调用 indexOf）。 */
-func redFlagCharToByte(chars: Array<Rune>, chat: Int64): Int64 {
-    var b: Int64 = 0
-    var i: Int64 = 0
-    while (i < chat && i < chars.size) {
-        b = b + String([chars[i]]).toArray().size
-        i = i + 1
-    }
-    return b
+    return redFlagHitChars(redFlagRunes(seg), term, hits, negated)
 }
 
 /*
- * **字节**偏移 → 字符下标。若该字节偏移**不在字符边界上**，返回 -1。
- *
- * ⚠ 这个"返回 -1"是**刻意的防御**：上一版的缺陷正是"字节偏移被当成字符下标用"，
- *   而如果那时有一个位置检查，缺陷会在第一次运行就暴露而不是等到"ASCII+汉字混排"。
- *   现在任何非边界输入都会被显式拒绝，而不是静默切出非法 UTF-8。
+ * 顺序比较 Rune，不再为每个否定命中从头计算字符/字节偏移。
+ * 每个候选起点最多比较 termChars.size 个字符，否定窗口固定为 4 字符。
+ * 对固定词表，全文工作量 O(n*k*m)，k 是词数、m 是最长词长，均为常量。
+ * 否定命中后仍只前进一个字符，保持原 indexOf 实现对重叠命中的语义。
  */
-func redFlagByteToChar(chars: Array<Rune>, byteAt: Int64): Int64 {
-    var b: Int64 = 0
-    var i: Int64 = 0
-    while (i < chars.size) {
-        if (b == byteAt) {
-            return i
-        }
-        if (b > byteAt) {
-            return -1
-        }
-        b = b + String([chars[i]]).toArray().size
-        i = i + 1
+func redFlagHitChars(chars: Array<Rune>, term: String, hits: ArrayList<String>,
+                     negated: ?ArrayList<String>): Bool {
+    let termChars = redFlagRunes(term)
+    if (termChars.size == 0 || termChars.size > chars.size) {
+        return false
     }
-    if (b == byteAt) {
-        return i        // 末尾之后的位置（= 片段长度）是合法边界
+    var at: Int64 = 0
+    let last = chars.size - termChars.size
+    while (at <= last) {
+        var matched: Int64 = 0
+        while (matched < termChars.size && chars[at + matched] == termChars[matched]) {
+            matched = matched + 1
+        }
+        if (matched == termChars.size) {
+            if (redFlagIsNegatedAt(chars, at)) {
+                match (negated) {
+                    case Some(acc) =>
+                        if (!acc.contains(term)) {
+                            acc.add(term)
+                        }
+                    case None => ()
+                }
+            } else {
+                if (!hits.contains(term)) {
+                    hits.add(term)
+                }
+                return true
+            }
+        }
+        at = at + 1
     }
-    return -1
+    return false
 }
 
 /*
@@ -378,14 +345,19 @@ func redFlagByteToChar(chars: Array<Rune>, byteAt: Int64): Int64 {
 public func detectRedFlag(chiefComplaint: String): RedFlagFacts {
     let f = RedFlagFacts()
     let segs = redFlagSegments(chiefComplaint)
+    // 一次建立字符数组，高危和模糊两轮共享；不按每个否定 hit 重扫前缀。
+    let segmentChars = ArrayList<Array<Rune>>()
+    for (seg in segs) {
+        segmentChars.add(redFlagRunes(seg))
+    }
     let negated = ArrayList<String>()
     let highHits = ArrayList<String>()
     let vagueHits = ArrayList<String>()
 
     // ② 高危词：任一命中即红牌
-    for (seg in segs) {
+    for (chars in segmentChars) {
         for (term in RED_FLAG_TERMS) {
-            if (redFlagHit(seg, term, highHits, Some(negated))) {
+            if (redFlagHitChars(chars, term, highHits, Some(negated))) {
                 f.redFlag = true
                 f.terms = highHits.toArray()
                 f.vagueTerms = vagueHits.toArray()
@@ -396,7 +368,9 @@ public func detectRedFlag(chiefComplaint: String): RedFlagFacts {
     }
 
     // ③ 模糊词：必须与"程度/频次"修饰词共现才算
-    for (seg in segs) {
+    for (i in 0..segs.size) {
+        let seg = segs[i]
+        let chars = segmentChars[i]
         var hasIntensifier = false
         for (mod in RED_FLAG_INTENSIFIERS) {
             if (seg.contains(mod)) {
@@ -407,7 +381,7 @@ public func detectRedFlag(chiefComplaint: String): RedFlagFacts {
             continue
         }
         for (term in RED_FLAG_VAGUE_TERMS) {
-            if (redFlagHit(seg, term, vagueHits, Some(negated))) {
+            if (redFlagHitChars(chars, term, vagueHits, Some(negated))) {
                 f.redFlag = true
             }
         }

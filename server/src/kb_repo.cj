@@ -173,12 +173,11 @@ public class KbRepo {
             "INSERT INTO kb_doc (title, category, body, enabled, updated_by, created_at, updated_at) " +
             "VALUES (?, ?, ?, 1, ?, ?, ?)",
             [DbStr(title.trimAscii()), DbStr(category.trimAscii()), DbStr(body), DbInt(actorId),
-             DbInt(now), DbInt(now)])
+             DbInt(now), DbInt(now)], returnInsertId: true)
         if (!ins.ok) {
             return kbClassifyDuplicate(ins.message, title.trimAscii(), out)
         }
-        let idRs = db.query("SELECT LAST_INSERT_ID()", Array<DbValue>())
-        let id = idRs.getInt(0, 0)
+        let id = ins.generatedId
         kbRechunk(id, body, now)
         return out.markOk(id)
     }
@@ -603,27 +602,35 @@ public func kbHasIdTailX(text: String): Bool {
     return false
 }
 
-/* 容错执行（带驱动消息，供分类）——与 domain_base.cj 同一手法。 */
+/* 仅已确认的唯一键冲突返回失败结果，未知数据库故障原样上抛。 */
 public class KbExecResult {
     public var ok: Bool = false
     public var message: String = ""
+    public var generatedId: Int64 = 0
 }
 
-public func kbExecTolerant(db: DbBackend, sql: String, args: Array<DbValue>): KbExecResult {
+public func kbExecTolerant(db: DbBackend, sql: String, args: Array<DbValue>,
+                          returnInsertId!: Bool = false): KbExecResult {
     let r = KbExecResult()
     try {
-        db.exec(sql, args)
+        if (returnInsertId) {
+            r.generatedId = db.execInsert(sql, args)
+        } else {
+            db.exec(sql, args)
+        }
         r.ok = true
     } catch (e: Exception) {
-        r.ok = false
-        r.message = e.message
+        match (baseDuplicateMessage(e)) {
+            case Some(message) => r.message = message
+            case None => throw e
+        }
     }
     return r
 }
 
 /*
  * 把唯一键冲突分类。
- * ⚠ 与 `baseClassifyDuplicate` 同一口径：认索引名；消息为空（驱动吞掉）时**不猜成 500**。
+ * 与基础域使用同一唯一键证据；空消息或未知故障不按重复/参数错误处理。
  *
  * ⚠⚠ `title` 参数是**必须的**，不是装饰（2026-10-09 实测发现）：
  *   原来这里只置 `duplicate = true`、不填 `detail`，于是 HTTP 层拼出的 409 消息是
@@ -633,18 +640,12 @@ public func kbExecTolerant(db: DbBackend, sql: String, args: Array<DbValue>): Kb
  *     是把定位成本推给调用方。
  */
 public func kbClassifyDuplicate(message: String, title: String, out: KbWriteOutcome): KbWriteOutcome {
-    if (message.contains("uk_kb_doc_title") || message.contains("Duplicate entry")) {
-        out.duplicate = true
-        out.detail = "标题「${title}」"
-        return out
+    if (!message.startsWith("Duplicate entry ")) {
+        throw Exception(message)
     }
-    if (message.size == 0) {
-        /* 驱动吞了消息 ⇒ 按"重复"处理（与 domain_base 的兜底一致）。 */
-        out.duplicate = true
-        out.detail = "标题「${title}」"
-        return out
-    }
-    return out.markInvalid("写入失败：${message}")
+    out.duplicate = true
+    out.detail = "标题「${title}」"
+    return out
 }
 
 /* 填一行文档。 */
