@@ -59,10 +59,23 @@ class PatientRepository(private val client: ApiClient, private val session: Sess
     }
 
     fun me(): CurrentUser {
-        if (session.mockMode) return CurrentUser(session.userId, "patient", session.patientId, 0, session.deviceId)
+        val (expected, cachedName) = synchronized(session) { identity() to session.displayName }
+        if (session.mockMode) return CurrentUser(session.userId, "patient", session.patientId, 0, session.deviceId,
+            cachedName)
         val d = client.get("/api/v1/auth/me")
-        return CurrentUser(d.getLong("user_id"), d.getString("role"), d.optLong("patient_id"),
-            d.optLong("doctor_id"), d.optString("device_id"))
+        val user = CurrentUser(d.getLong("user_id"), d.getString("role"), d.optLong("patient_id"),
+            d.optLong("doctor_id"), d.optString("device_id"), d.optString("display_name", cachedName))
+        synchronized(session) {
+            requireIdentity(expected)
+            if (user.role != "patient" || user.userId != session.userId || user.patientId != expected.patientId) {
+                session.clearLoginIfCurrent(expected.token, expected.baseUrl)
+                throw ApiException(403, "FORBIDDEN_ROLE", session.text(R.string.data_invalid_patient_identity))
+            }
+            if (!session.updateCurrentUserIfCurrent(user, expected.token, expected.baseUrl)) {
+                throw ApiException(0, "SESSION_CHANGED", session.text(R.string.data_identity_changed))
+            }
+        }
+        return user
     }
 
     fun logout() {
@@ -134,6 +147,12 @@ class PatientRepository(private val client: ApiClient, private val session: Sess
 
     private fun bookForIdentity(scheduleId: Long, clientToken: String, expected: Identity): Appointment {
         require(scheduleId > 0 && clientToken.isNotBlank() && clientToken.length <= 64) { session.text(R.string.data_booking_invalid) }
+        synchronized(session) {
+            requireIdentity(expected)
+            if (session.bookingToken(scheduleId) != clientToken) {
+                throw ApiException(0, "BOOKING_CHANGED", session.text(R.string.data_booking_response_mismatch))
+            }
+        }
         if (session.mockMode) return synchronized(this) {
             requireIdentity(expected)
             mockTokens[clientToken]?.let { return@synchronized it.copy(replayed = true) }
@@ -145,7 +164,12 @@ class PatientRepository(private val client: ApiClient, private val session: Sess
                 s.workDate, s.period, seq, "booked", departmentName = s.departmentName,
                 doctorName = s.doctorName, doctorTitle = s.doctorTitle)
             mockTokens[clientToken] = result; mockAppointments += result
-            session.markBookingCompleted(scheduleId, result.appointmentId)
+            synchronized(session) {
+                requireIdentity(expected)
+                if (!session.markBookingCompleted(scheduleId, result.appointmentId, clientToken)) {
+                    throw ApiException(0, "BOOKING_CHANGED", session.text(R.string.data_booking_response_mismatch))
+                }
+            }
             result
         }
         val knownId = session.completedBookingId(scheduleId)
@@ -156,7 +180,12 @@ class PatientRepository(private val client: ApiClient, private val session: Sess
             throw ApiException(0, "INVALID_RESPONSE", session.text(R.string.data_booking_response_mismatch))
         }
         // Keep the original token after success too: retries/re-entry must identify the same order.
-        synchronized(session) { requireIdentity(expected); session.markBookingCompleted(scheduleId, result.appointmentId) }
+        synchronized(session) {
+            requireIdentity(expected)
+            if (!session.markBookingCompleted(scheduleId, result.appointmentId, clientToken)) {
+                throw ApiException(0, "BOOKING_CHANGED", session.text(R.string.data_booking_response_mismatch))
+            }
+        }
         return result
     }
 
@@ -175,7 +204,7 @@ class PatientRepository(private val client: ApiClient, private val session: Sess
             val result = old.copy(status = "cancelled", slotRestored = true)
             mockAppointments[index] = result
             mockTokens.entries.removeIf { it.value.appointmentId == id }
-            session.clearBooking(old.scheduleId)
+            session.clearBookingIfCompleted(old.scheduleId, id)
             result
         }
         val expected = identity()
@@ -185,7 +214,7 @@ class PatientRepository(private val client: ApiClient, private val session: Sess
             }
             synchronized(session) {
                 requireIdentity(expected)
-                if (it.status == "cancelled") session.clearBooking(it.scheduleId)
+                if (it.status == "cancelled") session.clearBookingIfCompleted(it.scheduleId, id)
             }
         }
     }

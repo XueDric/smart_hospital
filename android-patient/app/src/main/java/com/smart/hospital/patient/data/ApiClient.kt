@@ -62,7 +62,8 @@ class ApiClient(private val session: SessionStore) {
             connection.apply {
                 requestMethod = method
                 connectTimeout = 15_000
-                readTimeout = 15_000
+                // Triage includes bounded server AI enrichment and rule fallback.
+                readTimeout = if (path == "/api/v1/triage") 45_000 else 15_000
                 instanceFollowRedirects = false
                 setRequestProperty("Accept", accept)
                 setRequestProperty("X-Device-Id", session.deviceId)

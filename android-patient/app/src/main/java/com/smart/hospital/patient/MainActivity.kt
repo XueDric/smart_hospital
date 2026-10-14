@@ -13,6 +13,7 @@ import android.text.TextWatcher
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
+import android.view.WindowInsets
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import android.widget.*
@@ -86,12 +87,32 @@ class MainActivity : Activity() {
         repo = PatientRepository(api, session)
         content = FrameLayout(this).apply { setBackgroundColor(bg) }
         setContentView(content)
+        applySafeAreaInsets()
         if (Build.VERSION.SDK_INT >= 33) {
             backCallback = OnBackInvokedCallback { handleBack() }.also {
                 onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, it)
             }
         }
-        if (session.isLoggedIn()) show(Screen.HOME, true) else { session.clearLogin(); show(Screen.LOGIN, true) }
+        if (session.isLoggedIn()) {
+            show(Screen.HOME, true)
+            // The server renews online tokens. An old local expiry is not authoritative.
+            runAsync({ repo.me() }, { render() }, { error -> toast(userMessage(error)) })
+        } else { session.clearLogin(); show(Screen.LOGIN, true) }
+    }
+
+    private fun applySafeAreaInsets() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(false)
+            content.setOnApplyWindowInsetsListener { view, insets ->
+                // Absolute padding avoids accumulating insets across renders/IME changes.
+                val safe = insets.getInsets(WindowInsets.Type.systemBars() or
+                    WindowInsets.Type.displayCutout() or WindowInsets.Type.ime())
+                view.setPadding(safe.left, safe.top, safe.right, safe.bottom)
+                WindowInsets.CONSUMED
+            }
+            content.requestApplyInsets()
+        }
+        // Older versions retain the framework's fitted window and adjustResize behavior.
     }
 
     @Deprecated("Legacy Android back callback")
@@ -485,7 +506,7 @@ class MainActivity : Activity() {
                     throw ApiException(403, "FORBIDDEN_ROLE", getString(R.string.identity_changed))
                 }
                 identity
-            }, { sync.isEnabled = true; toast(getString(R.string.identity_synced)) }, { error -> sync.isEnabled = true; toast(userMessage(error)) })
+            }, { render(); toast(getString(R.string.identity_synced)) }, { error -> sync.isEnabled = true; toast(userMessage(error)) })
         }
         body.addView(identity)
         val settings = cardColumn(); settings.addView(textView(if (session.mockMode) getString(R.string.demo_mode_label) else getString(R.string.online_mode_label), 18f, ink, true))

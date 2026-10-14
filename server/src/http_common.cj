@@ -157,6 +157,9 @@ public func apiErrorSpec(code: String): (Int64, String) {
     if (code == "EMR_LOCKED") {
         return (409, "病历已提交锁定，不可修改（需管理员解锁）")
     }
+    if (code == "EMR_CHANGED") {
+        return (409, "病历已被其他操作修改，请重新读取后确认")
+    }
     /* 完成就诊前必须先提交锁定病历（409：当前状态不允许该操作）。 */
     if (code == "EMR_NOT_LOCKED") {
         return (409, "完成就诊前必须先提交锁定病历")

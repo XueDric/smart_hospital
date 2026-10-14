@@ -3,7 +3,7 @@ package com.smart.hospital.patient.model
 data class LoginResult(val token: String, val expiresAt: Long, val userId: Long, val role: String,
                        val refId: Long, val displayName: String, val patientId: Long)
 data class CurrentUser(val userId: Long, val role: String, val patientId: Long, val doctorId: Long,
-                       val deviceId: String)
+                       val deviceId: String, val displayName: String = "")
 data class TriageOption(val departmentId: Long, val departmentName: String, val doctorId: Long,
                         val doctorName: String, val doctorTitle: String, val scheduleId: Long,
                         val workDate: String, val period: String, val remainNum: Int,

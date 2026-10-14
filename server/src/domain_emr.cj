@@ -289,6 +289,8 @@ public class EmrWriteOutcome {
     public var noSuchAppointment: Bool = false
     /* 病历已锁定，草稿写入被拒。 */
     public var locked: Bool = false
+    /* 读到的草稿内容已被另一请求修改；调用方保留输入并重新读取。 */
+    public var conflict: Bool = false
     /* 未知的段名。 */
     public var unknownSection: Bool = false
     /* 某段超长（超出字符上限）。 */
@@ -333,6 +335,22 @@ public class MedicalRecordRepo {
         "id, appointment_id, patient_id, doctor_id, chief_complaint, present_illness, " +
         "past_history, allergy_history, physical_exam, diagnosis, treatment, status, " +
         "updated_by, created_at, updated_at"
+
+    /*
+     * 完整内容快照作为乐观版本。MySQL 默认排序规则不区分大小写，必须二进制
+     * 比较；updated_at 秒级时间戳不能单独作为版本。避免在共享连接上新开事务。
+     */
+    private let draftSnapshotSql: String =
+        "status = ? AND BINARY chief_complaint = BINARY ? AND BINARY present_illness = BINARY ? " +
+        "AND BINARY past_history = BINARY ? AND BINARY allergy_history = BINARY ? " +
+        "AND BINARY physical_exam = BINARY ? AND BINARY diagnosis = BINARY ? " +
+        "AND BINARY treatment = BINARY ? AND updated_by = ? AND updated_at = ?"
+
+    private func snapshotParams(r: MedicalRecord): Array<DbValue> {
+        return [DbStr(EMR_DRAFT), DbStr(r.chiefComplaint), DbStr(r.presentIllness),
+                DbStr(r.pastHistory), DbStr(r.allergyHistory), DbStr(r.physicalExam),
+                DbStr(r.diagnosis), DbStr(r.treatment), DbInt(r.updatedBy), DbInt(r.updatedAt)]
+    }
 
     /* 按挂号单取病历。 */
     public func findByAppointment(appointmentId: Int64): ?MedicalRecord {
@@ -394,7 +412,8 @@ public class MedicalRecordRepo {
      */
     public func saveDraft(appointmentId: Int64, doctorId: Int64,
                           patch: HashMap<String, String>, now: Int64,
-                          actorId: Int64): EmrWriteOutcome {
+                          actorId: Int64,
+                          prefill!: HashMap<String, String> = HashMap<String, String>()): EmrWriteOutcome {
         let out = EmrWriteOutcome()
         // ① 校验段名与长度（**写入前**校验，不留半成品）
         for ((k, v) in patch) {
@@ -425,12 +444,33 @@ public class MedicalRecordRepo {
             out.locked = true
             return out
         }
+        // 保存合并前的完整快照；rec 会在下方被修改。
+        let before = snapshotParams(rec)
         // ③ 合并
         if (!exists) {
             rec.appointmentId = appointmentId
             rec.doctorId = doctorId
             rec.patientId = 0      // 由 ④ 从 appointment 补齐（**不从客户端取**）
             rec.createdAt = now
+            // 仅在本次实际建单时预填，不能用建单前的外部查询结果覆盖已有病历。
+            for ((k, v) in prefill) {
+                if (!patch.containsKey(k)) {
+                    match (emrSectionOf(k)) {
+                        case None =>
+                            out.unknownSection = true
+                            out.detail = k
+                            return out
+                        case Some(sec) =>
+                            let n = previsitCharLen(v)
+                            if (n > sec.maxLen) {
+                                out.tooLong = true
+                                out.detail = "${sec.label}（${n} 字，上限 ${sec.maxLen}）"
+                                return out
+                            }
+                    }
+                    let _ = rec.set(k, v)
+                }
+            }
         }
         for ((k, v) in patch) {
             let _ = rec.set(k, v)
@@ -439,15 +479,36 @@ public class MedicalRecordRepo {
         rec.updatedAt = now
         // ④ 落库
         if (exists) {
-            db.exec("UPDATE medical_record SET chief_complaint = ?, present_illness = ?, " +
+            let values = ArrayList<DbValue>()
+            let updates: Array<DbValue> = [DbStr(rec.chiefComplaint), DbStr(rec.presentIllness), DbStr(rec.pastHistory),
+                       DbStr(rec.allergyHistory), DbStr(rec.physicalExam), DbStr(rec.diagnosis),
+                       DbStr(rec.treatment), DbInt(rec.updatedBy), DbInt(rec.updatedAt), DbInt(rec.id)]
+            for (x in updates) {
+                values.add(x)
+            }
+            for (x in before) { values.add(x) }
+            let n = db.exec("UPDATE medical_record SET chief_complaint = ?, present_illness = ?, " +
                     "past_history = ?, allergy_history = ?, physical_exam = ?, diagnosis = ?, " +
-                    "treatment = ?, updated_by = ?, updated_at = ? WHERE id = ?",
-                    [DbStr(rec.chiefComplaint), DbStr(rec.presentIllness), DbStr(rec.pastHistory),
-                     DbStr(rec.allergyHistory), DbStr(rec.physicalExam), DbStr(rec.diagnosis),
-                     DbStr(rec.treatment), DbInt(rec.updatedBy), DbInt(rec.updatedAt),
-                     DbInt(rec.id)])
+                    "treatment = ?, updated_by = ?, updated_at = ? WHERE id = ? AND " + draftSnapshotSql,
+                    values.toArray())
             out.recordId = rec.id
-            out.ok = true
+            out.ok = n == 1
+            out.conflict = n == 0
+            if (n == 0) {
+                // 无变化写入也可能返回0；只有回读精确等于拟保存版本且仍draft才成功。
+                match (findByAppointment(appointmentId)) {
+                    case Some(latest) =>
+                        var same = latest.status == EMR_DRAFT && latest.updatedBy == rec.updatedBy &&
+                                   latest.updatedAt == rec.updatedAt
+                        for (sec in emrSections()) {
+                            if (latest.get(sec.key) != rec.get(sec.key)) { same = false }
+                        }
+                        out.ok = same
+                        out.conflict = !same
+                        out.locked = latest.isLocked()
+                    case None => ()
+                }
+            }
             return out
         }
         /*
@@ -475,7 +536,8 @@ public class MedicalRecordRepo {
             return out
         }
         let derivedPatientId = ars.getInt(0, 0)
-        db.exec("INSERT INTO medical_record (appointment_id, patient_id, doctor_id, " +
+        try {
+            db.exec("INSERT INTO medical_record (appointment_id, patient_id, doctor_id, " +
                 "chief_complaint, present_illness, past_history, allergy_history, " +
                 "physical_exam, diagnosis, treatment, status, updated_by, created_at, updated_at) " +
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -484,6 +546,17 @@ public class MedicalRecordRepo {
                  DbStr(rec.allergyHistory), DbStr(rec.physicalExam), DbStr(rec.diagnosis),
                  DbStr(rec.treatment), DbStr(EMR_DRAFT), DbInt(rec.updatedBy),
                  DbInt(rec.createdAt), DbInt(rec.updatedAt)])
+        } catch (e: Exception) {
+            // 同预约首次保存并发撞唯一键时明确冲突，不自动重放过时的预填内容。
+            match (findByAppointment(appointmentId)) {
+                case Some(latest) =>
+                    out.recordId = latest.id
+                    out.locked = latest.isLocked()
+                    out.conflict = !out.locked
+                    return out
+                case None => throw e
+            }
+        }
         rec.patientId = derivedPatientId
         match (findByAppointment(appointmentId)) {
             case Some(r2) =>
@@ -506,10 +579,8 @@ public class MedicalRecordRepo {
      * 校验：① 病历必须存在且非空正文；② 必填段（诊断/处理意见）不能为空。
      * 效果：`status = 'locked'` ⇒ 此后 `saveDraft` 一律拒绝。
      *
-     * ⚠ 用**条件 UPDATE**（`WHERE status = 'draft'`）而不是"先查再写"：
-     *   后者在并发下会双写成功（两个请求都读到 draft、都写 locked）。
-     *   条件 UPDATE 的**影响行数**就是判据 —— 与号源扣减同一手法
-     *   （ADR-0001 rev.3 的"一次成功即原子"）。
+     * 条件UPDATE同时约束draft和刚校验的完整内容快照。只约束draft不能阻止
+     * “校验完成→另一个保存清空必填→锁定空病历”的交错；失配明确返回409。
      */
     public func lock(appointmentId: Int64, now: Int64, actorId: Int64): EmrWriteOutcome {
         let out = EmrWriteOutcome()
@@ -538,13 +609,17 @@ public class MedicalRecordRepo {
             out.recordId = rec.id
             return out
         }
+        let values = ArrayList<DbValue>()
+        let updates: Array<DbValue> = [DbStr(EMR_LOCKED), DbInt(actorId), DbInt(now), DbInt(appointmentId)]
+        for (x in updates) {
+            values.add(x)
+        }
+        for (x in snapshotParams(rec)) { values.add(x) }
         let n = db.exec("UPDATE medical_record SET status = ?, updated_by = ?, updated_at = ? " +
-                        "WHERE appointment_id = ? AND status = ?",
-                        [DbStr(EMR_LOCKED), DbInt(actorId), DbInt(now),
-                         DbInt(appointmentId), DbStr(EMR_DRAFT)])
+                        "WHERE appointment_id = ? AND " + draftSnapshotSql, values.toArray())
         if (n == 0) {
-            /* 条件 UPDATE 没命中 ⇒ 期间被别人锁了（并发）——如实说"已锁定" */
-            out.locked = true
+            /* 校验的内容已改变或被锁定，不能锁定未校验的新内容。 */
+            out.conflict = true
             out.recordId = rec.id
             return out
         }
@@ -642,14 +717,8 @@ public class MedicalRecordRepo {
                                     sessionId: String, patientId: Int64,
                                     patch: HashMap<String, String>, now: Int64,
                                     actorId: Int64): EmrWriteOutcome {
-        if (findByAppointment(appointmentId).isSome()) {
-            return saveDraft(appointmentId, doctorId, patch, now, actorId)
-        }
-        let merged = intakePrefill(sessionId, patientId)
-        for ((k, v) in patch) {
-            merged[k] = v      // 医生显式提交的段**覆盖**预填值
-        }
-        return saveDraft(appointmentId, doctorId, merged, now, actorId)
+        return saveDraft(appointmentId, doctorId, patch, now, actorId,
+                         prefill: intakePrefill(sessionId, patientId))
     }
 }
 

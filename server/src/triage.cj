@@ -426,12 +426,16 @@ func toOptions(slots: Array<BookableSlot>): Array<TriageOption> {
  * `today` 传参（YYYY-MM-DD）：让"过期排班不算可用"这条可被确定性测试。
  */
 public func triageComplaint(repo: TriageRepo, chiefComplaint: String, today: String,
-                            limit!: Int64 = 3): TriageVerdict {
+                            limit!: Int64 = 3, redFlagComplaint!: ?String = None): TriageVerdict {
     let v = TriageVerdict()
     v.source = TRIAGE_SOURCE_RULES
 
     // ① 保险丝：危急征象**优先于一切**
-    let rf = detectRedFlag(chiefComplaint)
+    // 危急检测使用完整、有请求体上限保护的原文；仅常规检索/模型输入允许截断。
+    let rf = detectRedFlag(match (redFlagComplaint) {
+        case Some(full) => full
+        case None => chiefComplaint
+    })
     if (rf.redFlag) {
         v.redFlag = true
         v.reasonCode = TR_RED_FLAG

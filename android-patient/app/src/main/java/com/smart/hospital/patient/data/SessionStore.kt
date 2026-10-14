@@ -4,6 +4,7 @@ import com.smart.hospital.patient.R
 import android.content.Context
 import com.smart.hospital.patient.BuildConfig
 import com.smart.hospital.patient.model.LoginResult
+import com.smart.hospital.patient.model.CurrentUser
 import java.net.URI
 import java.security.MessageDigest
 import java.util.Locale
@@ -19,6 +20,7 @@ class SessionStore(context: Context) {
     private var demoPrevisitId = ""
     private val demoBookingTokens = mutableMapOf<Long, String>()
     private val demoCompletedBookings = mutableMapOf<Long, Long>()
+    private val demoCancelledBookings = mutableMapOf<Long, MutableSet<Long>>()
 
     init {
         // Remove identities created by the former persisted demonstration mode.
@@ -68,8 +70,19 @@ class SessionStore(context: Context) {
     val displayName: String get() = if (mockMode) demoLogin?.displayName.orEmpty() else prefs.getString("display_name", "").orEmpty()
     val previsitSessionId: String get() = if (mockMode) demoPrevisitId else prefs.getString("previsit_session_id", "").orEmpty()
 
-    fun isLoggedIn(): Boolean = token.length == 64 && expiresAt > System.currentTimeMillis() / 1000 &&
-        role == "patient" && patientId > 0
+    @Synchronized fun isLoggedIn(): Boolean = token.length == 64 && role == "patient" && patientId > 0 &&
+        (!mockMode || expiresAt > System.currentTimeMillis() / 1000)
+
+    // Online expiry is a login-time snapshot: the server renews it on authenticated requests.
+    // Only an authoritative rejection may discard an otherwise valid persisted online identity.
+    @Synchronized fun updateCurrentUserIfCurrent(user: CurrentUser, requestedToken: String,
+                                                requestedBaseUrl: String): Boolean {
+        if (token != requestedToken || baseUrl != requestedBaseUrl || user.role != "patient" ||
+            user.userId != userId || user.patientId != patientId) return false
+        if (mockMode) demoLogin = demoLogin?.copy(displayName = user.displayName)
+        else prefs.edit().putString("display_name", user.displayName).apply()
+        return true
+    }
 
     @Synchronized fun saveLogin(result: LoginResult) {
         require(result.token.length == 64) { text(R.string.data_invalid_token) }
@@ -97,6 +110,7 @@ class SessionStore(context: Context) {
         demoPrevisitId = ""
         demoBookingTokens.clear()
         demoCompletedBookings.clear()
+        demoCancelledBookings.clear()
         prefs.edit().remove("token").remove("expires_at").remove("user_id").remove("role")
             .remove("ref_id").remove("patient_id").remove("display_name")
             .remove("previsit_session_id").remove("mock_mode").apply()
@@ -127,20 +141,47 @@ class SessionStore(context: Context) {
         return prefs.getLong("booking_completed_${bookingNamespace(scheduleId)}", 0).takeIf { it > 0 }
     }
 
-    @Synchronized fun markBookingCompleted(scheduleId: Long, appointmentId: Long) {
+    @Synchronized fun markBookingCompleted(scheduleId: Long, appointmentId: Long, clientToken: String): Boolean {
         require(appointmentId > 0)
+        val namespace = bookingNamespace(scheduleId)
+        val currentToken = if (mockMode) demoBookingTokens[scheduleId] else prefs.getString("booking_token_$namespace", null)
+        val completed = completedBookingId(scheduleId)
+        val cancelled = if (mockMode) demoCancelledBookings[scheduleId]?.contains(appointmentId) == true
+            else prefs.getStringSet("booking_cancelled_$namespace", emptySet()).orEmpty().contains(appointmentId.toString())
+        // A cancelled request can finish after a new booking. It must not replace the newer ID.
+        if (cancelled || currentToken != clientToken || (completed != null && completed != appointmentId)) return false
         if (mockMode) demoCompletedBookings[scheduleId] = appointmentId
-        else prefs.edit().putLong("booking_completed_${bookingNamespace(scheduleId)}", appointmentId).commit()
+        else check(prefs.edit().putLong("booking_completed_$namespace", appointmentId).commit()) {
+            text(R.string.data_booking_storage_failed)
+        }
+        return true
     }
 
-    @Synchronized fun clearBooking(scheduleId: Long) {
+    @Synchronized fun clearBookingIfCompleted(scheduleId: Long, appointmentId: Long): Boolean {
+        require(scheduleId > 0 && appointmentId > 0)
+        // Compare and removal share the same monitor as token creation and completion writes.
+        // Cancelling another device's order for this schedule must preserve our retry token.
+        val matchesCompleted = completedBookingId(scheduleId) == appointmentId
         if (mockMode) {
-            demoBookingTokens.remove(scheduleId)
-            demoCompletedBookings.remove(scheduleId)
+            demoCancelledBookings.getOrPut(scheduleId) { mutableSetOf() }.add(appointmentId)
+            if (matchesCompleted) {
+                demoBookingTokens.remove(scheduleId)
+                demoCompletedBookings.remove(scheduleId)
+            }
         } else {
             val namespace = bookingNamespace(scheduleId)
-            prefs.edit().remove("booking_token_$namespace").remove("booking_completed_$namespace").commit()
+            // Even an unobserved booking response may arrive after its confirmed cancellation.
+            // Record that ID without deleting an unrelated pending/completed booking's key.
+            val cancelledKey = "booking_cancelled_$namespace"
+            val cancelled = prefs.getStringSet(cancelledKey, emptySet()).orEmpty().toMutableSet()
+            cancelled.add(appointmentId.toString())
+            val editor = prefs.edit().putStringSet(cancelledKey, cancelled)
+            if (matchesCompleted) editor.remove("booking_token_$namespace").remove("booking_completed_$namespace")
+            check(editor.commit()) {
+                text(R.string.data_booking_storage_failed)
+            }
         }
+        return matchesCompleted
     }
 
     private fun newBookingToken() = UUID.randomUUID().toString().replace("-", "")

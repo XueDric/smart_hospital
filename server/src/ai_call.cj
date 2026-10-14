@@ -93,7 +93,7 @@ private let aiSemLock = Mutex()
 private var aiSem: ?Semaphore = None
 
 /* 取（必要时创建）出站并发闸。容量取**首次**调用时配置的值。 */
-private func aiAcquireGate(limit: Int64): Unit {
+private func aiGate(limit: Int64): Semaphore {
     aiSemLock.lock()
     try {
         if (aiSemCapacity != limit) {
@@ -109,10 +109,7 @@ private func aiAcquireGate(limit: Int64): Unit {
     } finally {
         aiSemLock.unlock()
     }
-    match (aiSem) {
-        case Some(s) => s.acquire()
-        case None => ()
-    }
+    return aiSem.getOrThrow()
 }
 
 private func aiReleaseGate(): Unit {
@@ -271,6 +268,57 @@ public let AI_SYS_FALLBACK: String =
  *   📌 若将来要高频调用，再引入池化 —— 那时**先写压测**，不要凭感觉加。
  */
 public func aiCallChat(o: AiRuntimeOptions, prompt: String, now: Int64): AiCallResult {
+    let (can, why) = aiCanCall(o)
+    if (!can) { let r = AiCallResult(); r.reason = why; return r }
+    aiGate(o.maxConcurrent).acquire()
+    try {
+        return aiCallChatRaw(o, prompt, now)
+    } finally {
+        aiReleaseGate()
+    }
+}
+
+/*
+ * 分诊模型的剩余等待预算。先非阻塞取共享许可，再启动纯网络任务。
+ * Future 超时不会取消系统TCP连接：许可由worker在实际退出时归还，因此残留
+ * 任务数量仍有上限，满载即降级。worker不持有请求数据库/结论对象，迟到结果丢弃。
+ * Future.get(Duration) 的时限涵盖DNS/connect/读写/解析，并非仅readTimeout。
+ */
+public func aiCallChatBudget(o: AiRuntimeOptions, prompt: String, now: Int64,
+                             budgetMs: Int64): AiCallResult {
+    let fallback = AiCallResult()
+    let (can, why) = aiCanCall(o)
+    if (!can) { fallback.reason = why; return fallback }
+    if (budgetMs <= 0) { fallback.reason = "分诊增强预算已耗尽，已降级为规则"; return fallback }
+    if (!aiGate(o.maxConcurrent).tryAcquire()) {
+        fallback.reason = "模型并发额度已满，已降级为规则"
+        return fallback
+    }
+    // spawn失败也必须归还许可；正常启动后许可只由worker归还。
+    var task: ?Future<AiCallResult> = None
+    try {
+        task = Some(spawn { =>
+            try {
+                return aiCallChatRaw(o, prompt, now, ioTimeoutSecs: (budgetMs + 999) / 1000)
+            } finally {
+                aiReleaseGate()
+            }
+        })
+    } catch (e: Exception) {
+        aiReleaseGate()
+        fallback.reason = "无法启动模型任务，已降级为规则"
+        return fallback
+    }
+    try {
+        return task.getOrThrow().get(Duration.millisecond * budgetMs)
+    } catch (e: Exception) {
+        fallback.reason = "分诊模型未在等待预算内完成，已降级为规则"
+        return fallback
+    }
+}
+
+private func aiCallChatRaw(o: AiRuntimeOptions, prompt: String, now: Int64,
+                           ioTimeoutSecs!: Int64 = 0): AiCallResult {
     let r = AiCallResult()
     /*
      * ★★ 用**真时钟**量耗时（2026-10-09 修）。
@@ -317,7 +365,7 @@ public func aiCallChat(o: AiRuntimeOptions, prompt: String, now: Int64): AiCallR
          *   ⚠ 口径边界：容量取**启动后首次出站**时配置的值（仓颉没有运行时改信号量容量），
          *     已写进 `ai_settings.cj` 的说明与 `ai-live-check`。
          */
-        aiAcquireGate(o.maxConcurrent)
+        // 并发许可由外层持有，本函数不能再次获取。
         let b = ClientBuilder()
         /*
          * ⚠⚠ TLS **必须显式配置**，否则对 https:// 会直接抛
@@ -375,10 +423,14 @@ public func aiCallChat(o: AiRuntimeOptions, prompt: String, now: Int64): AiCallR
          *   并在文档里**如实写明 connect 阶段不受控**。
          *   📌 只设 client 级不够 —— 请求级才是逐次生效的那一层，两层都设。
          */
-        let d = Duration.second * o.timeoutSecs
+        let seconds = if (ioTimeoutSecs > 0 && ioTimeoutSecs < o.timeoutSecs) {
+            ioTimeoutSecs
+        } else { o.timeoutSecs }
+        let d = Duration.second * seconds
         b.readTimeout(d)
         b.writeTimeout(d)
         let c = b.build()
+        try {
         let req = HttpRequestBuilder().method("POST").url(o.endpoint)
             .header("Content-Type", "application/json")
             .header("Authorization", "Bearer " + key)
@@ -388,8 +440,6 @@ public func aiCallChat(o: AiRuntimeOptions, prompt: String, now: Int64): AiCallR
         let resp = c.send(req)
         let status = Int64(resp.status)
         let body = aiReadAll(resp.body)
-        c.close()
-        aiReleaseGate()
         r.elapsedMs = aiNowMs() - t0
         if (status < 200 || status >= 300) {
             /*
@@ -418,8 +468,10 @@ public func aiCallChat(o: AiRuntimeOptions, prompt: String, now: Int64): AiCallR
                 r.reason = "响应不是预期的 JSON 形状（choices[0].message.content）"
                 return r
         }
+        } finally {
+            c.close()
+        }
     } catch (e: Exception) {
-        aiReleaseGate()
         r.elapsedMs = aiNowMs() - t0
         /*
          * ⚠ 异常消息也可能含密钥（例如把整个请求 URL/头拼进消息的库）。

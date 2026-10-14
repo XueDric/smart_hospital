@@ -1,7 +1,11 @@
 package qingzhou
 
 import std.collection.*
+import std.time.*
 import stdx.encoding.json.*
+
+/* RAG/config/Prompt 已用时间从分诊模型等待额度扣除；SQL自身由部署侧限时。 */
+public let TRIAGE_ENHANCEMENT_BUDGET_MS: Int64 = 12000
 
 /*
  * SPDX-License-Identifier: MIT
@@ -158,7 +162,8 @@ public let AI_NOTE_DENY: Array<String> = [
  */
 public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
                             aiSettings: AiSettingsRepo, now: Int64,
-                            ragHits!: Array<KbHit> = Array<KbHit>()): Unit {
+                            ragHits!: Array<KbHit> = Array<KbHit>(),
+                            deadlineMs!: Int64 = 0): Unit {
     /*
      * ① 危急征象 ⇒ **不调模型**。
      *   理由：这时患者最需要的是"立刻就医"四个字，而不是一段更通顺的解释。
@@ -209,7 +214,10 @@ public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
      *     那会诱导模型自己编参考资料）。
      */
     let prompt = aiTriagePrompt(complaint, v, ragHits: ragHits)
-    let r = aiCallChat(opts, prompt, now)
+    let remaining = if (deadlineMs > 0) {
+        deadlineMs - DateTime.now().toUnixTimeStamp().toMilliseconds()
+    } else { TRIAGE_ENHANCEMENT_BUDGET_MS }
+    let r = aiCallChatBudget(opts, prompt, now, remaining)
     if (r.ok) {
         let clean = aiSanitizeNote(r.text)
         if (clean.size == 0) {

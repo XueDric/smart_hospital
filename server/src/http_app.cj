@@ -1380,9 +1380,8 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         /*
          * 长度上限：主诉是**用户输入**，直接进词表匹配与日志。
          * 不设上限等于让一个请求把日志刷爆（也顺带保护分词循环）。
-         * 这里不报错而是**截断**：患者多写几句不该被拒 —— 多出来的内容
-         * 对分诊无用，但拒掉会让体验变差。截断这个动作**如实上报**（truncated
-         * 字段），不静默。
+         * 完整主诉先过危急检测（保留否定上下文）；仅常规检索和模型解释输入
+         * 截断。请求体另有 bodyLimit，不能把尾部危急词静默删除。
          *
          * ⚠⚠ **必须按"字符"截断，不能按"字节"截断** —— 我第一版就是 `text[0..500]`，
          *   实测**超长中文主诉直接 500**：`String` 的下标是**字节**偏移，
@@ -1400,7 +1399,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
             truncated = true
         }
         let today = hTodayDate()
-        let v = triageComplaint(triage, text, today)
+        let v = triageComplaint(triage, text, today, redFlagComplaint: Some(complaint))
         /*
          * ★★ 2026-10-09：**模型增强层**（P3 建好配置底座后补上的最后一环）。
          *
@@ -1419,7 +1418,13 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
          * ⚠ **危急征象时不调模型**：那正是要立刻就医的场景，多一次网络往返
          *   只会延迟患者看到「立即就医」，收益为零、风险为正。
          */
-        aiEnhanceTriage(v, text, aiSettings, hNowEpoch(), ragHits: triageRagHits(kb, text, v))
+        // 同步SQL不能由Future中断：RAG在当前请求取完，worker只持有网络配置和Prompt。
+        // 已用RAG时间扣除，预算不足直接规则降级；正常模型等待含connect最多剩余额度。
+        let enhancementDeadline = DateTime.now().toUnixTimeStamp().toMilliseconds() +
+                                  TRIAGE_ENHANCEMENT_BUDGET_MS
+        let ragHits = triageRagHits(kb, text, v)
+        aiEnhanceTriage(v, text, aiSettings, hNowEpoch(), ragHits: ragHits,
+                        deadlineMs: enhancementDeadline)
         /*
          * ★ P4：把**结论**记进统计表（看板的"分诊命中率"靠它）。
          *

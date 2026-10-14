@@ -125,6 +125,9 @@ func emrThrowOnFailure(out: EmrWriteOutcome, what: String): Unit {
     if (out.locked) {
         throw apiErrorMsg("EMR_LOCKED", "${what}：病历已提交锁定，不可再改（需管理员解锁）")
     }
+    if (out.conflict) {
+        throw apiErrorMsg("EMR_CHANGED", "${what}：病历已被其他操作修改，请保留输入并重新读取后确认")
+    }
     if (out.unknownSection) {
         throw apiErrorMsg("VALIDATION_FAILED", "${what}：未知的病历段 '${out.detail}'")
     }
