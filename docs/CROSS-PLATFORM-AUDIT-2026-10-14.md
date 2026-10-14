@@ -152,7 +152,7 @@ Android [SessionStore.kt:114](F:/cj_cup/smart_hospital/android-patient/app/src/m
 - SSE 主诉方式不同：鸿蒙 query、Android 空 query 开流后 JSON answer。服务端支持两种，未发现由此产生的必然契约错误；query 方式会让敏感文本进入 URL，可沿 Android 方式统一。
 - 已核对的核心路径包括登录/身份、排班、分诊、预问诊开流与 answer、挂号/退号、患者病历列表/详情。未发现足以报告的 Android 路径、请求方法或基础信封字段整体不匹配。此结论不代替在线联调。
 - 上轮 SSE done、主诉 JSON、冷却按钮状态分离、Android 幂等键持久化、退号 slot_restored 警示均已有实现，没有重复报告为未修。
-- 服务端成功测试夹具仍大量使用已过去的 `2026-10-08`：[acceptance.cj:237](F:/cj_cup/smart_hospital/server/src/acceptance.cj:237)。新可售日期规则会拒绝它们，需要用动态当前/未来日期更新成功夹具；历史负例继续保留。本轮没有运行有数据库副作用的套件。
+- 服务端成功测试夹具仍大量使用已过去的 `2026-10-08`：[acceptance.cj:237](F:/cj_cup/smart_hospital/server/src/acceptance.cj:237)。新可售日期规则会拒绝它们，需要用动态当前/未来日期更新成功夹具；历史负例继续保留。本轮没有运行有数据库副作用的套件。**（2026-10-14 跟进：已处置，见文末 R2 —— 夹具日期**保留写死**，改为向 `book()` / `tryDeductSlot()` 注入夹具当天，避免套件依赖墙上时钟。）**
 - 未验证：完整 Android/Harmony 构建、真机布局、Release 签名、真实 TLS 信任、慢网 SSE、目标数据库 SQL 兼容与并发守恒。已有文档中的“待复测”没有转换为已通过。
 
 ## 安卓技能检索与后续工作流
@@ -171,3 +171,52 @@ Android [SessionStore.kt:114](F:/cj_cup/smart_hospital/android-patient/app/src/m
 4. 独立 QA 先修动态日期夹具，再在隔离数据库和声明明确的在线模式下跑流程；检查账号、地址、模式切换、响应丢失和进程重启。
 
 本轮产物是审查报告，共 5 项 P1、10 项 P2、1 项 P3。最小下一步为先修 F01/F02/F03/F04/F05 并添加对应有区分力的回归，再处理患者挂号/问诊主流程。
+
+## 修复记录（2026-10-14 跟进）
+
+> 本节由服务端 owner 在"拉取后按报告与实测复核"时补写：先修**阻断项**（编译不过、验收红、客户端构建红），不代替 F01–F16 的功能修复。
+
+| # | 问题 | 现象与根因 | 处置与证据 |
+| --- | --- | --- | --- |
+| R1 | 服务端**编不过** | `error: 'containsKey' is not a member of class 'HashMap<Struct-String, Struct-String>'`（[domain_emr.cj:457](../server/src/domain_emr.cj#L457)）。`patch` 是 `HashMap<String,String>`，`containsKey` 是 **JsonObject** 的 API；同仓 `acceptance_kb.cj` 里的 `containsKey` 都作用在 JsonObject 上，所以此前从未暴露 | 改 `patch.contains(k)`。已核对：本机只装 cjc 1.0.5 / 1.2.0，1.2.0 下 `HashMap.contains` 编译并运行通过 |
+| R2 | `accept` **466/497（31 项红）**——即本报告"差异与验证缺口"最后一条预言的那件事 | 号源新增可售谓词 `work_date >= 今天`（+ 科室/医生启用且归属一致）后，夹具写死的 `2026-10-08` 等日期一律被判"过期不可售"，于是"扣号成功/remain 递减/seq_no 回填"整片红 | **没有**按报告建议把夹具改成动态日期（那会让套件依赖墙上时钟），而是给 `book()` 加 `today!` 注入口（与上游给 `tryDeductSlot` / `findBookableSchedule` 加的同款），夹具显式注入 `ACC_FIXTURE_DATE` / `ACC_FIXTURE_DATE_P4`。理由与"新规则必须给夹具留注入口"一并记入 [server/README.md](../server/README.md) 坑 AI。证据：`accept` **497 项 0 失败**，`selftest` 50 / `authtest` 17 / `triagetest` 108 全绿，`doc-counts.ps1` 文档数字与实测一致 |
+| R3 | 鸿蒙 HAP **编不过**（17 条 ArkTS 错误，[feature-doctor](../feature-doctor/src/main/ets/data/DoctorRepository.ets)、[feature-admin](../feature-admin/src/main/ets/data/MockAdminRepository.ets)） | ① 4× `arkts-no-untyped-obj-literals`：`DoctorRepository.ets` 向 `HttpClient.post` 传裸 `{}`；② 13× 私有静态成员被**类外**访问（`MockDoctorState.skeleton/section`、`MockAdminState.doctorName/doctorTitle/deptName`） | ① 一律先声明 `const body: Record<string, Object> = {}`；② 这 5 个夹具工厂改为非 private（保留"只在同文件 Mock 层复用"的边界）。证据：ASCII 路径副本内 `ohpm install --all` + `hvigorw assembleHap` → **BUILD SUCCESSFUL in 21 s 968 ms**，产物 `entry-default-unsigned.hap`（1,410,641 B）。⚠ hvigor **拒绝含中文的工程路径**，构建必须在 ASCII 路径下做 |
+| R4 | 说明 | 本次**没有**动 F01–F16 的功能实现，也没有跑 Android 侧构建；R1–R3 只是让"上游 main 能编、能过验收、能出包" | 复核命令：`build.ps1` → `selftest` / `authtest` / `triagetest` / `accept <dsn>` → `tests\doc-counts.ps1`；客户端 ASCII 副本内 `hvigorw assembleHap` |
+
+## F01–F16 服务端侧复核与修复（2026-10-14 第二轮）
+
+> 任务口径：「修与后端有关的 bug」。做法是**逐条回到服务端代码**核对本报告的定位是否仍然成立，
+> 只改服务端；鸿蒙 / Android 侧一行未动（除 R3 的编译阻断）。
+> 结论先说：**4 项上游已经修好（本轮只补回归护栏），2 项是真缺口（本轮修复）**，其余 10 项不在服务端。
+
+### 上游已修：服务端无需再改，本轮只补"回归护栏"
+
+| # | 核对结论 | 代码依据 | 本轮补的护栏 |
+| --- | --- | --- | --- |
+| F01 | ✅ 已修 | 截断后的 `text` 只用于常规检索 / 模型输入；危急判定拿的是**原文**：`triageComplaint(triage, text, today, redFlagComplaint: Some(complaint))`（[http_app.cj:1433](../server/src/http_app.cj#L1433)），`triage.cj` 的 `redFlagComplaint!` 走 `detectRedFlag`（[triage.cj:429](../server/src/triage.cj#L429)、[triage.cj:435](../server/src/triage.cj#L435)） | `tests\triage-check.ps1` 新增：**600 字主诉 + 末尾「胸痛」仍 `red_flag=true` / `RED_FLAG` / `count=0`**，并**先断言 `truncated=true`**（否则"没触发截断"会让用例白过） |
+| F02 | ✅ 已加固 | `saveDraft` 的更新带**草稿快照谓词**：`... WHERE id = ? AND ` + `draftSnapshotSql`（[domain_emr.cj:492](../server/src/domain_emr.cj#L492)，谓词定义 [domain_emr.cj:343](../server/src/domain_emr.cj#L343)）；`lock` 同样带 `WHERE appointment_id = ? AND draftSnapshotSql`（[domain_emr.cj:619](../server/src/domain_emr.cj#L619)）⇒ 报告里的两种交错**都会让谓词落空而报冲突**，不再存在"读到 draft 后静默覆写已锁定内容" | 无（已在 `accept` 的 AC-P4 病历锁定组内） |
+| F10 | ✅ 已修 | 服务端给模型增强设了**硬预算** `TRIAGE_ENHANCEMENT_BUDGET_MS = 12000`（[ai_triage.cj:8](../server/src/ai_triage.cj#L8)），请求侧按剩余预算传 `deadlineMs`（[http_app.cj:1455](../server/src/http_app.cj#L1455)、[ai_triage.cj:219](../server/src/ai_triage.cj#L219)）⇒ 12 s < Android 15 s / 鸿蒙 20 s，服务端总在客户端超时前给出 `source=rules` | `triagetest` 新增 `rtEnhanceBudget`：断言 **预算 < 客户端最紧等待上限**，且**留 20% 余量**（预算×10 ≤ 客户端×8）—— 防止有人把预算调大或把客户端超时调小 |
+| F15 | ✅ 服务端已就绪 | 看板已回**千分比**并对每个比值配 `permille_note` 文案：`completion_permille`（[dashboard.cj:229](../server/src/dashboard.cj#L229)）、`cancel_permille` / `no_show_permille` + 说明（[dashboard.cj:165](../server/src/dashboard.cj#L165)）、`permille_note`（[dashboard.cj:230](../server/src/dashboard.cj#L230)）。报告里"随数值改变"的是**客户端的百分比转换** | 无（服务端口径未变；客户端侧仍归鸿蒙/Android owner） |
+
+### 真缺口：服务端会改变状态，却没有任何接口能读到它 → 本轮修复
+
+| # | 缺口的本质 | 处置 | 证据 |
+| --- | --- | --- | --- |
+| F11 | 服务端**滑动续期**（`principalByToken` 里把 `expires_at` 往后推、每天最多写一次库），但 `/auth/me` **不回** `expires_at` ⇒ 各端只能用登录那一刻的旧值倒计时；Android 于是在令牌**仍然有效**时清登录、并顺手清掉预问诊恢复状态 | `/auth/me` 回报**续期后**的 `expires_at`：新增 `Principal.expiresAt`，每次请求都从令牌行回填（**不依赖"这次是否真的写了库"**——24 h 节流下会漏）。客户端应改为**每次 `/auth/me` 用返回值刷新本地到期** | `accept` 新增 **AC-14**（6 项）：夹具造"即将到期"的令牌 → 有效令牌可访问 → 续期后 `expires_at` 变大 → **与库中令牌行一致** → 节流（不写库）时也不虚报 → 返回值仍是原来那个到期时刻。`tests\auth-check.ps1` 新增"`/auth/me` 的 `expires_at` 与登录响应一致且在未来" |
+| F14 | 全项目 `today` 一律 **Asia/Shanghai**（`HOSPITAL_TZ_OFFSET_SECONDS`），但客户端拿**设备本地时区**拼 `work_date` ⇒ 设备时区不对或跨零点就查不到当天号源（"App 说今天没号、网页有号"） | `/health` 与 `/api/v1/health` 增加 `today`（`YYYY-MM-DD`）+ `timezone`（恒 `Asia/Shanghai`）；文档改为"客户端**读它**，不要自己算" | `accept` 新增 **AC-15**（4 项）：探活不需要令牌且回齐字段、`timezone` 恒为上海、`today` 等于 **UTC+8 当天**、与库内当天一致。新增 `tests\health-check.ps1`（15 项）覆盖两路径同实现、形状、不泄漏敏感字段、日期口径 |
+
+### 本轮实测数字（服务端）
+
+| 套件 | 结果 |
+| --- | --- |
+| `selftest` | **50 / 50** |
+| `authtest` | **17 / 17** |
+| `triagetest`（含本轮 +2） | **110 / 110** |
+| `accept`（含本轮 +10：AC-14 六项、AC-15 四项） | **507 / 507** |
+| `tests\health-check.ps1`（新） | **15 / 15** |
+| `tests\auth-check.ps1` | **29 / 29**（`-SkipTiming` 28 / 28） |
+| `tests\triage-check.ps1`（含本轮 +4） | **28 / 28** |
+| `tests\doc-counts.ps1` | 文档数字与实测一致（已 `-Fix` 同步） |
+
+> ⚠ 仍未验证的项照旧（真机、Release 签名、真实 TLS、慢网 SSE、目标库 SQL 兼容与并发守恒）；
+> 本轮也**没有**跑 Android / 鸿蒙构建（R3 只在 ASCII 副本内验证鸿蒙出包）。

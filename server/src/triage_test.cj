@@ -61,6 +61,7 @@ public func runTriageTests(): Int64 {
     rtWidthMix(r)
     rtDept(r)
     rtDeptNegation(r)
+    rtEnhanceBudget(r)
     println("")
     println("=== P2 预问诊纯逻辑自检 ===")
     rpSseFrame(r)
@@ -620,5 +621,30 @@ func rpAssistantLines(r: TriageRunner): Unit {
         }
         r.check("★★ 采完后明确声明「不能替代医生诊断」（否则患者以为已看完病）", hasDisclaimer)
         r.check("采完后不再提问（无 '第 ' 开头的进度行）", !l3[0].contains("第 "))
+    })
+}
+
+/* ---------- ★ 模型增强预算必须小于客户端等待上限（跨端审计 F10）---------- */
+/*
+ * 审计 F10：客户端把网络等待设成 Android 15s / 鸿蒙 20s，而模型侧默认超时 30s
+ *   ⇒ 模型慢的时候客户端先超时断开，服务端**已经准备好的规则降级结果送不出去**：
+ *     患者看到的是"请求失败"，而不是那份本来可用的规则结论 —— 降级机制白做了。
+ *
+ * 服务端的处置（2026-10-09 已实现）：分诊增强走 `TRIAGE_ENHANCEMENT_BUDGET_MS`
+ *   这个**整体截止时间**（含 RAG 取数与连接等待），超时即如实降级为规则结论。
+ *
+ * ⚠ 这条断言守的是**契约**而不是实现细节：预算一旦被调到接近或超过客户端等待上限，
+ *   "降级结果送得出去"这个前提就没了 —— 那正是 F10 的整条因果链。
+ *   客户端侧的上限（15s/20s）记在审计报告里，这里取**最紧的那个**当红线。
+ */
+func rtEnhanceBudget(r: TriageRunner): Unit {
+    println("")
+    println("--- ★ 模型增强预算 vs 客户端等待上限（F10）---")
+    triageSection(r, "rtEnhanceBudget", { =>
+        let clientMinWaitMs: Int64 = 15000
+        r.check("★★ 增强预算 < 客户端最紧的等待上限（${TRIAGE_ENHANCEMENT_BUDGET_MS}ms < ${clientMinWaitMs}ms）",
+                TRIAGE_ENHANCEMENT_BUDGET_MS < clientMinWaitMs)
+        r.check("★ 且留出余量（预算 ≤ 上限的 80%），避免「刚好赶上」变成常态",
+                TRIAGE_ENHANCEMENT_BUDGET_MS * 10 <= clientMinWaitMs * 8)
     })
 }

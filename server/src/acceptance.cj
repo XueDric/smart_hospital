@@ -59,6 +59,20 @@ func hResetAll(db: DbBackend): Unit {
 }
 
 /*
+ * 验收夹具用的**固定排班日**。
+ *
+ * ⚠ 为什么需要它：可售谓词要求 `schedule.work_date >= 今天`（见 `bookingSchedulePredicate`），
+ *   而夹具日期是写死的（确定性要求，绝不能改成 `hTodayDate()+N`）。
+ *   ⇒ 凡是在夹具排班上调用**走可售谓词**的仓储方法（`book` / `tryDeductSlot` /
+ *   `findBookableSchedule`），都必须显式注入夹具当天，否则夹具排班会被判成
+ *   "过期不可售"，把真实回归淹没在夹具噪声里。
+ *   `ACC_FIXTURE_DATE_P4` 目前是未来日期，同样注入 —— 为的是**不依赖墙上时钟**：
+ *   等 2026-12-24 过去以后，不注入的用例会自己变红。
+ */
+let ACC_FIXTURE_DATE: String = "2026-10-08"
+let ACC_FIXTURE_DATE_P4: String = "2026-12-24"
+
+/*
  * 建一个测试排班（显式 id，便于用例可读）。返回 (scheduleId, patientId, doctorId, deptId)。
  *
  * ⚠ 用 `INSERT IGNORE`：P0 的用例每次都会重建部门/医生/患者（id 固定为 1），
@@ -171,6 +185,20 @@ func hVisitDate(db: DbBackend, appointmentId: Int64): String {
     return rs.getString(0, 0)
 }
 
+/*
+ * 读某令牌**落库**的有效期（AC-14 用）。
+ *
+ * 为什么要单独查库：AC-14 要抓的正是"仓储回给调用方的有效期与库里存的不一致"
+ * （服务端续期了、客户端还按旧值倒计时），所以断言不能只信返回值。
+ */
+func hTokenExpiry(db: DbBackend, token: String): Int64 {
+    let rs = db.query("SELECT expires_at FROM auth_token WHERE token = ?", [DbStr(token)])
+    if (rs.rowCount() < 1) {
+        return -1
+    }
+    return rs.getInt(0, 0)
+}
+
 /* ===================== 测试运行器 ===================== */
 
 /*
@@ -221,7 +249,7 @@ public class TestRunner {
         println("=== AC-2 号满不超卖 ===")
         section("AC-2", { =>
             hSeedSchedule(db, 9001, 0, "2026-10-08")     // total=0, remain=0
-            let deducted = repo.tryDeductSlot(9001)
+            let deducted = repo.tryDeductSlot(9001, today: ACC_FIXTURE_DATE)
             let (remain, ver) = hScheduleState(db, 9001)
             check("remain_num=0 时扣减返回 false", !deducted)
             check("扣减失败后 remain_num 仍为 0（未变负）", remain == 0)
@@ -247,7 +275,7 @@ public class TestRunner {
             var ok: Int64 = 0
             var i: Int64 = 0
             while (i < 5) {
-                if (repo.tryDeductSlot(9002)) {
+                if (repo.tryDeductSlot(9002, today: ACC_FIXTURE_DATE)) {
                     ok = ok + 1
                 }
                 i = i + 1
@@ -257,7 +285,7 @@ public class TestRunner {
             check("remain_num 归零（5 → 0）", remain == 0)
             check("version 随每次成功 +1（0 → 5）", ver == 5)
             // 第 6 次必须失败（号已售完）
-            check("第 6 次扣减失败（号已售完，不超卖）", !repo.tryDeductSlot(9002))
+            check("第 6 次扣减失败（号已售完，不超卖）", !repo.tryDeductSlot(9002, today: ACC_FIXTURE_DATE))
             let (remain2, _) = hScheduleState(db, 9002)
             check("售完后 remain_num 仍为 0（未变负）", remain2 == 0)
         })
@@ -282,7 +310,7 @@ public class TestRunner {
             var ok: Int64 = 0
             var i: Int64 = 0
             while (i < n) {
-                if (repo.tryDeductSlot(9008)) {
+                if (repo.tryDeductSlot(9008, today: ACC_FIXTURE_DATE)) {
                     ok = ok + 1
                 }
                 i = i + 1
@@ -318,7 +346,7 @@ public class TestRunner {
             // 先全部借出
             var i: Int64 = 0
             while (i < n) {
-                let _ = repo.tryDeductSlot(9009)
+                let _ = repo.tryDeductSlot(9009, today: ACC_FIXTURE_DATE)
                 i = i + 1
             }
             let (afterLend, _) = hScheduleState(db, 9009)
@@ -434,7 +462,7 @@ public class TestRunner {
 
             /* ④ 反向：号源域**确实有数据**，否则上面是"空比空"的假绿 */
             hSeedSchedule(db, 9011, 3, "2026-10-08")
-            let a = repo.book(1, 9011, "tok-ac4", hNowEpoch())
+            let a = repo.book(1, 9011, "tok-ac4", hNowEpoch(), today: ACC_FIXTURE_DATE)
             check("④ ★★ 反向：号源域确实有数据（造出一张挂号单）—— 否则③可能是「因为什么都没做」而假绿",
                   isBooked(a))
             let schedRows = hTableRowCount(db, TABLE_SCHEDULE)
@@ -475,7 +503,7 @@ public class TestRunner {
              */
             hResetAll(db)
             hSeedSchedule(db, 9010, 5, "2026-10-08")
-            let a = repo.book(1, 9010, "tok-ac12-a", hNowEpoch())
+            let a = repo.book(1, 9010, "tok-ac12-a", hNowEpoch(), today: ACC_FIXTURE_DATE)
             check("第一次挂号成功", isBooked(a))
             check("响应 seq_no = 1", a.seqNo == 1)
             let dbSeq1 = hAppointmentSeqNo(db, a.appointmentId)
@@ -484,7 +512,7 @@ public class TestRunner {
             // 退掉它（seq_no 不回收），再挂一单 → 应为 2，且响应与库一致
             let c = repo.cancel(a.appointmentId, hNowEpoch())
             check("退号成功", isCancelled(c))
-            let b = repo.book(1, 9010, "tok-ac12-b", hNowEpoch())
+            let b = repo.book(1, 9010, "tok-ac12-b", hNowEpoch(), today: ACC_FIXTURE_DATE)
             check("退号后再次挂号成功", isBooked(b))
             let dbSeq2 = hAppointmentSeqNo(db, b.appointmentId)
             /*
@@ -503,8 +531,8 @@ public class TestRunner {
         section("AC-5", { =>
             hResetAll(db)
             hSeedSchedule(db, 9003, 1, "2026-10-08")
-            let a = repo.book(1, 9003, "tok-ac5-a", hNowEpoch())   // 抢走唯一号
-            let b = repo.book(1, 9003, "tok-ac5-b", hNowEpoch())   // 号已满 → 必然失败
+            let a = repo.book(1, 9003, "tok-ac5-a", hNowEpoch(), today: ACC_FIXTURE_DATE)   // 抢走唯一号
+            let b = repo.book(1, 9003, "tok-ac5-b", hNowEpoch(), today: ACC_FIXTURE_DATE)   // 号已满 → 必然失败
             let (remain, _) = hScheduleState(db, 9003)
             let count = hAppointmentCount(db, 9003)
             check("首个挂号成功", isBooked(a))
@@ -521,8 +549,8 @@ public class TestRunner {
             hResetAll(db)
             hSeedSchedule(db, 9004, 3, "2026-10-08")
             let tok = "tok-ac3-fixed"
-            let a = repo.book(1, 9004, tok, hNowEpoch())
-            let b = repo.book(1, 9004, tok, hNowEpoch())          // 重复提交
+            let a = repo.book(1, 9004, tok, hNowEpoch(), today: ACC_FIXTURE_DATE)
+            let b = repo.book(1, 9004, tok, hNowEpoch(), today: ACC_FIXTURE_DATE)          // 重复提交
             let count = hAppointmentCount(db, 9004)
             let (remain, _) = hScheduleState(db, 9004)
             check("首次挂号成功", isBooked(a))
@@ -539,7 +567,7 @@ public class TestRunner {
         section("AC-6", { =>
             hResetAll(db)
             hSeedSchedule(db, 9005, 3, "2026-10-08")
-            let a = repo.book(1, 9005, "tok-ac6", hNowEpoch())
+            let a = repo.book(1, 9005, "tok-ac6", hNowEpoch(), today: ACC_FIXTURE_DATE)
             let before = hVisitDate(db, a.appointmentId)
             // 管理员一键顺延排班：2026-10-08 → 2026-10-15
             db.exec("UPDATE schedule SET work_date = ?, version = version + 1 WHERE id = ?",
@@ -560,7 +588,7 @@ public class TestRunner {
         section("AC-7", { =>
             hResetAll(db)
             hSeedSchedule(db, 9006, 2, "2026-10-08")
-            let a = repo.book(1, 9006, "tok-ac7", hNowEpoch())
+            let a = repo.book(1, 9006, "tok-ac7", hNowEpoch(), today: ACC_FIXTURE_DATE)
             // 正常退号
             let c1 = repo.cancel(a.appointmentId, hNowEpoch())
             let (remain1, _) = hScheduleState(db, 9006)
@@ -580,7 +608,7 @@ public class TestRunner {
              *   让调用方知道"已退号但号源需运维修"，而不是以为退号失败。 */
             hResetAll(db)
             hSeedSchedule(db, 9007, 1, "2026-10-08")
-            let b = repo.book(1, 9007, "tok-ac7b", hNowEpoch())
+            let b = repo.book(1, 9007, "tok-ac7b", hNowEpoch(), today: ACC_FIXTURE_DATE)
             // 管理员重置号源：remain_num 顶满到 total_num（version 也随之变）
             db.exec("UPDATE schedule SET remain_num = total_num, version = version + 1 " +
                     "WHERE id = ?", [DbInt(9007)])
@@ -610,10 +638,10 @@ public class TestRunner {
             hResetAll(db)
             hSeedSchedule(db, 9401, 4, "2026-12-24")
             let now = hNowEpoch()
-            let a = repo.book(1, 9401, "tok-ac13-visiting", now)
-            let b = repo.book(1, 9401, "tok-ac13-done", now)
-            let c = repo.book(1, 9401, "tok-ac13-noshow", now)
-            let d = repo.book(1, 9401, "tok-ac13-booked", now)
+            let a = repo.book(1, 9401, "tok-ac13-visiting", now, today: ACC_FIXTURE_DATE_P4)
+            let b = repo.book(1, 9401, "tok-ac13-done", now, today: ACC_FIXTURE_DATE_P4)
+            let c = repo.book(1, 9401, "tok-ac13-noshow", now, today: ACC_FIXTURE_DATE_P4)
+            let d = repo.book(1, 9401, "tok-ac13-booked", now, today: ACC_FIXTURE_DATE_P4)
             check("四张单都建成功（夹具就位）", isBooked(a) && isBooked(b) && isBooked(c) && isBooked(d))
             /*
              * 直接把三张单拨到"不该被退"的状态。
@@ -658,6 +686,88 @@ public class TestRunner {
             let (remainFinal, _) = hScheduleState(db, 9401)
             check("★ 已挂号的单仍可正常退号（护栏没有误伤）", isCancelled(c4))
             check("★ 该单退号后号源 +1（归还路径未被破坏）", remainFinal == remainBefore + 1)
+        })
+    }
+
+    /* ---------- AC-14：滑动续期必须把「续期后」的有效期回给调用方（跨端审计 F11）---------- */
+    /*
+     * 修的是什么：`principalByToken` 一直在做滑动续期（把 `expires_at` 往后推一个 TTL），
+     * 但 `Principal` 里**没有**有效期字段 ⇒ `/auth/me` 没有任何地方能告诉客户端
+     * "我这张令牌现在到什么时候"。
+     * 后果（审计 F11 原文）：各端把登录那一刻的 `expires_at` 一直缓存着，服务端的续期
+     * 对客户端**不可见**；Android 端因此按旧值倒计时，会在令牌仍然有效时把用户踢回登录页。
+     *
+     * ⚠ 覆盖边界如实记：这里测的是"回填的值是否权威"（可达、确定性）。
+     *   并发续期不会算错（那条 UPDATE 写的是**绝对值** `now + TTL`，重复执行幂等），
+     *   所以不另造并发窗口 —— 与 AC-13 同一个取舍。
+     */
+    public func ac14(): Unit {
+        println("=== AC-14 ★★ 令牌滑动续期：有效期必须回给客户端（F11）===")
+        section("AC-14", { =>
+            hResetAll(db)
+            let auth = AuthRepo(db)
+            let now = hNowEpoch()
+            // 只为造出 patient id=1（createUser 会校验业务身份真实存在）
+            let _seed = hSeedSchedule(db, 9501, 2, ACC_FIXTURE_DATE_P4)
+            let _uid = auth.createUser("ac14-renew", Role.Patient, 1, "续期验收患者",
+                                       "Ac14#Renew1", now)
+            let login = auth.login("ac14-renew", "Ac14#Renew1", now)
+            check("夹具：能登录并拿到令牌（没令牌则本用例无意义）", login.token.size > 0)
+            let token = login.token
+            /*
+             * 把令牌拨到"该续期"的状态：剩余 1000 秒（< TOKEN_TTL - RENEW_AFTER），
+             * 且上次续期在两天前（已过 RENEW_AFTER 节流窗口）。
+             */
+            db.exec("UPDATE auth_token SET expires_at = ?, last_renew_at = ? WHERE token = ?",
+                    [DbInt(now + 1000), DbInt(now - 2 * RENEW_AFTER), DbStr(token)])
+            let p = auth.principalByToken(token, now)
+            check("★ 令牌有效（否则下面断言的是 None）", p.isSome())
+            let exp = p.getOrThrow().expiresAt
+            check("★★ 回填的是**续期后**的有效期（now + TOKEN_TTL）", exp == now + TOKEN_TTL)
+            let inDb = hTokenExpiry(db, token)
+            check("★★ 且与库中值一致（两端看到同一个到期时刻；库=${inDb} 回填=${exp}）",
+                  exp == inDb)
+            /*
+             * 反向证明：**节流期内不能凭空造一个未来值**。
+             * 若实现把 `now + TOKEN_TTL` 无条件回填，客户端会看到一个库里并不存在的
+             * 有效期 —— 那是另一种"两端不一致"，只是方向相反。
+             */
+            let p2 = auth.principalByToken(token, now + 60)
+            check("★ 节流期内不重复续期：回填值等于库中值（不虚报）",
+                  p2.getOrThrow().expiresAt == hTokenExpiry(db, token))
+            check("★ 且该值仍是原来那个（没被偷偷改成 now + TOKEN_TTL）",
+                  p2.getOrThrow().expiresAt == exp)
+            // 自建自清（auth_user / auth_token 不在 hResetAll 的清理范围内）
+            db.exec("DELETE FROM auth_token WHERE token = ?", [DbStr(token)])
+            db.exec("DELETE FROM auth_user WHERE login_name = ?", [DbStr("ac14-renew")])
+        })
+    }
+
+    /* ---------- AC-15：探活接口必须给出**医院今天**与时间口径（跨端审计 F14）---------- */
+    /*
+     * 修的是什么：客户端拿**设备本地日期**当"今天"去查排班（鸿蒙 `BookingPage` 默认日期、
+     * `Theme.todayString()`），而服务端的"今天"是 Asia/Shanghai ⇒ 设备时区不对或跨零点时，
+     * 两侧对"今天"的答案不同：轻则默认日期查不到号，重则把过去的排班当可用。
+     * ⇒ 服务端在探活响应里直接给出**权威日期**与**时区名**，客户端读它即可，不必自己算。
+     */
+    public func ac15(): Unit {
+        println("=== AC-15 ★ 探活响应给出医院日期与时间口径（F14）===")
+        section("AC-15", { =>
+            let body = healthJson(DevAuthGate(false, false))
+            check("★ /health 带 today，且等于服务端口径的今天",
+                  body.contains("\"today\":\"" + hTodayDate() + "\""))
+            check("★ /health 带 timezone = Asia/Shanghai",
+                  body.contains("\"timezone\":\"Asia/Shanghai\""))
+            /*
+             * ★★ 探活接口**不能**因为多了日期而开始查库
+             *   （库慢必须表现成库慢，不能表现成服务挂了）。
+             *   这里能证明的是"不碰库也能算出这个字段"——`hTodayDate()` 是纯计算，
+             *   且与日期格式化同一口径（后者已有固定 epoch 的断言守着）。
+             */
+            check("★★ 该字段是纯计算：与日期格式化同口径（hTodayDate == hDateStringOf(now)）",
+                  hTodayDate() == hDateStringOf(hNowEpoch()))
+            check("★ 且探活仍如实报告 dev_auth（没被日期字段挤掉）",
+                  body.contains("\"dev_auth\":false"))
         })
     }
 
@@ -828,6 +938,13 @@ public func runAcceptance(db: DbBackend): Int64 {
      *   放前面会把别人的夹具清掉 —— 与所有"自建自清"的用例同一取舍。
      */
     runner.ac13()
+    /*
+     * AC-14 / AC-15（2026-10-14，跨端审计 F11 / F14 的回归护栏）。
+     * ⚠ 同样排在最后：AC-14 也 `hResetAll`，并且自建自清 `auth_user`/`auth_token`
+     *   （那两张表不在 `hResetAll` 的清理范围内，所以它必须自己收尾）。
+     */
+    runner.ac14()
+    runner.ac15()
     println("")
     println("通过 ${runner.passed} 项，失败 ${runner.failed} 项")
     if (runner.failed == 0) {

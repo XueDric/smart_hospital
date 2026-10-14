@@ -125,15 +125,17 @@ class MockAdminState {
     return result;
   }
 
-  private static doctorName(doctorId: number): string {
+  // 非 private：同文件的 MockAdminRepository 需要复用这三个名字解析工厂
+  // （私有静态成员不能被类外访问，ArkTS 编译期直接报错）。
+  static doctorName(doctorId: number): string {
     return '李医生';
   }
 
-  private static doctorTitle(doctorId: number): string {
+  static doctorTitle(doctorId: number): string {
     return '副主任医师';
   }
 
-  private static deptName(departmentId: number): string {
+  static deptName(departmentId: number): string {
     if (departmentId === 3) {
       return '呼吸内科';
     }

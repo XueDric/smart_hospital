@@ -127,6 +127,30 @@ Check "角色为 admin" ((Json $r).data.role -eq "admin")
 $r = Req 'a7' 'GET' '/api/v1/auth/me' @('Authorization: Bearer not-a-real-token') $null
 Check "乱令牌 → 401" ($r.Code -eq 401)
 
+# ── 3b) ★★ 滑动续期后的有效期必须能被客户端读到（跨端审计 F11）────────────
+Write-Host ""
+Write-Host "[3b] ★★ /auth/me 必须回报当前令牌有效期（F11）"
+# ── 这一节守的是跨端审计 F11 ─────────────────────────────────────────────
+# 审计原文：`auth_repo.cj` 的滑动续期会把 `expires_at` 往后推，但响应里**没有地方**
+# 告诉客户端"现在的到期时刻是多少" ⇒ 各端一直拿登录那一刻的旧值倒计时，
+# Android 端会在令牌仍然有效时把用户踢回登录页（本地值比服务端旧一天）。
+#
+# 这里验的是 **HTTP 可见性**：字段确实发出来了，且与登录响应同口径。
+# "续期真的发生后回填的是**新**值、且与库中一致"由 `accept` 的 AC-14 用固定时间戳断言
+# （那需要把令牌拨到该续期的状态，HTTP 层做不到确定性）。
+$rLogin = Req 'a6b' 'POST' '/api/v1/auth/login' @() ('{"login_name":"' + $AdminLogin + '","password":"' + $AdminPw + '"}')
+$loginExp = (Json $rLogin).data.expires_at
+$tokF11 = (Json $rLogin).data.token
+Check "夹具：登录响应带 expires_at（实得 $loginExp）" ($null -ne $loginExp -and $loginExp -gt 0)
+$r = Req 'a6c' 'GET' '/api/v1/auth/me' @("Authorization: Bearer $tokF11") $null
+$meExp = (Json $r).data.expires_at
+Check "★★ /auth/me 回报 expires_at（此前完全没有这个字段）" ($null -ne $meExp -and $meExp -gt 0) ("实得 $meExp")
+Check "★★ 且与登录响应一致（同一个到期时刻 ⇒ 客户端可据此刷新本地倒计时）" `
+      ($meExp -eq $loginExp) ("me=$meExp login=$loginExp")
+$nowEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+Check "★ 该值在未来（不是 0 / 不是过去，否则客户端会立刻进登录页）" `
+      ($meExp -gt $nowEpoch) ("exp=$meExp now=$nowEpoch")
+
 # ── 5) 造/取患者账号，验三端权限 ──────────────────────────────────────────
 Write-Host ""
 Write-Host "[4] 三端权限"
