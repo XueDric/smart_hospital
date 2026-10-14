@@ -556,16 +556,21 @@ public class AiModelRepo {
             r.duplicate = true
             return r
         }
-        let _ = db.exec("INSERT INTO ai_model (name, kind, provider, base_url, model, temperature, " +
-                        "max_tokens, key_ref, enabled, is_default, created_at, updated_at, updated_by) " +
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        [DbStr(name), DbStr(kind), DbStr(provider), DbStr(url), DbStr(model),
-                         DbFloat(m.temperature), DbInt(m.maxTokens), DbStr(keyRef),
-                         DbInt(if (m.enabled) { 1 } else { 0 }),
-                         DbInt(if (m.isDefault) { 1 } else { 0 }),
-                         DbInt(now), DbInt(now), DbInt(byUserId)])
-        let idRs = db.query("SELECT LAST_INSERT_ID()", Array<DbValue>())
-        let id = if (idRs.rowCount() > 0) { idRs.getInt(0, 0) } else { 0 }
+        /*
+         * ⚠ 用 `execInsert` 而不是 `exec` + `SELECT LAST_INSERT_ID()`：
+         *   新框架的 exec/query **不保证落在同一条连接**（上游因此把两处裸读 LAST_INSERT_ID
+         *   全换成 execInsert，见 domain_booking.cj 的踩坑注释）。分开调用时读到的可能是
+         *   别的连接的上一次自增值，或者干脆是 0 —— 表现是"新建配置成功但 id=0"，
+         *   接着 `clearOtherDefaults` 会把**所有**行都当成别的行处理。
+         */
+        let id = db.execInsert("INSERT INTO ai_model (name, kind, provider, base_url, model, temperature, " +
+                               "max_tokens, key_ref, enabled, is_default, created_at, updated_at, updated_by) " +
+                               "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               [DbStr(name), DbStr(kind), DbStr(provider), DbStr(url), DbStr(model),
+                                DbFloat(m.temperature), DbInt(m.maxTokens), DbStr(keyRef),
+                                DbInt(if (m.enabled) { 1 } else { 0 }),
+                                DbInt(if (m.isDefault) { 1 } else { 0 }),
+                                DbInt(now), DbInt(now), DbInt(byUserId)])
         if (m.isDefault) {
             clearOtherDefaults(kind, id, now)
         }

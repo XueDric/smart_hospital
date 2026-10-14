@@ -119,13 +119,12 @@ func hSeedAppointmentForDoctor(db: DbBackend, seedId: Int64, patientId: Int64,
             "VALUES (?, ?, ?, ?, ?, 0) ON DUPLICATE KEY UPDATE name = VALUES(name)",
             [DbInt(patientId), DbStr("139" + hP4Pad8(patientId)), DbStr("P4测试患者${patientId}"),
              DbStr("M"), DbStr("1990-01-01")])
-    db.exec("INSERT INTO appointment (schedule_id, patient_id, doctor_id, department_id, " +
-            "visit_date, period, seq_no, status, slot_restored, created_at) " +
-            "VALUES (?, ?, ?, ?, ?, 'AM', 1, ?, 1, 0)",
-            [DbInt(scheduleId), DbInt(patientId), DbInt(doctorId), DbInt(deptId),
-             DbStr("2026-12-20"), DbStr(status)])
-    let rs = db.query("SELECT LAST_INSERT_ID()", Array<DbValue>())
-    return rs.getInt(0, 0)
+    /* ⚠ 用 execInsert：exec/query 不保证同一条连接，分开读 LAST_INSERT_ID 可能是别的连接的值。 */
+    return db.execInsert("INSERT INTO appointment (schedule_id, patient_id, doctor_id, department_id, " +
+                         "visit_date, period, seq_no, status, slot_restored, created_at) " +
+                         "VALUES (?, ?, ?, ?, ?, 'AM', 1, ?, 1, 0)",
+                         [DbInt(scheduleId), DbInt(patientId), DbInt(doctorId), DbInt(deptId),
+                          DbStr("2026-12-20"), DbStr(status)])
 }
 
 /* 造一个**名下没有挂号单**的医生（用于"不属于我"的归属测试）。 */
