@@ -173,12 +173,11 @@ public class KbRepo {
             "INSERT INTO kb_doc (title, category, body, enabled, updated_by, created_at, updated_at) " +
             "VALUES (?, ?, ?, 1, ?, ?, ?)",
             [DbStr(title.trimAscii()), DbStr(category.trimAscii()), DbStr(body), DbInt(actorId),
-             DbInt(now), DbInt(now)])
+             DbInt(now), DbInt(now)], returnInsertId: true)
         if (!ins.ok) {
             return kbClassifyDuplicate(ins.message, title.trimAscii(), out)
         }
-        let idRs = db.query("SELECT LAST_INSERT_ID()", Array<DbValue>())
-        let id = idRs.getInt(0, 0)
+        let id = ins.generatedId
         kbRechunk(id, body, now)
         return out.markOk(id)
     }
@@ -607,12 +606,18 @@ public func kbHasIdTailX(text: String): Bool {
 public class KbExecResult {
     public var ok: Bool = false
     public var message: String = ""
+    public var generatedId: Int64 = 0
 }
 
-public func kbExecTolerant(db: DbBackend, sql: String, args: Array<DbValue>): KbExecResult {
+public func kbExecTolerant(db: DbBackend, sql: String, args: Array<DbValue>,
+                          returnInsertId!: Bool = false): KbExecResult {
     let r = KbExecResult()
     try {
-        db.exec(sql, args)
+        if (returnInsertId) {
+            r.generatedId = db.execInsert(sql, args)
+        } else {
+            db.exec(sql, args)
+        }
         r.ok = true
     } catch (e: Exception) {
         r.ok = false

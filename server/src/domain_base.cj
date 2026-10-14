@@ -254,12 +254,11 @@ public class DepartmentRepo {
             "INSERT INTO department (name, code, location, sort, enabled, created_at) " +
             "VALUES (?, ?, ?, ?, ?, ?)",
             [DbStr(d.name), DbStr(d.code), DbStr(d.location), DbInt(d.sort),
-             DbInt(if (d.enabled) { 1 } else { 0 }), DbInt(now)])
+             DbInt(if (d.enabled) { 1 } else { 0 }), DbInt(now)], returnInsertId: true)
         if (!ins.ok) {
             return baseClassifyDuplicate(ins.message, out)
         }
-        let idRs = db.query("SELECT LAST_INSERT_ID()", Array<DbValue>())
-        return out.markOk(idRs.getInt(0, 0))
+        return out.markOk(ins.generatedId)
     }
 
     /* 改科室。⚠ **不动 `created_at`**（它是"什么时候建的"，改它等于篡改历史）。 */
@@ -433,12 +432,11 @@ public class DoctorRepo {
         if (d.specialty.size > BASE_SPECIALTY_MAX) {
             return out.markInvalid("擅长最长 ${BASE_SPECIALTY_MAX} 字")
         }
-        db.exec("INSERT INTO doctor (name, department_id, title, specialty, enabled, created_at) " +
+        let id = db.execInsert("INSERT INTO doctor (name, department_id, title, specialty, enabled, created_at) " +
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 [DbStr(d.name), DbInt(d.departmentId), DbStr(d.title), DbStr(d.specialty),
                  DbInt(if (d.enabled) { 1 } else { 0 }), DbInt(now)])
-        let idRs = db.query("SELECT LAST_INSERT_ID()", Array<DbValue>())
-        return out.markOk(idRs.getInt(0, 0))
+        return out.markOk(id)
     }
 
     public func update(id: Int64, d: Doctor): BaseWriteOutcome {
@@ -539,6 +537,7 @@ public func baseCount(db: DbBackend, sql: String, arg: Int64): Int64 {
 public class BaseExecResult {
     public var ok: Bool = false
     public var message: String = ""
+    public var generatedId: Int64 = 0
 }
 
 /*
@@ -554,10 +553,15 @@ public class BaseExecResult {
  *   所以这里对"空消息"要**有兜底分类**：不能因为消息为空就把唯一键冲突
  *   当成"未知错误"报 500 —— 那会把一个正常的业务拒绝变成服务端故障。
  */
-public func baseExecTolerant(db: DbBackend, sql: String, args: Array<DbValue>): BaseExecResult {
+public func baseExecTolerant(db: DbBackend, sql: String, args: Array<DbValue>,
+                            returnInsertId!: Bool = false): BaseExecResult {
     let r = BaseExecResult()
     try {
-        db.exec(sql, args)
+        if (returnInsertId) {
+            r.generatedId = db.execInsert(sql, args)
+        } else {
+            db.exec(sql, args)
+        }
         r.ok = true
     } catch (e: Exception) {
         r.ok = false

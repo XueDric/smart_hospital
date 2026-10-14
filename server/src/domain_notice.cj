@@ -257,12 +257,11 @@ public class NoticeRepo {
             "updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [DbStr(n.title.trimAscii()), DbStr(n.body), DbStr(n.category.trimAscii()),
              DbInt(n.sort), DbInt(if (n.enabled) { 1 } else { 0 }), DbInt(n.publishedAt),
-             DbInt(n.updatedBy), DbInt(now), DbInt(now)])
+             DbInt(n.updatedBy), DbInt(now), DbInt(now)], returnInsertId: true)
         if (!ins.ok) {
             return baseClassifyDuplicate(ins.message, out)
         }
-        let idRs = db.query("SELECT LAST_INSERT_ID()", Array<DbValue>())
-        return out.markOk(idRs.getInt(0, 0))
+        return out.markOk(ins.generatedId)
     }
 
     /*

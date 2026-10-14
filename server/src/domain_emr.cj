@@ -454,7 +454,7 @@ public class MedicalRecordRepo {
             rec.createdAt = now
             // 仅在本次实际建单时预填，不能用建单前的外部查询结果覆盖已有病历。
             for ((k, v) in prefill) {
-                if (!patch.containsKey(k)) {
+                if (!patch.contains(k)) {
                     match (emrSectionOf(k)) {
                         case None =>
                             out.unknownSection = true

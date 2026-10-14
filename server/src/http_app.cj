@@ -1372,6 +1372,10 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
     r.post("/api/v1/triage", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.Book)
+        // 从已授权请求开始计增强额度：全文规则/检索已用时也扣除模型等待。
+        // 同步SQL/规则扫描不可由该截止中断，不能把它当作整体HTTP硬截止。
+        let enhancementDeadline = DateTime.now().toUnixTimeStamp().toMilliseconds() +
+                                  TRIAGE_ENHANCEMENT_BUDGET_MS
         let body = bodyObj(ctx)
         let complaint = match (bodyStr(ctx, "chief_complaint")) {
             case Some(v) => v
@@ -1419,9 +1423,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
          *   只会延迟患者看到「立即就医」，收益为零、风险为正。
          */
         // 同步SQL不能由Future中断：RAG在当前请求取完，worker只持有网络配置和Prompt。
-        // 已用RAG时间扣除，预算不足直接规则降级；正常模型等待含connect最多剩余额度。
-        let enhancementDeadline = DateTime.now().toUnixTimeStamp().toMilliseconds() +
-                                  TRIAGE_ENHANCEMENT_BUDGET_MS
+        // 已用规则/检索/RAG时间扣除，预算不足直接规则降级；模型等待仅用剩余额度。
         let ragHits = triageRagHits(kb, text, v)
         aiEnhanceTriage(v, text, aiSettings, hNowEpoch(), ragHits: ragHits,
                         deadlineMs: enhancementDeadline)
@@ -1833,8 +1835,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
             throw apiErrorMsg("VALIDATION_FAILED", "医生必须启用且属于所选科室")
         }
         let now = hNowEpoch()
-        repo.insertSchedule(doctorId, departmentId, workDate, period, total, now)
-        let sid = repo.lastInsertId()
+        let sid = repo.insertSchedule(doctorId, departmentId, workDate, period, total, now)
         let o = JsonObject()
         o.put("schedule_id", JsonInt(sid))
         o.put("total_num", JsonInt(total))

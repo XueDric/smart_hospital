@@ -131,6 +131,20 @@ public interface DbBackend {
     }
 
     /*
+     * INSERT 的生成 ID 必须在执行它的同一连接上立即读取。
+     * 默认实现适用于调用方独占的连接；共享连接后端必须覆盖并将这两条
+     * 命令置于同一临界区，不能用单独的 exec + LAST_INSERT_ID 获取 ID。
+     */
+    func execInsert(sql: String, params: Array<DbValue>): Int64 {
+        exec(sql, params)
+        let rs = query("SELECT LAST_INSERT_ID()", Array<DbValue>())
+        if (rs.rowCount() < 1) {
+            throw Exception("INSERT 后未返回生成 ID")
+        }
+        return rs.getInt(0, 0)
+    }
+
+    /*
      * 事务：begin → 若干写操作 → commit/rollback。
      * 各后端按自身 API 实现（CangDB 用 Db.begin/commit/rollback，
      * MySQL 用 Connection.createTransaction 返回的 Transaction）；

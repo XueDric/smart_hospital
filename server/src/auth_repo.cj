@@ -532,17 +532,12 @@ public class AuthRepo {
             throw UserFacingError("口令强度不足：${pwOk.reason}")
         }
         let rec = newPasswordRecord(password)
-        db.exec(
+        return db.execInsert(
             "INSERT INTO auth_user " +
             "(login_name, role, ref_id, display_name, pw_salt, pw_hash, pw_iter, " +
             " status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)",
             [DbStr(normalizeLoginName(loginName)), DbStr(roleName(role)), DbInt(refId), DbStr(displayName),
              DbStr(rec[0]), DbStr(rec[1]), DbInt(rec[2]), DbInt(now)])
-        let rs = db.query("SELECT LAST_INSERT_ID()", Array<DbValue>())
-        if (rs.rowCount() < 1) {
-            return 0
-        }
-        return rs.getInt(0, 0)
     }
 
     /* 只校验业务实体存在性，启停状态由业务权限与排班入口处理。 */

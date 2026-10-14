@@ -2,6 +2,7 @@ package qingzhou
 
 import std.collection.*
 import std.database.sql.*
+import std.sync.*
 
 /*
  * SPDX-License-Identifier: MIT
@@ -25,6 +26,10 @@ import std.database.sql.*
 public class MySqlBackend <: DbBackend {
     private let conn: Connection
     private let tx: Transaction
+    // std.sync.Mutex 是可重入锁：事务持锁后，其内部 query/exec 可再次入锁。
+    private let connectionLock = Mutex()
+    private var transactionActive: Bool = false
+    private var usable: Bool = true
 
     /*
      * ★★ 绑定值转义口径（2026-10-10，被 `PUT ai.endpoint` 的实测缺陷逼出来的）。
@@ -101,9 +106,15 @@ public class MySqlBackend <: DbBackend {
         this.noBackslashEscapes = noBackslashEscapes
         if (noBackslashEscapes) {
             // sql_mode 是 SET 类型，已含该项时会自动去重，故可幂等重复设置
-            let stmt = conn.prepareStatement(
-                "SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',NO_BACKSLASH_ESCAPES')")
-            stmt.update()
+            synchronized(connectionLock) {
+                let stmt = conn.prepareStatement(
+                    "SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',NO_BACKSLASH_ESCAPES')")
+                try {
+                    stmt.update()
+                } finally {
+                    stmt.close()
+                }
+            }
         }
     }
 
@@ -116,35 +127,54 @@ public class MySqlBackend <: DbBackend {
     /* 执行查询：游标逐行前进，每列按 String 取值，收集为 DbResultSet。
        注意：std.database.sql 的 get<T>(index) 列索引从 1 开始（1-based）。 */
     public func query(sql: String): DbResultSet {
-        let stmt = conn.prepareStatement(sql)
-        let qr = stmt.query()
-        let out = ArrayList<ArrayList<String>>()
-        while (qr.next()) {
-            let row = ArrayList<String>()
-            let n = qr.columnInfos.size
-            var i: Int64 = 1
-            while (i <= n) {
-                // 统一按 String 取值；若驱动对数值列不支持 get<String>，
-                // 需按 columnInfos[i-1] 的列类型改用 get<Int64> 等（见 ColumnInfo）。
-                // 用 getOrNull 而非 get：get 在 NULL 列上抛 NoneValueException，
-                // 会让任何含 NULL 的查询直接崩。NULL 统一字符串化为 "NULL"，
-                // 与 CangDB 后端的约定一致（DbResultSet.getNullable 两端行为相同）。
-                match (qr.getOrNull<String>(i)) {
-                    case Some(v) => row.add(v)
-                    case None => row.add("NULL")
-                }
-                i += 1
-            }
-            out.add(row)
+        synchronized(connectionLock) {
+            requireUsable()
+            return queryLocked(sql)
         }
-        return DbResultSet(out)
+    }
+
+    // 结果集也在连接锁内完整物化，避免游标读取跨过其他命令。
+    private func queryLocked(sql: String): DbResultSet {
+        let stmt = conn.prepareStatement(sql)
+        try {
+            let qr = stmt.query()
+            try {
+                let out = ArrayList<ArrayList<String>>()
+                while (qr.next()) {
+                    let row = ArrayList<String>()
+                    let n = qr.columnInfos.size
+                    var i: Int64 = 1
+                    while (i <= n) {
+                        // getOrNull 保留 NULL，不让可空列读取抛异常。
+                        match (qr.getOrNull<String>(i)) {
+                            case Some(v) => row.add(v)
+                            case None => row.add("NULL")
+                        }
+                        i += 1
+                    }
+                    out.add(row)
+                }
+                return DbResultSet(out)
+            } finally {
+                qr.close()
+            }
+        } finally {
+            stmt.close()
+        }
     }
 
     /* 执行写操作，返回受影响行数（UpdateResult.rowCount）。 */
     public func exec(sql: String): Int64 {
-        let stmt = conn.prepareStatement(sql)
-        let ur = stmt.update()
-        return ur.rowCount
+        synchronized(connectionLock) {
+            requireUsable()
+            let stmt = conn.prepareStatement(sql)
+            try {
+                let ur = stmt.update()
+                return ur.rowCount
+            } finally {
+                stmt.close()
+            }
+        }
     }
 
     /* 确保表存在：MySQL 支持 CREATE TABLE IF NOT EXISTS，一条语句搞定。 */
@@ -190,24 +220,107 @@ public class MySqlBackend <: DbBackend {
         exec(mysqlBindSql(sql, params))
     }
 
+    // 包括非事务 INSERT；其他请求不能在写入与 ID 读取之间占用连接。
+    public func execInsert(sql: String, params: Array<DbValue>): Int64 {
+        synchronized(connectionLock) {
+            exec(sql, params)
+            let rs = query("SELECT LAST_INSERT_ID()", Array<DbValue>())
+            if (rs.rowCount() < 1) {
+                throw Exception("INSERT 后未返回生成 ID")
+            }
+            return rs.getInt(0, 0)
+        }
+    }
+
+    private func requireUsable(): Unit {
+        if (!usable) {
+            throw Exception("数据库连接已关闭或事务回滚失败")
+        }
+    }
+
     /* 关闭连接，归还驱动连接资源。 */
     public func close(): Unit {
-        conn.close()
+        synchronized(connectionLock) {
+            if (!usable) { return }
+            usable = false
+            try {
+                conn.close()
+            } finally {
+                if (transactionActive) {
+                    transactionActive = false
+                    connectionLock.unlock()
+                }
+            }
+        }
     }
 
     /* 开启事务：通过 Connection 的事务对象发送 BEGIN。 */
     public func beginTransaction(): Unit {
-        tx.begin()
+        // 成功后保留本次 lock，直到同一线程提交/回滚；失败则立即归还。
+        connectionLock.lock()
+        try {
+            requireUsable()
+            if (transactionActive) {
+                throw Exception("同一连接不支持嵌套事务")
+            }
+            try {
+                tx.begin()
+            } catch (e: Exception) {
+                // BEGIN 可能已在服务器生效但响应丢失，禁止复用未知事务连接。
+                // 仅处理真正发送 BEGIN 的异常；嵌套事务拒绝不会关闭原事务。
+                usable = false
+                try { conn.close() } catch (_: Exception) { () }
+                throw e
+            }
+            transactionActive = true
+        } catch (e: Exception) {
+            connectionLock.unlock()
+            throw e
+        }
     }
 
     /* 提交事务：COMMIT。 */
     public func commitTransaction(): Unit {
-        tx.commit()
+        synchronized(connectionLock) {
+            requireUsable()
+            if (!transactionActive) { throw Exception("没有可提交的事务") }
+            // 提交失败仍保留 begin 的锁，让 withTransaction 先回滚再放行。
+            tx.commit()
+            transactionActive = false
+            connectionLock.unlock()
+        }
     }
 
     /* 回滚事务：ROLLBACK。 */
     public func rollbackTransaction(): Unit {
-        tx.rollback()
+        synchronized(connectionLock) {
+            requireUsable()
+            if (!transactionActive) { throw Exception("没有可回滚的事务") }
+            try {
+                tx.rollback()
+            } catch (e: Exception) {
+                // 未确认回滚的连接不可复用，防止下个请求进入未知事务。
+                usable = false
+                try { conn.close() } catch (_: Exception) { () }
+                throw e
+            } finally {
+                transactionActive = false
+                connectionLock.unlock()
+            }
+        }
+    }
+
+    public func withTransaction(body: () -> Unit): Unit {
+        synchronized(connectionLock) {
+            beginTransaction()
+            try {
+                body()
+                commitTransaction()
+            } catch (e: Exception) {
+                if (transactionActive) { rollbackTransaction() }
+                throw e
+            }
+        }
     }
 
     /*
