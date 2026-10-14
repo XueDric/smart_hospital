@@ -186,13 +186,36 @@ public class DepartmentRepo {
         this.db = db
     }
 
-    public func listAll(includeDisabled!: Bool = true): Array<Department> {
+    public func listAll(includeDisabled!: Bool = true, limit!: Int64 = 0, offset!: Int64 = 0): Array<Department> {
         var sql = "SELECT id, name, code, location, sort, enabled, created_at FROM department"
         if (!includeDisabled) {
             sql = sql + " WHERE enabled = 1"
         }
         sql = sql + " ORDER BY sort ASC, id ASC"
-        let rs = db.query(sql, Array<DbValue>())
+        /*
+         * ★ 2026-10-14（第三方复查 B9）新增分页。
+         *
+         * ⚠ `limit <= 0` = **不分页**（与全仓既有口径一致："0 表示不过滤"）——
+         *   所以 `baseDepartmentsForNames()` 这类"读全表建名字索引"的调用点
+         *   一个都不用改，也不会被误截断（名字索引截断 = 页面显示空科室名）。
+         *
+         * ⚠ `offset` 只在分页时才拼：单独 `OFFSET` 在 MySQL 里是**语法错误**
+         *   （它是 `LIMIT` 的子句）。负数一律夹到 0，不往 SQL 里透传。
+         *
+         * 📌 用 `LIMIT ? OFFSET ?` 参数化，而不是把数字拼进 SQL 字符串：
+         *   这是本函数唯一的注入面，参数化是纪律（全仓无一处手拼数值）。
+         */
+        let args = ArrayList<DbValue>()
+        if (limit > 0) {
+            var off = offset
+            if (off < 0) {
+                off = 0
+            }
+            sql = sql + " LIMIT ? OFFSET ?"
+            args.add(DbInt(limit))
+            args.add(DbInt(off))
+        }
+        let rs = db.query(sql, args.toArray())
         let out = ArrayList<Department>()
         var i: Int64 = 0
         while (i < rs.rowCount()) {
@@ -208,6 +231,28 @@ public class DepartmentRepo {
             i = i + 1
         }
         return out.toArray()
+    }
+
+    /*
+     * ★ 2026-10-14（B9）：与 `listAll` **同一套过滤条件**下的总数。
+     *
+     * ⚠ 为什么要单独一个 COUNT 而不是"再查一页看有没有剩下的"：
+     *   客户端要显示"共 N 条 / 当前第 M 页"，靠"多查一页"得到的只是
+     *   "还有更多"这个布尔量，翻到最后一页时还得再试一次。
+     *   ⚠ 过滤条件必须与 `listAll` **逐字对应** —— 两处不一致会出现
+     *     "total=3 但翻不到 3 条"这种最难查的分页 bug（本仓把这条写在
+     *     测试里：`base-check` 的分页断言会比较 total 与实际行数）。
+     */
+    public func countAll(includeDisabled!: Bool = true): Int64 {
+        var sql = "SELECT COUNT(*) FROM department"
+        if (!includeDisabled) {
+            sql = sql + " WHERE enabled = 1"
+        }
+        let rs = db.query(sql, Array<DbValue>())
+        if (rs.rowCount() == 0) {
+            return 0
+        }
+        return rs.getInt(0, 0)
     }
 
     public func findById(id: Int64): ?Department {
@@ -360,7 +405,8 @@ public class DoctorRepo {
         this.db = db
     }
 
-    public func listAll(departmentId: Int64, includeDisabled!: Bool = true): Array<Doctor> {
+    public func listAll(departmentId: Int64, includeDisabled!: Bool = true,
+                        limit!: Int64 = 0, offset!: Int64 = 0): Array<Doctor> {
         var sql = "SELECT id, name, department_id, title, specialty, enabled, created_at FROM doctor"
         /*
          * ⚠ 参数用 `ArrayList<DbValue>` 而不是 `Array<DbValue>()`：
@@ -382,6 +428,20 @@ public class DoctorRepo {
             }
         }
         sql = sql + " ORDER BY id ASC"
+        /*
+         * ★ 2026-10-14（第三方复查 B9）分页，口径与 `DepartmentRepo.listAll` 一致：
+         *   `limit <= 0` = 不分页；`offset` 只在分页时拼（单独 OFFSET 语法非法）、
+         *   负数夹到 0。见那里的长注释。
+         */
+        if (limit > 0) {
+            var off = offset
+            if (off < 0) {
+                off = 0
+            }
+            sql = sql + " LIMIT ? OFFSET ?"
+            args.add(DbInt(limit))
+            args.add(DbInt(off))
+        }
         let rs = db.query(sql, args.toArray())
         let out = ArrayList<Doctor>()
         var i: Int64 = 0
@@ -398,6 +458,31 @@ public class DoctorRepo {
             i = i + 1
         }
         return out.toArray()
+    }
+
+    /*
+     * ★ 2026-10-14（B9）：与 `listAll` 同一套过滤（`department_id` + `enabled`）下的总数。
+     *   ⚠ 两处条件必须逐字对应，否则会出现"total 与实际可翻页数不符"的分页 bug。
+     */
+    public func countAll(departmentId: Int64, includeDisabled!: Bool = true): Int64 {
+        var sql = "SELECT COUNT(*) FROM doctor"
+        let args = ArrayList<DbValue>()
+        if (departmentId > 0) {
+            sql = sql + " WHERE department_id = ?"
+            args.add(DbInt(departmentId))
+        }
+        if (!includeDisabled) {
+            if (departmentId > 0) {
+                sql = sql + " AND enabled = 1"
+            } else {
+                sql = sql + " WHERE enabled = 1"
+            }
+        }
+        let rs = db.query(sql, args.toArray())
+        if (rs.rowCount() == 0) {
+            return 0
+        }
+        return rs.getInt(0, 0)
     }
 
     public func findById(id: Int64): ?Doctor {

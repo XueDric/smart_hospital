@@ -1001,7 +1001,10 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 > 这三组是为**服务端托管的后台管理台**（`/admin/`，见 [ADMIN-WEB.md](ADMIN-WEB.md)）加的。
 > **患者端与医生端不用关心这一节**，列在这里是为了让"接口总表"保持完整、不漏缺口。
-> 全部端点：`principalOf` + `requireCan(p.role, Action.ManageSchedule)` ⇒ **仅 admin**。
+> 全部端点：`principalOf` + `requireCan(...)` ⇒ **仅 admin**。具体动作名：
+> AI 全套（模型/配置/Prompt/工具）用 **`Action.ManageAi`**、账号管理（`/admin/users`）用
+> **`Action.ManageUser`**、排班维护仍用 `Action.ManageSchedule`（2026-10-14 评审 B8 之前，
+> 这三者都复用 `ManageSchedule`；现在 403 的 message 里会直接打印要求的动作名）。
 
 **① AI 模型配置（`ai_model` 表：一个模型一行）**
 
@@ -1065,8 +1068,8 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | `GET /api/v1/admin/ai/settings`、`PUT/DELETE /api/v1/admin/ai/settings/:key` | AI 配置中心；**密钥绝不回显**（只回"是否已设置 + 引用类型"） | `http_app.cj:1029-1136` |
 | `GET /api/v1/admin/ai/prompts`、`PUT/DELETE /api/v1/admin/ai/prompts/:name` | Prompt 模板 CRUD（正文原样回显，它不是机密） | `http_app.cj:1066-1098` |
 | `GET /api/v1/admin/ai/tools`、`PUT /api/v1/admin/ai/tools/:name` | 工具开关；`enabled` **只接受 JSON 布尔** | `http_app.cj:1101-1126` |
-| `GET/POST /api/v1/admin/departments`、`GET/PUT/DELETE /…/:id` | 科室 CRUD（`manage_base_data`） | `http_base.cj:172-256` |
-| `GET/POST /api/v1/admin/doctors`、`GET/PUT/DELETE /…/:id` | 医生 CRUD | `http_base.cj:260-333` |
+| `GET/POST /api/v1/admin/departments`、`GET/PUT/DELETE /…/:id` | 科室 CRUD（`manage_base_data`）；**列表支持 `limit`/`offset`，响应含 `total`/`limit`/`offset`**（`limit` 缺省/非法/`>200` ⇒ 200） | `http_base.cj:172-256` |
+| `GET/POST /api/v1/admin/doctors`、`GET/PUT/DELETE /…/:id` | 医生 CRUD；列表同上（`total` 与 `department_id`+`include_disabled` **同一套过滤**）；公共 `/api/v1/departments`、`/api/v1/doctors` **刻意不分页** | `http_base.cj:260-333` |
 | `GET/POST /api/v1/admin/kb/docs`、`GET/PUT/DELETE /…/:id`、`GET /api/v1/admin/kb/stats` | 知识库 CRUD | `http_kb.cj:146-250` |
 | `GET/POST /api/v1/admin/notices`、`GET/PUT/DELETE /api/v1/admin/notices/:id` | 公告 CRUD（`manage_notice`）；`?include_disabled=` 可见停用/预排期；**PUT 不传 `published_at` 则保持原发布时间** | `http_notice.cj:167-243` |
 | `GET /api/v1/admin/dashboard` | 运营看板，**只出计数、绝不含患者 id/姓名/电话** | `http_p4.cj:466`、`dashboard.cj:240-245` |

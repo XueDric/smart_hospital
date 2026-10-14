@@ -172,7 +172,7 @@ ai_call.cj：请求体 model / max_tokens / messages / **temperature**
 | --- | --- |
 | `tests\ai-model-check.ps1`（**45 项**） | 模型配置全链路：鉴权（无令牌 401 / 患者 403）、播种的两条默认行与 `request_url` 拼接、密钥不回显、校验闸门（明文 http / 温度越界 / 空名 / 未知类型 / 非法 `key_ref` / 重名）、PATCH 语义、`is_default` 唯一、连通性测试恒 200 且不受 `ai.enabled` 影响、缓存失效**真的**读到库里的新值、`settings` 闸门（并断言库里没留下那行）、删除与夹具自清 |
 | `tests\admin-web-smoke.mjs` | 无头 Edge + CDP：真实 boot 流程 + **11 个页面逐个渲染** + **写路径**（公告新建/下架/重新发布/删除、知识库 PATCH/空正文 400/重切块、必填校验、`DELETE ai/settings/:key` 收窄、`PUT` 不存在模型 404、未注册路径 404 信封、未带令牌 401、登出回登录页）；模态框能开能关；收集 `console.error` / 未捕获异常 / `>=400` 响应，逐页截图。**判定全部计入退出码**：登录遮罩未收起 / 侧栏项数少于页面清单 / `whoami` 为空 / 页脚"读取失败" / 某页正文过短 / 某页有错误框 / 侧栏无高亮——任一为真即 FAIL |
-| `tests\base-check.ps1` | 基础数据域 + 本轮新增的排班可改（不变量 400 / 版本冲突 409 / 停诊 PATCH / 404 / 空改动 400） |
+| `tests\base-check.ps1` | 基础数据域 + 排班可改（不变量 400 / 版本冲突 409 / 停诊 PATCH / 404 / 空改动 400）+ **B8 权限动作**（AI 配置 403 且 message 是 `manage_ai`、`/admin/users` 是 `manage_user`、排班仍是 `manage_schedule` —— 证明动作名真的换了，而不是"权限被整体收紧"）+ **B9 分页**（`limit`/`offset` 真翻页、`total` 是**真总数**、`limit` 0/非数字/9999 ⇒ 200、`offset` 负数 ⇒ 0、`total` 跟着 `include_disabled` 与 `department_id` 过滤、公共选择器端点**没有** `total`） |
 | `tests\auth-check.ps1` | 令牌域 + 本轮新增的账号列表模式（分页 / 筛选 / 白名单外当不筛 / 不吐 `pw_hash`） |
 | `accept`（AC-16 / AC-17） | 服务端侧的确定性证明：播种幂等、`defaultOf` 与 `request_url`、运行时覆盖与温度、`key_ref` 回落、缓存与 `invalidate`、`listUsers` 不读口令材料、`updateSchedule` 的原子不变量与乐观锁 |
 
@@ -198,13 +198,17 @@ ai_call.cj：请求体 model / max_tokens / messages / **temperature**
 3. **`ai.ca_bundle_path` 仍不支持**：stdx 1.1.3.1 的 `TlsClientConfig` 只有 mTLS、没有信任锚入口，
    写入会被 400 拒绝（写明"不会生效，故拒绝写入"）。
 4. 管理台**不做**多用户/角色区分：能登录管理台的就是 `admin`（与 `/api/v1/admin/*` 的权限口径一致）。
-5. **权限动作复用（评审 B8，登记不修）**：AI 全套端点、`/admin/users`、`/auth/sessions` 复用
-   `Action.ManageSchedule`（刻意如此：同一个页面不能有两个权限答案）。这条依赖
-   **「`ManageSchedule` ≡ admin-only」这一当前事实** —— 一旦排班权限放开给护士/医生，
-   AI 配置与用户管理会**连带失守**。后续若要放开排班，必须先补 `Action.ManageAi` / `Action.ManageUser`。
-6. **`/admin/departments`、`/admin/doctors` 列表无分页（评审 B9，登记不修）**：
-   只有 `include_disabled` / `department_id`，没有 `limit`/`offset` ⇒ 前端表格无上界。
-   当前是**规模假设**（科室/医生 ≤200 行量级），超过就该加分页参数，而不是继续加内存。
+5. **权限动作复用（评审 B8，2026-10-14 已修）**：AI 全套端点原先复用 `Action.ManageSchedule`，
+   现改为 **`Action.ManageAi`**；`/admin/users` 改为 **`Action.ManageUser`**（两者都仍是 admin-only，
+   所以行为不变，变的是**语义**：403 的 message 里会打印要求的动作名，可直接看到是哪一个）。
+   **遗留边界**：`http_p4.cj:421` 的"复诊重开"仍用 `Action.ManageSchedule`（属排班域动作，刻意保留）；
+   `/auth/sessions/*`（查看/踢设备）**不做**动作检查 —— 它们只作用于调用者自己的 `userId`，是自服务。
+6. **列表分页（评审 B9，2026-10-14 已修）**：`/admin/departments`、`/admin/doctors` 支持
+   `limit`/`offset`，响应新增 `total`（同 `include_disabled`/`department_id` 过滤下的**真总数**）、
+   `limit`、`offset`；`limit` 缺省/非数字/<1/>200 ⇒ **200**，`offset` 非法 ⇒ 0。
+   **遗留边界**：① 公共 `/api/v1/departments`、`/api/v1/doctors` **刻意不分页**（截断的下拉框对患者
+   不可见；要控规模请用 `enabled=0`）；② 管理台前端**尚未接分页 UI**，当前按默认 200 行拉取
+   —— 超过 200 行时表格会少显示，这一点由 `total` 可观测（后续加分页控件即可）。
 
 ---
 

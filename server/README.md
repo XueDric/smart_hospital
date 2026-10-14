@@ -134,8 +134,8 @@ cd server     # ⚠ cwd 必须是 server/，见下
 | GET | `/api/v1/schedules?department_id=&work_date=&limit=` | 三端可读；**新增** `department_name` / `doctor_name` / `doctor_title` / `version` |
 | GET | `/api/v1/appointments?include_cancelled=&limit=` | 仅患者；**新增** 科室/医生名称（原先只有 id） |
 | GET | `/api/v1/medical-records?limit=` | 仅患者（自己的）；**新增** `department_id` / `visit_date` / `period` + 科室/医生名称 |
-| GET | `/api/v1/departments?enabled_only=` | 三端可读的**科室字典**（患者端不必再手输 `810003`） |
-| GET | `/api/v1/doctors?department_id=&enabled_only=` | 三端可读的**医生字典**（带 `department_name`） |
+| GET | `/api/v1/departments?enabled_only=` | 三端可读的**科室字典**（患者端不必再手输 `810003`）。⚠ **刻意不分页** —— 截断的下拉框对患者不可见；要控规模请用 `enabled=0`（管理端 `/api/v1/admin/departments` 才有 `limit`/`offset`/`total`） |
+| GET | `/api/v1/doctors?department_id=&enabled_only=` | 三端可读的**医生字典**（带 `department_name`）；同上，**刻意不分页** |
 | GET | `/api/v1/notices` | 三端可读的**公告**（仅 `enabled=1` 且 `published_at <= now`） |
 | GET/POST | `/api/v1/admin/notices` | 仅管理员（`?include_disabled=` 可见停用/预排期） |
 | GET/PUT/DELETE | `/api/v1/admin/notices/:id` | 仅管理员（删除是硬删；要留痕就 `PUT enabled=false`） |
@@ -258,7 +258,7 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 | `src/http_p4.cj` | **P4 接口层**：11 个端点（接诊队列 / 病历 / 看板）；路由注册仍集中在 http_app.cj |
 | `src/acceptance_p4.cj` | AC-P4-1…4：病历锁定不可改 / 状态机 / 看板隐私 / 统计不落敏感文本 |
 | `src/domain_base.cj` | **基础数据域（科室/医生）仓储**：CRUD + 唯一键冲突分类 + **引用保护**（有引用不删）+ **软删**（force） |
-| `src/http_base.cj` | **基础数据域接口**（12 个端点）：科室/医生的管理端 CRUD（仅 `ManageBaseData`，管理员）+ **患者可读字典** `GET /api/v1/departments`、`GET /api/v1/doctors` |
+| `src/http_base.cj` | **基础数据域接口**（12 个端点）：科室/医生的管理端 CRUD（仅 `ManageBaseData`，管理员；**列表支持 `limit`/`offset` 且回 `total`**，见文件头"分页"一节）+ **患者可读字典** `GET /api/v1/departments`、`GET /api/v1/doctors`（**刻意不分页**） |
 | `src/domain_notice.cj` | **公告域仓储**（2026-10-12）：院内公告/健康提示的 CRUD；列顺序单一定义 + 列数守卫；⚠ 公告**不进检索、不出站**（与 `kb_doc` 的边界写在文件头） |
 | `src/http_notice.cj` | **公告域接口**（6 个端点）：`GET /api/v1/notices`（三端可读）+ 管理端 CRUD（仅 `ManageNotice`）；`published_at` 支持预排期 |
 | `src/ai_call.cj` | **真模型出站**（P5 第一步）：TLS 出站 + 密钥**引用**解析 + **脱敏** + 失败不抛异常；2026-10-14 起请求体带 `temperature`，并新增**连通性探测**（`aiProbeChat` / `aiProbeEmbedding`） |

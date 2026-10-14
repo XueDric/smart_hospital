@@ -140,6 +140,32 @@ public enum Action {
     | ViewBaseData            // 读科室/医生目录（三端都能看）
     | ViewNotice              // 读公告（三端都能看）
     | ManageNotice            // 维护公告（仅管理员）
+    /*
+     * ★ 2026-10-14（第三方复查 B8 的**根治**）新增两条。
+     *
+     * 背景：AI 全套端点（14 处）与 `/admin/users`（3 处）此前都写
+     *   `requireCan(p.role, Action.ManageSchedule)` —— 当时**行为**是对的
+     *   （`ManageSchedule` 恰好 = admin-only），但那是**巧合**，
+     *   不是矩阵表达出来的事实：它把"能不能改排班"和"能不能改 AI 密钥引用/
+     *   建管理员账号"绑成了同一个答案。
+     *
+     * ⚠ 为什么不能就这么留着（"现在反正都是管理员"）：
+     *   一旦排班权限按业务需要放开（例如"护士长可调号源"是极常见的诉求），
+     *   **AI 配置与账号管理会跟着一起失守** —— 而且失守方式是"没有报错、
+     *   没有测试变红"的静默越权：改的是 `can()` 里一行，漏的是另外 17 个端点。
+     *   这正是本仓纪律（权限动作按**语义**分，不按"当前谁能做"分）要防的事。
+     *
+     * ⚠ 为什么不复用 `ManageBaseData`（科室/医生档案）：
+     *   那是**主数据**（相对稳定的档案），AI 是**运行时配置**（含 endpoint、
+     *   密钥引用、模型参数），账号管理是**身份与凭据**。三者的变更审批口径
+     *   天然不同（改 AI 密钥引用要能审计、建管理员账号要更严），
+     *   合成一条就再也拆不开。
+     *
+     * 📌 本次只**新增动作、不改授权结果**：两条都是 admin-only，
+     *   所以对现有客户端**零行为变化**；变的是"以后能只动其中一个"。
+     */
+    | ManageAi                // 维护 AI 配置（设置/Prompt/工具/模型，含密钥引用）（仅管理员）
+    | ManageUser              // 维护账号与口令（建号/改口令/列号）（仅管理员）
 }
 
 public func actionName(a: Action): String {
@@ -159,6 +185,8 @@ public func actionName(a: Action): String {
         case ViewNotice => return "view_notice"
         case ManageNotice => return "manage_notice"
         case ViewDashboard => return "view_dashboard"
+        case ManageAi => return "manage_ai"
+        case ManageUser => return "manage_user"
     }
 }
 
@@ -183,6 +211,16 @@ public func actionName(a: Action): String {
  *   view_base_data              ✅     ✅     ✅   ← 读科室/医生目录（患者要它才能显示科室名）
  *   view_notice                 ✅     ✅     ✅   ← 读公告（面向所有人的院内通知）
  *   manage_notice               ❌     ❌     ✅   ← 维护公告
+ *
+ * 权限矩阵（2026-10-14 B8 根治新增两行 —— 原先这两类端点借用 manage_schedule）：
+ *
+ *   manage_ai                   ❌     ❌     ✅   ← AI 配置/模型/Prompt/工具/密钥引用
+ *   manage_user                 ❌     ❌     ✅   ← 账号与口令（建号/改口令/列号）
+ *
+ * ⚠ 这两行是"把巧合变成事实"：它们此前的授权结果与现在**完全一致**
+ *   （都是 admin-only），区别在于矩阵里现在**看得见**这两个动作 ——
+ *   将来放开 `manage_schedule`（例如给护士长调号源）不会再连带把
+ *   AI 密钥引用与账号管理一起放开。详见 `Action` 枚举处的长注释。
  *
  * ⚠ 三条刻意的选择，都值得说清：
  *   ① **管理员不能写病历** —— 病历的"作者"必须是临床人员。若管理员可写，
@@ -275,6 +313,25 @@ public func can(role: Role, action: Action): Bool {
                 case _ => return false
             }
         case ViewDashboard =>
+            match (role) {
+                case Admin => return true
+                case _ => return false
+            }
+        /*
+         * ★ 2026-10-14（B8 根治）新增两条 —— 都是 admin-only。
+         *
+         * ⚠ 这里**故意**写成与其他"仅管理员"动作一样的形状（而不是写一句
+         *   `case ManageAi | ManageUser => ...`）：仓颉的 `match` 支持多模式，
+         *   但这两条将来**极可能分道扬镳**（例如"只让信息科改 AI endpoint"
+         *   或"只让医务科建账号"），并列写在一起会让下次拆分时少看见一处。
+         *   逐条列出的成本是几行，漏改的代价是静默越权。
+         */
+        case ManageAi =>
+            match (role) {
+                case Admin => return true
+                case _ => return false
+            }
+        case ManageUser =>
             match (role) {
                 case Admin => return true
                 case _ => return false
@@ -1204,7 +1261,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      */
     r.post("/api/v1/admin/users", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageUser)
         let loginName = requireStr(ctx, "login_name")
         let password = requireStr(ctx, "password")
         let roleStr = requireStr(ctx, "role")
@@ -1275,7 +1332,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      */
     r.get("/api/v1/admin/users", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageUser)
         let loginName = ctx.queryParamOr("login_name", "")
         if (loginName.size > 0) {
             match (auth.findUser(loginName)) {
@@ -1346,7 +1403,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      */
     r.post("/api/v1/admin/users/:id/password", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageUser)
         let uid = parseInt64Or(ctx.paramOr("id", "0"), 0)
         if (uid <= 0) {
             throw apiErrorMsg("VALIDATION_FAILED", "user_id 必须是正整数")
@@ -1378,14 +1435,14 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      *        连变量名/路径都不回（路径会泄露部署结构）。
      *      即使是管理员也不回明文 —— 与"账号接口绝不回 pw_hash"同一条纪律。
      *
-     *   ③ **写操作仅管理员**（`Action.ManageSchedule`），读也是 ——
+     *   ③ **写操作仅管理员**（`Action.ManageAi`；读也是）——
      *      AI 配置包含 endpoint 与部署路径信息，不该对患者/医生开放。
      */
 
     /* ---------- GET /api/v1/admin/ai/settings —— 读配置（仅管理员，秘密项脱敏）---------- */
     r.get("/api/v1/admin/ai/settings", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageAi)
         sendOk(ctx, aiSettingsJson(aiSettings, hNowEpoch()))
     })
 
@@ -1396,7 +1453,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      */
     r.put("/api/v1/admin/ai/settings/:key", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageAi)
         let key = ctx.paramOr("key", "")
         /*
          * ★★ 命名空间闸门：本端点**只写 `ai.*` 静态登记项**（2026-10-14 修的真实漏洞）。
@@ -1445,14 +1502,14 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      */
     r.get("/api/v1/admin/ai/prompts", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageAi)
         sendOk(ctx, aiPromptsJson(prompts, hNowEpoch()))
     })
 
     /* ---------- PUT /api/v1/admin/ai/prompts/:name —— 改模板（仅管理员）---------- */
     r.put("/api/v1/admin/ai/prompts/:name", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageAi)
         let name = ctx.paramOr("name", "")
         let text = match (bodyStr(ctx, "body")) {
             case Some(v) => v
@@ -1468,7 +1525,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
     /* ---------- DELETE /api/v1/admin/ai/prompts/:name —— 恢复默认模板（仅管理员）---------- */
     r.delete("/api/v1/admin/ai/prompts/:name", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageAi)
         let name = ctx.paramOr("name", "")
         if (!prompts.reset(name, hNowEpoch())) {
             throw apiErrorMsg("VALIDATION_FAILED", "未知的 Prompt：${name}")
@@ -1479,7 +1536,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
     /* ---------- GET /api/v1/admin/ai/tools —— AI 工具开关（仅管理员）---------- */
     r.get("/api/v1/admin/ai/tools", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageAi)
         sendOk(ctx, aiToolsJson(aiSettings, hNowEpoch()))
     })
 
@@ -1490,7 +1547,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      */
     r.put("/api/v1/admin/ai/tools/:name", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageAi)
         let name = ctx.paramOr("name", "")
         let on = match (bodyBool(ctx, "enabled")) {
             case Some(b) => b
@@ -1505,7 +1562,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
     /* ---------- DELETE /api/v1/admin/ai/settings/:key —— 删一项（回到默认值）---------- */
     r.delete("/api/v1/admin/ai/settings/:key", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageAi)
         let key = ctx.paramOr("key", "")
         /*
          * ★★ 2026-10-14（第三方复查 B1 修）：**命名空间收窄必须与 PUT 一致**。
@@ -1540,14 +1597,17 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      *   运行期装配口径：`AiSettingsRepo.options()` 取"默认对话模型"那一行**整体覆盖**
      *   KV（理由见那里的注释：逐字段合并会拼出一个"两个来源的模型"，没人知道请求发给了谁）。
      *
-     * ⚠ 权限沿用 `Action.ManageSchedule`（与既有 8 条 AI 端点同一个动作）——
+     * ⚠ 权限用 `Action.ManageAi`（与既有 14 条 AI 端点同一个动作）——
      *   同一个页面上出现两个权限动作，会让"谁能改 AI"有两个答案。
+     *   📌 2026-10-14（B8 根治）之前这里借的是 `Action.ManageSchedule`：
+     *     行为同样是 admin-only，但那让"改 AI"与"改排班"共用一个答案，
+     *     详见 `Action` 枚举处的新增注释。
      */
 
     /* ---------- GET /api/v1/admin/ai/models —— 列表（仅管理员）---------- */
     r.get("/api/v1/admin/ai/models", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageAi)
         /*
          * ⚠ `include_disabled` 与科室/医生/公告**同口径**：默认 "true"（都返回），
          *   只有字面 "false" 才过滤停用。停用的配置本身就是管理台要看的对象 ——
@@ -1578,7 +1638,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
     /* ---------- POST /api/v1/admin/ai/models —— 新增一条（仅管理员）---------- */
     r.post("/api/v1/admin/ai/models", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageAi)
         let m = AiModel()
         m.name = bodyStrOr(ctx, "name", "")
         m.kind = bodyStrOr(ctx, "kind", "")
@@ -1642,7 +1702,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      */
     r.post("/api/v1/admin/ai/models/invalidate", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageAi)
         let now = hNowEpoch()
         /*
          * 两张表各自的缓存在**两个仓储**里：
@@ -1670,7 +1730,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      */
     r.put("/api/v1/admin/ai/models/:id", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageAi)
         let id = parseInt64Or(ctx.paramOr("id", ""), 0)
         if (id <= 0) {
             throw apiErrorMsg("VALIDATION_FAILED", "模型配置 id 必须是正整数")
@@ -1710,7 +1770,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      */
     r.delete("/api/v1/admin/ai/models/:id", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageAi)
         let id = parseInt64Or(ctx.paramOr("id", ""), 0)
         if (id <= 0) {
             throw apiErrorMsg("VALIDATION_FAILED", "模型配置 id 必须是正整数")
@@ -1736,7 +1796,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      */
     r.post("/api/v1/admin/ai/models/:id/test", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageAi)
         let id = parseInt64Or(ctx.paramOr("id", ""), 0)
         if (id <= 0) {
             throw apiErrorMsg("VALIDATION_FAILED", "模型配置 id 必须是正整数")

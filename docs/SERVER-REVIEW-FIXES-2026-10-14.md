@@ -53,8 +53,8 @@
 | **B5** | `aiModelTruncate` 改为按 **Rune** 计数与收集（原 `s.toArray()` 是字节，会切碎中文），超出部分以 `…` 收尾 | 编译 + `ai-model-check.ps1` |
 | **B6** | `create`/`update` 的 `execInsert`/`exec` 包 try/catch：异常时**只有** `nameTaken(...)` 为真才置 `r.duplicate = true`（映射 409），否则 `throw e`（不吞真有故障） | `ai-model-check.ps1` 重复名用例 |
 | **B7** | `server/src/auth_repo.cj` 的 `listUsers`/`countUsers`：`WHERE role <> '' AND (? = '' OR role = ?) AND (? = '' OR status = ?)`（把"数据不变量"变成"代码不变量"，仍全参数化） | `base-check`/`auth-check` 全绿 |
-| **B8** | 判定为**可接受的边界**：`Action.ManageSchedule` 复用使 admin-only 语义漂移。登记到 `docs/ADMIN-WEB.md` §九「已知边界」第 5 条，建议后续补 `Action.ManageAi`/`Action.ManageUser` | 文档登记（不改代码） |
-| **B9** | 判定为**规模假设**：`/admin/departments`、`/admin/doctors` 无分页。登记到 `docs/ADMIN-WEB.md` §九 第 6 条（假设 ≤200 行） | 文档登记（不改代码） |
+| **B8** | **已根治（第二轮，2026-10-14）**：新增两个权限动作 `Action.ManageAi` / `Action.ManageUser`（`server/src/http_app.cj` 的 `Action` 枚举 + `can()` + `actionName()`），AI 全套 14 处 `requireCan` 改 `ManageAi`、`/admin/users` 3 处改 `ManageUser`；排班维护**仍**用 `ManageSchedule`（属排班域，刻意保留）。注意 `/auth/sessions/*` 本就**不做**动作检查（只作用于自己 `userId`，自服务）—— 报告把这三类并列时这一条其实不成立 | `base-check [1.5]` 4 项：患者读 AI 配置 → 403 且 message 含 **`manage_ai`**；读 `/admin/users` → 403 且含 **`manage_user`**；写排班 → 403 且仍含 `manage_schedule`（对照，证明不是权限被整体收紧）。全绿 |
+| **B9** | **已修（第二轮，2026-10-14）**：`GET /admin/departments`、`GET /admin/doctors` 支持 `limit`/`offset`，响应新增 `total`（与 `listAll` **同一套过滤**：`include_disabled` / `department_id`）、`limit`、`offset`；`limit` 缺省/非数字/`<1`/`>200` ⇒ 200（`BASE_LIST_DEFAULT_LIMIT`/`_MAX_LIMIT` 都在 `http_base.cj:329-330`）；`offset` 非法 ⇒ 0。公共 `/api/v1/departments`、`/api/v1/doctors` **刻意不分页**（截断下拉框对患者不可见），已写进 `http_base.cj` 文件头"分页"一节 | `base-check [8]` 12 项：真翻页 / `total` == 库计数 / `limit` 0·abc·9999 ⇒ 200 / `offset=-3` ⇒ 0 / `total` 随 `include_disabled`（5 vs 6）与 `department_id`（3 < 全院 6）/ 公共端点无 `total`。全绿（`通过 74 项`，EXIT=0） |
 
 ## 四、测试体系（C1-C4）
 
@@ -126,9 +126,13 @@
 
 ## 八、遗留（不影响本报告关闭，供后续排期）
 
-1. **B8 的根治**：新增 `Action.ManageAi` / `Action.ManageUser`，让权限矩阵不再靠 `ManageSchedule` 复用（当前 admin-only 语义正确，但语义漂移）。
-2. **B9 的分页**：`/admin/departments`、`/admin/doctors` 在行数超过约 200 时需分页（当前假设已文档化）。
+1. ~~**B8 的根治**~~ —— **已在第二轮关闭**（见 §三 B8：新增 `Action.ManageAi`/`Action.ManageUser`，
+   权限矩阵不再靠 `ManageSchedule` 复用）。**残余边界**：`http_p4.cj:421` 的"复诊重开"
+   仍用 `ManageSchedule`（属排班域动作）；`/auth/sessions/*` 不做动作检查（自服务）。
+2. ~~**B9 的分页**~~ —— **已在第二轮关闭**（见 §三 B9）。**残余边界**：管理台前端**尚未接分页 UI**，
+   当前按默认 200 行拉取 —— 超过 200 行时表格会少显示，这一点由响应里的 `total` 可观测。
 3. **子代理交付的运维脚本**中，`devdb.ps1` 的 start/stop/init 全流程与 `new-tls-cert.ps1` 的端到端签发未实跑（只做了函数级/打桩验证），建议在干净机器上补一次演练。
-4. **`docs/ADMIN-WEB.md` §九** 的两条边界（权限动作复用、无分页）需要在后续版本关闭时同步删除。
+4. ~~**`docs/ADMIN-WEB.md` §九** 的两条边界（权限动作复用、无分页）需要在后续版本关闭时同步删除。~~
+   —— 已随第二轮改写为"已修 + 残余边界"（§九 第 5、6 条）。
 
 > 原第 3 条（`previsit-check.ps1:384-385` 的 `2>$null`）已在本次收口时一并修掉，见 §C3 末条。

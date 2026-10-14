@@ -141,7 +141,7 @@ INSERT INTO patient (id, phone, name, gender, birth_date, created_at)
 #   ① **前缀只在这里定义一次**（下面的 `$KbClean` 拼出来），不再散落字面量；
 #   ② ★ **本脚本结尾自检残留为 0** —— 照 `create-db-check.ps1` 的做法。
 #      这样同类问题会在**源头**暴露，而不是伪装成产品缺陷去坑下一个脚本。
-$CleanPrefixes = @('BASET', 'BASEDEL', 'RESP')
+$CleanPrefixes = @('BASET', 'BASEDEL', 'RESP', 'BASEPG')
 $LikeClause = ($CleanPrefixes | ForEach-Object { "code LIKE '$_%'" }) -join ' OR '
 SqlFile @"
 DELETE FROM auth_user WHERE login_name = 'basepatient';
@@ -204,6 +204,33 @@ $r = Req 'p3' 'GET' '/api/v1/admin/departments' @() $null
 Check "★ 无令牌读科室 → 401" ($r.Http -eq 401) ("HTTP $($r.Http)")
 $r = Req 'p4' 'GET' '/api/v1/admin/departments' @("Authorization: Bearer $admTok") $null
 Check "管理员读科室列表 → 200" ($r.Http -eq 200) ("HTTP $($r.Http)")
+
+# ── [1.5] ★★ B8（2026-10-14）：权限动作**不再复用 ManageSchedule**
+#   背景：AI 全套端点、`/admin/users` 原先都复用 `Action.ManageSchedule`。
+#     当时是**有意**的（同一页面不能有两个权限答案），但语义已经漂移：
+#     "能改排班" == "能改 AI 提示词" == "能建管理员账号" ⇒ 一旦排班权限放开给
+#     护士/医生，AI 配置与用户管理会**连带失守**。
+#   ⇒ 本次给它们各自的动作名：`manage_ai` / `manage_user`。
+#   ★ 断言方式：403 的 message 里**打印了要求的动作名**（`http_app.cj:346`
+#     `"角色 X 无权执行 ${actionName(action)}"`）⇒ "动作名到底换没换"是**可观测**的。
+#     只断言 403 是不够的：复用 ManageSchedule 时同样会 403。
+$r = Req 'b8ai' 'GET' '/api/v1/admin/ai/settings' @("Authorization: Bearer $patTok") $null
+Check "★★ B8：患者读 AI 配置 → 403（HTTP $($r.Http)）" ($r.Http -eq 403) ("HTTP $($r.Http)")
+Check "★★ B8：且 403 里要求的动作是 manage_ai（**不是** manage_schedule）" `
+      (($r.Body | ConvertFrom-Json).error.message -match 'manage_ai') `
+      (($r.Body | ConvertFrom-Json).error.message)
+
+$r = Req 'b8usr' 'GET' '/api/v1/admin/users' @("Authorization: Bearer $patTok") $null
+Check "★★ B8：患者读用户列表 → 403 + manage_user" `
+      ($r.Http -eq 403 -and ($r.Body | ConvertFrom-Json).error.message -match 'manage_user') `
+      ("HTTP $($r.Http) msg=$(($r.Body | ConvertFrom-Json).error.message)")
+
+# 对照：排班**仍然**是 manage_schedule —— 证明上面两个 403 不是因为权限被整体收紧
+$r = Req 'b8sch' 'POST' '/api/v1/admin/schedules' @("Authorization: Bearer $patTok") `
+     '{"doctor_id":1,"department_id":1,"schedule_date":"2026-12-31","total_num":5}'
+Check "★★ B8 对照：排班写操作仍是 manage_schedule（没被顺手改坏/挪走）" `
+      ($r.Http -eq 403 -and ($r.Body | ConvertFrom-Json).error.message -match 'manage_schedule') `
+      ("HTTP $($r.Http) msg=$(($r.Body | ConvertFrom-Json).error.message)")
 
 # ── [2] 科室 CRUD
 Write-Host ""
@@ -442,6 +469,104 @@ Check "★ ⑦ 放号数与启停都不给 ⇒ 400（拒绝空改动，别让它
 
 # 闭合第 5 节的守卫（见上面 `if ($respId -le 0) { ... } else {`）
 }
+
+# ── [8] ★★ B9（2026-10-14）：科室/医生列表**分页**
+#   前情：`/admin/departments`、`/admin/doctors` 原先只返回**全量**（没有
+#     limit/offset，响应里也没有 total）—— 报告把这条登记为"规模假设"，
+#     并指出它与 A1 是同一类问题：**管理台看不出自己被截断了**。
+#   本次：`limit`（缺省/非法/越界 ⇒ 200）、`offset`、`total`（真总数）
+#     三件套补齐；而**公共选择器端点刻意不分页**（截断一个下拉框对患者
+#     是不可见的，不像表格能显示"共 N 条"）。
+Write-Host ""
+Write-Host "[8] ★★ 列表分页（limit/offset/total）+ 公共端点刻意不分页"
+
+# 夹具：3 个科室（前缀 BASEPG，已并入 $CleanPrefixes）+ 每个科室 1 名医生
+SqlFile @"
+DELETE FROM doctor WHERE department_id IN (SELECT id FROM department WHERE code LIKE 'BASEPG%');
+DELETE FROM department WHERE code LIKE 'BASEPG%';
+"@ "分页夹具清理"
+$pgIds = @()
+foreach ($k in 1..3) {
+    $null = Req "pgmk$k" 'POST' '/api/v1/admin/departments' @("Authorization: Bearer $admTok") `
+            ('{"name":"Base分页科' + $k + '","code":"BASEPG' + $k + '","sort":' + (90 + $k) + '}')
+    $pgIds += [int](Scalar "SELECT id FROM department WHERE code = 'BASEPG$k'")
+}
+Check "① 备好 3 个科室（id=$($pgIds -join ',')）" ((@($pgIds | Where-Object { $_ -gt 0 })).Count -eq 3)
+foreach ($k in 1..3) {
+    $null = Req "pgdoc$k" 'POST' '/api/v1/admin/doctors' @("Authorization: Bearer $admTok") `
+            ('{"name":"Base分页医' + $k + '","department_id":' + $pgIds[0] + ',"title":"医师"}')
+}
+
+$allDept = [int](Scalar "SELECT COUNT(*) FROM department")
+$r = Req 'pg1' 'GET' '/api/v1/admin/departments?limit=1&offset=0' @("Authorization: Bearer $admTok") $null
+$j = $r.Body | ConvertFrom-Json
+Check "★★ ② limit=1 ⇒ 只回 1 行、count=1、limit=1、offset=0（HTTP $($r.Http)）" `
+      ($r.Http -eq 200 -and $j.data.count -eq 1 -and $j.data.limit -eq 1 -and $j.data.offset -eq 0) `
+      ("count=$($j.data.count) limit=$($j.data.limit) offset=$($j.data.offset)")
+Check "★★ ③ 且 total 是**真总数**（实得 $($j.data.total)，库里 $allDept 行）—— 页大小 ≠ 总数" `
+      ($j.data.total -eq $allDept) ("total=$($j.data.total) db=$allDept")
+$pgFirst = $j.data.items[0].id
+
+$r = Req 'pg2' 'GET' '/api/v1/admin/departments?limit=1&offset=1' @("Authorization: Bearer $admTok") $null
+$j2 = $r.Body | ConvertFrom-Json
+Check "★★ ④ offset=1 真的翻页（$pgFirst → $($j2.data.items[0].id)）" `
+      ($j2.data.count -eq 1 -and $j2.data.items[0].id -ne $pgFirst) `
+      ("id=$($j2.data.items[0].id) offset=$($j2.data.offset)")
+
+$r = Req 'pg3' 'GET' '/api/v1/admin/departments?limit=0' @("Authorization: Bearer $admTok") $null
+$j3 = $r.Body | ConvertFrom-Json
+Check "★ ⑤ limit=0 ⇒ 回默认 200（不是 0 行、也不是 400：0 是"合法但没意义"，按默认处理）" `
+      ($r.Http -eq 200 -and $j3.data.limit -eq 200 -and $j3.data.count -gt 0) `
+      ("HTTP=$($r.Http) limit=$($j3.data.limit) count=$($j3.data.count)")
+
+$r = Req 'pg4' 'GET' '/api/v1/admin/departments?limit=abc&offset=-3' @("Authorization: Bearer $admTok") $null
+$j4 = $r.Body | ConvertFrom-Json
+Check "★ ⑥ limit=abc / offset=-3 ⇒ 回默认（200 / 0），不报错（沿用全仓 parseInt64Or 口径）" `
+      ($r.Http -eq 200 -and $j4.data.limit -eq 200 -and $j4.data.offset -eq 0) `
+      ("HTTP=$($r.Http) limit=$($j4.data.limit) offset=$($j4.data.offset)")
+
+$r = Req 'pg5' 'GET' '/api/v1/admin/departments?limit=9999' @("Authorization: Bearer $admTok") $null
+$j5 = $r.Body | ConvertFrom-Json
+Check "★ ⑦ limit=9999（越界）⇒ 回默认 200（挡住"一次拉光 100 万行"）" `
+      ($r.Http -eq 200 -and $j5.data.limit -eq 200) ("HTTP=$($r.Http) limit=$($j5.data.limit)")
+
+# ★★ total 必须跟着 include_disabled 走 —— 否则前端分页会在最后一页空转
+$enabledDept = [int](Scalar "SELECT COUNT(*) FROM department WHERE enabled = 1")
+$r = Req 'pg6' 'GET' '/api/v1/admin/departments?include_disabled=false&limit=1' @("Authorization: Bearer $admTok") $null
+$j6 = $r.Body | ConvertFrom-Json
+Check "★★ ⑧ total 跟着 include_disabled 过滤（enabled=1 共 $enabledDept 行，实得 $($j6.data.total)）" `
+      ($j6.data.total -eq $enabledDept) ("total=$($j6.data.total) db=$enabledDept")
+
+# 医生：department_id + 分页 必须**同时**生效（total 与 listAll 同一套过滤）
+$pgDep = $pgIds[0]
+$dn = [int](Scalar "SELECT COUNT(*) FROM doctor WHERE department_id = $pgDep")
+$allDoc = [int](Scalar "SELECT COUNT(*) FROM doctor")
+$r = Req 'pg7' 'GET' "/api/v1/admin/doctors?department_id=$pgDep&limit=2&offset=0" @("Authorization: Bearer $admTok") $null
+$j7 = $r.Body | ConvertFrom-Json
+Check "★★ ⑨ 医生：department_id + limit=2 ⇒ count=2（本部门共 $dn 名）、total=$($j7.data.total)" `
+      ($j7.data.count -eq 2 -and $j7.data.total -eq $dn -and $dn -eq 3) `
+      ("count=$($j7.data.count) total=$($j7.data.total) db=$dn")
+Check "★ ⑨b total 只数**本科室**（$($j7.data.total) < 全院 $allDoc）—— 过滤与分页同源" `
+      ($j7.data.total -lt $allDoc) ("total=$($j7.data.total) 全院=$allDoc")
+
+$r = Req 'pg7b' 'GET' "/api/v1/admin/doctors?department_id=$pgDep&limit=2&offset=2" @("Authorization: Bearer $admTok") $null
+$j7b = $r.Body | ConvertFrom-Json
+Check "★ ⑨c offset=2 ⇒ 第二页只剩 1 行（3 名 / limit=2）" `
+      ($j7b.data.count -eq 1 -and $j7b.data.total -eq 3 -and $j7b.data.offset -eq 2) `
+      ("count=$($j7b.data.count) total=$($j7b.data.total) offset=$($j7b.data.offset)")
+
+# 公共选择器端点：刻意**不分页** ⇒ 响应里没有 total/limit/offset
+$r = Req 'pg8' 'GET' '/api/v1/departments' @("Authorization: Bearer $patTok") $null
+$j8 = $r.Body | ConvertFrom-Json
+Check "★★ ⑩ 公共 /api/v1/departments 刻意不分页：**没有** total 字段（截断下拉框对患者不可见）" `
+      ($r.Http -eq 200 -and $null -eq $j8.data.total -and $null -eq $j8.data.limit) `
+      ("HTTP=$($r.Http) total=$($j8.data.total) limit=$($j8.data.limit)")
+
+$r = Req 'pg9' 'GET' "/api/v1/doctors?department_id=$pgDep" @("Authorization: Bearer $patTok") $null
+$j9 = $r.Body | ConvertFrom-Json
+Check "★ ⑪ 公共 /api/v1/doctors 同理（且按科室过滤仍有效，实得 $($j9.data.count) 位）" `
+      ($r.Http -eq 200 -and $null -eq $j9.data.total -and $j9.data.count -eq 3) `
+      ("HTTP=$($r.Http) count=$($j9.data.count) total=$($j9.data.total)")
 
 # 清理
 # ⚠ 用**同一份 $CleanPrefixes**（不再写字面量，也不再按 id 段 —— 成功建的 id 是

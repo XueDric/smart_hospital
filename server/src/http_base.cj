@@ -30,16 +30,41 @@ import std.time.*
  *
  * ## 端点一览（全部仅管理员：`Action.ManageBaseData`）
  *
- *   GET    /api/v1/admin/departments               科室列表
+ *   GET    /api/v1/admin/departments[?include_disabled=&limit=&offset=]  科室列表（分页）
  *   POST   /api/v1/admin/departments               建科室
  *   GET    /api/v1/admin/departments/:id           单个科室
  *   PUT    /api/v1/admin/departments/:id           改科室
  *   DELETE /api/v1/admin/departments/:id[?force=]  删（默认只删未被引用的）
- *   GET    /api/v1/admin/doctors[?department_id=]  医生列表
+ *   GET    /api/v1/admin/doctors[?department_id=&include_disabled=&limit=&offset=]  医生列表（分页）
  *   POST   /api/v1/admin/doctors                   建医生
  *   GET    /api/v1/admin/doctors/:id               单个医生
  *   PUT    /api/v1/admin/doctors/:id               改医生
  *   DELETE /api/v1/admin/doctors/:id[?force=]      删（同上）
+ *
+ * ## 分页（2026-10-14 第三方复查 B9 根治）
+ *
+ * 此前两个列表**没有任何上界**（`SELECT` 出多少返回多少）：前端表格的行数
+ * 由数据库现状决定，谁也没法保证它不会长到"一次请求把 20 万行医生拖出来"。
+ * 现在两条列表都认 `limit` / `offset`，响应里多了 `total` / `limit` / `offset`：
+ *
+ *   · `limit`   缺省 / 非法 / 越界 → **200**（`BASE_LIST_DEFAULT_LIMIT`），上限也是 200
+ *   · `offset`  缺省 / 非法 / 负数 → **0**
+ *   · `total`   同一过滤条件下的**总行数**（客户端据此显示"共 N 条"并翻页）
+ *   · `count`   本页条数（与其余列表接口同义，语义未变）
+ *
+ * ⚠ 三条刻意的取舍（都值得说清，否则后来者会以为"漏了参数校验"）：
+ *   ① **默认 200 而不是 50**（`/admin/users` 是 50）：科室/医生是**字典表**，
+ *      前端拿它渲染表格**也拿来填下拉框**（排班页选科室/医生、AI 页选医生）。
+ *      默认 50 会把下拉框**静默截断** —— 而"排班时找不到张医生"是最难定位的
+ *      那类故障（界面正常、就是没有这个人）。200 正好等于此前文档化的
+ *      "≤200 行量级"规模假设 ⇒ **现有客户端行为不变**，但从此有了明确上界。
+ *   ② **患者侧那两条读接口（`/departments`、`/doctors`）刻意不加分页**：
+ *      它们喂的是**选择器**而不是表格，截断的后果是"患者选不到某个科室"
+ *      （且界面上看不出是被截断的）。要限制它们的规模应走"停用科室"
+ *      （`enabled = 0` 会被这两条接口天然过滤掉），而不是悄悄少返回几行。
+ *   ③ **非法值不报错、回默认**：与"筛选值非法当没筛"同一条容错口径。
+ *      要"一次拿全"的调用方应当**翻页取**，而不是把 limit 调大 ——
+ *      上限存在的意义就是"不能一次把整张表拖出来"。
  *
  * ## 患者可读的字典（2026-10-12 新增，`Action.ViewBaseData`，**三端都能读**）
  *
@@ -293,6 +318,40 @@ public func nameIndexOf(dept: DepartmentRepo, doc: DoctorRepo): NameIndex {
 }
 
 /*
+ * 列表分页的默认值与上限（见文件头的"分页"一节）。
+ *
+ * ⚠ 两者**故意取同一个数**：本仓对"默认给一页、但不给无限"的口径是
+ *   "默认 = 上限"（`/admin/users` 是 50 = 上限？不，那里是默认 50、上限 200）。
+ *   这里合成一个常量的理由：科室/医生是字典表，**正常规模**与**可接受规模**
+ *   是同一个量级（几百行）；把默认压到 50 只会逼客户端每次都显式传 limit，
+ *   反而更容易写出"忘了传 ⇒ 少了一半数据"的代码。
+ */
+public let BASE_LIST_DEFAULT_LIMIT: Int64 = 200
+public let BASE_LIST_MAX_LIMIT: Int64 = 200
+
+/*
+ * ★ 2026-10-14（第三方复查 B9）：从 query 里取 (limit, offset)。
+ *
+ * 容错口径与 `/admin/users` 完全一致（非法值不报错，回默认）：
+ *   · `limit` 非数字 / < 1 / > 上限 ⇒ 回 `BASE_LIST_DEFAULT_LIMIT`
+ *   · `offset` 非数字 / < 0        ⇒ 0（负偏移在 SQL 里是错误，不能透传）
+ *
+ * 📌 返回 tuple 而不是往 ctx 里塞状态：这两个值只在**一个 handler 内**用一次，
+ *   穿参数比隐式共享更清楚（本仓 `civilFromDays` 也是这么返回的）。
+ */
+func basePageOf(ctx: Context): (Int64, Int64) {
+    var limit = parseInt64Or(ctx.queryParamOr("limit", "${BASE_LIST_DEFAULT_LIMIT}"), BASE_LIST_DEFAULT_LIMIT)
+    if (limit < 1 || limit > BASE_LIST_MAX_LIMIT) {
+        limit = BASE_LIST_DEFAULT_LIMIT
+    }
+    var offset = parseInt64Or(ctx.queryParamOr("offset", "0"), 0)
+    if (offset < 0) {
+        offset = 0
+    }
+    return (limit, offset)
+}
+
+/*
  * 注册基础数据域的路由。
  *
  * ⚠ 与 `registerP4Routes` 一样**在 http_app.cj 里被调用**，
@@ -305,13 +364,19 @@ public func registerBaseRoutes(r: Router, auth: AuthRepo, gate: DevAuthGate,
         let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.ManageBaseData)
         let includeDisabled = (ctx.queryParamOr("include_disabled", "true")) != "false"
+        /* ★ B9：分页（见文件头"分页"一节）。 */
+        let (limit, offset) = basePageOf(ctx)
         let items = JsonArray()
-        for (d in dept.listAll(includeDisabled: includeDisabled)) {
+        for (d in dept.listAll(includeDisabled: includeDisabled, limit: limit, offset: offset)) {
             items.add(baseDepartmentJson(d))
         }
         let data = JsonObject()
         data.put("items", items)
         data.put("count", JsonInt(Int64(items.size())))
+        /* `total` = 同一 `include_disabled` 过滤下的总行数（count 只是本页条数）。 */
+        data.put("total", JsonInt(dept.countAll(includeDisabled: includeDisabled)))
+        data.put("limit", JsonInt(limit))
+        data.put("offset", JsonInt(offset))
         sendOk(ctx, data)
     })
 
@@ -399,14 +464,20 @@ public func registerBaseRoutes(r: Router, auth: AuthRepo, gate: DevAuthGate,
          */
         let depFilter = parseInt64Or(ctx.queryParamOr("department_id", "0"), 0)
         let includeDisabled = (ctx.queryParamOr("include_disabled", "true")) != "false"
+        /* ★ B9：分页（见文件头"分页"一节）。 */
+        let (limit, offset) = basePageOf(ctx)
         let depts = baseDepartmentsForNames(dept)
         let items = JsonArray()
-        for (d in doc.listAll(depFilter, includeDisabled: includeDisabled)) {
+        for (d in doc.listAll(depFilter, includeDisabled: includeDisabled, limit: limit, offset: offset)) {
             items.add(baseDoctorJson(d, baseNameOf(depts, d.departmentId)))
         }
         let data = JsonObject()
         data.put("items", items)
         data.put("count", JsonInt(Int64(items.size())))
+        /* `total` 与 `listAll` 用**同一套过滤**（department_id + include_disabled）。 */
+        data.put("total", JsonInt(doc.countAll(depFilter, includeDisabled: includeDisabled)))
+        data.put("limit", JsonInt(limit))
+        data.put("offset", JsonInt(offset))
         sendOk(ctx, data)
     })
 
@@ -493,6 +564,12 @@ public func registerBaseRoutes(r: Router, auth: AuthRepo, gate: DevAuthGate,
      *   管理字段（`baseDepartmentJson` 里已经带了，这里不额外加）。
      *   停用的科室**不返回**（患者不该看到已下线的科室；
      *   而历史排班里的旧科室名仍能由 `baseNameOf` 从**含停用**的全量里解析出来）。
+     *
+     * ★ 2026-10-14（B9）：这条路**刻意不分页**（与 admin 版不同）——
+     *   它喂的是患者端的**选择器**：截断的后果是"某个科室直接不在列表里"，
+     *   而患者看不出这是被截断的（不像表格能显示"共 N 条"）。
+     *   要控制它的规模请用**停用**（`enabled = 0` 天然被过滤掉），
+     *   而不是悄悄少返回几行。详见文件头"分页"一节第 ② 条。
      */
     r.get("/api/v1/departments", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
