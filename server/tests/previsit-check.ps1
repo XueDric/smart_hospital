@@ -381,8 +381,13 @@ Check "★ enabled 非布尔被拒 400（只认 true/false，不给表达空间�
 # 8.7 ★ 未登记的配置项必须被拒（否则 KV 表变垃圾场）
 $r = DoReq 'aiunk' 'PUT' '/api/v1/admin/ai/settings/ai.garbage' @("Authorization: Bearer $admTok") '{"value":"x"}'
 Check "★ 未登记的配置项被拒 400" ($r.Http -eq 400) ("HTTP $($r.Http)")
-Check "★ 且确实没进库（$(& $My.Client -h $My.DbHost -P $My.Port -u $My.User "-p$($My.Pass)" --skip-ssl $My.Db -N -B -e "SELECT COUNT(*) FROM ai_setting WHERE k='ai.garbage'" 2>$null) 行）" `
-      ("$(& $My.Client -h $My.DbHost -P $My.Port -u $My.User "-p$($My.Pass)" --skip-ssl $My.Db -N -B -e "SELECT COUNT(*) FROM ai_setting WHERE k='ai.garbage'" 2>$null)".Trim() -eq '0')
+# ⚠ 2026-10-14（收口 C3）：这里原来直接 `& $My.Client … -e "…" 2>$null`（还是**两次**），
+#   两个毛病：① `2>$null` 把驱动/连接错误一并吞掉，查询失败会静默变成空串，
+#   `.Trim() -eq '0'` 于是永远为假（脚本看起来"红得有理"，其实根本没查到）；
+#   ② 不看 `$LASTEXITCODE`，客户端非 0 退出也不会被发现。
+#   统一改走 `Invoke-MySqlScalar`（它会检查退出码与 `ERROR nnnn` 行，失败即抛）。
+$garbageRows = Invoke-MySqlScalar -My $My -Sql "SELECT COUNT(*) FROM ai_setting WHERE k='ai.garbage'" -Label "ai.garbage 行数"
+Check "★ 且确实没进库（$garbageRows 行）" ("$garbageRows".Trim() -eq '0')
 
 # 8.8 ★★ 全表兜底扫描：库里不得出现"像密钥"的长随机串
 $rows = Invoke-MySqlScalar -My $My -Sql "SELECT COUNT(*) FROM ai_setting WHERE CHAR_LENGTH(v) >= 32 AND v NOT LIKE '%:%' AND v NOT LIKE '%/%' AND v NOT LIKE '% %'" -Label "可疑行数"

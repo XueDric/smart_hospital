@@ -79,6 +79,7 @@
   - `Invoke-MySqlScalar`：捕获 `$LASTEXITCODE`，非 0 **或** 输出里出现 `^\s*ERROR\s+\d{3,5}\b` 即抛（`mariadb -e "source bad.sql"` 在语句失败时**退出码仍是 0**，所以必须看输出，新增 `Get-HospMysqlServerErrors`）；`try/finally` 里恢复 EAP。
   - 新增 `Invoke-MySqlFile`；`Resolve-HospPath` / `Join-HospPathSafe` 统一路径解析（`HOSP_*` 环境变量优先）。
 - **验证**：函数级用例（坏 SQL 抛、坏 .sql 文件抛、空 SELECT 告警、缺库名 DSN 抛）+ `base-check` 全绿。
+- **同类隐患顺手清掉**（原列在第八节遗留第 3 条）：`server\tests\previsit-check.ps1:384-385` 曾两处直接 `& $My.Client … -e "…" 2>$null` —— 既吞掉驱动/连接错误（查询失败会静默变成空串，断言恒假），又不看 `$LASTEXITCODE`。现改为一次 `Invoke-MySqlScalar -Label "ai.garbage 行数"` 取 `$garbageRows`，供消息与断言共用；改后全仓 `server\tests\*.ps1` 再无活的 `2>$null`（仅注释里提到）。实跑 `previsit-check.ps1` **PASS 86 / FAIL 0 / exit 0**（含 `[PASS] ★ 且确实没进库（0 行）`）。
 
 ### C4 冒烟覆盖面 + 稳定性（A1 漏检的直接原因）
 - **修法**：`admin-web-smoke.mjs` 重写（216 → ~330 行）
@@ -127,6 +128,7 @@
 
 1. **B8 的根治**：新增 `Action.ManageAi` / `Action.ManageUser`，让权限矩阵不再靠 `ManageSchedule` 复用（当前 admin-only 语义正确，但语义漂移）。
 2. **B9 的分页**：`/admin/departments`、`/admin/doctors` 在行数超过约 200 时需分页（当前假设已文档化）。
-3. **`previsit-check.ps1:384-385`** 仍用 `2>$null` 吞 stderr（本次 C3 的检查范围之外，属同类隐患）。
-4. **子代理交付的运维脚本**中，`devdb.ps1` 的 start/stop/init 全流程与 `new-tls-cert.ps1` 的端到端签发未实跑（只做了函数级/打桩验证），建议在干净机器上补一次演练。
-5. **`docs/ADMIN-WEB.md` §九** 的两条边界（权限动作复用、无分页）需要在后续版本关闭时同步删除。
+3. **子代理交付的运维脚本**中，`devdb.ps1` 的 start/stop/init 全流程与 `new-tls-cert.ps1` 的端到端签发未实跑（只做了函数级/打桩验证），建议在干净机器上补一次演练。
+4. **`docs/ADMIN-WEB.md` §九** 的两条边界（权限动作复用、无分页）需要在后续版本关闭时同步删除。
+
+> 原第 3 条（`previsit-check.ps1:384-385` 的 `2>$null`）已在本次收口时一并修掉，见 §C3 末条。
