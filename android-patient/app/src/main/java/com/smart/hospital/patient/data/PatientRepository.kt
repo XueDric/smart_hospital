@@ -80,15 +80,20 @@ class PatientRepository(private val client: ApiClient, private val session: Sess
     }
 
     fun logout() {
-        val expected = identity()
-        if (!session.mockMode) runCatching {
-            client.postWithStatus("/api/v1/auth/logout", JSONObject(), expected.baseUrl, expected.token)
+        val (expected, demo) = synchronized(session) { identity() to session.mockMode }
+        try {
+            if (!demo) client.postWithStatus("/api/v1/auth/logout", JSONObject(), expected.baseUrl, expected.token)
+        } finally {
+            // Match the demo operation lock order; an old logout must not clear a new identity.
+            synchronized(this) {
+                synchronized(session) {
+                    if (identity() == expected) {
+                        session.clearLoginIfCurrent(expected.token, expected.baseUrl)
+                        resetTransientState()
+                    }
+                }
+            }
         }
-        val cleared = synchronized(session) {
-            if (identity() == expected) { session.clearLoginIfCurrent(expected.token, expected.baseUrl); true }
-            else false
-        }
-        if (cleared) resetTransientState()
     }
 
     @Synchronized fun resetTransientState() {
@@ -116,19 +121,24 @@ class PatientRepository(private val client: ApiClient, private val session: Sess
             d.optString("patient_note"), d.optBoolean("truncated"), d.optString("ai_note"), d.optString("ai_reason"), options)
     }
 
+    fun hospitalToday(): String {
+        if (session.mockMode) return LocalDate.now(hospitalZone).toString()
+        val today = client.get("/health").opt("today") as? String
+            ?: throw ApiException(0, "INVALID_RESPONSE", session.text(R.string.data_hospital_date_invalid))
+        return try { parseDate(today).toString() }
+        catch (_: ApiException) { throw ApiException(0, "INVALID_RESPONSE", session.text(R.string.data_hospital_date_invalid)) }
+    }
+
     fun schedules(date: String): List<Schedule> {
         val requested = parseDate(date)
-        if (requested.isBefore(LocalDate.now(hospitalZone))) throw ApiException(400, "VALIDATION_FAILED", session.text(R.string.data_date_not_past))
         if (session.mockMode) return mockSchedules().filter { it.workDate == requested.toString() }
         val encoded = URLEncoder.encode(requested.toString(), "UTF-8")
         val a = client.get("/api/v1/schedules?work_date=$encoded&limit=100").optJSONArray("schedules")
-        return (0 until (a?.length() ?: 0)).mapNotNull { i ->
+        // Patient sellability is decided by the server using the hospital's clock.
+        return (0 until (a?.length() ?: 0)).map { i ->
             val o = a!!.getJSONObject(i)
-            val day = o.getString("work_date")
-            val validDay = runCatching { LocalDate.parse(day) }.getOrNull()
-            if (!o.optBoolean("enabled", false) || validDay == null || validDay.isBefore(LocalDate.now(hospitalZone)) || validDay != requested) null
-            else Schedule(o.getLong("id"), o.getLong("doctor_id"), o.getLong("department_id"), day,
-                o.getString("period"), o.getInt("total_num"), o.getInt("remain_num"), true,
+            Schedule(o.getLong("id"), o.getLong("doctor_id"), o.getLong("department_id"), o.getString("work_date"),
+                o.getString("period"), o.getInt("total_num"), o.getInt("remain_num"), o.getBoolean("enabled"),
                 o.optString("department_name"), o.optString("doctor_name"), o.optString("doctor_title"))
         }
     }
@@ -148,11 +158,6 @@ class PatientRepository(private val client: ApiClient, private val session: Sess
 
     private fun bookForIdentity(scheduleId: Long, clientToken: String, expected: Identity): Appointment {
         require(scheduleId > 0 && clientToken.isNotBlank() && clientToken.length <= 64) { session.text(R.string.data_booking_invalid) }
-        if (!session.mockMode && session.completedBookingId(scheduleId) != null) {
-            // Cancellation may have committed after a timeout, or on another device.
-            // Synchronize only explicit cancelled records; a capped list's absence proves nothing.
-            loadAppointments(expected)
-        }
         synchronized(session) {
             requireIdentity(expected)
             if (session.bookingToken(scheduleId) != clientToken) {

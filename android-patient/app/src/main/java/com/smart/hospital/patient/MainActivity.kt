@@ -24,8 +24,6 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.time.LocalDate
-import java.time.ZoneId
 
 class MainActivity : Activity() {
     private val bg = Color.rgb(243, 248, 247)
@@ -294,17 +292,28 @@ class MainActivity : Activity() {
 
     private fun bookingView(): View {
         val root = vertical(); root.addView(header(getString(R.string.booking_title), getString(R.string.booking_subtitle), true)); val body = bodyColumn()
-        val date = edit(getString(R.string.booking_date_hint), bookingDate.ifBlank { selectedSchedule?.workDate ?: today() }).apply { isSingleLine = true }
-        bookingDate = date.text.toString(); remember(date) { bookingDate = it }
+        val date = edit(getString(R.string.booking_date_hint), bookingDate.ifBlank { selectedSchedule?.workDate.orEmpty() }).apply { isSingleLine = true }
+        var dateRevision = 0
+        bookingDate = date.text.toString(); remember(date) { bookingDate = it; dateRevision++ }
         val query = networkButton(getString(R.string.booking_query), true); body.addView(date, lp(-1, dp(48))); body.addView(query, lp(-1, dp(46)).also { it.topMargin = dp(10) })
         val message = textView("", 13f, danger); body.addView(message, spaced(8)); val list = vertical(); body.addView(list, spaced(14))
         fun load() {
+            val requestedDate = date.text.toString().trim()
+            val requestedRevision = dateRevision
             query.isEnabled = false; query.text = getString(R.string.booking_query_pending); message.text = ""; list.removeAllViews()
-            runAsync({ repo.schedules(date.text.toString().trim()) }, { schedules ->
+            runAsync({
+                val target = if (requestedDate.isBlank()) repo.hospitalToday() else requestedDate
+                target to repo.schedules(target)
+            }, { (target, schedules) ->
                 query.isEnabled = true; query.text = getString(R.string.booking_query)
+                if (dateRevision != requestedRevision) return@runAsync
+                if (requestedDate.isBlank()) date.setText(target)
                 if (schedules.isEmpty()) list.addView(banner(getString(R.string.booking_slots_empty), infoSoft, info))
                 schedules.sortedByDescending { it.id == selectedSchedule?.id }.forEach { list.addView(scheduleCard(it) { load() }, spaced(10)) }
-            }, { error -> query.isEnabled = true; query.text = getString(R.string.booking_query_retry); message.text = userMessage(error) })
+            }, { error ->
+                query.isEnabled = true; query.text = getString(R.string.booking_query_retry)
+                if (dateRevision == requestedRevision) message.text = userMessage(error)
+            })
         }
         query.setOnClickListener { load() }; load(); addBody(root, body, Screen.BOOKING); return root
     }
@@ -496,6 +505,7 @@ class MainActivity : Activity() {
         identity.addView(textView(getString(R.string.profile_identity, session.patientId, formatEpoch(session.expiresAt)), 13f, secondary), spaced(6))
         val sync = networkButton(getString(R.string.identity_sync), false); identity.addView(sync, spaced(12))
         sync.setOnClickListener {
+            if (logoutBusy) return@setOnClickListener
             sync.isEnabled = false
             val expectedToken = session.token; val expectedAddress = session.baseUrl
             val expectedUserId = session.userId; val expectedPatientId = session.patientId
@@ -506,7 +516,12 @@ class MainActivity : Activity() {
                     throw ApiException(403, "FORBIDDEN_ROLE", getString(R.string.identity_changed))
                 }
                 identity
-            }, { render(); toast(getString(R.string.identity_synced)) }, { error -> sync.isEnabled = true; toast(userMessage(error)) })
+            }, {
+                // Keep the logout callback's render version alive until it completes.
+                if (!logoutBusy) { render(); toast(getString(R.string.identity_synced)) }
+            }, { error ->
+                if (!logoutBusy) { sync.isEnabled = true; toast(userMessage(error)) }
+            })
         }
         body.addView(identity)
         val settings = cardColumn(); settings.addView(textView(if (session.mockMode) getString(R.string.demo_mode_label) else getString(R.string.online_mode_label), 18f, ink, true))
@@ -530,7 +545,7 @@ class MainActivity : Activity() {
         logout.setOnClickListener {
             logout.isEnabled = false; logoutBusy = true
             runAsync({ repo.logout() }, { clearPatientState(); loginNotice = getString(R.string.logout_success); show(Screen.LOGIN, true) }, {
-                session.clearLogin(); clearPatientState(); loginNotice = getString(R.string.logout_local_success); show(Screen.LOGIN, true)
+                clearPatientState(); loginNotice = getString(R.string.logout_local_success); show(Screen.LOGIN, true)
             })
         }
         addBody(root, body, Screen.PROFILE); return root
@@ -669,7 +684,6 @@ class MainActivity : Activity() {
     private fun statusText(s: String) = mapOf("booked" to getString(R.string.status_booked), "visiting" to getString(R.string.status_visiting), "done" to getString(R.string.status_done), "cancelled" to getString(R.string.status_cancelled), "no_show" to getString(R.string.status_no_show))[s] ?: s.ifBlank { getString(R.string.status_unknown) }
     private fun statusColor(s: String) = when (s) { "booked" -> info; "visiting" -> primaryDark; "done" -> success; "cancelled", "no_show" -> danger; else -> secondary }
     private fun statusBackground(s: String) = when (s) { "cancelled", "no_show" -> dangerSoft; "done" -> successSoft; else -> primarySoft }
-    private fun today() = LocalDate.now(ZoneId.of("Asia/Shanghai")).toString()
     private fun formatEpoch(value: Long) = if (value <= 0) getString(R.string.time_unknown) else SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(value * 1000))
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private fun lp(w: Int, h: Int) = LinearLayout.LayoutParams(w, h)

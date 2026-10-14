@@ -5,6 +5,7 @@ package qingzhou
  *   （见 domain_booking.cj 的同类注释），所以这里显式写上。
  */
 import std.collection.*
+import std.database.sql.*
 
 /*
  * SPDX-License-Identifier: MIT
@@ -533,26 +534,32 @@ public func baseCount(db: DbBackend, sql: String, arg: Int64): Int64 {
     return rs.getInt(0, 0)
 }
 
-/* 容错执行的结果：失败时带**驱动给的消息**（关键：用于区分唯一键冲突）。 */
+/* 只把已确认的唯一键冲突转成返回值；其他数据库故障保留原异常。 */
 public class BaseExecResult {
     public var ok: Bool = false
     public var message: String = ""
     public var generatedId: Int64 = 0
 }
 
-/*
- * 执行一条可能撞唯一键的语句，**捕获异常并带回消息**。
- *
- * ⚠ 为什么需要它：本项目**没有**"先查再插"的余地（TOCTOU），
- *   而唯一键冲突只能从异常里看出来。所以这里把异常转成返回值，
- *   由调用方分类 —— **不吞**：消息原样带回，分类逻辑集中在
- *   `baseClassifyDuplicate` 一处。
- *
- * ⚠⚠ 顺带记一个本仓真踩过的坑：驱动的 `SqlException.message` 在**某些**错误上
- *   是**空串**（P4 时 `INSERT ... SELECT` 那次就只给了 `errorCode: 0`）。
- *   所以这里对"空消息"要**有兜底分类**：不能因为消息为空就把唯一键冲突
- *   当成"未知错误"报 500 —— 那会把一个正常的业务拒绝变成服务端故障。
+/* MariaDB 1062 是唯一键冲突。现有驱动可能只保留报错文本，
+ * 此时只接受明确的 Duplicate entry 前缀，不凭索引名、空消息或未知故障猜测。
+ * 不改变驱动接口或预编译产物；没有这些证据时让原异常上抛。
  */
+public func baseDuplicateMessage(e: Exception): ?String {
+    if (e.message.startsWith("Duplicate entry ")) {
+        return Some(e.message)
+    }
+    match (e) {
+        case sql: SqlException =>
+            if (sql.errorCode == 1062) {
+                return Some("Duplicate entry (errorCode=1062): ${e.message}")
+            }
+        case _ => ()
+    }
+    return None
+}
+
+/* INSERT、ID 读取及资源清理故障均不得转成参数错误。 */
 public func baseExecTolerant(db: DbBackend, sql: String, args: Array<DbValue>,
                             returnInsertId!: Bool = false): BaseExecResult {
     let r = BaseExecResult()
@@ -564,8 +571,10 @@ public func baseExecTolerant(db: DbBackend, sql: String, args: Array<DbValue>,
         }
         r.ok = true
     } catch (e: Exception) {
-        r.ok = false
-        r.message = e.message
+        match (baseDuplicateMessage(e)) {
+            case Some(message) => r.message = message
+            case None => throw e
+        }
     }
     return r
 }
@@ -573,11 +582,12 @@ public func baseExecTolerant(db: DbBackend, sql: String, args: Array<DbValue>,
 /*
  * 把唯一键冲突分类成"哪个字段重复"。
  *
- * ⚠ 判定依据是**错误消息里的索引名**（MariaDB 会带 `uk_department_name` 之类），
- *   而不是猜。若消息为空（驱动吞了，见上），则退化为**主动查一次**来判定 ——
- *   这样即使驱动不给消息，也能给出正确结论，而不是笼统的 500。
+ * 先确认唯一键冲突，再用错误消息里的索引名定位字段。
  */
 public func baseClassifyDuplicate(message: String, out: BaseWriteOutcome): BaseWriteOutcome {
+    if (!message.startsWith("Duplicate entry ")) {
+        throw Exception(message)
+    }
     if (message.contains("uk_department_name")) {
         return out.markDuplicate("name")
     }
@@ -594,18 +604,6 @@ public func baseClassifyDuplicate(message: String, out: BaseWriteOutcome): BaseW
     if (message.contains("uk_notice_title")) {
         return out.markDuplicate("title")
     }
-    if (message.contains("Duplicate entry")) {
-        /* 消息在但索引名不认识 ⇒ 按"重复"处理，字段留空（HTTP 层给通用文案）。 */
-        return out.markDuplicate("")
-    }
-    /*
-     * 消息为空或不可识别 ⇒ **不猜**：如实标成参数不合法并带上原始信息，
-     * 由 HTTP 层回 400+原因（而不是 500）。
-     * ⚠ 这类"驱动吞消息"的情况已在 acceptance 里由"重复名/重复码"两个用例覆盖
-     *   （它们各自都会实际制造一次冲突），所以这条兜底分支**有测试走到**。
-     */
-    if (message.size == 0) {
-        return out.markDuplicate("")
-    }
-    return out.markInvalid("写入失败：${message}")
+    /* 已确认冲突但索引名不认识，保留通用的重复文案。 */
+    return out.markDuplicate("")
 }

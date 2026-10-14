@@ -1,4 +1,5 @@
 <resources>
+    <string name="data_hospital_date_invalid">无法获取有效的医院日期，请重试或输入查询日期。</string>
     <string name="data_demo_unavailable">正式版本不提供演示数据</string>
     <string name="data_invalid_token">服务端令牌格式无效</string>
     <string name="data_invalid_patient_identity">登录响应缺少有效患者字段</string>

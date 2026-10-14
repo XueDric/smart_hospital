@@ -37,6 +37,7 @@
 package qingzhou
 
 import std.collection.*
+import std.sync.*
 import stdx.encoding.json.*
 
 /* ===================== 配置项定义（静态白名单）===================== */
@@ -548,6 +549,10 @@ public let AI_SETTINGS_CACHE_TTL_SECS: Int64 = 5
 
 public class AiSettingsRepo {
     private let db: DbBackend
+    /* 可重入：get 在仓储锁内调用 reload；锁序为仓储锁 → 数据库连接锁。
+     * 写操作释放数据库连接锁后才 invalidate，不持有连接锁反向获取仓储锁。
+     */
+    private let cacheLock = Mutex()
     /* 缓存：所有项的 key→value。`cacheAt = 0` 表示未加载/已失效。 */
     private var cache: HashMap<String, String> = HashMap<String, String>()
     private var cacheAt: Int64 = 0
@@ -576,27 +581,31 @@ public class AiSettingsRepo {
      *   两者都落回默认值，回显也一致（见 `aiSettingsJson` 里回显生效值的说明）。
      */
     public func get(key: String, now: Int64): String {
-        if (cacheAt == 0 || now - cacheAt > AI_SETTINGS_CACHE_TTL_SECS) {
-            reload(now)
+        synchronized(cacheLock) {
+            if (cacheAt == 0 || now - cacheAt > AI_SETTINGS_CACHE_TTL_SECS) {
+                reload(now)
+            }
+            if (cache.contains(key)) {
+                return cache[key]
+            }
+            // ⚠ 默认值也 trim：与"写入时 trim"配套，保证任何路径都不带首尾空白
+            return aiSettingDefaultOf(key).trimAscii()
         }
-        if (cache.contains(key)) {
-            return cache[key]
-        }
-        // ⚠ 默认值也 trim：与"写入时 trim"配套，保证任何路径都不带首尾空白
-        return aiSettingDefaultOf(key).trimAscii()
     }
 
     /* 重新加载全部配置到缓存。 */
     public func reload(now: Int64): Unit {
-        let fresh = HashMap<String, String>()
-        let rs = db.query("SELECT k, v FROM ai_setting", Array<DbValue>())
-        var i: Int64 = 0
-        while (i < rs.rowCount()) {
-            fresh[rs.getString(i, 0)] = rs.getString(i, 1)
-            i = i + 1
+        synchronized(cacheLock) {
+            let fresh = HashMap<String, String>()
+            let rs = db.query("SELECT k, v FROM ai_setting", Array<DbValue>())
+            var i: Int64 = 0
+            while (i < rs.rowCount()) {
+                fresh[rs.getString(i, 0)] = rs.getString(i, 1)
+                i = i + 1
+            }
+            cache = fresh
+            cacheAt = now
         }
-        cache = fresh
-        cacheAt = now
     }
 
     /*
@@ -607,7 +616,9 @@ public class AiSettingsRepo {
      *   实际别的实例又改了库）。置 0 = "下次读重新查库"，**永远以库为准**。
      */
     public func invalidate(): Unit {
-        cacheAt = 0
+        synchronized(cacheLock) {
+            cacheAt = 0
+        }
     }
 
     /* 写某项配置（含**未登记 key 拒绝**与**密钥引用校验**两道闸门）。 */
