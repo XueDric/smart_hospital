@@ -39,6 +39,38 @@ async function guarded(el, fn) {
   try { await fn(); } catch (e) { fail(el, e); }
 }
 
+/*
+  单页上限，与**服务端** `BASE_LIST_MAX_LIMIT`（server/src/http_base.cj）对齐。
+  ★ 为什么必须显式传它、而不是"不传就是全都要"：服务端把 `limit <= 0` 当成"用默认值"，
+    默认也是 200（base-check.ps1 把这条钉进了断言）⇒ 不传 limit 拿到的**仍然是 200 条**，
+    只是没人知道被截断了。显式传 + 对 total 做比较，截断才是**可观测**的。
+*/
+const PAGE_MAX = 200;
+
+/*
+  列表页统一的「条数行」。字段来自服务端分页回包（total / count / limit / offset）。
+  ★ 只在 `total > offset + count` 时才出警告：把"库里就这么多"和"上限挡住了一部分"
+    在界面上分开 —— 前者正常，后者使用者必须知道，否则会以为"医生就这 200 个"。
+*/
+function countLine(data, unit) {
+  const total = Number(data.total || 0);
+  const count = Number(data.count != null ? data.count : (data.items || []).length);
+  const limit = Number(data.limit || 0);
+  const offset = Number(data.offset || 0);
+  const hidden = Math.max(0, total - offset - count);
+  return h('div', { class: 'muted', style: 'margin-top:10px' },
+    `共 ${total} ${unit}，本页 ${count} 条（offset=${offset}，limit=${limit}）`,
+    hidden > 0 ? h('span', { class: 'badge off', style: 'margin-left:10px' },
+      `还有 ${hidden} ${unit}未显示（单页上限 ${limit || PAGE_MAX}）—— 请用筛选条件缩小范围`) : null);
+}
+
+/* 下拉被截断时的一句提示文本（下拉本身只能显示 items，装不下"还有多少条"） */
+function truncHint(shown, total, unit) {
+  return total > shown
+    ? `⚠ 仅显示前 ${shown} ${unit}（共 ${total} ${unit}，超出单页上限 ${PAGE_MAX}）—— 请先用搜索/筛选缩小范围`
+    : '';
+}
+
 function stat(k, v, note) {
   return h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v),
     note ? h('div', { class: 'n' }, note) : null);
@@ -234,7 +266,9 @@ page({
     async function reload() {
       loading(listBox);
       try {
-        const data = await API.get('/admin/departments' + API.qs({ include_disabled: 'true' }));
+        const data = await API.get('/admin/departments' + API.qs({
+          include_disabled: 'true', limit: PAGE_MAX, offset: 0,
+        }));
         clear(listBox);
         listBox.appendChild(table([
           { key: 'id', label: 'ID' },
@@ -252,6 +286,7 @@ page({
               }, '删除')),
           },
         ], data.items));
+        listBox.appendChild(countLine(data, '个科室'));
       } catch (e) { fail(listBox, e); }
     }
 
@@ -319,12 +354,15 @@ page({
     const state = { deptId: 0 };
     const listBox = h('div');
     let depts = [];
+    let deptTotal = 0;   /* 科室下拉的总数：用于判断 200 上限有没有吃掉选项（见 truncHint） */
+    const deptHint = h('span', { class: 'hint', style: 'margin:0' }, '');
 
     async function reload() {
       loading(listBox);
       try {
         const data = await API.get('/admin/doctors' + API.qs({
           department_id: state.deptId || '', include_disabled: 'true',
+          limit: PAGE_MAX, offset: 0,
         }));
         clear(listBox);
         listBox.appendChild(table([
@@ -340,6 +378,7 @@ page({
               h('button', { class: 'btn btn-sm', style: 'margin-left:6px', onclick: () => remove(r) }, '删除')),
           },
         ], data.items));
+        listBox.appendChild(countLine(data, '位医生'));
       } catch (e) { fail(listBox, e); }
     }
 
@@ -351,7 +390,8 @@ page({
         fields: [
           { name: 'name', label: '姓名', required: true, value: row ? row.name : '' },
           { name: 'department_id', label: '所属科室', type: 'select', value: row ? row.department_id : (state.deptId || ''),
-            options: depts.map((d) => ({ value: d.id, label: `${d.name}${d.enabled ? '' : '（已停用）'}` })) },
+            options: depts.map((d) => ({ value: d.id, label: `${d.name}${d.enabled ? '' : '（已停用）'}` })),
+            hint: truncHint(depts.length, deptTotal, '个科室') || undefined },
           { name: 'title', label: '职称', value: row ? row.title : '', placeholder: '例如 主任医师' },
           { name: 'specialty', label: '专长', value: row ? row.specialty : '' },
           { name: 'enabled', label: '启用', type: 'checkbox', value: row ? row.enabled : true },
@@ -387,19 +427,35 @@ page({
     }
 
     clear(el);
+    const deptSel = h('select', { onchange: (e) => { state.deptId = Number(e.target.value); reload(); } },
+      h('option', { value: '0' }, '全部科室'));
     el.appendChild(card('医生管理', null,
       toolbar(
         h('button', { class: 'btn btn-primary', onclick: () => form(null) }, '新增医生'),
         h('span', { class: 'grow' }),
-        h('select', { onchange: (e) => { state.deptId = Number(e.target.value); reload(); } },
-          h('option', { value: '0' }, '全部科室'))),
+        deptHint,
+        deptSel),
       listBox));
-    /* 科室下拉要在渲染前拿到（新增医生必须选科室）—— 一次拉取，两个用途 */
-    API.get('/admin/departments' + API.qs({ include_disabled: 'true' })).then((d) => {
-      depts = d.items || [];
-      const sel = el.querySelector('.toolbar select');
-      depts.forEach((x) => sel.appendChild(h('option', { value: x.id }, x.name)));
-    }).catch((e) => toast('科室列表加载失败：' + e.toString(), 'err'));
+    /*
+     * 科室下拉要在渲染前拿到（新增医生必须选科室）—— 一次拉取，两个用途。
+     * ★ 报告复查项：这里以前是**未 await 的 `.then()` 链**，慢网下医生页会先只有
+     *   "全部科室"、稍后才补上，看起来像"科室下拉是空的"。现在 await 到底，并且
+     *   失败原因写在 hint 上（toast 一闪而过，等于没说）。
+     * ★ 同时显式传 limit=PAGE_MAX：服务端不传 limit 也只回 200 条，截断必须自己发现。
+     */
+    (async () => {
+      try {
+        const d = await API.get('/admin/departments' + API.qs({
+          include_disabled: 'true', limit: PAGE_MAX, offset: 0,
+        }));
+        depts = d.items || [];
+        deptTotal = Number(d.total || depts.length);
+        depts.forEach((x) => deptSel.appendChild(h('option', { value: x.id }, x.name)));
+        deptHint.textContent = truncHint(depts.length, deptTotal, '个科室');
+      } catch (e) {
+        deptHint.textContent = '科室列表加载失败：' + e.toString();
+      }
+    })();
     reload();
   },
 });
@@ -420,6 +476,8 @@ page({
     const listBox = h('div');
     let depts = [];
     let doctors = [];
+    let deptTotal = 0;      /* 下拉候选的总数：判断 200 上限有没有把选项吃掉 */
+    let doctorTotal = 0;
 
     async function reload() {
       loading(listBox);
@@ -449,9 +507,15 @@ page({
               h('button', { class: 'btn btn-sm', onclick: () => edit(r) }, '改放号/停诊')),
           },
         ], rows));
+        /*
+         * ★ 措辞纠正（报告复查项）：`count` 是**本页条数**，不是总数 —— 服务端
+         *   `GET /api/v1/schedules`（http_app.cj:2084-2086）只回 `schedules` + `count`，
+         *   没有 total。以前写"共 N 条"，使用者会读成"这天一共有 N 个号源"。
+         *   要真总数得先给该接口加分页字段（未做）；在那之前界面必须写明是"本页"。
+         */
         listBox.appendChild(h('div', { class: 'muted', style: 'margin-top:10px' },
-          `共 ${data.count} 条（含已约满与已停诊 —— "已约满仍出现在列表里"是刻意的：`,
-          `停号要能看见、要能改回来）`));
+          `本页 ${data.count} 条（单次最多请求 100 条 —— 用日期/科室筛选缩小范围；`,
+          `含已约满与已停诊："已约满仍出现在列表里"是刻意的，停号要能看见、要能改回来）`));
       } catch (e) { fail(listBox, e); }
     }
 
@@ -462,10 +526,12 @@ page({
         submitText: '创建',
         fields: [
           { name: 'department_id', label: '科室', type: 'select', value: state.deptId || '',
-            options: depts.map((d) => ({ value: d.id, label: d.name })) },
+            options: depts.map((d) => ({ value: d.id, label: d.name })),
+            hint: truncHint(depts.length, deptTotal, '个科室') || undefined },
           { name: 'doctor_id', label: '医生', type: 'select', value: '',
             options: doctors.map((d) => ({ value: d.id, label: `${d.name}（${d.department_name || ''}）` })),
-            hint: '医生必须属于所选科室（服务端校验）' },
+            hint: [truncHint(doctors.length, doctorTotal, '位医生'),
+                   '医生必须属于所选科室（服务端校验）'].filter(Boolean).join('；') },
           { name: 'work_date', label: '日期', type: 'date', required: true, value: state.workDate || '' },
           { name: 'period', label: '时段', type: 'select', value: 'AM',
             options: [{ value: 'AM', label: '上午 AM' }, { value: 'PM', label: '下午 PM' }] },
@@ -513,16 +579,26 @@ page({
       ),
       listBox));
     /*
-     * 科室 + 医生下拉：**各拉一次全量**（管理台的数据量级是几十条，
-     * 分页拉取的复杂度不值得）。医生的科室归属用于让使用者少填错。
+     * 科室 + 医生下拉：**各拉一次，但显式传 limit**（PAGE_MAX = 服务端单页上限）。
+     * ★ 报告复查项（这里是最该收紧的一处）：不传 limit 时服务端仍只回 200 条
+     *   （`limit <= 0` ⇒ 默认 200），于是"医生超过 200 位"时，排在后半段的科室
+     *   在下拉里会显示成**没有医生** —— 而医生是必填项，使用者只能卡住。
+     *   现在：显式传 + 把 total 交给 truncHint 显示出来。
      */
-    Promise.all([
-      API.get('/admin/departments' + API.qs({ include_disabled: 'true' })),
-      API.get('/admin/doctors' + API.qs({ include_disabled: 'true' })),
-    ]).then(([d, doc]) => {
-      depts = d.items || [];
-      doctors = doc.items || [];
-    }).catch((e) => toast('科室/医生列表加载失败：' + e.toString(), 'err'));
+    (async () => {
+      try {
+        const [d, doc] = await Promise.all([
+          API.get('/admin/departments' + API.qs({ include_disabled: 'true', limit: PAGE_MAX, offset: 0 })),
+          API.get('/admin/doctors' + API.qs({ include_disabled: 'true', limit: PAGE_MAX, offset: 0 })),
+        ]);
+        depts = d.items || [];
+        deptTotal = Number(d.total || depts.length);
+        doctors = doc.items || [];
+        doctorTotal = Number(doc.total || doctors.length);
+      } catch (e) {
+        toast('科室/医生列表加载失败：' + e.toString(), 'err');
+      }
+    })();
     reload();
   },
 });

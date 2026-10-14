@@ -129,10 +129,41 @@
 1. ~~**B8 的根治**~~ —— **已在第二轮关闭**（见 §三 B8：新增 `Action.ManageAi`/`Action.ManageUser`，
    权限矩阵不再靠 `ManageSchedule` 复用）。**残余边界**：`http_p4.cj:421` 的"复诊重开"
    仍用 `ManageSchedule`（属排班域动作）；`/auth/sessions/*` 不做动作检查（自服务）。
-2. ~~**B9 的分页**~~ —— **已在第二轮关闭**（见 §三 B9）。**残余边界**：管理台前端**尚未接分页 UI**，
-   当前按默认 200 行拉取 —— 超过 200 行时表格会少显示，这一点由响应里的 `total` 可观测。
+2. ~~**B9 的分页**~~ —— **已在第二轮关闭**（见 §三 B9）。**残余边界**：管理台前端**没有分页控件**
+   （用户管理页除外），其余列表按显式 `limit=200` 拉取，**超出部分在界面上有红字警告**（见 §九）；
+   要彻底解决就是给列表页补分页控件，或给 `GET /api/v1/schedules` 补 `total`/`offset`。
 3. **子代理交付的运维脚本**中，`devdb.ps1` 的 start/stop/init 全流程与 `new-tls-cert.ps1` 的端到端签发未实跑（只做了函数级/打桩验证），建议在干净机器上补一次演练。
 4. ~~**`docs/ADMIN-WEB.md` §九** 的两条边界（权限动作复用、无分页）需要在后续版本关闭时同步删除。~~
    —— 已随第二轮改写为"已修 + 残余边界"（§九 第 5、6 条）。
 
 > 原第 3 条（`previsit-check.ps1:384-385` 的 `2>$null`）已在本次收口时一并修掉，见 §C3 末条。
+
+---
+
+## 九、第三轮复查（管理台"取全量"遗留收紧，2026-10-14）
+
+> 复查结论原文：**本次复查唯一待收紧处（非回归，属遗留）** —— 管理台仍有 3 处"取全量"调用没有
+> 显式传 `limit`，静默吃 200 上限且界面上没有任何截断提示；另有条数行缺失、`共 N 条` 措辞错、
+> 未 await 的 `.then()` 链各一处。
+
+| # | 问题（复查原文） | 处理 | 证据 |
+| --- | --- | --- | --- |
+| 1 | 排班表单的科室/医生下拉（`Promise.all` 拉 `/admin/departments`、`/admin/doctors`）不传 `limit` ⇒ 医生超过 200 位时后半段科室在下拉里显示成"没有医生"，而**医生是必填项** | 显式 `limit: PAGE_MAX`（200，与服务端 `BASE_LIST_MAX_LIMIT` 对齐）+ 新增 `truncHint()`，把 `total > items.length` 写在**字段 hint** 上（`⚠ 仅显示前 N 位医生（共 M 位，超出单页上限 200）`） | 冒烟强制 `PAGE_MAX=1` 时医生页正文出现 `⚠ 仅显示前 1 个科室（共 4 个科室，超出单页上限 1）` |
+| 2 | 医生管理页的科室筛选下拉同样不传 `limit`，且是**未 await 的 `.then()` 链**（慢网下短暂只有"全部科室"） | 改 `await`（IIFE + try/catch），加载失败写在控件旁的 hint 上（不再只在 toast 里一闪而过）；显式 `limit` + `truncHint` | 同上（该 hint 与条数行同时出现在医生页正文里） |
+| 3 | 科室、医生两个列表页**没有任何条数行**（服务端新给的 `total` 只有用户管理页用上了） | 新增 `countLine(data, unit)`：`共 N 个科室，本页 M 条（offset=…，limit=…）`；仅当 `total > offset + count` 时追加红字「还有 K 个未显示（单页上限 200）」 | 冒烟 `REQUIRED_TEXT`（科室页 `共 … 个科室`、医生页 `共 … 位医生`） |
+| 4 | 排班页写 `共 ${data.count} 条`，而 `count` 是**本页条数**（`GET /api/v1/schedules` 只回 `schedules` + `count`，`http_app.cj:2038` 的 `limit` 默认 100）⇒ 容易被读成"这天一共 N 个号源" | 文案改「本页 N 条（单次最多请求 100 条 —— 用日期/科室筛选缩小范围…）」；**未改**服务端（要真 `total` 得给该接口补 `total`/`offset`，属后续排期） | 冒烟 `REQUIRED_TEXT.schedules = ['本页 ', '条']` |
+
+**纪律落点**：`js/pages.js` 的 `const PAGE_MAX = 200` 与服务端上限对齐；凡列表/下拉一律显式传 `limit`，
+列表页必须有条数行，下拉被截断必须有 hint —— 完整说明见
+[`docs/ADMIN-WEB.md`](ADMIN-WEB.md) §4.1（新增小节）。
+
+**验证方式**（特意做了"断言能失败"的证明，避免加了断言却空转）：
+1. **正常态**：`admin-web-smoke.mjs` 全绿 —— `SMOKE-EXIT=0`，`pageFailures` / `bootFailures` /
+   `modalFailures` / `writeFailures` / `logoutFailures` 全空。
+2. **反向证明**：给 `REQUIRED_TEXT.departments` 临时加一个不存在的字眼 ⇒ `SMOKE-EXIT=1`，且
+   `pageFailures` 出现 `departments: 正文缺少「…」（条数行/截断提示被删或改错）`（证明断言真的在跑）。
+3. **截断态**：临时把 `PAGE_MAX` 改成 1（只为验证，已回滚）⇒ 实测正文出现
+   `共 4 个科室，本页 1 条（offset=0，limit=1）还有 3 个科室未显示（单页上限 1）—— 请用筛选条件缩小范围`，
+   医生页出现 `⚠ 仅显示前 1 个科室（共 4 个科室，超出单页上限 1）—— 请先用搜索/筛选缩小范围`。
+4. `node --check` 对 `pages.js` / `ui.js` / `admin-web-smoke.mjs` 全部通过（这三个文件都不是编译产物，
+   服务端无需重新构建 —— 改动只在前端静态资源与冒烟脚本）。

@@ -69,9 +69,9 @@ server/admin-web/
 | --- | --- | --- |
 | 运营看板 `dashboard` | `GET /api/v1/admin/dashboard`、`GET /health` | `/health` 是**唯一平铺返回**（没有 `data` 信封）的接口，故 `API.health()` 显式声明 `raw`；页脚显示"服务端版本 / 数据后端 / 今天(时区)" |
 | 用户管理 `users` | `GET/POST /api/v1/admin/users`、`POST /:id/password` | 列表模式本轮新增（`limit/offset/role/status`）；口令材料**永不出现**在响应里 |
-| 科室管理 `departments` | `GET/POST/PUT/DELETE /api/v1/admin/departments` | 删除遇 `BASE_IN_USE` 时追问是否 `?force=true` 软删 |
-| 医生管理 `doctors` | `GET/POST/PUT/DELETE /api/v1/admin/doctors` | 科室下拉在渲染后异步填充 |
-| 排班号源 `schedules` | `GET /api/v1/schedules`、`POST/PUT /api/v1/admin/schedules[/:id]` | 页面自算 `已约 = 放号 − 余量`；编辑弹窗里的 `version` 标注"乐观锁，不要改" |
+| 科室管理 `departments` | `GET/POST/PUT/DELETE /api/v1/admin/departments` | 删除遇 `BASE_IN_USE` 时追问是否 `?force=true` 软删；列表底部有**条数行**（`共 N 个科室，本页 M 条`，截断时追加警告） |
+| 医生管理 `doctors` | `GET/POST/PUT/DELETE /api/v1/admin/doctors` | 科室下拉**加载完成才渲染**（失败原因写在控件旁的 hint 上，不再只在 toast 里一闪而过）；列表底部有**条数行**（`共 N 位医生`） |
+| 排班号源 `schedules` | `GET /api/v1/schedules`、`POST/PUT /api/v1/admin/schedules[/:id]` | 页面自算 `已约 = 放号 − 余量`；编辑弹窗里的 `version` 标注"乐观锁，不要改"；底部写的是**「本页 N 条」**（该接口只回 `count`，没有 `total`） |
 | **AI 模型配置** `ai-models` | `GET/POST/PUT/DELETE /api/v1/admin/ai/models[/:id]`、`POST /invalidate`、`POST /:id/test` | 本轮新增（截图主页面）。温度只对 `CHAT` 有意义，`EMBEDDING` 行显示 `—` |
 | AI 全局设置 `ai-settings` | `GET/PUT/DELETE /api/v1/admin/ai/settings[/:key]` | 密钥项只显示"是否已设置 + 引用类型"，可回默认值 |
 | Prompt 模板 `ai-prompts` | `GET/PUT/DELETE /api/v1/admin/ai/prompts[/:name]` | 三项：`dept` / `previsit` / `redflag`；**空串 = 删行恢复默认**；服务端校验必需占位符与长度 |
@@ -79,6 +79,25 @@ server/admin-web/
 | 医学知识库 `kb` | `GET/POST/PUT/DELETE /api/v1/admin/kb/docs[/:id]`、`GET /admin/kb/stats` | 概览里的 `embedding_note` 直接回答"为什么没召回" |
 | 系统公告 `notices` | `GET/POST/PUT/DELETE /api/v1/admin/notices[/:id]` | 患者端只看"已启用且生效时间已到"的公告（服务端过滤） |
 | 患者档案 / 症状标签库 / Agent 执行观测 | —— | **未做**：侧栏灰显并写明原因（后端目前没有这三块的接口） |
+
+### 4.1 列表条数与"截断"的显示纪律（2026-10-14 第三轮复查后收紧）
+
+服务端分页（B9）给了 `total`，但**没有 `limit` 的请求不等于"全都要"**：`limit <= 0` 走默认值，
+默认也是 200（`server/src/http_base.cj` 的 `BASE_LIST_DEFAULT_LIMIT` / `BASE_LIST_MAX_LIMIT`）。
+所以前端（`js/pages.js`）定下三条规矩：
+
+1. **凡列表/下拉一律显式传 `limit: PAGE_MAX`**（`const PAGE_MAX = 200`，与服务端上限对齐）。
+   不传时"被截断"在界面上完全看不出来——这是最危险的一种静默。
+2. **列表页底部必须有条数行**：`共 N <单位>，本页 M 条（offset=…，limit=…）`；
+   仅当 `total > offset + count` 时才追加一句红字警告「还有 K 个未显示（单页上限 200）」。
+   把"库里就这么多"和"上限挡住了一部分"分开——前者正常，后者使用者必须知道。
+3. **下拉被截断时用控件旁的 hint 说明**（下拉里只能显示 `items`，装不下"还有多少条"）：
+   `⚠ 仅显示前 200 个科室（共 431 个科室，超出单页上限 200）—— 请先用搜索/筛选缩小范围`。
+   典型受害场景：排班表单的**医生**下拉是必填项，超过 200 位时排在后面的科室会显示成"没有医生"。
+
+⚠ 这条纪律被钉进了冒烟：`tests/admin-web-smoke.mjs` 的 `REQUIRED_TEXT` 要求科室页正文含
+`共 … 个科室`、医生页含 `共 … 位医生`、排班页含 `本页 … 条`。这些字眼掉了页面照样能渲染、
+正文照样够长，只有真的点进去才会发现，所以必须由冒烟拦。
 
 ---
 
@@ -171,7 +190,7 @@ ai_call.cj：请求体 model / max_tokens / messages / **temperature**
 | 手段 | 覆盖 |
 | --- | --- |
 | `tests\ai-model-check.ps1`（**45 项**） | 模型配置全链路：鉴权（无令牌 401 / 患者 403）、播种的两条默认行与 `request_url` 拼接、密钥不回显、校验闸门（明文 http / 温度越界 / 空名 / 未知类型 / 非法 `key_ref` / 重名）、PATCH 语义、`is_default` 唯一、连通性测试恒 200 且不受 `ai.enabled` 影响、缓存失效**真的**读到库里的新值、`settings` 闸门（并断言库里没留下那行）、删除与夹具自清 |
-| `tests\admin-web-smoke.mjs` | 无头 Edge + CDP：真实 boot 流程 + **11 个页面逐个渲染** + **写路径**（公告新建/下架/重新发布/删除、知识库 PATCH/空正文 400/重切块、必填校验、`DELETE ai/settings/:key` 收窄、`PUT` 不存在模型 404、未注册路径 404 信封、未带令牌 401、登出回登录页）；模态框能开能关；收集 `console.error` / 未捕获异常 / `>=400` 响应，逐页截图。**判定全部计入退出码**：登录遮罩未收起 / 侧栏项数少于页面清单 / `whoami` 为空 / 页脚"读取失败" / 某页正文过短 / 某页有错误框 / 侧栏无高亮——任一为真即 FAIL |
+| `tests\admin-web-smoke.mjs` | 无头 Edge + CDP：真实 boot 流程 + **11 个页面逐个渲染** + **写路径**（公告新建/下架/重新发布/删除、知识库 PATCH/空正文 400/重切块、必填校验、`DELETE ai/settings/:key` 收窄、`PUT` 不存在模型 404、未注册路径 404 信封、未带令牌 401、登出回登录页）；模态框能开能关；收集 `console.error` / 未捕获异常 / `>=400` 响应，逐页截图。**判定全部计入退出码**：登录遮罩未收起 / 侧栏项数少于页面清单 / `whoami` 为空 / 页脚"读取失败" / 某页正文过短 / 某页有错误框 / 侧栏无高亮 / **某页正文缺少必须出现的字眼**（`REQUIRED_TEXT`：科室页 `共 … 个科室`、医生页 `共 … 位医生`、排班页 `本页 … 条` —— 见 §4.1）——任一为真即 FAIL |
 | `tests\base-check.ps1` | 基础数据域 + 排班可改（不变量 400 / 版本冲突 409 / 停诊 PATCH / 404 / 空改动 400）+ **B8 权限动作**（AI 配置 403 且 message 是 `manage_ai`、`/admin/users` 是 `manage_user`、排班仍是 `manage_schedule` —— 证明动作名真的换了，而不是"权限被整体收紧"）+ **B9 分页**（`limit`/`offset` 真翻页、`total` 是**真总数**、`limit` 0/非数字/9999 ⇒ 200、`offset` 负数 ⇒ 0、`total` 跟着 `include_disabled` 与 `department_id` 过滤、公共选择器端点**没有** `total`） |
 | `tests\auth-check.ps1` | 令牌域 + 本轮新增的账号列表模式（分页 / 筛选 / 白名单外当不筛 / 不吐 `pw_hash`） |
 | `accept`（AC-16 / AC-17） | 服务端侧的确定性证明：播种幂等、`defaultOf` 与 `request_url`、运行时覆盖与温度、`key_ref` 回落、缓存与 `invalidate`、`listUsers` 不读口令材料、`updateSchedule` 的原子不变量与乐观锁 |
@@ -207,8 +226,10 @@ ai_call.cj：请求体 model / max_tokens / messages / **temperature**
    `limit`/`offset`，响应新增 `total`（同 `include_disabled`/`department_id` 过滤下的**真总数**）、
    `limit`、`offset`；`limit` 缺省/非数字/<1/>200 ⇒ **200**，`offset` 非法 ⇒ 0。
    **遗留边界**：① 公共 `/api/v1/departments`、`/api/v1/doctors` **刻意不分页**（截断的下拉框对患者
-   不可见；要控规模请用 `enabled=0`）；② 管理台前端**尚未接分页 UI**，当前按默认 200 行拉取
-   —— 超过 200 行时表格会少显示，这一点由 `total` 可观测（后续加分页控件即可）。
+   不可见；要控规模请用 `enabled=0`）；② 管理台前端**尚未接分页控件**（列表页有上一页/下一页的只有
+   用户管理），其余列表按显式 `limit=200` 拉取，**超出部分在界面上有红字警告**（见 §4.1）——
+   要彻底解决就是给这几个列表页补分页控件，或给排班号源页的服务端接口补 `total`/`offset`
+   （它现在只回 `count`，所以页面写的是"本页 N 条"而不是"共 N 条"）。
 
 ---
 

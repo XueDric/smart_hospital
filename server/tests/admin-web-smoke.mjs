@@ -75,6 +75,19 @@ const PAGES = [
   'ai-models', 'ai-settings', 'ai-prompts', 'ai-tools', 'kb', 'notices',
 ];
 
+/* 页面正文里必须出现的字面量。
+   ★ 为什么要有这一层：这些页面里最容易被悄悄弄丢的不是"渲染失败"，而是
+     **把服务端的事实说清楚的那句话** —— 列表的条数行（total）、下拉被 200 上限
+     截断时的提示、以及"本页 N 条"（不是总数）的措辞。它们掉了页面照样能渲染、
+     正文照样够长，只有人来点才会发现，所以钉在冒烟里。
+   ⚠ 只钉"必须存在"，不钉具体数字：数字随夹具变化。 */
+const REQUIRED_TEXT = {
+  departments: ['共 ', '个科室'],
+  doctors: ['共 ', '位医生'],
+  /* 排班页由 GET /api/v1/schedules 供数，它的 count 是**本页条数** —— 文案必须是"本页" */
+  schedules: ['本页 ', '条'],
+};
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ---------------- 启动 Edge（带调试端口） ---------------- */
@@ -260,6 +273,7 @@ for (const id of PAGES) {
     return {
       activeNav: (document.querySelector('.nav-item.active') || {}).textContent || '',
       chars: c ? c.innerText.trim().length : -1,
+      text: c ? c.innerText : '',
       head: c ? c.innerText.trim().slice(0, 120).replace(/\\s+/g, ' ') : '',
       hasErrorBox: !!document.querySelector('.toast-err, .error, [data-error]'),
     };
@@ -273,6 +287,11 @@ for (const r of report) {
   if (r.hasErrorBox) pageFailures.push(`${r.id}: 页面渲染出错误框`);
   if (r.chars < MIN_CHARS) pageFailures.push(`${r.id}: 正文过短（${r.chars} < ${MIN_CHARS}）`);
   if (!String(r.activeNav).trim()) pageFailures.push(`${r.id}: 侧栏没有高亮项（路由没生效）`);
+  for (const needle of (REQUIRED_TEXT[r.id] || [])) {
+    if (!String(r.text || '').includes(needle)) {
+      pageFailures.push(`${r.id}: 正文缺少「${needle}」（条数行/截断提示被删或改错）`);
+    }
+  }
 }
 
 /* ---------------- ③ 模态框 + 必填校验（UI 写路径） ---------------- */
