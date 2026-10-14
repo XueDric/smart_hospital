@@ -31,7 +31,11 @@ Set-Location ./android-patient
 ./verify-artifacts.ps1 -ApkPath ./app/build/outputs/apk/debug/app-debug.apk
 ```
 
-离线模式需要依赖缓存齐备；首次准备缓存时去掉 `-Offline`。直接运行 Wrapper 时自行配置 JDK 与 SDK：
+离线模式需要依赖缓存齐备；首次准备缓存时去掉 `-Offline`。
+
+下载默认优先国内源：插件和依赖使用阿里云 Google、Gradle Plugin、Public 镜像，官方仓库保留为后备。Gradle 8.7 分发包使用腾讯镜像，Wrapper 配置固定官方 SHA-256，下载超时为60秒。首次切换镜像后，同步或构建应关闭离线模式，以下载该仓库来源下尚未缓存的依赖。仅调整下载来源，不升级 AGP/Kotlin/Gradle，也不增加本项目未使用的工具链插件。
+
+直接运行 Wrapper 时自行配置 JDK 与 SDK；以下离线命令仅在缓存已齐备时使用：
 
 ```powershell
 ./gradlew.bat clean :app:assembleDebug --offline --no-daemon
