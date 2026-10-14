@@ -822,10 +822,22 @@ public class AuthRepo {
         }
 
         // 仅有效身份才滑动续期（节流：每天最多一次）。
+        /*
+         * ★ 2026-10-14（跨端审计 F11）：把**续期后**的有效期回填给调用方。
+         *
+         * 此前这里只写库、不回填，于是 `/auth/me` 没有任何地方能拿到"我这张
+         * 令牌还剩多久"，各端只好把登录那一刻的 `expires_at` 一直缓存着
+         * （滑动续期对它们等于不存在：服务端一边把有效期往后推，客户端一边
+         * 按旧值倒计时，两侧看到的到期时刻越差越大）。
+         * ⚠ 顺序要紧：必须先算出续期后的值再回填，见下方 `effectiveExpires`。
+         */
+        var effectiveExpires = expiresAt
         if (expiresAt - now < TOKEN_TTL - RENEW_AFTER && now - lastRenew >= RENEW_AFTER) {
             db.exec("UPDATE auth_token SET expires_at = ?, last_renew_at = ? WHERE token = ?",
                     [DbInt(now + TOKEN_TTL), DbInt(now), DbStr(token)])
+            effectiveExpires = now + TOKEN_TTL
         }
+        p.expiresAt = effectiveExpires
         /*
          * 角色 → 业务实体 id 的映射。
          * 患者：refId 即 patient.id（挂号要用它）；

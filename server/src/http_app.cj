@@ -305,6 +305,17 @@ public class Principal {
     public var patientId: Int64 = 0
     public var doctorId: Int64 = 0
     public var loginName: String = ""
+    /*
+     * ★ 2026-10-14（跨端审计 F11）：令牌的**当前**有效期（epoch 秒）。
+     *
+     * ⚠ 必须是"**滑动续期之后**"的值，不能是查出来的旧值：
+     *   续期就发生在 `principalByToken` 里，若这里回填续期前的数，
+     *   客户端按它做本地倒计时就会比服务端**早一天**进登录页
+     *   （审计里 Android 端"本地有效期不同步"就是这个字段缺失导致的）。
+     * ⚠ 开发态身份（`--dev-auth` 的请求头）没有令牌 ⇒ 保持 0，
+     *   客户端见到 0 应理解为"本次不是令牌会话"。
+     */
+    public var expiresAt: Int64 = 0
 }
 
 /*
@@ -903,9 +914,17 @@ func previsitSessionJson(s: PrevisitSession): JsonObject {
 /*
  * 健康检查的响应体（`/health` 与 `/api/v1/health` 共用**同一份实现**）。
  *
- * ⚠ 只回"服务活着 + 版本 + 数据后端 + 是否开着开发态鉴权"，
- *   **不查库**：探活接口查询库会让"库慢"表现成"服务挂了"，
+ * ⚠ 只回"服务活着 + 版本 + 数据后端 + 是否开着开发态鉴权"+（2026-10-14 起）
+ *   **医院今天**，**不查库**：探活接口查询库会让"库慢"表现成"服务挂了"，
  *   而这两件事的处置完全不同（重启进程 vs 查数据库）。
+ *
+ * ★ 2026-10-14（跨端审计 F14）：新增 `today` / `timezone`。
+ *   起因：客户端拿**设备本地日期**去查排班（鸿蒙 `BookingPage` 默认日期、
+ *   `Theme.todayString()`），而服务端"今天"是 Asia/Shanghai —— 设备时区不对
+ *   或跨零点时，两侧对"今天"的答案不同：轻则默认日期查不到号，重则把
+ *   过去的排班当可用（审计里"日期跟随设备时区"就是这么来的）。
+ *   ⇒ 服务端把**权威日期**直接发出来，客户端只需读它，不必自己算时区。
+ *   `hTodayDate()` 是纯计算（无库查询），所以探活接口仍然不碰数据库。
  */
 func healthJson(gate: DevAuthGate): String {
     let o = JsonObject()
@@ -914,6 +933,8 @@ func healthJson(gate: DevAuthGate): String {
     o.put("version", JsonString(SERVER_VERSION))
     o.put("data_backend", JsonString("mysql"))
     o.put("dev_auth", JsonBool(gate.enabled))
+    o.put("today", JsonString(hTodayDate()))
+    o.put("timezone", JsonString("Asia/Shanghai"))
     return o.toString()
 }
 
@@ -1101,6 +1122,16 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         // 回显本次请求的设备标识：客户端据此在会话列表里标出"这台设备"
         let (devId, _devName) = deviceOf(ctx)
         o.put("device_id", JsonString(devId))
+        /*
+         * ★ 2026-10-14（跨端审计 F11）：回**当前**令牌有效期（滑动续期后的值）。
+         *
+         * 起因：续期发生在服务端（`principalByToken`，每天最多一次），但响应里
+         *   从来没有地方告诉客户端"你现在的 expires_at 是多少" ⇒ 各端只能一直
+         *   用登录那一刻的值做本地判断，续期对客户端**不可见**。
+         * ⚠ `--dev-auth` 下没有令牌 ⇒ `expiresAt = 0`，客户端应把 0 当作
+         *   "本次不是令牌会话"而不是"立刻过期"。
+         */
+        o.put("expires_at", JsonInt(p.expiresAt))
         sendOk(ctx, o)
     })
 

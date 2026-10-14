@@ -151,6 +151,29 @@ $r = DoReq 'long' 'POST' '/api/v1/triage' @("Authorization: Bearer $patTok") ('{
 Check "超长主诉（1200 字）→ 200 且 truncated=true（不是 500）" `
       ($r.Http -eq 200 -and $r.Json.data.truncated -eq $true) ("HTTP $($r.Http) truncated=$($r.Json.data.truncated)")
 
+# ── 5a) ★★ 截断之后仍必须按**全文**判危急（跨端审计 F01）────────────────────
+Write-Host ""
+Write-Host "[5a] ★★ 危急征象必须用全文判：截断点之后的危急词不能丢（F01）"
+# ── 这一节守的是跨端审计 F01 ─────────────────────────────────────────────
+# 审计原文：主诉按 500 字符截断**在危急征象检查之前**，于是"500 字之后写胸痛"
+# 会让保险丝失效 —— 患者被判成普通分诊，而唯一挡住它的机制就是这条保险丝。
+#
+# 服务端现在的口径（http_app.cj 的分诊 handler）：危急检测吃**完整主诉**
+# （请求体另有 bodyLimit 兜底），只有常规科室检索与模型输入用截断后的文本。
+#
+# ⚠ 用例必须**先证明它真的走了截断路径**（truncated=true），否则"没触发截断"
+#   会让这条断言白过 —— 一个永远为真的测试比没有更像坑。
+$longRed = ('咳嗽' * 300) + '，胸痛'
+$r = DoReq 'longred' 'POST' '/api/v1/triage' @("Authorization: Bearer $patTok") ('{"chief_complaint":"' + $longRed + '"}')
+Check "夹具：超长主诉确实被截断（truncated=true，否则本用例无意义）" `
+      ($r.Json.data.truncated -eq $true) ("truncated=$($r.Json.data.truncated) len=$($longRed.Length)")
+Check "★★ 截断点之后的「胸痛」仍触发 red_flag（按全文判，实得 $($r.Json.data.red_flag)）" `
+      ($r.Json.data.red_flag -eq $true) ("red_flag=$($r.Json.data.red_flag)")
+Check "★★ 且 reason_code = RED_FLAG（不是 NEED_CLARIFY/ALTERNATIVES）" `
+      ($r.Json.data.reason_code -eq 'RED_FLAG') ("reason=$($r.Json.data.reason_code)")
+Check "★★ 危急时依旧不给任何号源（count = 0）" `
+      ($r.Json.data.count -eq 0) ("count=$($r.Json.data.count)")
+
 # ── 5b) ★★ 宽度混排（ASCII 窄字符 + 汉字宽字符）不得 500 ──────────────────
 Write-Host ""
 Write-Host "[5b] ★★ 宽度混排：真实临床写法不得 500（第五份复查缺陷）"

@@ -185,6 +185,20 @@ func hVisitDate(db: DbBackend, appointmentId: Int64): String {
     return rs.getString(0, 0)
 }
 
+/*
+ * 读某令牌**落库**的有效期（AC-14 用）。
+ *
+ * 为什么要单独查库：AC-14 要抓的正是"仓储回给调用方的有效期与库里存的不一致"
+ * （服务端续期了、客户端还按旧值倒计时），所以断言不能只信返回值。
+ */
+func hTokenExpiry(db: DbBackend, token: String): Int64 {
+    let rs = db.query("SELECT expires_at FROM auth_token WHERE token = ?", [DbStr(token)])
+    if (rs.rowCount() < 1) {
+        return -1
+    }
+    return rs.getInt(0, 0)
+}
+
 /* ===================== 测试运行器 ===================== */
 
 /*
@@ -675,6 +689,88 @@ public class TestRunner {
         })
     }
 
+    /* ---------- AC-14：滑动续期必须把「续期后」的有效期回给调用方（跨端审计 F11）---------- */
+    /*
+     * 修的是什么：`principalByToken` 一直在做滑动续期（把 `expires_at` 往后推一个 TTL），
+     * 但 `Principal` 里**没有**有效期字段 ⇒ `/auth/me` 没有任何地方能告诉客户端
+     * "我这张令牌现在到什么时候"。
+     * 后果（审计 F11 原文）：各端把登录那一刻的 `expires_at` 一直缓存着，服务端的续期
+     * 对客户端**不可见**；Android 端因此按旧值倒计时，会在令牌仍然有效时把用户踢回登录页。
+     *
+     * ⚠ 覆盖边界如实记：这里测的是"回填的值是否权威"（可达、确定性）。
+     *   并发续期不会算错（那条 UPDATE 写的是**绝对值** `now + TTL`，重复执行幂等），
+     *   所以不另造并发窗口 —— 与 AC-13 同一个取舍。
+     */
+    public func ac14(): Unit {
+        println("=== AC-14 ★★ 令牌滑动续期：有效期必须回给客户端（F11）===")
+        section("AC-14", { =>
+            hResetAll(db)
+            let auth = AuthRepo(db)
+            let now = hNowEpoch()
+            // 只为造出 patient id=1（createUser 会校验业务身份真实存在）
+            let _seed = hSeedSchedule(db, 9501, 2, ACC_FIXTURE_DATE_P4)
+            let _uid = auth.createUser("ac14-renew", Role.Patient, 1, "续期验收患者",
+                                       "Ac14#Renew1", now)
+            let login = auth.login("ac14-renew", "Ac14#Renew1", now)
+            check("夹具：能登录并拿到令牌（没令牌则本用例无意义）", login.token.size > 0)
+            let token = login.token
+            /*
+             * 把令牌拨到"该续期"的状态：剩余 1000 秒（< TOKEN_TTL - RENEW_AFTER），
+             * 且上次续期在两天前（已过 RENEW_AFTER 节流窗口）。
+             */
+            db.exec("UPDATE auth_token SET expires_at = ?, last_renew_at = ? WHERE token = ?",
+                    [DbInt(now + 1000), DbInt(now - 2 * RENEW_AFTER), DbStr(token)])
+            let p = auth.principalByToken(token, now)
+            check("★ 令牌有效（否则下面断言的是 None）", p.isSome())
+            let exp = p.getOrThrow().expiresAt
+            check("★★ 回填的是**续期后**的有效期（now + TOKEN_TTL）", exp == now + TOKEN_TTL)
+            let inDb = hTokenExpiry(db, token)
+            check("★★ 且与库中值一致（两端看到同一个到期时刻；库=${inDb} 回填=${exp}）",
+                  exp == inDb)
+            /*
+             * 反向证明：**节流期内不能凭空造一个未来值**。
+             * 若实现把 `now + TOKEN_TTL` 无条件回填，客户端会看到一个库里并不存在的
+             * 有效期 —— 那是另一种"两端不一致"，只是方向相反。
+             */
+            let p2 = auth.principalByToken(token, now + 60)
+            check("★ 节流期内不重复续期：回填值等于库中值（不虚报）",
+                  p2.getOrThrow().expiresAt == hTokenExpiry(db, token))
+            check("★ 且该值仍是原来那个（没被偷偷改成 now + TOKEN_TTL）",
+                  p2.getOrThrow().expiresAt == exp)
+            // 自建自清（auth_user / auth_token 不在 hResetAll 的清理范围内）
+            db.exec("DELETE FROM auth_token WHERE token = ?", [DbStr(token)])
+            db.exec("DELETE FROM auth_user WHERE login_name = ?", [DbStr("ac14-renew")])
+        })
+    }
+
+    /* ---------- AC-15：探活接口必须给出**医院今天**与时间口径（跨端审计 F14）---------- */
+    /*
+     * 修的是什么：客户端拿**设备本地日期**当"今天"去查排班（鸿蒙 `BookingPage` 默认日期、
+     * `Theme.todayString()`），而服务端的"今天"是 Asia/Shanghai ⇒ 设备时区不对或跨零点时，
+     * 两侧对"今天"的答案不同：轻则默认日期查不到号，重则把过去的排班当可用。
+     * ⇒ 服务端在探活响应里直接给出**权威日期**与**时区名**，客户端读它即可，不必自己算。
+     */
+    public func ac15(): Unit {
+        println("=== AC-15 ★ 探活响应给出医院日期与时间口径（F14）===")
+        section("AC-15", { =>
+            let body = healthJson(DevAuthGate(false, false))
+            check("★ /health 带 today，且等于服务端口径的今天",
+                  body.contains("\"today\":\"" + hTodayDate() + "\""))
+            check("★ /health 带 timezone = Asia/Shanghai",
+                  body.contains("\"timezone\":\"Asia/Shanghai\""))
+            /*
+             * ★★ 探活接口**不能**因为多了日期而开始查库
+             *   （库慢必须表现成库慢，不能表现成服务挂了）。
+             *   这里能证明的是"不碰库也能算出这个字段"——`hTodayDate()` 是纯计算，
+             *   且与日期格式化同一口径（后者已有固定 epoch 的断言守着）。
+             */
+            check("★★ 该字段是纯计算：与日期格式化同口径（hTodayDate == hDateStringOf(now)）",
+                  hTodayDate() == hDateStringOf(hNowEpoch()))
+            check("★ 且探活仍如实报告 dev_auth（没被日期字段挤掉）",
+                  body.contains("\"dev_auth\":false"))
+        })
+    }
+
     /*
      * ⚠ 原先这里是 **AC-8：`booking_idem` 表可正常读写**。
      *   **2026-10-07 连同表与实现一起删除**（决策见 ADR-0001 §7 第 7 条）。
@@ -842,6 +938,13 @@ public func runAcceptance(db: DbBackend): Int64 {
      *   放前面会把别人的夹具清掉 —— 与所有"自建自清"的用例同一取舍。
      */
     runner.ac13()
+    /*
+     * AC-14 / AC-15（2026-10-14，跨端审计 F11 / F14 的回归护栏）。
+     * ⚠ 同样排在最后：AC-14 也 `hResetAll`，并且自建自清 `auth_user`/`auth_token`
+     *   （那两张表不在 `hResetAll` 的清理范围内，所以它必须自己收尾）。
+     */
+    runner.ac14()
+    runner.ac15()
     println("")
     println("通过 ${runner.passed} 项，失败 ${runner.failed} 项")
     if (runner.failed == 0) {

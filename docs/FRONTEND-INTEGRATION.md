@@ -30,7 +30,7 @@
 | 鉴权头 | `Authorization: Bearer <token>`；头名大小写不敏感，`Bearer` 前缀大小写不敏感，token 前后空白会被 trim（`http_app.cj:350-363`） |
 | 成功信封 | `{"ok":true,"data":{…}}`，HTTP 200 / 201（`http_common.cj:225-238`） |
 | 失败信封 | `{"ok":false,"error":{"code","message","fields"?}}`（`http_common.cj:241-253`） |
-| 唯一例外 | `GET /health`：**在根路径、不在 `/api/v1` 下、不鉴权、不走信封**，返回平铺 `{ok,service,version,data_backend,dev_auth}`（`http_app.cj:737-745`） |
+| 唯一例外 | `GET /health`：**在根路径、不在 `/api/v1` 下、不鉴权、不走信封**，返回平铺 `{ok,service,version,data_backend,dev_auth,today,timezone}`（`http_app.cj` 的 `healthJson`；`/api/v1/health` 是**同一份实现**的别名，见 §5.19） |
 | SSE | `GET /api/v1/previsit/stream?chief_complaint=…`；线格式 `data: {"event":"meta"\|"delta"\|"done","data":{…}}\n\n`（`previsit.cj:611-616`） |
 | TLS | **只在显式给 `--tls-cert/--tls-key`（或 `--tls-files`）时才启用；绝不静默降级**（`main.cj:786-836`） |
 | ID 类型 | 除预问诊 `session_id` 是 64 位 hex **字符串**外，所有 id 都是 **JSON number**（Int64） |
@@ -116,19 +116,22 @@ Invoke-RestMethod http://127.0.0.1:8091/health
 ```
 
 ```json
-{"ok":true,"service":"hospital-server","version":"0.2.0-p1","data_backend":"mysql","dev_auth":false}
+{"ok":true,"service":"hospital-server","version":"0.2.0-p1","data_backend":"mysql","dev_auth":false,"today":"2026-10-14","timezone":"Asia/Shanghai"}
 ```
 
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `ok` | Bool | 恒 `true`（**注意：这个 `ok` 与信封里的 `ok` 同级，但它没有 `data` 包装层**） |
-| `service` | String | 恒 `"hospital-server"`（`http_app.cj:740`） |
+| `service` | String | 恒 `"hospital-server"` |
 | `version` | String | `SERVER_VERSION`，当前 `"0.2.0-p1"`（`main.cj:31`）。**当成不透明字符串**，不要按版本号做能力判断 |
-| `data_backend` | String | 恒 `"mysql"`（`http_app.cj:742`） |
-| `dev_auth` | Bool | `true` = 服务端以 `--dev-auth` 启动，**开发鉴权模式已开**：`X-Role`/`X-Patient-Id`/`X-Doctor-Id` 头可绕过全部认证（`http_app.cj:321-343`）。**正式联调必须为 `false`**，前端可在设置页把 `dev_auth:true` 显示成红色告警 |
+| `data_backend` | String | 恒 `"mysql"` |
+| `dev_auth` | Bool | `true` = 服务端以 `--dev-auth` 启动，**开发鉴权模式已开**：`X-Role`/`X-Patient-Id`/`X-Doctor-Id` 头可绕过全部认证。**正式联调必须为 `false`**，前端可在设置页把 `dev_auth:true` 显示成红色告警 |
+| `today` | String | ★ **医院今天的日期**（`YYYY-MM-DD`，口径 = Asia/Shanghai）。客户端**不要**用设备本地日期去算"今天"（见 §10.4），拿这个字段即可 |
+| `timezone` | String | 恒 `"Asia/Shanghai"`，与 `today` 配套；**展示用**，不要拿它自己再换算一遍 |
 
-> ⚠ `GET /api/v1/health` → **404**（未实测；由路由表 `http_app.cj:737` 只有根路径 `/health` 直接得出，
-> 且已由手工探测确认返回平铺 `{"error":"Not Found","path":"/api/v1/health"}`，见 §12）。
+> ⚠ `GET /api/v1/health` 自 2026-10-12 起**存在**（是 `/health` 的别名、同一份实现，见 §5.19）。
+> 早期文档与手工探测记录的"`/api/v1/health` → 404"**已过时**；客户端可以统一走 `/api/v1` 前缀，
+> 不必为探活特判根路径。
 > `/health` 的响应是普通 `content-length` JSON，**不是** chunked（全项目只有 `/previsit/stream` 是 chunked 流）。
 
 ### 2.4 TLS 怎么开
@@ -375,6 +378,8 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | `patient_id` | Int64 | 非患者为 **0** |
 | `doctor_id` | Int64 | 非医生为 **0** |
 | `device_id` | String | 回显**本次请求**的 `X-Device-Id`（没带就是 `""`），用于在会话列表里标出"这台设备" |
+| `display_name` | String | 账号显示名（2026-10-12 起）。⚠ 账号在登录后被删除时**不带该字段**（不报错：令牌有效即会话成立） |
+| `expires_at` | Int64 | ★ **当前令牌的到期时刻**（epoch 秒，**滑动续期后的值**；2026-10-14 起，见 §4.1）。客户端每次拿到它都应刷新本地倒计时：登录时那个值不是一成不变的 —— 服务端会滑动续期，客户端只认旧值就会在令牌仍有效时把用户踢回登录页（跨端审计 F11）。`--dev-auth` 模式下没有令牌 ⇒ 恒为 **0**（= "本次不是令牌会话"，**不是**"已过期"） |
 
 错误：`401 AUTH_REQUIRED`（没带令牌）/ `401 AUTH_TOKEN_EXPIRED`（令牌无效或过期）。
 
@@ -493,6 +498,12 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 `TRIAGE_INPUT_MAX_CHARS = 500` 字符，并把 `truncated` 置 `true`（**不报错**，`http_app.cj:1181-1186`、
 `http_app.cj:593-614`）。实测 1200 字主诉 → 200 且 `truncated=true`（不是 500）。
 客户端仍应在本地限制输入长度。
+
+★ **截断不影响危急检测**（2026-10-14，跨端审计 F01）：截断后的文本只用于**常规检索与模型输入**，
+危急（`red_flag`）判定始终拿**用户原文**（`http_app.cj` 把 `redFlagComplaint: Some(complaint)` 原文一并传下去）。
+⇒ 主诉很长、末尾才写「胸痛」时，仍然 `red_flag=true`、`reason_code=RED_FLAG`、`options` 为空。
+回归护栏：`tests\triage-check.ps1` 的该用例（600 字 + 末尾「胸痛」，并先断言 `truncated=true`）。
+客户端**不要**因为 `truncated=true` 就向用户暗示"系统可能没看到你说的危急症状"。
 
 **成功 `200`**
 
@@ -961,6 +972,8 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | 端点 | 新增字段 | 为什么 |
 | --- | --- | --- |
 | `GET /api/v1/auth/me`（§5.3） | `display_name` | 此前只回 id/role，患者端「同步身份信息」刷不出姓名 |
+| `GET /api/v1/auth/me`（§5.3） | ★ `expires_at` | **2026-10-14 新增（跨端审计 F11）**：服务端会**滑动续期**（每天最多写一次库、把到期时刻往后推一个 TTL），但此前响应里没有任何地方能读到"现在到期时刻是多少" ⇒ 各端只能拿登录那一刻的旧值倒计时，Android 端因此在令牌仍有效时把用户踢回登录页。现在每次 `/auth/me` 都回**续期后**的值 |
+| `GET /health` 与 `GET /api/v1/health`（§5.1/§5.19） | ★ `today` `timezone` | **2026-10-14 新增（跨端审计 F14）**：客户端原来自已用**设备本地日期**当"今天"去查排班（鸿蒙 `BookingPage` 默认日期、`Theme.todayString()`），设备时区不对或跨零点就会查不到当天号源。服务端直接把权威日期发出来，客户端读它即可 |
 | `GET /api/v1/schedules`（§5.12） | `department_name` `doctor_name` `doctor_title` `version` | 患者端此前只能显示 `科室 #810003 · 医生 #900003`；`version` 供"号源已变化"提示（`/schedules/:id` 早就给了） |
 | `GET /api/v1/appointments`（§5.14） | 同上三个名称 | 首页「下一次就诊」/就诊列表 |
 | `POST /api/v1/appointments`（§5.15） | 名称三个 + `remain_num` | 挂完号**就地刷新「余 N」**，不必再发一次排班查询 |
@@ -979,7 +992,10 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 并由 `selftest` 用**固定 epoch** 钉住（含"UTC 10-11T16:30 在上海应算 2026-10-12"这条跨零点断言）。
 
 ⚠ 客户端 `Theme.todayString()` 用的是**设备本地日期**：设备时区若被设成非中国时区，
-仍可能出现跨零点不一致（建议客户端显示"今天"时以服务端 `date` 字段为准）。
+仍可能出现跨零点不一致。★ **2026-10-14 起服务端提供权威日期**：
+`GET /health` 与 `GET /api/v1/health` 的响应带 `today`（`YYYY-MM-DD`）与 `timezone`（恒 `Asia/Shanghai`），
+客户端应**直接读它**，不要再自己按设备时区算"今天"（跨端审计 F14）。
+由 `accept` 的 AC-15 与 `tests\health-check.ps1`（含"`today` == UTC+8 当天"的断言）守住。
 
 ---
 
@@ -1241,12 +1257,16 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 
 ### 10.4 日期与"今天"的口径差异
 
-* 服务端 `hTodayDate()` 用 **UTC**（`http_app.cj:566-584`），返回 `YYYY-MM-DD`。
+* 服务端 `hTodayDate()` 用 **Asia/Shanghai**（`HOSPITAL_TZ_OFFSET_SECONDS = 8 * 3600`，`http_app.cj`），返回 `YYYY-MM-DD`。
+  （本节 2026-10-12 之前写的是"用 UTC"，那已是**过时**描述；现口径见 §5.25。）
 * 客户端拼 `work_date` 用**本地时区** ⇒ 跨零点时服务端"今天"可能比本地**早一天**。
-  现象：本地以为"今天的号"查不到（分诊的号源筛选用的是服务端 UTC 今天）。
-* ⚠ 服务端**没有任何接口**返回"服务端的今天"（`/health` 不返回日期），所以客户端**无法**拿到那个 UTC 日期。
-* 建议：客户端做"今天之后"过滤时，**不要假设服务端的今天**——用本地日期做一次宽松过滤（例如保留 `>= 本地今天 - 1 天`），
-  并以**分诊返回的 `work_date`** 为权威来展示与排序；"当天号查不到"最终以分诊 `reason_code` 为准（`NO_BOOKABLE` = 真的没号）。
+  现象：本地以为"今天的号"查不到（分诊的号源筛选用的是服务端的今天）。
+* ★ **2026-10-14 起服务端有接口返回"服务端的今天"**：`GET /health` 与 `GET /api/v1/health`
+  的响应带 `today`（`YYYY-MM-DD`）与 `timezone`（恒 `"Asia/Shanghai"`）。
+  ⇒ 客户端**直接读这个字段**当"今天"，不要再按设备时区自己算（跨端审计 F14）。
+  （▲ 本节此前写的"服务端没有任何接口返回服务端的今天（`/health` 不返回日期）"**已作废**。）
+* 建议：客户端做"今天之后"过滤时用 `/health` 的 `today`；并以**分诊返回的 `work_date`** 为权威来展示与排序；
+  "当天号查不到"最终以分诊 `reason_code` 为准（`NO_BOOKABLE` = 真的没号）。
 
 ### 10.5 网络层工程约定（非契约）
 
@@ -1299,18 +1319,22 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 ### 12.1 `GET /health` 原始返回
 
 ```json
-{"ok":true,"service":"hospital-server","version":"0.2.0-p1","data_backend":"mysql","dev_auth":false}
+{"ok":true,"service":"hospital-server","version":"0.2.0-p1","data_backend":"mysql","dev_auth":false,"today":"2026-10-14","timezone":"Asia/Shanghai"}
 ```
 
-* 平铺、**无信封**、**不在 `/api/v1` 下**（实测 `GET /api/v1/health` → 404）。
-* 是 `content-length: 100` 的普通 JSON，**不是 chunked**（只有 `/previsit/stream` 是 chunked）。
+* 平铺、**无信封**；`/api/v1/health` 是**同一份实现**的别名（见 §5.19）。
+  ▲ 本节此前写的"实测 `GET /api/v1/health` → 404"是 **2026-10-12 之前**的记录，**已作废**
+  （2026-10-14 由 `tests\health-check.ps1` 实测两个路径均为 200 且字段一致）。
+* 是普通 `content-length` JSON，**不是 chunked**（只有 `/previsit/stream` 是 chunked）。
+* ★ `today` 的口径由脚本钉住：`tests\health-check.ps1` 断言它等于 **UTC+8 当天**（不是设备本地日期）。
 
-### 12.2 `auth-check.ps1`（25 项）
+### 12.2 `auth-check.ps1`（29 项）
 
 * **无令牌访问业务接口 → 401，错误码 `AUTH_REQUIRED`**。
-  ★ 与契约核对：一致（`http_app.cj:346` 抛 `AUTH_REQUIRED`，message「缺少 Authorization: Bearer \<token\>」）。
-* 错误口令 → 401；**账号不存在 → 同一个错误码**（防枚举）；计时比 **1.20**（< 2 判为防枚举成立）。
+  ★ 与契约核对：一致（`http_app.cj` 抛 `AUTH_REQUIRED`，message「缺少 Authorization: Bearer \<token\>」）。
+* 错误口令 → 401；**账号不存在 → 同一个错误码**（防枚举）；计时比 **1.24**（< 2 判为防枚举成立）。
 * 乱令牌 → 401（`AUTH_TOKEN_EXPIRED`）。
+* ★ **`/auth/me` 回报 `expires_at`，且与登录响应一致、在未来**（2026-10-14 新增，跨端审计 F11）。
 * 管理员重置口令后**旧令牌立即失效 → 401**；旧口令登录失败 → 401；新口令登录成功 → 200。
 * 登出 → 200；**登出后同一令牌 → 401**。
 * 患者建排班 / 建账号 → **403 `FORBIDDEN_ROLE`**；患者查排班**不是 403**（有则 200 / 无则 404）。
@@ -1325,7 +1349,7 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 * 成功登录**清零**计数。
 * `retry-after` 在同一锁定窗口内递减（实测 900 → 899）；不同账号互不影响（锁 A 时 B 用正确口令照常 200）。
 
-### 12.4 `triage-check.ps1`（24 项）
+### 12.4 `triage-check.ps1`（28 项）
 
 * 管理员调 `POST /api/v1/triage` → **403**（患者侧接口）。
 * 缺 `chief_complaint` → **400 `VALIDATION_FAILED`**；**空白主诉 → 200 `reason_code=NO_COMPLAINT`**。
@@ -1333,6 +1357,14 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 * 号满的排班**不出现**在 `options`（`reason_code=ALTERNATIVES count=1`）；有号后能推荐（`reason_code=OK`、`remain_num=3`）。
 * `source=rules`。
 * **1200 字主诉 → 200 且 `truncated=true`**（不是 500）。
+* ★ **600 字主诉 + 末尾「胸痛」→ 仍 `red_flag=true` / `RED_FLAG` / `count=0`**：截断发生在常规检索与模型输入，
+  **不发生在危急检测**（2026-10-14 新增，跨端审计 F01；用例先断言 `truncated=true`，避免"没触发截断"让断言白过）。
+
+### 12.8 `health-check.ps1`（15 项，2026-10-14 新增）
+
+* 两个路径（`/health`、`/api/v1/health`）**都不需要令牌**且均 200；两路径的 `today`/`timezone`/`version` 一致。
+* 响应形状：`ok/service/version/data_backend/dev_auth` 齐备，且**不含** `password|secret|dsn|token` 字样（它是不鉴权接口）。
+* ★★ `today` 等于 **UTC+8 当天**、`timezone` 恒 `Asia/Shanghai`（跨端审计 F14 的回归护栏）。
 
 ### 12.5 `previsit-check.ps1`（86 项，含 SSE）
 
@@ -1495,15 +1527,17 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 ```jsonc
 // GET /health（平铺，无 data 包装）
 { "ok": true, "service": "hospital-server", "version": "0.2.0-p1",
-  "data_backend": "mysql", "dev_auth": false }
+  "data_backend": "mysql", "dev_auth": false,
+  "today": "2026-10-14", "timezone": "Asia/Shanghai" }
 
 // POST /api/v1/auth/login
 { "ok": true, "data": { "token": "9f2c…(64 hex)…", "expires_at": 1790000000,
   "user_id": 12, "role": "patient", "ref_id": 7, "display_name": "张三", "patient_id": 7 } }
 
-// GET /api/v1/auth/me
+// GET /api/v1/auth/me（expires_at 是**续期后**的值，见 §5.3）
 { "ok": true, "data": { "user_id": 12, "role": "patient",
-  "patient_id": 7, "doctor_id": 0, "device_id": "dev-001" } }
+  "patient_id": 7, "doctor_id": 0, "device_id": "dev-001",
+  "expires_at": 1790086400 } }
 
 // GET /api/v1/schedules?department_id=3&work_date=2026-11-20
 { "ok": true, "data": { "schedules": [
