@@ -158,6 +158,15 @@ public class AiCallResult {
     public var elapsedMs: Int64 = 0
     /* 是否发生了解析或校验层面的失败（与网络失败区分）。 */
     public var invalidOutput: Bool = false
+    /*
+     * ★ 2026-10-14 增：HTTP 状态码（0 = 没走到收到响应那一步）。
+     *
+     * ⚠ 为什么值得单独一个字段：管理台的「连通性测试」要显示"到底发生了什么"。
+     *   只看 `reason` 的话，401（密钥错）与 404（地址写错）在文案里长得像
+     *   "都是模型返回了一个错误" —— 而这两件事的处置完全不同
+     *   （一个去改密钥，一个去改地址）。**数字比措辞更不容易被误读。**
+     */
+    public var httpStatus: Int64 = 0
 }
 
 /* ===================== 可调用性判定 ===================== */
@@ -344,9 +353,19 @@ private func aiCallChatRaw(o: AiRuntimeOptions, prompt: String, now: Int64,
      *   （患者侧的 SSE 由我们重新产出）。让模型侧也流式只会让"超时/半截响应"
      *   更难处理，收益为零。
      */
+    /*
+     * ★ 2026-10-14：补 `temperature`。
+     *
+     * ⚠ 在这之前，本项目的出站请求体**从不发 temperature** —— 于是"温度"
+     *   这件事在服务端根本不存在（`grep -i temperature` 零命中），
+     *   而管理台的模型配置页恰恰要按每条配置设它（截图上的 0.30）。
+     *   ⇒ 现在它来自**生效的那条模型配置**（见 ai_settings.cj 的 aiRuntimeResolve），
+     *     旧 KV 路线下取 `ai.temperature`（默认 0.30）。
+     */
     let reqBody = JsonObject()
     reqBody.put("model", JsonString(o.model))
     reqBody.put("max_tokens", JsonInt(o.maxTokens))
+    reqBody.put("temperature", JsonFloat(o.temperature))
     let msgs = JsonArray()
     let sysMsg = JsonObject()
     sysMsg.put("role", JsonString("system"))
@@ -441,6 +460,7 @@ private func aiCallChatRaw(o: AiRuntimeOptions, prompt: String, now: Int64,
         let status = Int64(resp.status)
         let body = aiReadAll(resp.body)
         r.elapsedMs = aiNowMs() - t0
+        r.httpStatus = status
         if (status < 200 || status >= 300) {
             /*
              * ⚠ 错误体**不回显给患者**，只进 `reason`（运维看）。
@@ -576,4 +596,194 @@ public func aiRedact(text: String, key: String): String {
         guard_ = guard_ + 1
     }
     return out
+}
+
+/* ===================== 连通性测试的最小出站调用（2026-10-14 增）===================== */
+
+/*
+ * 连通性测试的公共出站段。
+ *
+ * ⚠ 与 `aiCallChatRaw` **刻意分开**（不是重复代码，是两件事）：
+ *   · 正式调用要并发闸、预算控制、降级语义、响应解析；
+ *   · 连通性测试**只有一次、短超时、由人触发**，要的是"最快回答能不能连上"。
+ *   把两者揉在一起会让正式路径多出一堆"只有测试才用"的分支 ——
+ *   而正式路径上的每个分支都是患者可见的风险。
+ *
+ * ⚠ 相同的是**安全口径**：https 强制、密钥只从引用解析、错误体先脱敏。
+ */
+private func aiProbePost(endpoint: String, keyRef: String, bodyJson: String,
+                         timeoutSecs: Int64): AiCallResult {
+    let r = AiCallResult()
+    let t0 = aiNowMs()
+    if (!startsWithAscii(endpoint.toAsciiLower(), "https://")) {
+        r.reason = "接口地址必须是 https://（明文调用大模型 = 密钥裸奔）"
+        return r
+    }
+    var key = ""
+    match (aiResolveKey(keyRef)) {
+        case Some(k) => key = k
+        case None =>
+            r.reason = aiKeyRefProblem(keyRef)
+            return r
+    }
+    try {
+        let b = ClientBuilder()
+        b.tlsConfig(TlsClientConfig())
+        b.noProxy()
+        let d = Duration.second * timeoutSecs
+        b.readTimeout(d)
+        b.writeTimeout(d)
+        let c = b.build()
+        try {
+            let req = HttpRequestBuilder().method("POST").url(endpoint)
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + key)
+                .readTimeout(d)
+                .writeTimeout(d)
+                .body(bodyJson).build()
+            let resp = c.send(req)
+            let status = Int64(resp.status)
+            let body = aiReadAll(resp.body)
+            r.elapsedMs = aiNowMs() - t0
+            r.httpStatus = status
+            if (status < 200 || status >= 300) {
+                r.reason = "模型返回 HTTP ${status}：${aiRedact(body, key)}"
+                return r
+            }
+            r.text = body
+            /*
+             * ⚠ 这里的 `ok` 只表示**"出站走到 HTTP 2xx"**，不表示"结果可用" ——
+             *   形状校验由调用方（aiProbeChat / aiProbeEmbedding）接着做，
+             *   它们会把 `ok` 修正回 false 并给出具体原因。
+             *   📌 分成两段是为了**不覆盖已有的失败原因**：HTTP 401 的原因
+             *     （密钥错）比"响应形状不对"有用得多，不能被后一段冲掉。
+             */
+            r.ok = true
+            return r
+        } finally {
+            c.close()
+        }
+    } catch (e: Exception) {
+        r.elapsedMs = aiNowMs() - t0
+        r.reason = "出站调用异常：${aiRedact(e.message, key)}"
+        return r
+    }
+}
+
+/*
+ * 对话模型的连通性测试：发一条最小的 chat 请求。
+ *
+ * ⚠ `max_tokens` 取 8（不是 1）：有些兼容实现在 `max_tokens=1` 时会返回
+ *   **空内容**，那会让"连通"被判成"异常"（假失败比假成功更费排查时间）。
+ * ⚠ 形状仍按**正式路径的同一函数** `aiExtractContent` 判 ——
+ *   连通性测试必须验证"我们真正依赖的那个字段拿得到"，
+ *   否则会出现"测试通过，正式调用解析失败"。
+ */
+public func aiProbeChat(endpoint: String, model: String, keyRef: String, temperature: Float64,
+                        maxTokens!: Int64 = 8, timeoutSecs!: Int64 = 15): AiCallResult {
+    let reqBody = JsonObject()
+    reqBody.put("model", JsonString(model))
+    reqBody.put("max_tokens", JsonInt(maxTokens))
+    reqBody.put("temperature", JsonFloat(temperature))
+    let msgs = JsonArray()
+    let m = JsonObject()
+    m.put("role", JsonString("user"))
+    m.put("content", JsonString("连通性测试：请只回复 ok"))
+    msgs.add(m)
+    reqBody.put("messages", msgs)
+    let r = aiProbePost(endpoint, keyRef, reqBody.toString(), timeoutSecs)
+    if (!r.ok) {
+        return r
+    }
+    match (aiExtractContent(r.text)) {
+        case Some(text) =>
+            if (text.trimAscii().size == 0) {
+                r.invalidOutput = true
+                r.ok = false
+                r.reason = "连通（HTTP ${r.httpStatus}）但内容为空（choices[0].message.content 为空）"
+                r.text = ""
+                return r
+            }
+            r.text = text.trimAscii()
+            return r
+        case None =>
+            r.invalidOutput = true
+            r.ok = false
+            r.reason = "响应不是预期的 JSON 形状（choices[0].message.content）"
+            r.text = ""
+            return r
+    }
+}
+
+/*
+ * 向量模型的连通性测试。
+ *
+ * ⚠ 响应形状校验**必须在这一层做**：本项目的向量存储是 `kb_chunk.embedding`
+ *   里的一串数字，如果连通性测试只看 HTTP 200，就会出现
+ *   "测试通过、但回填向量时解析不出数组" —— 那是最难查的一类问题。
+ */
+public func aiProbeEmbedding(endpoint: String, model: String, keyRef: String,
+                             timeoutSecs!: Int64 = 15): AiCallResult {
+    let reqBody = JsonObject()
+    reqBody.put("model", JsonString(model))
+    /*
+     * ⚠ `input` 用**数组**（OpenAI 兼容约定；有些实现两种都收，
+     *   但数组是两边都认的形状）。内容用最短的非空字符串。
+     */
+    let inputs = JsonArray()
+    inputs.add(JsonString("ping"))
+    reqBody.put("input", inputs)
+    let r = aiProbePost(endpoint, keyRef, reqBody.toString(), timeoutSecs)
+    if (r.httpStatus == 0) {
+        return r
+    }
+    let dim = aiExtractEmbeddingDim(r.text)
+    if (dim <= 0) {
+        r.invalidOutput = true
+        r.reason = "响应不是预期的向量形状（data[0].embedding 不是非空数组）"
+        r.text = ""
+        return r
+    }
+    r.ok = true
+    r.text = "向量维度 ${dim}"
+    return r
+}
+
+/*
+ * 从 embeddings 响应里取向量维度；形状不符返回 -1。
+ *
+ * ⚠ 每一层先判类型再取值（`asXxx()` 类型不符会抛异常，本项目记过这条）。
+ */
+public func aiExtractEmbeddingDim(body: String): Int64 {
+    try {
+        let v = JsonValue.fromStr(body)
+        if (!(v is JsonObject)) {
+            return -1
+        }
+        match (v.asObject().get("data")) {
+            case Some(d) =>
+                if (!(d is JsonArray)) {
+                    return -1
+                }
+                let arr = d.asArray()
+                if (arr.size() < 1) {
+                    return -1
+                }
+                let first = arr[0]
+                if (!(first is JsonObject)) {
+                    return -1
+                }
+                match (first.asObject().get("embedding")) {
+                    case Some(e) =>
+                        if (!(e is JsonArray)) {
+                            return -1
+                        }
+                        return e.asArray().size()
+                    case None => return -1
+                }
+            case None => return -1
+        }
+    } catch (e: Exception) {
+        return -1
+    }
 }

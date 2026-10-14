@@ -391,6 +391,55 @@ $src = $tri.data.source
 Check "⑤ source 如实标注（rules / model / model:invalid 三者之一，实得 $src）" `
       (@("rules","model","model:invalid") -contains $src) ("source=$src")
 
+# ── [7] ★ 排班可改：放号数 / 停诊（管理台「排班号源」页的编辑按钮）
+#   ⚠ 此前**只有建、没有改**：号源写错或医生停诊只能再开一条排班，
+#     老排班连同已经约出去的号继续挂在患者端可约。
+#     本段用的是上面 [6] 刚建出来的那条排班（department=$respId）。
+Write-Host ""
+Write-Host "[7] ★ 排班改放号数 / 停诊（PUT /api/v1/admin/schedules/:id）"
+$schedId = [int](Scalar "SELECT id FROM schedule WHERE department_id=$respId ORDER BY id DESC LIMIT 1")
+Check "① 取到刚排的号源 id" ($schedId -gt 0) ("id=$schedId")
+
+# 放号数 10 → 20：余量同步 +10（保持已约数不变），版本 +1
+$r = Req 's1' 'PUT' "/api/v1/admin/schedules/$schedId" @("Authorization: Bearer $admTok") '{"total_num":20,"version":0}'
+$sj = $r.Body | ConvertFrom-Json
+Check "② ✓ 放号数 10→20 ⇒ 200、余量同步为 20、版本 1（HTTP $($r.Http)）" `
+      ($r.Http -eq 200 -and $sj.data.total_num -eq 20 -and $sj.data.remain_num -eq 20 -and $sj.data.version -eq 1) `
+      ("HTTP=$($r.Http) body=$($r.Body)")
+# ★★ 只在响应里说"改好了"不算：必须落库
+Check "② 且库里确实 20/20（不是只在响应里说说）" `
+      ((Scalar "SELECT CONCAT(total_num,'/',remain_num) FROM schedule WHERE id=$schedId") -eq '20/20')
+
+# 先造出"已约 3 个"，才能验证不变量
+SqlFile "UPDATE schedule SET remain_num = remain_num - 3, version = version + 1 WHERE id = $schedId;" "造已约"
+
+# ★★ 不变量：放号数不得低于已约数（否则余量为负 = 超卖）
+$r = Req 's2' 'PUT' "/api/v1/admin/schedules/$schedId" @("Authorization: Bearer $admTok") '{"total_num":2,"version":2}'
+Check "★★ ③ 放号数降到已约数(3)以下 ⇒ 400，且库里**一个字都没改**（HTTP $($r.Http)）" `
+      ($r.Http -eq 400 -and (Scalar "SELECT CONCAT(total_num,'/',remain_num) FROM schedule WHERE id=$schedId") -eq '20/17') `
+      ("HTTP=$($r.Http) code=$(($r.Body | ConvertFrom-Json).error.code) body=$($r.Body)")
+
+# 乐观锁：拿过期版本号改
+$r = Req 's3' 'PUT' "/api/v1/admin/schedules/$schedId" @("Authorization: Bearer $admTok") '{"total_num":15,"version":0}'
+Check "★★ ④ 拿过期版本号改 ⇒ 409 SCHEDULE_CONFLICT（不是静默成功、也不是覆盖别人）" `
+      ($r.Http -eq 409 -and ($r.Body | ConvertFrom-Json).error.code -eq 'SCHEDULE_CONFLICT') `
+      ("HTTP=$($r.Http) code=$(($r.Body | ConvertFrom-Json).error.code)")
+
+# 停诊：PATCH 语义 —— 只给 enabled，不动放号数/余量
+$r = Req 's4' 'PUT' "/api/v1/admin/schedules/$schedId" @("Authorization: Bearer $admTok") '{"enabled":false,"version":2}'
+Check "★ ⑤ 停诊 ⇒ 200、库里 enabled=0、且余量没被动（PATCH 语义）" `
+      ($r.Http -eq 200 -and (Scalar "SELECT enabled FROM schedule WHERE id=$schedId") -eq '0' -and `
+       (Scalar "SELECT remain_num FROM schedule WHERE id=$schedId") -eq '17') `
+      ("HTTP=$($r.Http) body=$($r.Body)")
+
+$r = Req 's5' 'PUT' '/api/v1/admin/schedules/999999' @("Authorization: Bearer $admTok") '{"total_num":5,"version":0}'
+Check "★ ⑥ 改不存在的排班 ⇒ 404（不是 200、也不是 500）" `
+      ($r.Http -eq 404) ("HTTP=$($r.Http) code=$(($r.Body | ConvertFrom-Json).error.code)")
+
+$r = Req 's6' 'PUT' "/api/v1/admin/schedules/$schedId" @("Authorization: Bearer $admTok") '{"version":3}'
+Check "★ ⑦ 放号数与启停都不给 ⇒ 400（拒绝空改动，别让它白推一次版本号）" `
+      ($r.Http -eq 400) ("HTTP=$($r.Http) code=$(($r.Body | ConvertFrom-Json).error.code)")
+
 # 闭合第 5 节的守卫（见上面 `if ($respId -le 0) { ... } else {`）
 }
 

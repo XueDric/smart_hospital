@@ -938,7 +938,7 @@ func healthJson(gate: DevAuthGate): String {
     return o.toString()
 }
 
-public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate, triage: TriageRepo, previsit: PrevisitRepo, aiSettings: AiSettingsRepo, prompts: PromptRepo,
+public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate, triage: TriageRepo, previsit: PrevisitRepo, aiSettings: AiSettingsRepo, aiModels: AiModelRepo, prompts: PromptRepo,
                            emr: MedicalRecordRepo, visit: VisitRepo,
                            dash: DashboardRepo, triageStat: TriageStatRepo,
                            dept: DepartmentRepo, doc: DoctorRepo, kb: KbRepo,
@@ -961,7 +961,19 @@ public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuth
     r.get("/api/v1/health", { ctx: Context, _: () -> Unit =>
         ctx.status(200).json(healthJson(gate))
     })
-
+    /*
+     * ★ 这里**曾经**有一条 `GET /admin → 302 /admin/` 的路由，2026-10-14 删除。
+     *
+     * 删它的原因不是"不需要"，而是"永远轮不到"：静态中间件用前缀 "/admin"
+     * 时会把余部为空的 `/admin` 也认领掉（前缀匹配成功 + 余部为空 ⇒ 目录
+     * ⇒ 回 indexFile），所以这个 handler 是**死代码**。
+     * 为了让它生效而把前缀改成 "/admin/" 更糟：框架守卫要求余部以 '/' 开头，
+     * 那会让 `/admin` 前缀下的**所有资源**都透传到路由上 404（实测）。
+     *
+     * 结论：不靠重定向，改由**前端用绝对路径引用资源**（见 admin-web/index.html
+     * 的 `/admin/css/style.css`、`/admin/js/api.js` 等）—— 这样 `/admin` 与 `/admin/`
+     * 两种入口都能正常渲染。详细推理见 `buildHospitalApp` 里静态挂载的注释。
+     */
     /* ===================== 鉴权接口 ===================== */
 
     /* ---------- POST /api/v1/auth/login —— 登录换令牌 ---------- */
@@ -1195,33 +1207,84 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         sendCreated(ctx, o)
     })
 
-    /* ---------- GET /api/v1/admin/users?login_name= —— 按登录名查账号（仅管理员）---------- */
+    /* ---------- GET /api/v1/admin/users —— 账号查询 / 列表（仅管理员）---------- */
     /*
      * 用途：前台"这个手机号对应的账号 id 是多少"是常规需求；
      * 测试夹具也需要它来把已存在的账号口径拉回已知状态。
      *
      * ⚠ **只返回非敏感字段** —— 绝不回 pw_salt / pw_hash（哪怕给管理员也不回：
      *   口令材料没有任何前端用途，回它只是给泄露多开一条路）。
+     *
+     * ★ 2026-10-14：**同一路径补了列表模式**（管理台「用户管理」页需要一张能翻页的表）。
+     *   两种语义由参数决定，**互不干扰**：
+     *     · 给了 `login_name` ⇒ **按登录名精确查单条**（原语义原样保留，
+     *       找不到仍 404 USER_NOT_FOUND —— 老的调用方与测试脚本一个字都不用改）；
+     *     · 没给 `login_name` ⇒ **列表模式**：`limit`/`offset`/`role`/`status`，
+     *       回 `{items,count,total,limit,offset}`。
+     *   为什么不做成两个路径：两件事读的是**同一张表、同一批字段**，
+     *   分成两条会让"字段只改了一边"这类不一致有机会发生。
      */
     r.get("/api/v1/admin/users", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.ManageSchedule)
         let loginName = ctx.queryParamOr("login_name", "")
-        if (loginName.size == 0) {
-            throw apiErrorMsg("VALIDATION_FAILED", "缺少查询参数 login_name")
+        if (loginName.size > 0) {
+            match (auth.findUser(loginName)) {
+                case Some(u) =>
+                    let o = JsonObject()
+                    o.put("user_id", JsonInt(u.id))
+                    o.put("login_name", JsonString(u.loginName))
+                    o.put("role", JsonString(roleName(u.role)))
+                    o.put("ref_id", JsonInt(u.refId))
+                    o.put("display_name", JsonString(u.displayName))
+                    o.put("status", JsonString(u.status))
+                    sendOk(ctx, o)
+                case None => throw apiErrorMsg("USER_NOT_FOUND", "账号不存在：${loginName}")
+            }
+            return
         }
-        match (auth.findUser(loginName)) {
-            case Some(u) =>
-                let o = JsonObject()
-                o.put("user_id", JsonInt(u.id))
-                o.put("login_name", JsonString(u.loginName))
-                o.put("role", JsonString(roleName(u.role)))
-                o.put("ref_id", JsonInt(u.refId))
-                o.put("display_name", JsonString(u.displayName))
-                o.put("status", JsonString(u.status))
-                sendOk(ctx, o)
-            case None => throw apiErrorMsg("USER_NOT_FOUND", "账号不存在：${loginName}")
+        /*
+         * 列表模式。⚠ `limit` 缺省 50、夹到 1..200：与知识库/公告的"默认给一页、
+         * 但不给无限"同一口径（无上限的列表 = 一次请求把库拖出来）。
+         * ⚠ 非法值（0/负数/非数字）**回默认 50**而不是报错 —— 与"筛选值非法当没筛"
+         *   同一条容错口径；`offset` 负数夹到 0（负偏移在 SQL 里是错误，不能透传）。
+         */
+        var limit = parseInt64Or(ctx.queryParamOr("limit", "50"), 50)
+        if (limit < 1 || limit > 200) {
+            limit = 50
         }
+        var offset = parseInt64Or(ctx.queryParamOr("offset", "0"), 0)
+        if (offset < 0) {
+            offset = 0
+        }
+        let roleFilter = ctx.queryParamOr("role", "")
+        let statusFilter = ctx.queryParamOr("status", "")
+        let rows = auth.listUsers(limit, offset, roleFilter, statusFilter)
+        let items = JsonArray()
+        var n: Int64 = 0
+        for (u in rows) {
+            let e = JsonObject()
+            /*
+             * ⚠ 列表项的键名与精确查询**保持一致**（`user_id` 而不是 `id`）：
+             *   同一个路径两种模式，字段名不一致会让前端写两次解包。
+             */
+            e.put("user_id", JsonInt(u.id))
+            e.put("login_name", JsonString(u.loginName))
+            e.put("role", JsonString(roleName(u.role)))
+            e.put("ref_id", JsonInt(u.refId))
+            e.put("display_name", JsonString(u.displayName))
+            e.put("status", JsonString(u.status))
+            items.add(e)
+            n = n + 1
+        }
+        let o = JsonObject()
+        o.put("items", items)
+        /* `count` = 本页条数（与其余列表接口同义）；`total` = 符合条件的总数。 */
+        o.put("count", JsonInt(n))
+        o.put("total", JsonInt(auth.countUsers(roleFilter, statusFilter)))
+        o.put("limit", JsonInt(limit))
+        o.put("offset", JsonInt(offset))
+        sendOk(ctx, o)
     })
 
     /* ---------- POST /api/v1/admin/users/:id/password —— 重置口令（仅管理员）---------- */
@@ -1287,6 +1350,30 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.ManageSchedule)
         let key = ctx.paramOr("key", "")
+        /*
+         * ★★ 命名空间闸门：本端点**只写 `ai.*` 静态登记项**（2026-10-14 修的真实漏洞）。
+         *
+         *   `AiSettingsRepo.put()` 是**共享**入口 —— 同一张 KV 表上挂了三个命名空间
+         *   （`ai.*` / `prompt.*` / `ai.tool.*`，见那里的注释），所以它的"已登记"判定
+         *   （`aiSettingKeyKnown`）**也认** `prompt.*` 与 `ai.tool.*`。而本端点是
+         *   "配置项"语义的入口 ⇒ 于是
+         *     `PUT /api/v1/admin/ai/settings/prompt.dept`（body 任意文本）
+         *   能**绕过** `PromptRepo.put()` 的占位符/长度校验直接落库，
+         *   而 `aiPromptsJson()` 与运行时都会读到它 —— 校验被静默跳过，
+         *   配置却"看起来写成功了"。这是本仓一贯抓的那一类：
+         *   **同一份数据有两个入口，只有一个入口装了闸门**。
+         *
+         *   ⇒ 处置：**在这个入口收窄**，不去动共享的 `put()` ——
+         *     它的另外两个调用方（PromptRepo 的闸门在 PromptRepo.put 里、
+         *     工具开关的闸门在 aiToolSet 里）都各自有校验，动共享层会连带改两处语义。
+         *   ⚠ 消息里必须写明**该走哪条路**，否则调用方只会对着同一个 400 反复重试。
+         */
+        if (aiSettingSpecOf(key).isNone()) {
+            throw apiErrorMsg("VALIDATION_FAILED",
+                "配置项 ${key} 不在本端点的登记表里；" +
+                "Prompt 模板改走 PUT /api/v1/admin/ai/prompts/:name，" +
+                "工具开关改走 PUT /api/v1/admin/ai/tools/:name")
+        }
         let body = bodyObj(ctx)
         let value = match (bodyStr(ctx, "value")) {
             case Some(v) => v
@@ -1380,6 +1467,233 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         }
         sendOk(ctx, aiSettingsJson(aiSettings, hNowEpoch()))
     })
+    /* ===================== AI 模型配置（`ai_model` 表）===================== */
+    /*
+     * ★ 与 `/admin/ai/settings` 的**分工**（两页并存，必须一句话说清）：
+     *   · `ai/settings` —— **全局**事实：总开关、超时、并发、全局密钥引用兜底…；
+     *   · `ai/models`   —— **一个模型一行**：类型(CHAT|EMBEDDING)/提供方/接口地址/
+     *     模型名称/温度/最大Token/启停/是否默认。
+     *   运行期装配口径：`AiSettingsRepo.options()` 取"默认对话模型"那一行**整体覆盖**
+     *   KV（理由见那里的注释：逐字段合并会拼出一个"两个来源的模型"，没人知道请求发给了谁）。
+     *
+     * ⚠ 权限沿用 `Action.ManageSchedule`（与既有 8 条 AI 端点同一个动作）——
+     *   同一个页面上出现两个权限动作，会让"谁能改 AI"有两个答案。
+     */
+
+    /* ---------- GET /api/v1/admin/ai/models —— 列表（仅管理员）---------- */
+    r.get("/api/v1/admin/ai/models", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        /*
+         * ⚠ `include_disabled` 与科室/医生/公告**同口径**：默认 "true"（都返回），
+         *   只有字面 "false" 才过滤停用。停用的配置本身就是管理台要看的对象 ——
+         *   过滤掉会让"我那条配置怎么不见了"变成一个只能靠猜的问题。
+         */
+        let includeDisabled = ctx.queryParamOr("include_disabled", "true") != "false"
+        let now = hNowEpoch()
+        let globalKeyRefSet = aiSettings.get(SET_AI_KEY_REF, now).trimAscii().size > 0
+        let items = JsonArray()
+        var n: Int64 = 0
+        for (m in aiModels.list(includeDisabled, now)) {
+            items.add(aiModelJson(m, globalKeyRefSet, inUse: aiModelInUse(aiModels, m, now)))
+            n = n + 1
+        }
+        let o = JsonObject()
+        o.put("items", items)
+        o.put("count", JsonInt(n))
+        /*
+         * ★ 把"全局有没有密钥引用"一起回：管理台据此把每一行标成
+         *   「自带密钥 / 用全局密钥 / 没有密钥」。少了这个字段，页面只能对
+         *   `key_source == "global"` 的行显示一个无法解释的"已设置"。
+         */
+        o.put("global_key_ref_set", JsonBool(globalKeyRefSet))
+        o.put("cache_ttl_secs", JsonInt(AI_MODEL_CACHE_TTL_SECS))
+        sendOk(ctx, o)
+    })
+
+    /* ---------- POST /api/v1/admin/ai/models —— 新增一条（仅管理员）---------- */
+    r.post("/api/v1/admin/ai/models", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        let m = AiModel()
+        m.name = bodyStrOr(ctx, "name", "")
+        m.kind = bodyStrOr(ctx, "kind", "")
+        m.provider = bodyStrOr(ctx, "provider", "")
+        m.baseUrl = bodyStrOr(ctx, "base_url", "")
+        m.model = bodyStrOr(ctx, "model", "")
+        /*
+         * 缺省值取"播种那两行"的同款：温度 0.3、上限 2048。
+         * ⚠ 缺省**只在这里**给（而不是在 `AiModel` 的字段默认值里兜）：
+         *   写入路径要能把"没给"和"给了非法值"分开 —— 后者必须 400，不能静默变默认。
+         */
+        m.temperature = match (bodyFloatOpt(ctx, "temperature")) {
+            case Some(v) => v
+            case None => AI_MODEL_SEED_CHAT_TEMPERATURE
+        }
+        m.maxTokens = match (bodyInt64(ctx, "max_tokens")) {
+            case Some(v) => v
+            case None => AI_MODEL_SEED_MAX_TOKENS
+        }
+        m.keyRef = bodyStrOr(ctx, "key_ref", "")
+        m.enabled = match (bodyBool(ctx, "enabled")) {
+            case Some(v) => v
+            case None => true
+        }
+        m.isDefault = match (bodyBool(ctx, "is_default")) {
+            case Some(v) => v
+            case None => false
+        }
+        let res = aiModels.create(m, hNowEpoch(), p.userId)
+        if (res.duplicate) {
+            throw apiErrorMsg("AI_MODEL_NAME_TAKEN", "同名模型配置已存在：${m.name.trimAscii()}")
+        }
+        if (!res.ok) {
+            throw apiErrorMsg("VALIDATION_FAILED", res.invalid)
+        }
+        let created = aiModels.get(res.id, hNowEpoch())
+        let o = JsonObject()
+        o.put("id", JsonInt(res.id))
+        match (created) {
+            case Some(row) =>
+                let now2 = hNowEpoch()
+                o.put("model", aiModelJson(row, aiSettings.get(SET_AI_KEY_REF, now2).trimAscii().size > 0,
+                                          inUse: aiModelInUse(aiModels, row, now2)))
+            case None => ()
+        }
+        sendCreated(ctx, o)
+    })
+
+    /*
+     * ---------- POST /api/v1/admin/ai/models/invalidate —— 失效配置缓存 ----------
+     *
+     * ⚠ 路径必须注册在 `/models/:id` 之前？—— 本仓的 `:id` 路由都是 PUT/DELETE，
+     *   POST 只有这一条与 `/:id/test`，**不存在**"POST /models/xxx 被当成 id"的歧义。
+     *   （为保险起见仍然把它排在 `/:id/test` 之前：路由匹配顺序在 Trie 实现里
+     *     依赖注册顺序时，先注册更具体的字面量路径是稳妥做法。）
+     *
+     * ★ 为什么需要这个按钮：写操作**已经**会主动失效缓存（`put`/`create`/`update`/`remove`
+     *   内部都调 `invalidate()`），所以正常路径用不到它。它存在是为了**跨实例**与
+     *   **直改数据库**这两种情形：前者最迟 5 秒（TTL）收敛，后者要等下一次写或 TTL。
+     *   有一个显式入口，"我刚在库里改了配置、怎么还没生效"就不用靠猜。
+     */
+    r.post("/api/v1/admin/ai/models/invalidate", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        let now = hNowEpoch()
+        /*
+         * 两张表各自的缓存在**两个仓储**里：
+         *   · `ai_model` → AiModelRepo（模型行）
+         *   · `ai_setting` → AiSettingsRepo（全局 KV）
+         * 一次按钮两边都清 —— 否则"失效配置缓存"这个名字与实际效果不符
+         * （管理台的分工是两页，但缓存是使用者看不见的东西，不该让他分两次点）。
+         */
+        aiModels.invalidate()
+        aiSettings.invalidate()
+        let o = JsonObject()
+        o.put("invalidated", JsonBool(true))
+        o.put("model_cache_ttl_secs", JsonInt(AI_MODEL_CACHE_TTL_SECS))
+        o.put("settings_cache_ttl_secs", JsonInt(AI_SETTINGS_CACHE_TTL_SECS))
+        o.put("next_call_reloads", JsonBool(true))
+        o.put("cleared_at", JsonInt(now))
+        sendOk(ctx, o)
+    })
+
+    /* ---------- PUT /api/v1/admin/ai/models/:id —— 改一条（仅管理员）---------- */
+    /*
+     * ⚠ 语义是 **PATCH**：请求体里**没给**的字段保持原值（见 `AiModelRepo.update` 的注释）。
+     *   最典型的场景是"只想改温度"—— 若按 PUT 语义把缺省字段回默认，
+     *   一次保存就会把 `key_ref` 清空，AI 随后**静默不可用**。
+     */
+    r.put("/api/v1/admin/ai/models/:id", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        let id = parseInt64Or(ctx.paramOr("id", ""), 0)
+        if (id <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "模型配置 id 必须是正整数")
+        }
+        let res = aiModels.update(id, bodyStr(ctx, "name"), bodyStr(ctx, "kind"),
+                                  bodyStr(ctx, "provider"), bodyStr(ctx, "base_url"),
+                                  bodyStr(ctx, "model"), bodyFloatOpt(ctx, "temperature"),
+                                  bodyInt64(ctx, "max_tokens"), bodyStr(ctx, "key_ref"),
+                                  bodyBool(ctx, "enabled"), bodyBool(ctx, "is_default"),
+                                  hNowEpoch(), p.userId)
+        if (res.notFound) {
+            throw apiErrorMsg("AI_MODEL_NOT_FOUND", "模型配置不存在：${id}")
+        }
+        if (res.duplicate) {
+            throw apiErrorMsg("AI_MODEL_NAME_TAKEN", "同名模型配置已存在")
+        }
+        if (!res.ok) {
+            throw apiErrorMsg("VALIDATION_FAILED", res.invalid)
+        }
+        let now = hNowEpoch()
+        let o = JsonObject()
+        o.put("id", JsonInt(res.id))
+        match (aiModels.get(res.id, now)) {
+            case Some(row) =>
+                o.put("model", aiModelJson(row, aiSettings.get(SET_AI_KEY_REF, now).trimAscii().size > 0,
+                                          inUse: aiModelInUse(aiModels, row, now)))
+            case None => ()
+        }
+        sendOk(ctx, o)
+    })
+
+    /* ---------- DELETE /api/v1/admin/ai/models/:id —— 删一条（仅管理员）---------- */
+    /*
+     * ⚠ **硬删**（与知识库文档同口径），不是软删停用：
+     *   需要"留着但不使用"时把 `enabled` 改成 false（PUT）即可。
+     *   两条路都能表达"不用它"，就不该再给第三个含义模糊的开关。
+     */
+    r.delete("/api/v1/admin/ai/models/:id", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        let id = parseInt64Or(ctx.paramOr("id", ""), 0)
+        if (id <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "模型配置 id 必须是正整数")
+        }
+        if (!aiModels.remove(id, hNowEpoch())) {
+            throw apiErrorMsg("AI_MODEL_NOT_FOUND", "模型配置不存在：${id}")
+        }
+        let o = JsonObject()
+        o.put("id", JsonInt(id))
+        o.put("deleted", JsonBool(true))
+        sendOk(ctx, o)
+    })
+
+    /* ---------- POST /api/v1/admin/ai/models/:id/test —— 连通性测试（仅管理员）---------- */
+    /*
+     * ★★ 三条口径（都在 `aiModelProbe` 的注释里，接口层再点名一次）：
+     *   ① **真实出站**：这条路会真的打到大模型服务商 —— 它不是"配置自检"。
+     *   ② **失败也回 200**：`ok=false` + `reason` 是**结果**，不是服务端故障；
+     *      管理台据此显示"失败 + 为什么"，而不是弹一个 500 让人以为后端坏了。
+     *   ③ **不受 `ai.enabled` 总开关影响**：这是诊断动作 ——
+     *      若必须先打开总开关才能测，顺序就反了（先上线再验证）。
+     *      ⚠ 其余安全闸一个不少：https 强制 + 密钥必须能解析出来。
+     */
+    r.post("/api/v1/admin/ai/models/:id/test", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        let id = parseInt64Or(ctx.paramOr("id", ""), 0)
+        if (id <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "模型配置 id 必须是正整数")
+        }
+        let now = hNowEpoch()
+        /*
+         * ⚠ 从**库/缓存拿行**（而不是从请求体拿一份临时配置）：
+         *   要测的必须是"保存下来的那条"，否则"页面上的值"与"实际生效的值"
+         *   会再次分叉 —— 而分叉正是这条路要消除的东西。
+         */
+        match (aiModels.get(id, now)) {
+            case None => throw apiErrorMsg("AI_MODEL_NOT_FOUND", "模型配置不存在：${id}")
+            case Some(m) =>
+                let pr = aiModelProbe(m, aiSettings, now)
+                let o = JsonObject()
+                o.put("id", JsonInt(id))
+                o.put("probe", aiModelProbeJson(pr))
+                sendOk(ctx, o)
+        }
+    })
+
     /* ===================== 业务接口 ===================== */
 
     /* ---------- POST /api/v1/triage —— 智能分诊（P2）---------- */
@@ -1872,6 +2186,73 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         o.put("remain_num", JsonInt(total))
         sendCreated(ctx, o)
     })
+
+    /* ---------- PUT /api/v1/admin/schedules/:id —— 改放号数 / 停诊（仅管理员）---------- */
+    /*
+     * ★★ 为什么必须有这一条（2026-10-14 补的真实缺口）：
+     *   在此之前**只有** `POST /admin/schedules`（建），没有任何改的入口 ⇒
+     *   "放号数写错了"或"这位医生今天停诊"只能**新开一条**排班，
+     *   而老的那条连同已经约出去的号一起留在那里 —— 患者端照样能约到它。
+     *   管理台「排班号源」页若只有"新增"，等于把使用者推向这个坑。
+     *
+     * ⚠ 语义是 **PATCH**：请求体里没给的字段保持原值（同 AI 模型配置那条）。
+     * ⚠ `version` **必填**（乐观锁的读基准）：它由 `GET /schedules/:id` 返回。
+     *   不给就无从判断"你看到的是不是最新的那一版"—— 那正是并发编辑要防的事。
+     *   缺 `version` ⇒ 400（而不是"默认 0"：默认 0 会让**每一次**编辑都变成冲突，
+     *   使用者只会看到"总是失败"而不知道少传了字段）。
+     */
+    r.put("/api/v1/admin/schedules/:id", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageSchedule)
+        let sid = parseInt64Or(ctx.paramOr("id", ""), 0)
+        if (sid <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "排班 id 必须是正整数")
+        }
+        let version = requireInt(ctx, "version")
+        /*
+         * ⚠ 两个可选字段都**不设默认**：缺省 = "不改这一项"。
+         *   "没给 total_num 却按 0 处理"会把排班改成 0 张（等于停号），
+         *   而调用方只是想改 enabled —— 这是我们必须避免的一类静默破坏。
+         */
+        let totalOpt = bodyInt64(ctx, "total_num")
+        if (totalOpt.isSome() && totalOpt.getOrThrow() <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "total_num 必须是正整数")
+        }
+        let enabledOpt = bodyBool(ctx, "enabled")
+        if (totalOpt.isNone() && enabledOpt.isNone()) {
+            throw apiErrorMsg("VALIDATION_FAILED", "至少要给 total_num 或 enabled 之一")
+        }
+        let res = repo.updateSchedule(sid, totalOpt, enabledOpt, version)
+        if (res.notFound) {
+            throw apiErrorMsg("SCHEDULE_NOT_FOUND", "排班不存在或已停诊：${sid}")
+        }
+        if (res.conflict) {
+            /*
+             * ⚠ 409 的信息量必须够：把**当前**的 version 一起回，
+             *   否则前端只能整页重刷（而重刷会丢掉使用者刚填的数字）。
+             */
+            throw apiErrorMsg("SCHEDULE_CONFLICT",
+                "该排班已被他人修改（你手里的 version = ${version}，当前的 version = ${res.version}），" +
+                "请刷新后重试")
+        }
+        if (res.tooSmall) {
+            throw apiErrorMsg("VALIDATION_FAILED",
+                "放号数不能小于已约张数（已约 ${res.booked} 张，放号数 ${res.totalNum}，" +
+                "待约 ${res.remainNum}）")
+        }
+        if (!res.ok) {
+            throw apiErrorMsg("VALIDATION_FAILED", "排班更新失败")
+        }
+        let o = JsonObject()
+        o.put("schedule_id", JsonInt(sid))
+        o.put("total_num", JsonInt(res.totalNum))
+        o.put("remain_num", JsonInt(res.remainNum))
+        /* `booked` = 已约张数（= total − remain）—— 放号数不能改到它以下。 */
+        o.put("booked", JsonInt(res.booked))
+        o.put("version", JsonInt(res.version))
+        o.put("enabled", JsonBool(res.enabled))
+        sendOk(ctx, o)
+    })
     /* ===================== P4：病历 + 接诊队列 + 运营看板 ===================== */
     /*
      * ⚠ 定义在 `http_p4.cj`（那一块有自己的纪律要写清：病历锁定语义、
@@ -1922,14 +2303,14 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
  */
 public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate,
                              triage: TriageRepo, previsit: PrevisitRepo,
-                             aiSettings: AiSettingsRepo, prompts: PromptRepo,
+                             aiSettings: AiSettingsRepo, aiModels: AiModelRepo, prompts: PromptRepo,
                              emr: MedicalRecordRepo, visit: VisitRepo,
                              dash: DashboardRepo, triageStat: TriageStatRepo,
                              dept: DepartmentRepo, doc: DoctorRepo, kb: KbRepo,
-                             notices: NoticeRepo): QingZhouApp {
-    let router = buildHospitalRouter(repo, auth, gate, triage, previsit, aiSettings, prompts,
+                             notices: NoticeRepo, adminWebDir!: String = ""): QingZhouApp {
+    let router = buildHospitalRouter(repo, auth, gate, triage, previsit, aiSettings, aiModels, prompts,
                                      emr, visit, dash, triageStat, dept, doc, kb, notices)
-    return QingZhouApp()
+    var app = QingZhouApp()
         .use(requestId())
         .use(logger())
         // bodyLimit 必须排在 bodyParser **之前**（外层）：框架的 bodyParser 是
@@ -1967,6 +2348,60 @@ public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGat
          *   ② 未来若引入 AI/HTTP 出站，必须在**事务外**做并自带超时。
          */
         .use(timeout(15000))
+    /*
+     * ★ 管理台静态资源（2026-10-14）：与 API **同源同端口**挂在 `/admin/` 下。
+     *
+     * 为什么必须排在 `router.middleware()` **之前**：中间件按注册顺序进入，
+     * 静态中间件要用前缀守卫"只认领 /admin/ 下面的路径、其余 `.next()` 透传"，
+     * 只有先经过它，`/api/...` 才仍然由路由处理。反过来挂（在路由之后）
+     * 就永远轮不到它 —— 每个静态请求都会先撞上路由的 404。
+     *
+     * ⚠ 与 `--dev-auth` / 令牌鉴权的关系：**静态页面本身不鉴权**
+     *   （否则浏览器第一次访问就得先登录，而这只是"取一份 JS/HTML"）。
+     *   真正的数据访问一律走 `/api/v1/admin/…`，那是**逐条**校验令牌与角色的
+     *   —— 也就是说"看得到页面"不等于"读得到数据"，这是刻意的：
+     *   一个没有登录的人打开 `/admin/` 只会看到一个登录框。
+     *
+     * ⚠ `enableCache = false`：框架默认把文件字节在**进程生命周期内**缓存
+     *   （static.cj:57-62 明说"开发期请关掉，否则要重启才能看到改动"）。
+     *   管理台是要反复改的界面，"改了没生效"这种错觉的排查成本远高于
+     *   每次请求多读一次磁盘（这里的文件总量是几十 KB 量级）。
+     *
+     * ⚠ `spaFallback = false`（而不是 true）——**2026-10-14 实测后改的口径**：
+     *   本管理台的前端路由是**哈希路由**（`#/ai-models`），所以"深层链接"永远
+     *   不会出现在 `ctx.path()` 里，SPA 回退**没有用得上的场景**。
+     *   而开着它有两个实实在在的坏处：
+     *     ① 打错的静态路径（例如 `js/page.js` 少个 s）会回 200 + HTML，
+     *        浏览器随后报 "Unexpected token '<'" —— 真因（路径写错）被这层
+     *        回退藏起来了；
+     *     ② 让"这个 URL 到底存不存在"在管理台上无法用状态码回答。
+     *   关掉之后：`/admin/` 200、`/admin/js/app.js` 200、
+     *   `/admin/whatever` 404（JSON 体，与 API 的 404 同形状）。
+     *
+     * ⚠ 前缀必须写 **"/admin"（不带尾斜杠）**，**不能**写 "/admin/"。
+     *   框架的前缀守卫（static.cj:138-153）在被认领之后还要求
+     *   "余部要么为空、要么以 '/' 开头"：
+     *     · 前缀 "/admin"  → `/admin/js/app.js` 的余部是 "/js/app.js" ✓（可用）
+     *     · 前缀 "/admin/" → 余部变成 "js/app.js"，**不**以 '/' 开头 ⇒ `next()`
+     *       ⇒ 落到路由上 404 —— 即"除 `/admin/` 首页之外**所有资源都 404**"。
+     *       这是 2026-10-14 实测到的（`/admin/js/pages.js` 回的是路由的
+     *       `{"error":"Not Found","path":…}`，而不是静态层的 404）。
+     *   代价：前缀不带尾斜杠时，`/admin`（余部为空）会被静态层**自己**认领，
+     *   按"目录 ⇒ indexFile"回一份 index.html 200 ⇒ 早先那条
+     *   `GET /admin → 302 /admin/` 的路由**永远轮不到**，已删除（死代码）。
+     *   于是前端**必须用绝对路径引用资源**（`/admin/css/style.css`…）：
+     *   否则浏览器停在 `/admin`（无尾斜杠）时会把 `css/style.css` 解析成
+     *   `/css/style.css` ⇒ 静态层不认领 ⇒ 404。这一条由 index.html 守住。
+     */
+    if (adminWebDir.size > 0) {
+        let staticOpts = StaticOptions("/admin")
+        staticOpts.indexFile = "index.html"
+        staticOpts.spaFallback = false
+        staticOpts.apiPrefix = "/api"
+        staticOpts.enableCache = false
+        app = app.use(serveWithOpts(adminWebDir, staticOpts))
+    }
+    return app
         .use(router.middleware())
         .onError({ ctx: Context, _: () -> Unit => hospitalErrorHandler(ctx) })
 }

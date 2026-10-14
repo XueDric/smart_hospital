@@ -574,6 +574,84 @@ public class AuthRepo {
     }
 
     /*
+     * 分页列账号（2026-10-14 新增：管理台的「用户管理」页需要一张能翻页的表）。
+     *
+     * ⚠ 为什么新加、而不是把 `findUser` 改造一下：
+     *   那条按登录名**精确查单条**，语义是"我知道是谁，把它查出来"；
+     *   这里要的是"都有谁"，还要按角色/状态筛、要翻页。两件事不同，
+     *   合在一起会让"找不到账号"到底是"没有"还是"不在这一页"变得说不清
+     *   （既有契约里也明确写着 GET /admin/users 无分页 —— 那是当时的缺口，
+     *   现在**新增列表模式**，`login_name` 仍走原语义）。
+     *
+     * ⚠ 筛选值一律**参数化**（`?`），绝不拼进 SQL 串：
+     *   它们来自 HTTP 查询串，拼字符串就是注入口。
+     *   ⚠ 非法角色/状态**当没筛**（而不是 400）——列表接口是"浏览"语义，
+     *     因为一个筛选词写错就整页报错，比忽略它更难用；
+     *     `roleOf()` 是白名单（只认三个角色），所以"当没筛"也不会放进垃圾。
+     *     （点名单条查询仍是严格的：不存在就 404。）
+     *
+     * ⚠ 返回**不带口令材料**（pw_salt/pw_hash 不出库）：
+     *   列表是最容易被整页导出/截图的一类接口，绝不回哈希。
+     */
+    public func listUsers(limit: Int64, offset: Int64, roleFilter: String,
+                          statusFilter: String): Array<AuthUser> {
+        let wantRole = match (roleOf(roleFilter)) {
+            case Some(r) => roleName(r)
+            case None => ""
+        }
+        let wantStatus = if (statusFilter == "active" || statusFilter == "disabled") {
+            statusFilter
+        } else {
+            ""
+        }
+        let rs = db.query(
+            "SELECT id, login_name, role, ref_id, display_name, pw_salt, pw_hash, pw_iter, status " +
+            "FROM auth_user WHERE (? = '' OR role = ?) AND (? = '' OR status = ?) " +
+            "ORDER BY id ASC LIMIT ? OFFSET ?",
+            [DbStr(wantRole), DbStr(wantRole), DbStr(wantStatus), DbStr(wantStatus),
+             DbInt(limit), DbInt(offset)])
+        let out = ArrayList<AuthUser>()
+        var i: Int64 = 0
+        while (i < rs.rowCount()) {
+            let u = AuthUser()
+            u.id = rs.getInt(i, 0)
+            u.loginName = rs.getString(i, 1)
+            u.role = match (roleOf(rs.getString(i, 2))) {
+                case Some(r) => r
+                case None => Role.Patient
+            }
+            u.refId = rs.getInt(i, 3)
+            u.displayName = rs.getString(i, 4)
+            /* 口令材料**故意不读出行**：读进来就有被顺手回显的风险。 */
+            u.pwIter = rs.getInt(i, 7)
+            u.status = rs.getString(i, 8)
+            out.add(u)
+            i = i + 1
+        }
+        return out.toArray()
+    }
+
+    /* 同上口径的总数（分页要能显示"共 N 条"）。 */
+    public func countUsers(roleFilter: String, statusFilter: String): Int64 {
+        let wantRole = match (roleOf(roleFilter)) {
+            case Some(r) => roleName(r)
+            case None => ""
+        }
+        let wantStatus = if (statusFilter == "active" || statusFilter == "disabled") {
+            statusFilter
+        } else {
+            ""
+        }
+        let rs = db.query(
+            "SELECT COUNT(*) FROM auth_user WHERE (? = '' OR role = ?) AND (? = '' OR status = ?)",
+            [DbStr(wantRole), DbStr(wantRole), DbStr(wantStatus), DbStr(wantStatus)])
+        if (rs.rowCount() == 0) {
+            return 0
+        }
+        return rs.getInt(0, 0)
+    }
+
+    /*
      * 改口令（同时吊销该账号**全部**令牌 —— 改密码必须踢下线）。
      *
      * ⚠ 顺序很关键：**先校验强度，再落库 + 吊销令牌**。

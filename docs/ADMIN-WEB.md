@@ -1,0 +1,207 @@
+# 服务端托管的后台管理台（`/admin/`）
+
+> 一句话：`server/admin-web/` 是**零构建的纯静态浏览器管理台**，由服务端自己挂在 `/admin`，
+> 与 REST API **同源同端口**；数据一律走 `/api/v1/admin/*`，页面本身不做任何鉴权。
+>
+> 2026-10-14 增。需求来自「智慧医院导诊后台」的设计稿：**AI 模型配置**（多模型、类型、提供方、
+> 温度、上限、启停、连通性测试、失效配置缓存）+ 侧栏其余页面。
+
+---
+
+## 一、为什么是"服务端托管静态页"，不是别的形态
+
+| 形态 | 否决/采纳的理由 |
+| --- | --- |
+| ❌ 继续扩鸿蒙原生 `feature-admin`（ArkTS 8 页） | 它是**设备端**应用：要装到鸿蒙设备/模拟器才能用，改一行要重新编译打包；而"配置模型、看用量"是运维动作，应该打开浏览器就能做 |
+| ❌ 另起一个前端工程（Vue/React + npm 构建） | 引入 `node_modules` 与打包产物 ⇒ 出现"源码是新的、跑起来是旧的"，并且本仓**没有任何前端构建链**（仓里连 `package.json` 都没有）；为 11 个页面引入一整套工具链，维护成本远大于收益 |
+| ✅ **服务端托管的纯静态 SPA** | 同源同端口 ⇒ **没有 CORS、没有证书、没有反向代理**话题；改完刷新即生效；仓里只多出几个 `.html/.css/.js` 文本文件；`git diff` 看得见每一行 |
+
+**代价（明确接受）**：没有框架 ⇒ 没有响应式与虚拟 DOM，页面用原生 `document.createElement`
+风格的 `h()` 助手拼装（`js/ui.js`）；数据量按"管理台"规模假设（一页 ≤ 200 行）。
+
+---
+
+## 二、怎么跑
+
+```powershell
+# 1) 构建（在 server/ 下；含管理台静态文件不需要额外步骤——它们是运行时读的普通文件）
+.\build.ps1
+
+# 2) 起服务端（管理台随服务端一起上线）
+.\build\hospital-server.exe serve "mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital_test" --port 8091
+
+# 3) 打开（首次登录用 create-admin 打印的口令）
+start http://127.0.0.1:8091/admin
+```
+
+- 启动 banner 会打印 `管理台：http://<addr>:<port>/admin/`。
+- **找不到目录时不会静默降级**：`pickAdminWebDir()` 依次找 `admin-web` / `server/admin-web` /
+  `../admin-web`（相对**进程工作目录**），找不到就打印告警并**不挂载**（API 不受影响）。
+  ⇒ 从仓库根目录起服务端时，第 2 个候选会命中；从 `server/` 起是第 1 个。
+- 为什么判"目录存在"而不是"`index.html` 存在"：部署不全时应该报"管理台不可用"，
+  而不是让它表现为"功能没做"。
+
+---
+
+## 三、目录结构
+
+```
+server/admin-web/
+├── index.html          壳页面（登录视图 + 顶栏/侧栏/内容区 + modal/toast 挂载点）
+├── favicon.svg         纯文本 SVG 图标（不引二进制资源）
+├── css/style.css       无框架样式（CSS 变量 + 十几个组件类）
+└── js/
+    ├── api.js          fetch 封装：统一信封拆包、ApiError、令牌存取、401 回调
+    ├── ui.js           h/table/card/toast/openModal/confirmBox/fmtTime/fmtPermille…
+    ├── pages.js        11 个页面（注册进 window.HOSPITAL_PAGES）
+    └── app.js          登录流程 + 侧栏生成 + #/<id> 哈希路由 + 面包屑
+```
+
+⚠ `index.html` 里的资源**必须写绝对路径**（`/admin/css/style.css`）：裸 `/admin`（不带尾斜杠）
+会被静态层按目录认领并回 `index.html`，此时相对路径会被解析成 `/css/style.css` ⇒ 404。
+理由见 [../server/README.md](../server/README.md) 坑 **AL**。
+
+---
+
+## 四、页面清单 ↔ 接口映射
+
+| 页面（`#/<id>`） | 主要接口 | 备注 |
+| --- | --- | --- |
+| 运营看板 `dashboard` | `GET /api/v1/admin/dashboard`、`GET /health` | `/health` 是**唯一平铺返回**（没有 `data` 信封）的接口，故 `API.health()` 显式声明 `raw`；页脚显示"服务端版本 / 数据后端 / 今天(时区)" |
+| 用户管理 `users` | `GET/POST /api/v1/admin/users`、`POST /:id/password` | 列表模式本轮新增（`limit/offset/role/status`）；口令材料**永不出现**在响应里 |
+| 科室管理 `departments` | `GET/POST/PUT/DELETE /api/v1/admin/departments` | 删除遇 `BASE_IN_USE` 时追问是否 `?force=true` 软删 |
+| 医生管理 `doctors` | `GET/POST/PUT/DELETE /api/v1/admin/doctors` | 科室下拉在渲染后异步填充 |
+| 排班号源 `schedules` | `GET /api/v1/schedules`、`POST/PUT /api/v1/admin/schedules[/:id]` | 页面自算 `已约 = 放号 − 余量`；编辑弹窗里的 `version` 标注"乐观锁，不要改" |
+| **AI 模型配置** `ai-models` | `GET/POST/PUT/DELETE /api/v1/admin/ai/models[/:id]`、`POST /invalidate`、`POST /:id/test` | 本轮新增（截图主页面）。温度只对 `CHAT` 有意义，`EMBEDDING` 行显示 `—` |
+| AI 全局设置 `ai-settings` | `GET/PUT/DELETE /api/v1/admin/ai/settings[/:key]` | 密钥项只显示"是否已设置 + 引用类型"，可回默认值 |
+| Prompt 模板 `ai-prompts` | `GET/PUT/DELETE /api/v1/admin/ai/prompts[/:name]` | 三项：`dept` / `previsit` / `redflag`；**空串 = 删行恢复默认**；服务端校验必需占位符与长度 |
+| 工具中心 `ai-tools` | `GET/PUT /api/v1/admin/ai/tools[/:name]` | 白名单 6 条只读工具，开关即时生效 |
+| 医学知识库 `kb` | `GET/POST/PUT/DELETE /api/v1/admin/kb/docs[/:id]`、`GET /admin/kb/stats` | 概览里的 `embedding_note` 直接回答"为什么没召回" |
+| 系统公告 `notices` | `GET/POST/PUT/DELETE /api/v1/admin/notices[/:id]` | 患者端只看"已启用且生效时间已到"的公告（服务端过滤） |
+| 患者档案 / 症状标签库 / Agent 执行观测 | —— | **未做**：侧栏灰显并写明原因（后端目前没有这三块的接口） |
+
+---
+
+## 五、鉴权与安全口径
+
+1. **静态页面本身不鉴权**：任何人拿到 `index.html` 都能打开登录页。这是刻意的——
+   页面里没有任何数据，数据全部来自逐条校验的 `/api/v1/admin/*`。
+2. **令牌**：`POST /api/v1/auth/login` 拿不透明令牌，存 `localStorage`（键 `hospital_admin_token`），
+   之后所有请求带 `Authorization: Bearer`。`401` ⇒ 清会话 + 回登录页（`API.setUnauthorizedHandler`）。
+   启动时用 `/auth/me` **验证**既有令牌并要求 `role === 'admin'`（不是"有令牌就当登录成功"）。
+3. **密钥永不回显**：配置里只存引用（`env:变量名` / `file:路径`），接口只回
+   `key_ref_set`（有没有）/ `key_ref_kind`（env|file）/ `key_source`（本条|全局）。
+   连 `env:变量名` 本身也不回——变量名会泄露部署约定。
+4. **账号列表不读口令材料**：`AuthRepo.listUsers()` 的 SELECT **故意不选** `pw_salt/pw_hash`，
+   "列表被整页导出"是最常见的泄露路径（`auth-check.ps1` 有断言钉住）。
+5. **连通性测试不泄漏密钥**：探测失败时的 `reason` 是脱敏后的（`aiRedact`），
+   且**失败也是结果**（恒 `200` + `probe.ok=false`），不会被误当成服务故障。
+6. **同源**：页面与 API 同端口 ⇒ 不涉及 CORS；服务端 CORS 中间件仍是默认值（`origin="*"`），
+   因为页面本身不使用跨源请求。
+
+---
+
+## 六、本轮新增 / 扩展的服务端接口
+
+### 6.1 AI 模型配置（`ai_model` 表）
+
+| 方法与路径 | 要点 |
+| --- | --- |
+| `GET /api/v1/admin/ai/models?include_disabled=` | 回 `items[{id,name,kind,kind_label,provider,base_url,request_url,model,temperature,max_tokens,key_ref_set,key_ref_kind,key_source,enabled,is_default,in_use,created_at,updated_at,updated_by}]` + `count` / `global_key_ref_set` / `cache_ttl_secs` |
+| `POST /api/v1/admin/ai/models` | body `name/kind/provider/base_url/model/temperature/max_tokens/key_ref/enabled/is_default`；缺省 温度 `0.3`、上限 `2048`、`enabled=true`；**201** `{id, model}`；重名 ⇒ `409 AI_MODEL_NAME_TAKEN` |
+| `PUT /api/v1/admin/ai/models/:id` | **PATCH 语义：缺省的键保持原值**（否则"只想改温度"会把 `key_ref` 清空）；`"key_ref": ""` 才表示清空 |
+| `DELETE /api/v1/admin/ai/models/:id` | **硬删**；"留着不用"请用 `PUT enabled=false` |
+| `POST /api/v1/admin/ai/models/invalidate` | 同时失效模型与全局设置两份缓存，回 `{invalidated, model_cache_ttl_secs, settings_cache_ttl_secs, next_call_reloads, cleared_at}` |
+| `POST /api/v1/admin/ai/models/:id/test` | 从**库里**取该行（不接受请求体里的临时值，否则"测通了但存的是另一份"），恒 `200`，回 `{id, probe:{ok,kind,model,request_url,elapsed_ms,http_status,key_source,reason,sample}}`；**刻意绕过 `ai.enabled`** —— 排查"配置对不对"不该被总开关挡住 |
+
+校验闸门（写入前）：`https://` 强制（明文调用大模型 = 密钥裸奔）、`temperature ∈ [0,2]`、
+`max_tokens ∈ [64,8192]`、名称/提供方/地址/模型名非空且不含控制字符、`key_ref` 非空时必须是
+`env:` / `file:` 引用。
+
+### 6.2 账号列表（`GET /api/v1/admin/users` 双模式）
+
+- 给了 `login_name` ⇒ **原来的精确查询**（找不到仍 `404 USER_NOT_FOUND`，老调用方零改动）。
+- 没给 ⇒ 列表模式：`limit`（默认 50，越界回默认）、`offset`、`role`、`status`（白名单外的值 =
+  不筛），回 `{items, count, total, limit, offset}`；列表项键名与精确查询**保持一致**（`user_id`）。
+
+### 6.3 排班可改（`PUT /api/v1/admin/schedules/:id`）
+
+此前**只有建、没有改**：号源写错或医生停诊只能再开一条排班，老排班连同已经约出去的号
+继续挂在患者端可约。现在支持 PATCH `total_num` / `enabled` + `version` 乐观锁：
+
+- 不变量"放号数 ≥ 已约数"放在**一条原子 SQL 里**（`remain_num + (? - total_num) >= 0`），
+  影响 0 行时回读分辨"不存在 / 版本冲突 / 数太小"三类，**不猜**；
+- 改 `total_num` 时 `remain_num` 同步加减同一差值 ⇒ 已约数保持不变（不会超卖）；
+- `404 SCHEDULE_NOT_FOUND` / `409 SCHEDULE_CONFLICT`（消息带上双方版本号）/ `400`。
+
+### 6.4 顺带修掉的一个真实漏洞
+
+`aiSettingKeyKnown()` **也认 `prompt.*` / `ai.tool.*`**，而原来的闸门只作用于 `key_ref` 与数值项
+⇒ `PUT /api/v1/admin/ai/settings/prompt.dept` 能**绕过** `PromptRepo` 的占位符/长度校验直接落库。
+现在 `PUT .../ai/settings/:key` 只接受**登记表里的 `ai.*` 项**，其余一律 `400` 并在消息里
+指路（Prompt 走 `PUT /admin/ai/prompts/:name`，工具走 `PUT /admin/ai/tools/:name`）。
+
+---
+
+## 七、运行时怎么用这些配置
+
+```
+ai_model 表（多条命名配置，每种类型一个默认）
+   │  defaultOf(kind)：优先 enabled + is_default，取 id 最小；否则该类型第一条 enabled；都没有 ⇒ None
+   ▼
+AiSettingsRepo.options(now)  ← KV 里的 ai.enabled / 旧 ai.endpoint / ai.model / ai.key_ref
+   │  默认模型行**整体覆盖** KV（端点、模型、密钥、温度、上限）
+   │  · key_ref 为空 = 回落全局 ai.key_ref（不覆盖）
+   │  · endpoint 过 aiModelRequestUrl() 拼成**完整请求 URL**（/chat/completions）
+   ▼
+AiRuntimeOptions（含 temperature，此前根本没有这个字段）
+   ▼
+ai_call.cj：请求体 model / max_tokens / messages / **temperature**
+```
+
+- 旧口径**不发 `temperature`** = 把决定性交给服务商默认值（通常是 1.0）⇒ 同一份主诉在
+  不同服务商上表现不一致。现在随行下发，缺省 `0.3`。
+- 缓存 TTL 5 秒（`aiModel.reload` / `AiSettingsRepo.reload`），任何写操作都会 `invalidate()`
+  ⇒ "保存后自动失效缓存，下一次请求动态构建实例，无需重启"（页面提示语说的就是这件事）。
+
+---
+
+## 八、怎么验证
+
+| 手段 | 覆盖 |
+| --- | --- |
+| `tests\ai-model-check.ps1`（**45 项**） | 模型配置全链路：鉴权（无令牌 401 / 患者 403）、播种的两条默认行与 `request_url` 拼接、密钥不回显、校验闸门（明文 http / 温度越界 / 空名 / 未知类型 / 非法 `key_ref` / 重名）、PATCH 语义、`is_default` 唯一、连通性测试恒 200 且不受 `ai.enabled` 影响、缓存失效**真的**读到库里的新值、`settings` 闸门（并断言库里没留下那行）、删除与夹具自清 |
+| `tests\admin-web-smoke.mjs` | 无头 Edge + CDP：真实 boot 流程 + **11 个页面逐个渲染**，收集 `console.error` / 未捕获异常 / `>=400` 响应，逐页截图；页脚不得出现"读取失败" |
+| `tests\base-check.ps1` | 基础数据域 + 本轮新增的排班可改（不变量 400 / 版本冲突 409 / 停诊 PATCH / 404 / 空改动 400） |
+| `tests\auth-check.ps1` | 令牌域 + 本轮新增的账号列表模式（分页 / 筛选 / 白名单外当不筛 / 不吐 `pw_hash`） |
+| `accept`（AC-16 / AC-17） | 服务端侧的确定性证明：播种幂等、`defaultOf` 与 `request_url`、运行时覆盖与温度、`key_ref` 回落、缓存与 `invalidate`、`listUsers` 不读口令材料、`updateSchedule` 的原子不变量与乐观锁 |
+
+冒烟脚本用法：
+
+```powershell
+& $env:NODE tests\admin-web-smoke.mjs --base http://127.0.0.1:8091 --admin admin --pw <口令> --out <截图目录>
+```
+
+---
+
+## 九、已知边界（明确未做）
+
+1. **患者档案 / 症状标签库 / Agent 执行观测** 三页未实现：后端没有对应接口（`triage_stat` 只有聚合）。
+2. **`EMBEDDING` 只做"配置 + 连通性测试"**：不做批量向量化回填；生产检索仍走关键词路
+   （`embedding_note` 在知识库页原样显示这个事实）。
+3. **`ai.ca_bundle_path` 仍不支持**：stdx 1.1.3.1 的 `TlsClientConfig` 只有 mTLS、没有信任锚入口，
+   写入会被 400 拒绝（写明"不会生效，故拒绝写入"）。
+4. 管理台**不做**多用户/角色区分：能登录管理台的就是 `admin`（与 `/api/v1/admin/*` 的权限口径一致）。
+
+---
+
+## 十、这一轮踩到的坑（详细版见 [../server/README.md](../server/README.md) 坑表）
+
+| 编号 | 一句话 |
+| --- | --- |
+| AL | 静态托管前缀**不能带尾斜杠**（`/admin/` 会让子资源全 404）；裸 `/admin` 被静态层按目录认领 ⇒ `index.html` 资源必须写绝对路径；`spaFallback=false` |
+| AM | 仓颉**块注释可嵌套** ⇒ 注释里不要出现 `/*`（`/admin/**`、`js/*.js` 都会触发 `unterminated block comment`，报错位置还指到文件末尾） |
+| AN | "用户指定的默认（`is_default`）"与"运行时真正生效（`in_use`）"是**两个事实**，只回一个就会出现"没有任何默认标记、但 AI 确实在用某一行" |
+| AO | 测试脚本的自清要覆盖它改过的**所有**状态：抢走默认位再删掉自己那行 ⇒ 库进入"该类型没有默认行"，表现为**首跑红、复跑绿**的假偶发 |
+| — | PowerShell 下 `curl -d '<json>'` 的引号会被剥（服务端报 `Invalid JSON body`）⇒ JSON 写文件 + `-d "@file"`；`Invoke-WebRequest` 在非交互模式直接不可用 |
+| — | 含中文的 `server/**/*.ps1` **必须 UTF-8 with BOM**；`edit` 工具会剥掉 BOM ⇒ 改完要用 `UTF8Encoding($true)` 重写（否则 PS 5.1 按 ANSI 解析报"意外的标记"） |

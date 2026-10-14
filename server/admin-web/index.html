@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<!--
+  智慧医院服务端 · 浏览器管理台（单页应用，**零构建**）
+  ============================================================================
+  为什么是"纯静态 + 零构建"（2026-10-14 的决定，见 docs/ADMIN-WEB.md）：
+    · 服务端**已经**是一个常驻进程，管理台与它**同源同端口**（挂在 /admin/），
+      于是 CORS、跨域 Cookie、反向代理、证书这些"部署话题"全部消失；
+    · 患者的鸿蒙端/安卓端要装包才能更新，而管理台是**运维每天用**的东西 ——
+      改一行文案要重新打包发版是不可接受的。纯静态文件改完刷新即可；
+    · 零构建 = 仓里不出现 node_modules / 打包产物，也不会因为"dist 忘了重新生成"
+      出现"源码是新的、跑起来是旧的"这种最难查的不一致。
+
+  ⚠ 这里**没有** npm/webpack/vite。所有页面脚本都是普通的 <script>，
+    用 `window.HOSPITAL_PAGES` 这个全局注册表拼装。改完刷新浏览器就生效
+    （服务端对该目录刻意关掉了框架的静态缓存，见 http_app.cj 的
+     `staticOpts.enableCache = false`）。
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- 管理台不进搜索引擎：它是内部工具，没有登录也只会看到一个框，
+       但被收录会让"智慧医院后台"这种词暴露在外网扫描器的字典里。 -->
+  <meta name="robots" content="noindex, nofollow">
+  <title>智慧医院导诊后台</title>
+  <!-- 图标也走绝对路径；有这一行浏览器就不会再去自动请求 /favicon.ico
+       （否则每次开台都在控制台留一条 404，掩盖真正的路径写错）。 -->
+  <link rel="icon" type="image/svg+xml" href="/admin/favicon.svg">
+  <!-- ⚠ 资源必须用**绝对路径**（`/admin/...`），不能写相对路径：
+       服务端把本目录挂在 `/admin` 前缀上，而 `/admin`（不带尾斜杠）也会
+       直接返回这份 index.html。此时浏览器地址栏停在 `/admin`，
+       `css/style.css` 会被解析成 `/css/style.css` ⇒ 静态层不认领 ⇒ 404。
+       绝对路径让 `/admin` 与 `/admin/` 两种入口都能正常渲染。
+       （见 server/src/http_app.cj 静态挂载处的注释。） -->
+  <link rel="stylesheet" href="/admin/css/style.css">
+</head>
+<body>
+  <!-- ===================== 登录视图 ===================== -->
+  <div id="login-view" class="login-wrap hidden">
+    <form id="login-form" class="login-card" autocomplete="on">
+      <div class="login-brand">智慧医院导诊后台</div>
+      <div class="login-sub">请使用<b>管理员</b>账号登录（患者/医生账号无法进入后台）</div>
+      <label class="field">
+        <span>登录名</span>
+        <input id="login-name" name="login_name" type="text" autocomplete="username" required>
+      </label>
+      <label class="field">
+        <span>口令</span>
+        <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <div id="login-error" class="login-error hidden"></div>
+      <button id="login-submit" class="btn btn-primary btn-block" type="submit">登录</button>
+      <div class="login-hint">
+        地址：<code id="login-base"></code>（同源，与患者端/医生端走同一个服务的 <code>/api/v1</code>）
+      </div>
+    </form>
+  </div>
+
+  <!-- ===================== 主视图 ===================== -->
+  <div id="app-view" class="hidden">
+    <header class="topbar">
+      <div class="topbar-brand"><span class="logo">✚</span> 智慧医院导诊后台</div>
+      <nav id="breadcrumb" class="breadcrumb"></nav>
+      <div class="topbar-right">
+        <span id="whoami" class="whoami"></span>
+        <button id="logout-btn" class="btn btn-ghost btn-sm" type="button">退出登录</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <nav id="nav"></nav>
+        <div class="sidebar-foot">
+          <div class="muted" id="nav-foot-note"></div>
+        </div>
+      </aside>
+      <main id="content" class="content"></main>
+    </div>
+  </div>
+
+  <!-- 轻量弹窗（新增/编辑表单）+ 提示条：由 js/ui.js 控制 -->
+  <div id="modal-root"></div>
+  <div id="toast-root" class="toast-root"></div>
+
+  <!-- 绝对路径，理由同 <link> 处（/admin 无尾斜杠也要能加载） →
+       加载顺序即依赖顺序：api → ui → pages（登记页面）→ app（启动路由） -->
+  <script src="/admin/js/api.js"></script>
+  <script src="/admin/js/ui.js"></script>
+  <script src="/admin/js/pages.js"></script>
+  <script src="/admin/js/app.js"></script>
+</body>
+</html>

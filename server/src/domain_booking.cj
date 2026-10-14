@@ -149,6 +149,31 @@ public class ScheduleRow {
 }
 
 /*
+ * 改排班（号源）的结果（2026-10-14 新增：管理台「排班号源」页要能改放号数与停诊）。
+ *
+ * ⚠ 三种失败**必须分开**，因为它们对应三个不同的 HTTP 状态与三种不同的处置：
+ *   · `notFound`   —— 排班不存在（404，别改了）；
+ *   · `conflict`   —— 有人在你读到它之后改过（409，**刷新后用自己的新值重试**）；
+ *   · `tooSmall`   —— 放号数改到"已约数"以下了（400，**这是业务错误**，
+ *                     `booked` 是当时已约的张数；重试多少次都不会成功）。
+ *   把它们混成一个"失败"会让界面只能显示"保存失败"，而使用者需要知道
+ *   "是刷新一下重试，还是这条路本来就走不通"。
+ */
+public class ScheduleUpdateOutcome {
+    public var ok: Bool = false
+    public var notFound: Bool = false
+    public var conflict: Bool = false
+    public var tooSmall: Bool = false
+    /* 失败时回显当时的真实数字（已约张数 / 放号数），供界面直接说明原因。 */
+    public var booked: Int64 = 0
+    public var totalNum: Int64 = 0
+    public var remainNum: Int64 = 0
+    public var version: Int64 = 0
+    /* 成功后的启用状态（PATCH 里没给 `enabled` 时 = 原值）。 */
+    public var enabled: Bool = true
+}
+
+/*
  * 挂号结果明细（供上层出参）。
  */
 public class BookingResult {
@@ -621,6 +646,103 @@ public class BookingRepo {
             " version, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?)",
             [DbInt(doctorId), DbInt(departmentId), DbStr(workDate), DbStr(period),
              DbInt(totalNum), DbInt(totalNum), DbInt(now)])
+    }
+
+    /*
+     * 改排班：放号数（`totalNum`）与停诊（`enabled`），**PATCH 语义**（None = 不改）。
+     *
+     * ★ 一条原子 UPDATE 同时兜住三件事（互不矛盾，也不需要事务）：
+     *   ① `version = ?` 前置条件 —— 乐观锁：把"读-改-写"的窗口**显式化**。
+     *      与扣号/归还那边刻意去掉 version 不同（见 `tryDeductSlot` 的长注释）：
+     *      那两处失败会**丢号源/少卖**，所以必须"一次就成功"；
+     *      这里是**人在页面上编辑**，冲突的代价只是"刷新一下"，用乐观锁正好。
+     *   ② `remain_num + (? - total_num) >= 0` —— 不变量"**放号数不得小于已约数**"
+     *      留在 **SQL 的 WHERE 里**，不是在应用里"先读后判"：
+     *      "已约数" = `total_num - remain_num` 是**同一行内**算出来的，
+     *      先读后判会有一个窗口（读完 3 张已约、另一个请求又约了 1 张 ⇒ 改小成功、
+     *      于是 4 张已约的排班放号数变成 3 —— 界面上"已约 > 放号"这种无法解释的状态）。
+     *   ③ 改 `total_num` 时**保持已约数不变**：`remain_num` 同步加减同一个差值。
+     *      ⚠ 直接写 `remain_num = 新放号数` 等于把已卖出去的号当没卖过（**超卖**）。
+     *      ⚠ 只改 `enabled` 时差值为 0 ⇒ 那条不变量恒成立，不会被误判成"太小"。
+     *
+     * ★★ `SET` 里 `remain_num` 必须写在 `total_num` **前面**（这一条踩过）：
+     *   MySQL 的 `UPDATE` **按书写顺序求值，且后面的表达式看到的是前面刚赋的新值**
+     *   —— 先写 `total_num = ?` 再写 `remain_num = remain_num + (? - total_num)`，
+     *   那个 `total_num` 已经是**新值** ⇒ 差值恒为 0 ⇒ 余量原地不动，
+     *   而"已约数"被凭空放大（放号 10 改 20 后仍是 10 张可约、却显示已约 10）。
+     *   反过来的另一个坑：`WHERE` 里看到的**始终是旧值**（先判后改），
+     *   所以不变量那半句 `remain_num + (? - total_num) >= 0` 用不着改。
+     *
+     * ⚠ 影响 0 行时**回读分辨原因，不猜**：三类失败（不存在 / 版本冲突 / 放号数太小）
+     *   对应三个不同的 HTTP 状态与三种不同的处置。把"改到 0 张"也报成"并发冲突"
+     *   是最容易写错的一处 —— 使用者会一直刷新重试一个**永远不会成功**的操作。
+     */
+    public func updateSchedule(id: Int64, totalNum: ?Int64, enabled: ?Bool,
+                               version: Int64): ScheduleUpdateOutcome {
+        let out = ScheduleUpdateOutcome()
+        let before = findSchedule(id)
+        match (before) {
+            case None =>
+                out.notFound = true
+                return out
+            case Some(row) =>
+                out.totalNum = row.totalNum
+                out.remainNum = row.remainNum
+                out.booked = row.totalNum - row.remainNum
+                out.version = row.version
+        }
+        let base = before.getOrThrow()
+        let wantEnabled = match (enabled) {
+            case Some(v) => v
+            case None => base.enabled
+        }
+        let newTotal = match (totalNum) {
+            case Some(v) => v
+            case None => base.totalNum
+        }
+        let n = db.exec(
+            "UPDATE schedule SET remain_num = remain_num + (? - total_num), total_num = ?, " +
+            "enabled = ?, version = version + 1 " +
+            "WHERE id = ? AND version = ? AND remain_num + (? - total_num) >= 0",
+            [DbInt(newTotal), DbInt(newTotal), DbInt(if (wantEnabled) { 1 } else { 0 }),
+             DbInt(id), DbInt(version), DbInt(newTotal)])
+        if (n > 0) {
+            out.ok = true
+            out.totalNum = newTotal
+            out.enabled = wantEnabled
+            match (findSchedule(id)) {
+                case Some(r) =>
+                    out.remainNum = r.remainNum
+                    out.version = r.version
+                    out.booked = r.totalNum - r.remainNum
+                case None => ()
+            }
+            return out
+        }
+        /*
+         * 0 行 ⇒ 回读一次，把原因**分成三类**（顺序有意义：
+         * 先判"还在不在"，再判"版本对不对"，最后才是"数太小"）。
+         */
+        match (findSchedule(id)) {
+            case None => out.notFound = true
+            case Some(r) =>
+                out.totalNum = r.totalNum
+                out.remainNum = r.remainNum
+                out.booked = r.totalNum - r.remainNum
+                out.version = r.version
+                if (r.version != version) {
+                    out.conflict = true
+                } else if (newTotal < out.booked) {
+                    out.tooSmall = true
+                } else {
+                    /*
+                     * 三类都不是却 0 行 ⇒ 只可能是"读与写之间被别的事务改过又改回来了"。
+                     * 按冲突处理（让调用方重读一次），**不报成功**。
+                     */
+                    out.conflict = true
+                }
+        }
+        return out
     }
 
     /*

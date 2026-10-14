@@ -166,6 +166,32 @@ func isTestDatabase(dbName: String): Bool {
     return dbName.contains("test")
 }
 
+/*
+ * 找管理台静态目录（2026-10-14）。
+ *
+ * 候选都是**相对进程工作目录**，覆盖三种真实启动方式：
+ *   ① `admin-web`        —— 在 `server/` 下跑（文档里的命令都是这样写的）
+ *   ② `server/admin-web` —— 在仓库根跑
+ *   ③ `../admin-web`     —— 在 `server/build/` 下直接跑那个 exe
+ *
+ * 返回空串 = 没找到（调用方会告警且**不挂载**，见 serve 路径的注释）。
+ *
+ * ⚠ 判据是"**目录**存在"，不是"`index.html` 存在"。后者会把
+ *   "东西没部署全"伪装成"这个功能没做"（都是 404），而前者会让
+ *   静态中间件自己去报 404 —— 谁的问题一目了然。
+ */
+func pickAdminWebDir(): String {
+    let candidates = ["admin-web", "server/admin-web", "../admin-web"]
+    var i = 0
+    while (i < candidates.size) {
+        if (exists(candidates[i])) {
+            return candidates[i]
+        }
+        i = i + 1
+    }
+    return ""
+}
+
 func accept(dsn: String): Int64 {
     var db: DbBackend
     try {
@@ -752,6 +778,17 @@ func serve(args: Array<String>): Int64 {
     let previsit = PrevisitRepo(db)
     // P3 AI 能力中心配置仓储（DB 驱动 + 缓存失效；密钥只存引用，见 ai_settings.cj）
     let aiSettings = AiSettingsRepo(db)
+    /*
+     * ★ 2026-10-14：AI 模型配置仓储（管理台「AI 模型配置」页 —— 对话模型/向量模型分开配）。
+     *
+     * 与 `ai_setting`（KV，8 项全局开关）**并存**而不是替换：
+     *   · `ai_setting`  —— 全局总开关、超时、并发、密钥引用等"只有一份"的项；
+     *   · `ai_model`    —— **多条命名配置**，按 kind 各选一条默认（本文件新建）。
+     * `attachModels` 让 `AiSettingsRepo.options()` **优先**读 ai_model 的默认行、
+     * 读不到再**回落**到 KV —— 所以存量库（只有 KV）不迁移也照常跑。
+     */
+    let aiModels = AiModelRepo(db)
+    aiSettings.attachModels(aiModels)
     // P3 第二块：Prompt 模板仓储（复用 aiSettings 的 KV 表与缓存，靠 prompt. 前缀隔离）
     let prompts = PromptRepo(aiSettings)
     /*
@@ -779,8 +816,27 @@ func serve(args: Array<String>): Int64 {
      *   —— 联调实测发现的（见 `domain_notice.cj` 文件头）。
      */
     let notices = NoticeRepo(db)
-    let app = buildHospitalApp(repo, auth, gate, triage, previsit, aiSettings, prompts,
-                               emr, visit, dash, triageStat, dept, doc, kb, notices)
+    /*
+     * 播种"默认对话模型 / 默认向量模型"：**只在 `ai_model` 一行都没有时**执行
+     * （幂等；存量库若旧 KV 里已有 endpoint+model，只补一条**对话**模型并继承旧值
+     *  —— 见 aiModelSeedDefaults 的注释）。
+     *
+     * ⚠ 只在 `serve` 路径播种：`accept` / `selftest` 自己构造仓储与夹具，
+     *   在这个"真实启动"路径之外偷偷写业务表，会破坏"空表"这类测试前提。
+     */
+    let seeded = aiModelSeedDefaults(aiModels, aiSettings, hNowEpoch())
+    if (seeded > 0) {
+        println("AI 模型配置：播种 ${seeded} 条默认配置（管理台「AI 模型配置」页可改）")
+    }
+    /*
+     * 管理台静态目录：按 **相对进程工作目录** 的候选依次找（文档里的启动命令都在
+     * `server/` 下执行）。⚠ 找不到时**不挂载**并明确告警，而不是挂上去再每个请求 404
+     * —— 后者看起来像"后台坏了"，真因却只是启动目录不对。
+     */
+    let adminWebDir = pickAdminWebDir()
+    let app = buildHospitalApp(repo, auth, gate, triage, previsit, aiSettings, aiModels, prompts,
+                               emr, visit, dash, triageStat, dept, doc, kb, notices,
+                               adminWebDir: adminWebDir)
     let box = HandleBox()
 
     println("")
@@ -795,6 +851,12 @@ func serve(args: Array<String>): Int64 {
         println("    仅限本机联调；生产必须走令牌（--prod 会拒绝启动）。")
     } else {
         println("  （未开 --dev-auth：业务接口会返回 401，仅 /health 可用）")
+    }
+    if (adminWebDir.size > 0) {
+        println("  管理台：http://${bindAddr}:${port}/admin/   （静态页面 + 同源 /api/v1）")
+    } else {
+        println("  ⚠ 未找到管理台静态目录（依次找过 admin-web / server/admin-web / ../admin-web）：")
+        println("    API 不受影响，但浏览器后台 /admin/ 不可用。请从 `server/` 目录启动。")
     }
     println("")
     println("接口：")

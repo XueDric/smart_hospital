@@ -214,9 +214,31 @@ Android [SessionStore.kt:114](F:/cj_cup/smart_hospital/android-patient/app/src/m
 | `triagetest`（含本轮 +2） | **110 / 110** |
 | `accept`（含本轮 +10：AC-14 六项、AC-15 四项） | **507 / 507** |
 | `tests\health-check.ps1`（新） | **15 / 15** |
-| `tests\auth-check.ps1` | **29 / 29**（`-SkipTiming` 28 / 28） |
+| `tests\auth-check.ps1` | **29 / 29**（`-SkipTiming` 28 / 28）—— ⚠ 该轮数字；同日稍后加了账号列表断言，**现为 40 / 40**（见表下） |
 | `tests\triage-check.ps1`（含本轮 +4） | **28 / 28** |
 | `tests\doc-counts.ps1` | 文档数字与实测一致（已 `-Fix` 同步） |
 
 > ⚠ 仍未验证的项照旧（真机、Release 签名、真实 TLS、慢网 SSE、目标库 SQL 兼容与并发守恒）；
 > 本轮也**没有**跑 Android / 鸿蒙构建（R3 只在 ASCII 副本内验证鸿蒙出包）。
+
+### 追加轮次实测数字（同日，服务端托管管理台 + AI 模型配置）
+
+需求：把「智慧医院导诊后台」的 AI 模型配置等页面做成**服务端托管的浏览器后台**（`/admin/`）。
+本轮的取舍、接口清单与坑见 [ADMIN-WEB.md](ADMIN-WEB.md) 与 [../server/README.md](../server/README.md)。
+
+| 套件 | 结果 |
+| --- | --- |
+| `build.ps1` | ✅ 业务 **37** 个 `.cj`；`SOURCE-MANIFEST.sha256` **75** 个文件 |
+| `selftest` / `authtest` / `triagetest` | **50 / 50**、**17 / 17**、**110 / 110** |
+| `accept`（+AC-16 二十八项、AC-17 十五项） | **550 / 550** |
+| `tests\health-check.ps1` | **15 / 15** |
+| `tests\auth-check.ps1`（+账号列表 8 项等） | **40 / 40** |
+| `tests\triage-check.ps1` | **28 / 28** |
+| `tests\base-check.ps1`（+排班可改段） | **57 / 57** |
+| `tests\ai-model-check.ps1`（新） | **45 / 45**（连跑两次均全绿 ⇒ 夹具自清有效） |
+| `tests\admin-web-smoke.mjs`（新） | `ok=true`：11 页全渲染、`consoleErrors=0`、`exceptions=0`、`badResponses=0`、页脚正常 |
+| `tests\doc-counts.ps1` | 一致（含 REST 端点 **64 → 71**：+6 条模型配置、+1 条排班 PATCH） |
+
+> ★ 本轮**改了两个产品**（都是测试先红）：① `ai_model` 列表新增 `in_use`（"运行时真正在用哪一行"，
+> 与用户指定的 `is_default` 是两个事实）；② `PUT /api/v1/admin/ai/settings/:key` 收紧为只认
+> 登记表里的 `ai.*`（此前 `prompt.*` / `ai.tool.*` 能绕过 `PromptRepo` 的校验直接落库）。

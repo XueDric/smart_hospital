@@ -223,6 +223,31 @@ public func apiErrorSpec(code: String): (Int64, String) {
     if (code == "NOTICE_TITLE_TAKEN") {
         return (409, "已存在同名公告")
     }
+    /*
+     * ★ 2026-10-14：AI 模型配置三个码（管理台「AI 模型配置」页）。
+     *
+     * ⚠ **第五次**提醒（P4/P5/公告都踩过或差点踩）：新错误码必须在这里登记，
+     *   否则落到兜底 `(500, "服务器内部错误")`，把"配置不存在"/"同名配置"
+     *   这种正常业务拒绝报成服务端故障；而**纯逻辑层测试抓不到**
+     *   ⇒ 本轮由 `server/tests/ai-model-check.ps1` 逐条钉住这四个码的 HTTP 状态。
+     */
+    if (code == "AI_MODEL_NOT_FOUND") {
+        return (404, "模型配置不存在")
+    }
+    /* 同名配置 ⇒ 409（请求本身合法，是与既有数据冲突）。 */
+    if (code == "AI_MODEL_NAME_TAKEN") {
+        return (409, "同名模型配置已存在")
+    }
+    /*
+     * ★ 排班被并发修改 ⇒ 409。
+     *
+     * ⚠ 用 409（不是 404/400）：排班**存在**、请求**合法**，只是"我基于的版本"
+     *   已经被别人改过了 —— 这正是 409 的语义，也是唯一能让管理台提示
+     *   "请刷新后重试"的码（用 400 会被当成"你填错了参数"）。
+     */
+    if (code == "SCHEDULE_CONFLICT") {
+        return (409, "该排班已被他人修改，请刷新后重试")
+    }
     return (500, "服务器内部错误")
 }
 
@@ -390,5 +415,29 @@ public func requireInt(ctx: Context, key: String): Int64 {
     match (bodyInt64(ctx, key)) {
         case Some(v) => return v
         case None => throw apiErrorMsg("VALIDATION_FAILED", "缺少必填数值字段 ${key}")
+    }
+}
+
+/*
+ * 读可选的**浮点**字段（2026-10-14 新增：AI 模型配置的 `temperature`）。
+ *
+ * ⚠ 与 `bodyBool` 同一条纪律：**先判类型再取值** —— `asFloat()` 在类型不符时
+ *   **抛异常**（不是返回 None），会一路走到全局兜底变成 500，
+ *   而"字段类型不对"是**客户端错误**（400）。
+ * ⚠ **整数也接受**：JSON 里 `1` 与 `1.0` 都是数字，没有理由因为少打一个 `.0` 就拒。
+ *   （范围校验另有其人：`aiModelValidate` 管 0..2，这里只管"读出来是个数"。）
+ */
+public func bodyFloatOpt(ctx: Context, key: String): ?Float64 {
+    let o = bodyObj(ctx)
+    match (o.get(key)) {
+        case Some(v) =>
+            if (v is JsonFloat) {
+                return Some(v.asFloat().getValue())
+            }
+            if (v is JsonInt) {
+                return Some(Float64(v.asInt().getValue()))
+            }
+            return None
+        case None => return None
     }
 }

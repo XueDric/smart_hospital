@@ -997,6 +997,56 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 客户端应**直接读它**，不要再自己按设备时区算"今天"（跨端审计 F14）。
 由 `accept` 的 AC-15 与 `tests\health-check.ps1`（含"`today` == UTC+8 当天"的断言）守住。
 
+### 5.26 2026-10-14 新增：AI 模型配置 / 账号列表 / 排班可改（仅 admin）
+
+> 这三组是为**服务端托管的后台管理台**（`/admin/`，见 [ADMIN-WEB.md](ADMIN-WEB.md)）加的。
+> **患者端与医生端不用关心这一节**，列在这里是为了让"接口总表"保持完整、不漏缺口。
+> 全部端点：`principalOf` + `requireCan(p.role, Action.ManageSchedule)` ⇒ **仅 admin**。
+
+**① AI 模型配置（`ai_model` 表：一个模型一行）**
+
+| 方法与路径 | 要点 |
+| --- | --- |
+| `GET /api/v1/admin/ai/models?include_disabled=` | `{items:[…],count,global_key_ref_set,cache_ttl_secs}`；列表项含 `id,name,kind,kind_label,provider,base_url,request_url,model,temperature,max_tokens,key_ref_set,key_ref_kind,key_source,enabled,is_default,in_use,created_at,updated_at,updated_by` |
+| `POST /api/v1/admin/ai/models` | body `name,kind(CHAT\|EMBEDDING),provider,base_url,model,temperature,max_tokens,key_ref,enabled,is_default`；缺省温度 `0.3`、上限 `2048`、`enabled=true`；**201** `{id,model}` |
+| `PUT /api/v1/admin/ai/models/:id` | **PATCH 语义：缺省的键保持原值**（只改温度不会清掉 `key_ref`）；`"key_ref":""` 才表示"改用全局密钥" |
+| `DELETE /api/v1/admin/ai/models/:id` | 硬删；"留着不用"请 `PUT enabled=false` |
+| `POST /api/v1/admin/ai/models/invalidate` | 立即失效模型 + 全局设置两份缓存 |
+| `POST /api/v1/admin/ai/models/:id/test` | 连通性测试（从库里取该行），**恒 200**，失败是结果不是故障：`probe.ok=false` + `reason` |
+
+- **密钥永不回显**：只回 `key_ref_set`（有没有）/ `key_ref_kind`（`env`\|`file`）/ `key_source`（`model`\|`global`）。
+- ★ `in_use` 与 `is_default` 是**两个事实**：`is_default` 是"用户指定的默认"，`in_use` 是"运行时
+  真正在用的那一行"（默认行被停用/删除后会退到该类型第一条启用的行）。客户端若只显示
+  `is_default`，会出现"一行默认标记都没有、而 AI 确实在用某一行"的状态。
+- `temperature` 只对 `CHAT` 有意义（`EMBEDDING` 行显示 `—`）；旧 KV `ai.*` 仍在，作为**回落**保留。
+
+**② 账号列表：`GET /api/v1/admin/users` 双模式**
+
+- **给了 `login_name`** ⇒ 原来的精确查询（找不到仍 `404 USER_NOT_FOUND`，**老调用方零改动**）。
+- **没给** ⇒ 列表模式：`limit`（默认 50；非法/越界回默认）、`offset`、`role`、`status`
+  （白名单外的值 = 不筛），回 `{items,count,total,limit,offset}`，列表项键名与精确查询**一致**（`user_id`）。
+- 列表**故意不读** `pw_salt`/`pw_hash`（"列表被整页导出"是最常见的泄露路径），由
+  `tests\auth-check.ps1` 的断言钉住。
+
+**③ 排班可改：`PUT /api/v1/admin/schedules/:id`**
+
+此前只有建、没有改：号源写错或医生停诊只能再开一条，老排班连同已经约出去的号继续可约。现在：
+
+- body `total_num`(>0) / `enabled` / `version`（**至少给一个**，`version` 必填 = 乐观锁）；
+- 不变量「放号数 ≥ 已约数」在**一条原子 SQL** 里判断，影响 0 行时回读分辨三类：
+  `404 SCHEDULE_NOT_FOUND`（不存在）、`409 SCHEDULE_CONFLICT`（版本冲突，消息带双方版本号）、
+  `400 VALIDATION_FAILED`（放号数小于已约张数）；
+- 改 `total_num` 时 `remain_num` 同步加减**同一差值** ⇒ 已约数保持不变（不会超卖）；
+- `GET /api/v1/schedules`（§5.12）本就回 `version`，可直接拿来填。
+
+**④ 顺带修掉的一个真实漏洞**：`PUT /api/v1/admin/ai/settings/:key` 现在只接受**登记表里的 `ai.*`**。
+此前 `aiSettingKeyKnown()` 也认 `prompt.*` / `ai.tool.*` ⇒ 可以绕过 `PromptRepo` 的
+占位符/长度校验直接落库。命中时回 `400` 并在 `message` 里指路（Prompt 走
+`PUT /admin/ai/prompts/:name`，工具走 `PUT /admin/ai/tools/:name`）。
+
+**新增错误码**（§14.1 已并入）：`404 AI_MODEL_NOT_FOUND`、`409 AI_MODEL_NAME_TAKEN`、
+`409 SCHEDULE_CONFLICT`。
+
 ---
 
 ## 6. 不能调的端点（前端不应出现这些路径）
@@ -1328,7 +1378,7 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 * 是普通 `content-length` JSON，**不是 chunked**（只有 `/previsit/stream` 是 chunked）。
 * ★ `today` 的口径由脚本钉住：`tests\health-check.ps1` 断言它等于 **UTC+8 当天**（不是设备本地日期）。
 
-### 12.2 `auth-check.ps1`（29 项）
+### 12.2 `auth-check.ps1`（40 项）
 
 * **无令牌访问业务接口 → 401，错误码 `AUTH_REQUIRED`**。
   ★ 与契约核对：一致（`http_app.cj` 抛 `AUTH_REQUIRED`，message「缺少 Authorization: Bearer \<token\>」）。
@@ -1339,6 +1389,10 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 * 登出 → 200；**登出后同一令牌 → 401**。
 * 患者建排班 / 建账号 → **403 `FORBIDDEN_ROLE`**；患者查排班**不是 403**（有则 200 / 无则 404）。
 * 不存在的账号查 `/admin/users` → 404 `USER_NOT_FOUND`。
+* ★ **账号列表模式（`/admin/users` 不带 `login_name`）**（2026-10-14 新增，管理台用）：
+  回 `{items,count,total,limit,offset}`；`role=admin` / `status=active` 能筛；**白名单外的 `role`/`status`
+  当"不筛"**（不是 400，也不是空列表）；`limit` 越界回**默认 50**（与"非法值回默认"同一容错口径）；
+  ★ 列表项**不含 `pw_hash` / `pw_salt`**（"列表被整页导出"是最常见的泄露路径）。
 
 ### 12.3 `rate-limit-check.ps1`（16 项）
 
@@ -1365,6 +1419,49 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 * 两个路径（`/health`、`/api/v1/health`）**都不需要令牌**且均 200；两路径的 `today`/`timezone`/`version` 一致。
 * 响应形状：`ok/service/version/data_backend/dev_auth` 齐备，且**不含** `password|secret|dsn|token` 字样（它是不鉴权接口）。
 * ★★ `today` 等于 **UTC+8 当天**、`timezone` 恒 `Asia/Shanghai`（跨端审计 F14 的回归护栏）。
+
+### 12.9 `ai-model-check.ps1`（45 项，2026-10-14 新增）
+
+`server/tests/ai-model-check.ps1`，专门守 §5.26 的三组新接口 + 一个漏洞修复。夹具前缀
+`AI-MODEL-CHK-<8hex>`，跑完自动清理（库里不留行）。
+
+* **鉴权**：无令牌 401 `AUTH_REQUIRED`；患者令牌 403 `FORBIDDEN_ROLE`。
+* **播种**：首次 `serve` 后列表恰好 2 行（CHAT/EMBEDDING 各一条默认）且 `request_url` 已拼好
+  （`…/compatible-mode/v1/chat/completions`、`…/embeddings`）；`global_key_ref_set=false`（未配密钥）。
+* **密钥不回显**：任何响应都不含 `env:`/`file:` 引用本体，只有 `key_ref_set`/`key_ref_kind`/`key_source`。
+* **校验闸门**：明文 `http://` ⇒ 400「接口地址必须是 https://（明文调用大模型 = 密钥裸奔）」；
+  温度 `2.5`、上限 `8`、空名、未知 `kind`、非法 `key_ref`（既不是 `env:` 也不是 `file:`）均 400。
+* **PATCH 语义**：`PUT {"temperature":0.9}` 之后 `model`/`max_tokens`/`key_ref` **原样保留**；
+  `{"key_ref":""}` 才清空。
+* **默认行唯一**：把探针行设为默认后，同类型只剩它一个 `is_default`。
+* ★ **`in_use`**：把默认行停用（或删除）后，`defaultOf()` 会退到该类型第一条启用行 ⇒ 此时
+  列表里**没有任何行 `is_default=true`，但必有一行 `in_use=true`**（否则页面会出现"AI 在用哪条"不可见）。
+  这条断言是本轮唯一"测试先红、随后改了产品"的地方。
+* **连通性测试**：无密钥时仍 **200** 且 `probe.ok=false`、`reason` 是脱敏后的中文原因；
+  `ai.enabled=false` 时**照样能测**（排查配置不该被总开关挡住）。
+* **缓存失效**：直连 MySQL 改行后 `GET` 仍回旧值（5 秒 TTL 内），`POST /invalidate` 之后立即回新值。
+* **settings 登记表闸门**：`PUT /api/v1/admin/ai/settings/prompt.dept` ⇒ 400 且消息指路
+  Prompt/工具专用端点，并断言**库里没留下这一行**（漏洞修的是"能绕过去落库"）。
+* **删除**：`DELETE` 回 `{id,deleted:true}`，再删 404 `AI_MODEL_NOT_FOUND`。
+
+### 12.10 `admin-web-smoke.mjs`（11 页，2026-10-14 新增）
+
+`server/tests/admin-web-smoke.mjs`：无头 Edge + CDP（Node 24 自带 `WebSocket`，无第三方依赖）。
+以 `--headless=new --remote-debugging-port=9333` 启浏览器 → 真实登录并写入
+`localStorage`（键 `hospital_admin_token`/`hospital_admin_who`）→ **刷新走真实 boot** →
+逐个访问 11 个页面 id（写死清单，防"页面被误删后测试跟着变短"）→ 收集
+`Runtime.consoleAPICalled(error/warning)`、`Runtime.exceptionThrown`、`Log.entryAdded(error)`、
+`Network.responseReceived(>=400)` → 每页截图 → 断言页脚不得含「读取失败」→ 任一项失败即 `exit 1`。
+
+```powershell
+& $env:NODE tests\admin-web-smoke.mjs --base http://127.0.0.1:8091 --admin admin --pw <口令> --out <截图目录>
+```
+
+实测：`ok=true, footNoteOk=true, consoleErrors=0, exceptions=0, badResponses=0, navItems=14`，
+页脚 `服务端 hospital-server 0.2.0-p1 · 数据后端 mysql · 今天 2026-10-14（Asia/Shanghai）`。
+它抓到过两个**只有截图能看见**的真 bug：① `/health` 是唯一平铺返回（无 `data` 信封），
+`API.get('/health')` 曾返回 `undefined` ⇒ 看板显示「加载失败」但**控制台无报错**；
+② `/favicon.ico` 404。两者都已修，脚本会忽略浏览器自动请求的 `favicon.ico`。 
 
 ### 12.5 `previsit-check.ps1`（86 项，含 SSE）
 
@@ -1456,6 +1553,9 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 | 409 | `BASE_IN_USE` | 该记录正被引用，不能删除 | ❌（管理端） |
 | 404 | `KB_DOC_NOT_FOUND` | 知识库文档不存在 | ❌（管理端） |
 | 409 | `KB_TITLE_TAKEN` | 已存在同名知识库文档 | ❌（管理端） |
+| 404 | `AI_MODEL_NOT_FOUND` | 模型配置不存在（2026-10-14 新增，§5.26） | ❌（管理端） |
+| 409 | `AI_MODEL_NAME_TAKEN` | 同名模型配置已存在（2026-10-14 新增，§5.26） | ❌（管理端） |
+| 409 | `SCHEDULE_CONFLICT` | 该排班已被他人修改，请刷新后重试（`message` 实际带双方 `version`；2026-10-14 新增，§5.26③） | ❌（管理端） |
 | 500 | *（任何未登记码，含 `INTERNAL` / `INTERNAL_ERROR` / `KB_WRITE_FAILED`）* | 服务器内部错误 | ✅（兜底） |
 
 > ⚠ **不存在** `AUTH_TOKEN_INVALID` 这个码（见 §11 第 5 条）。

@@ -771,6 +771,287 @@ public class TestRunner {
         })
     }
 
+    /* ---------- AC-16：模型配置表（多模型 / 运行时解析 / PATCH / 缓存失效）---------- */
+    /*
+     * 修的是什么：`ai_setting` 是**单份 KV**，只能配一个对话模型，而且**没有温度**。
+     *   产品要求"一个模型一行"（对话 / 向量分开、各自温度与上限、各自启停），
+     *   并明确"保存后自动失效缓存、下一次 AI 请求动态构建模型实例，无需重启"。
+     *   ⇒ 新增 `ai_model` 表 + 运行时按类型解析。本用例钉住四件事：
+     *     ① 空表播种两行且**幂等**（不覆盖已有配置）；
+     *     ② 运行时优先取模型行（含温度），`key_ref` 为空时回落全局那把；
+     *     ③ PATCH 语义（只给温度 ⇒ 别的字段不变）、重名与明文地址被拒；
+     *     ④ 缓存确实存在，且 `invalidate()` 能失效它。
+     */
+    public func ac16(): Unit {
+        println("=== AC-16 ★★ 模型配置表：播种 / 运行时解析 / PATCH / 缓存失效 ===")
+        section("AC-16", { =>
+            /*
+             * ⚠ 本用例独占 `ai_model` 与几个 `ai.*` 配置项。库是共享的（管理台联调也会写它），
+             *   不清就会变成"随机红"。结尾恢复成"播种后的两行"，让库回到与生产一致的起点。
+             */
+            db.exec("DELETE FROM ai_model", Array<DbValue>())
+            db.exec("DELETE FROM ai_setting WHERE k = ?", [DbStr("ai.enabled")])
+            db.exec("DELETE FROM ai_setting WHERE k = ?", [DbStr("ai.endpoint")])
+            db.exec("DELETE FROM ai_setting WHERE k = ?", [DbStr("ai.model")])
+            db.exec("DELETE FROM ai_setting WHERE k = ?", [DbStr("ai.max_tokens")])
+            db.exec("DELETE FROM ai_setting WHERE k = ?", [DbStr("ai.key_ref")])
+
+            let now = hNowEpoch()
+            let models = AiModelRepo(db)
+            let settings = AiSettingsRepo(db)
+            settings.attachModels(models)
+
+            check("清空后模型表为空", models.countAll() == 0)
+            check("空表播种：返回 2，且表里恰好 2 行",
+                  aiModelSeedDefaults(models, settings, now) == 2 && models.countAll() == 2)
+            check("播种幂等：再播一次不改动（返回 0，仍是 2 行）",
+                  aiModelSeedDefaults(models, settings, now) == 0 && models.countAll() == 2)
+
+            match (models.defaultOf(AI_MODEL_KIND_CHAT, now)) {
+                case Some(m) =>
+                    check("对话模型：请求 URL = base_url + /chat/completions（探针与真实调用同一条路）",
+                          aiModelRequestUrl(m.baseUrl, AI_MODEL_KIND_CHAT) ==
+                          AI_MODEL_SEED_BASE_URL + "/chat/completions")
+                    check("对话模型：种子值 = qwen-plus / 温度 0.3 / 上限 2048（与产品需求一致）",
+                          m.model == AI_MODEL_SEED_CHAT_MODEL &&
+                          m.temperature == AI_MODEL_SEED_CHAT_TEMPERATURE &&
+                          m.maxTokens == AI_MODEL_SEED_MAX_TOKENS)
+                case None =>
+                    check("默认对话模型可按类型取到", false)
+            }
+            match (models.defaultOf(AI_MODEL_KIND_EMBEDDING, now)) {
+                case Some(m) =>
+                    check("向量模型：请求 URL = base_url + /embeddings",
+                          aiModelRequestUrl(m.baseUrl, AI_MODEL_KIND_EMBEDDING) ==
+                          AI_MODEL_SEED_BASE_URL + "/embeddings")
+                case None =>
+                    check("默认向量模型可按类型取到", false)
+            }
+
+            let opts = settings.options(now)
+            check("运行时端点 = 模型行（而不是 KV 里可能存在的另一个地址）",
+                  opts.endpoint == AI_MODEL_SEED_BASE_URL + "/chat/completions")
+            check("运行时模型名 = 模型行", opts.model == AI_MODEL_SEED_CHAT_MODEL)
+            check("★ 运行时温度 = 模型行的 0.3（旧口径根本不发温度，等于把决定性让给服务商默认值）",
+                  opts.temperature == AI_MODEL_SEED_CHAT_TEMPERATURE)
+            check("运行时最大 Token = 模型行", opts.maxTokens == AI_MODEL_SEED_MAX_TOKENS)
+            check("AI 总开关仍来自 KV（默认 0 ⇒ 不可用；模型行不该绕过总开关）", !opts.enabled)
+
+            check("全局密钥引用可写入（模型行留空时用它兜底）",
+                  settings.put("ai.key_ref", "env:AC16_GLOBAL_KEY", now).ok)
+            check("★ 密钥引用回落：模型行 key_ref 为空 ⇒ 取全局那把",
+                  settings.options(now).keyRef == "env:AC16_GLOBAL_KEY")
+
+            let draft = AiModel()
+            draft.name = "AC16-临时行"
+            draft.kind = "chat"
+            draft.provider = "本地"
+            draft.baseUrl = AI_MODEL_SEED_BASE_URL
+            draft.model = "ac16-model"
+            draft.temperature = 0.5
+            draft.maxTokens = 1024
+            draft.keyRef = "env:AC16_ROW_KEY"
+            draft.enabled = true
+            draft.isDefault = true
+            let created = models.create(draft, now, 1)
+            check("新建默认对话模型：成功且拿到 id（类型小写 chat 也要能用）",
+                  created.ok && created.id > 0)
+            match (models.get(created.id, now)) {
+                case Some(m) =>
+                    check("落库的 kind 已归一化为 CHAT", m.kind == AI_MODEL_KIND_CHAT)
+                case None =>
+                    check("新建后能读回该行", false)
+            }
+            match (models.defaultOf(AI_MODEL_KIND_CHAT, now)) {
+                case Some(m) =>
+                    check("新行成为默认对话模型（is_default 生效）",
+                          m.id == created.id && m.model == "ac16-model")
+                case None =>
+                    check("新行成为默认对话模型", false)
+            }
+            var defaultCount: Int64 = 0
+            for (m in models.list(true, now)) {
+                if (m.kind == AI_MODEL_KIND_CHAT && m.isDefault) {
+                    defaultCount = defaultCount + 1
+                }
+            }
+            check("同一类型只有一个默认（clearOtherDefaults 把旧默认清掉了）", defaultCount == 1)
+
+            let patched = models.update(created.id, None, None, None, None, None, Some(0.9), None,
+                                        None, None, None, now, 1)
+            check("PATCH：只给温度也能成功", patched.ok)
+            match (models.get(created.id, now)) {
+                case Some(m) =>
+                    check("★ PATCH 不清空没提到的字段（模型名 / 密钥引用 / 上限原样）",
+                          m.temperature == 0.9 && m.model == "ac16-model" &&
+                          m.keyRef == "env:AC16_ROW_KEY" && m.maxTokens == 1024)
+                case None =>
+                    check("PATCH 后能读回该行", false)
+            }
+
+            let dup = AiModel()
+            dup.name = "AC16-临时行"
+            dup.kind = AI_MODEL_KIND_CHAT
+            dup.provider = "本地"
+            dup.baseUrl = AI_MODEL_SEED_BASE_URL
+            dup.model = "another"
+            check("重名 ⇒ duplicate（HTTP 层映射成 409）", models.create(dup, now, 1).duplicate)
+            check("明文 http 地址被拒（消息要说清是密钥裸奔）",
+                  aiModelValidate("n", AI_MODEL_KIND_CHAT, "p", "http://x.example/v1", "m",
+                                  0.3, 1024, "").size > 0)
+            check("温度越界 2.5 被拒",
+                  aiModelValidate("n", AI_MODEL_KIND_CHAT, "p", AI_MODEL_SEED_BASE_URL, "m",
+                                  2.5, 1024, "").size > 0)
+            check("最大 Token 过小 8 被拒",
+                  aiModelValidate("n", AI_MODEL_KIND_CHAT, "p", AI_MODEL_SEED_BASE_URL, "m",
+                                  0.3, 8, "").size > 0)
+
+            /*
+             * 缓存：**绕过仓储**直接改库 ⇒ 仓储仍回旧值（证明缓存真的在）；
+             * `invalidate()` 之后才看到新值 —— 管理台那个"失效配置缓存"按钮等价于此。
+             */
+            db.exec("UPDATE ai_model SET model = ? WHERE id = ?",
+                    [DbStr("ac16-cache-probe"), DbInt(created.id)])
+            var cachedModel = ""
+            match (models.get(created.id, now)) {
+                case Some(m) => cachedModel = m.model
+                case None => ()
+            }
+            check("★ 缓存生效：直连改库后仓储仍回旧值（说明不是每次都查库）",
+                  cachedModel == "ac16-model")
+            models.invalidate()
+            var freshModel = ""
+            match (models.get(created.id, now)) {
+                case Some(m) => freshModel = m.model
+                case None => ()
+            }
+            check("★ invalidate() 后读到新值（下次 AI 请求重新构建实例，无需重启）",
+                  freshModel == "ac16-cache-probe")
+
+            check("删除临时行成功", models.remove(created.id, now))
+            check("删后取不到该行", models.get(created.id, now).isNone())
+            db.exec("DELETE FROM ai_model", Array<DbValue>())
+            db.exec("DELETE FROM ai_setting WHERE k = ?", [DbStr("ai.key_ref")])
+            check("收尾：恢复成播种后的 2 行（给联调/管理台一个一致的起点）",
+                  aiModelSeedDefaults(models, settings, now) == 2 && models.countAll() == 2)
+        })
+    }
+
+    /* ---------- AC-17：管理台补充的两个契约缺口（账号列表 / 排班可改）---------- */
+    /*
+     * 缺口是什么：① `GET /api/v1/admin/users` 原先**只能按登录名精确查一条**，
+     *   管理台的"用户管理"页要列表、要翻页、要按角色筛，接口根本不支持；
+     *   ② 排班**只有建、没有改** —— 号源写错或医生停诊只能新开一条，
+     *   老排班连同已经约出去的号继续挂在患者端可约。
+     * 本用例钉住这两条新路径（含"列表不吐口令材料"与"放号数不得低于已约数"）。
+     */
+    public func ac17(): Unit {
+        println("=== AC-17 ★ 管理台缺口：账号列表 与 排班改放号/停诊 ===")
+        section("AC-17", { =>
+            let now = hNowEpoch()
+            let auth = AuthRepo(db)
+
+            /* ---------- ① 账号列表 ---------- */
+            db.exec("DELETE FROM auth_token WHERE user_id IN " +
+                    "(SELECT id FROM auth_user WHERE login_name LIKE ?)", [DbStr("ac17-%")])
+            db.exec("DELETE FROM auth_user WHERE login_name LIKE ?", [DbStr("ac17-%")])
+            let a = auth.createUser("ac17-probe-a", Role.Admin, 0, "AC-17 探针甲",
+                                    "Ac17-Str0ng-Pass!", now)
+            let b = auth.createUser("ac17-probe-b", Role.Admin, 0, "AC-17 探针乙",
+                                    "Ac17-Str0ng-Pass!", now)
+            check("建两个 admin 探针账号（口令强度校验通过）", a > 0 && b > 0)
+
+            let listed = auth.listUsers(500, 0, "admin", "")
+            var foundA = false
+            var leakage = false
+            for (u in listed) {
+                if (u.loginName == "ac17-probe-a") {
+                    foundA = true
+                }
+                if (u.pwHash.size > 0 || u.pwSalt.size > 0) {
+                    leakage = true
+                }
+            }
+            check("★ 列表模式：按 role 筛能查到刚建的账号（旧接口只支持按登录名精确查）", foundA)
+            check("★★ 列表**不**读出任何口令材料（pw_hash / pw_salt 全空）", !leakage)
+            check("count 与 list 同一套 WHERE（口径不会互相漂移）",
+                  auth.countUsers("admin", "") == auth.listUsers(500, 0, "admin", "").size)
+            check("白名单外的 role 值 = 不筛（不报错、也不当成未知角色查空）",
+                  auth.listUsers(500, 0, "超级管理员", "").size == auth.countUsers("", ""))
+
+            let page1 = auth.listUsers(1, 0, "", "")
+            let page2 = auth.listUsers(1, 1, "", "")
+            check("limit / offset 生效（第 1、2 页各 1 条且不同一行）",
+                  page1.size == 1 && page2.size == 1 && page1[0].id != page2[0].id)
+
+            db.exec("DELETE FROM auth_token WHERE user_id IN " +
+                    "(SELECT id FROM auth_user WHERE login_name LIKE ?)", [DbStr("ac17-%")])
+            db.exec("DELETE FROM auth_user WHERE login_name LIKE ?", [DbStr("ac17-%")])
+            check("收尾：探针账号已清掉（不给下一次运行留状态）",
+                  auth.countUsers("", "") == auth.listUsers(500, 0, "", "").size)
+
+            /* ---------- ② 排班：改放号数 / 停诊 ---------- */
+            /* ⚠ hSeedSchedule 用的是普通 INSERT ⇒ 先清掉同 id 的行，保证可重复运行。 */
+            db.exec("DELETE FROM appointment WHERE schedule_id = ?", [DbInt(9701)])
+            db.exec("DELETE FROM schedule WHERE id = ?", [DbInt(9701)])
+            hSeedSchedule(db, 9701, 10, ACC_FIXTURE_DATE)
+
+            let up1 = repo.updateSchedule(9701, Some(20), None, 0)
+            let (remain1, ver1) = hScheduleState(db, 9701)
+            check("改放号数 10 → 20：成功、余量同步 +10、版本 +1",
+                  up1.ok && up1.totalNum == 20 && remain1 == 20 && ver1 == 1)
+
+            var i: Int64 = 0
+            while (i < 3) {
+                let _ = repo.tryDeductSlot(9701, today: ACC_FIXTURE_DATE)
+                i = i + 1
+            }
+            let (remainBooked, verBooked) = hScheduleState(db, 9701)
+            /*
+             * ⚠ 扣号（`tryDeductSlot`）**也会** `version + 1` —— 乐观锁不只服务"人改排班"。
+             *   ⇒ 这里必须**读回**当前版本再改；拿 up1 之后那个 1 去改不是"并发冲突测试"，
+             *   而是测试自己写错了前提（会稳定地假红）。
+             */
+            check("先占掉 3 个号（余量 20 → 17，版本推进到 ${verBooked}）", remainBooked == 17)
+
+            /* ★ 不变量：放号数不得低于"已约数"（否则余量为负 = 超卖）。 */
+            let up2 = repo.updateSchedule(9701, Some(2), None, verBooked)
+            let (remain2, ver2) = hScheduleState(db, 9701)
+            check("★★ 放号数降到已约数以下 ⇒ tooSmall，且库里**一个字都没改**" +
+                  "（实得 tooSmall=${up2.tooSmall} ok=${up2.ok} remain=${remain2} ver=${ver2}" +
+                  " booked=${up2.booked} total=${up2.totalNum}）",
+                  up2.tooSmall && !up2.ok && remain2 == 17 && ver2 == verBooked)
+
+            let up3 = repo.updateSchedule(9701, Some(15), None, verBooked)
+            let (remain3, ver3) = hScheduleState(db, 9701)
+            check("★ 放号数 20 → 15：余量 = 17 + (15 - 20) = 12（已约的 3 个不受影响）" +
+                  "（实得 ok=${up3.ok} remain=${remain3} ver=${ver3} booked=${up3.booked}" +
+                  " remainNum=${up3.remainNum} tooSmall=${up3.tooSmall} conflict=${up3.conflict}）",
+                  up3.ok && remain3 == 12 && ver3 == verBooked + 1 &&
+                  up3.remainNum == 12 && up3.booked == 3)
+
+            let up4 = repo.updateSchedule(9701, Some(16), None, verBooked)
+            check("拿着**过期**的版本号改 ⇒ conflict（不是静默成功、也不是覆盖别人的改动）",
+                  up4.conflict && !up4.ok)
+
+            let (_, verAfter3) = hScheduleState(db, 9701)
+            let up5 = repo.updateSchedule(9701, None, Some(false), verAfter3)
+            let rs = db.query("SELECT enabled FROM schedule WHERE id = ?", [DbInt(9701)])
+            check("停诊：enabled 落库为 0（此前只有建、没有改，停诊只能新开一条排班）" +
+                  "（实得 ok=${up5.ok} enabled=${rs.getInt(0, 0)} ver=${up5.version}" +
+                  " notFound=${up5.notFound} conflict=${up5.conflict}）",
+                  up5.ok && rs.rowCount() == 1 && rs.getInt(0, 0) == 0)
+
+            let up6 = repo.updateSchedule(9799, Some(5), None, 0)
+            check("改不存在的排班 ⇒ notFound（不回「成功」）", up6.notFound && !up6.ok)
+
+            db.exec("DELETE FROM appointment WHERE schedule_id = ?", [DbInt(9701)])
+            db.exec("DELETE FROM schedule WHERE id = ?", [DbInt(9701)])
+            let gone = db.query("SELECT id FROM schedule WHERE id = ?", [DbInt(9701)])
+            check("收尾：探针排班已清掉（不给下一次运行留状态）", gone.rowCount() == 0)
+        })
+    }
+
     /*
      * ⚠ 原先这里是 **AC-8：`booking_idem` 表可正常读写**。
      *   **2026-10-07 连同表与实现一起删除**（决策见 ADR-0001 §7 第 7 条）。
@@ -945,6 +1226,13 @@ public func runAcceptance(db: DbBackend): Int64 {
      */
     runner.ac14()
     runner.ac15()
+    /*
+     * AC-16 / AC-17（2026-10-14，管理台后端：多模型配置 + 两个契约缺口）。
+     * ⚠ 同样排在最后：AC-16 独占 `ai_model` / `ai.*` 配置项，AC-17 自建自清探针账号与排班，
+     *   两者都不依赖别的用例留下的状态（AC-17 复用 hSeedSchedule 的固定科室/医生/患者夹具）。
+     */
+    runner.ac16()
+    runner.ac17()
     println("")
     println("通过 ${runner.passed} 项，失败 ${runner.failed} 项")
     if (runner.failed == 0) {

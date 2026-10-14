@@ -199,6 +199,58 @@ Check "患者查排班（有则 200 / 无则 404，但绝不是 403）" `
       ($r.Code -eq 200 -or $r.Code -eq 404)
 Check "患者查排班未因权限被拒（非 403）" ($r.Code -ne 403)
 
+# ── 4b) ★ 账号列表模式（管理台「用户管理」页要列表 / 翻页 / 按角色筛）
+#   ⚠ 这个端点原先**只能按 login_name 精确查一条**：管理台要列表、要翻页、
+#     要按角色筛，接口根本不支持（只能靠"猜登录名"逐条试）。
+#   ⚠ 同时守一条隐私纪律：列表**不得**吐出任何口令材料（pw_hash / pw_salt）。
+Write-Host ""
+Write-Host "[4b] ★ 账号列表模式（列表 / 筛选 / 翻页 / 不吐口令材料）"
+$r = Req 'a25' 'GET' '/api/v1/admin/users?limit=200' @("Authorization: Bearer $admin") $null
+$lj = Json $r
+$short = $r.Body.Substring(0, [Math]::Min(200, $r.Body.Length))
+Check "列表模式 ⇒ 200（不带 login_name 也能查）" ($r.Code -eq 200) ("HTTP $($r.Code)")
+Check "返回 items / count / total / limit / offset 五个字段" `
+      ($null -ne $lj.data.items -and $null -ne $lj.data.count -and $null -ne $lj.data.total -and `
+       $null -ne $lj.data.limit -and $null -ne $lj.data.offset) ("body=$short")
+Check "★★ 列表里能查到刚建的患者账号（$PatientLogin）" `
+      ((@($lj.data.items | Where-Object { $_.login_name -eq $PatientLogin })).Count -eq 1) ("body=$short")
+Check "★★★ 响应里**没有** pw_hash / pw_salt 字段（列表最容易被整页导出）" `
+      (-not ($r.Body -match 'pw_hash|pw_salt')) ("body=$short")
+Check "count 与 items 条数一致（口径不漂移）" ([int]$lj.data.count -eq @($lj.data.items).Count) `
+      ("count=$($lj.data.count) items=$(@($lj.data.items).Count)")
+
+$r = Req 'a26' 'GET' '/api/v1/admin/users?role=admin&limit=200' @("Authorization: Bearer $admin") $null
+$aOnly = Json $r
+Check "★ role=admin 筛选生效（结果里全是 admin）" `
+      ((@($aOnly.data.items | Where-Object { $_.role -ne 'admin' })).Count -eq 0) `
+      ("roles=$((@($aOnly.data.items | ForEach-Object { $_.role }) | Select-Object -Unique) -join ',')")
+
+$r = Req 'a27' 'GET' '/api/v1/admin/users?role=nobody&limit=200' @("Authorization: Bearer $admin") $null
+$badRole = Json $r
+Check "★★ 白名单外的 role 值 = 不筛（不报错、也不查成空）" `
+      ([int]$badRole.data.count -eq [int]$lj.data.count) ("bad=$($badRole.data.count) all=$($lj.data.count)")
+
+$r = Req 'a28' 'GET' '/api/v1/admin/users?limit=1&offset=0' @("Authorization: Bearer $admin") $null
+$p1 = Json $r
+$r = Req 'a29' 'GET' '/api/v1/admin/users?limit=1&offset=1' @("Authorization: Bearer $admin") $null
+$p2 = Json $r
+Check "★ limit/offset 翻页生效（第 1、2 页不是同一行）" `
+      ([int]$p1.data.count -eq 1 -and [int]$p2.data.count -eq 1 -and `
+       @($p1.data.items)[0].user_id -ne @($p2.data.items)[0].user_id) `
+      ("p1=$(@($p1.data.items)[0].user_id) p2=$(@($p2.data.items)[0].user_id)")
+
+$r = Req 'a30' 'GET' '/api/v1/admin/users?limit=9999' @("Authorization: Bearer $admin") $null
+$over = Json $r
+Check "★★ 要得比上限多 ⇒ 回默认 50，且真的只给 50 条（不因为你要得多就多给）" `
+      ([int]$over.data.limit -eq 50 -and [int]$over.data.count -le 50) `
+      ("limit=$($over.data.limit) count=$($over.data.count)")
+Check "★★ 且 total 仍报全量（分页信息不因为被夹而失真：total > count 才翻得动页）" `
+      ([int]$over.data.total -ge [int]$over.data.count) ("total=$($over.data.total) count=$($over.data.count)")
+
+$r = Req 'a31' 'GET' '/api/v1/admin/users?login_name=no-such-user-xyz' @("Authorization: Bearer $admin") $null
+Check "★★ 精确查询语义未变：查不到仍是 404 USER_NOT_FOUND（老调用方零改动）" `
+      ($r.Code -eq 404 -and (Json $r).error.code -eq 'USER_NOT_FOUND') ("HTTP $($r.Code)")
+
 # ── 6) 登出吊销 ───────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "[5] 登出与吊销"

@@ -74,7 +74,7 @@ cd server     # ⚠ cwd 必须是 server/，见下
 | `triagetest` | P2 分诊 + 预问诊**纯逻辑**自检（**110 项**断言），不碰库不调模型 | ❌ |
 | `authtest` | **口令/令牌原语自检**（含 3 个公开测试向量，**17 项**） | ❌ |
 | `check-db <dsn>` | 连库 + 幂等建表 + 打印表清单（★ 标记号源域） | ✅ |
-| `accept <dsn>` | 验收测试 AC-1…AC-15（**507 项断言**：AC-1…AC-13 + AC-P2-1…6 / AC-P3-1…6 / AC-P4-1…4 / AC-BASE-1…3 / AC-AICALL-1…3 / AC-NOTICE-1…3；⚠ 只允许库名含 `test` 的测试库） | ✅ |
+| `accept <dsn>` | 验收测试 AC-1…AC-17（**550 项断言**：AC-1…AC-13 + **AC-14/AC-15**（令牌续期回值、`/health` 日期口径）+ **AC-16/AC-17**（`ai_model` 模型配置、账号列表/排班可改）+ AC-P2-1…6 / AC-P3-1…6 / AC-P4-1…4 / AC-BASE-1…3 / AC-AICALL-1…3 / AC-NOTICE-1…3；⚠ 只允许库名含 `test` 的测试库） | ✅ |
 | `create-db <dsn>` | 幂等建库（utf8mb4）—— 测试库靠它 | ✅ |
 | `create-admin <dsn>` | 建/重置管理员并打印口令（**引导入口**） | ✅ |
 | `serve <dsn>` | **P1**：启动 HTTP / HTTPS 服务（默认只绑 `127.0.0.1`） | ✅ |
@@ -176,22 +176,51 @@ $env:HOSP_ADMIN_PW = "<管理员口令>"
 # 探活接口（/health 与 /api/v1/health：响应形状 + ★ 医院日期口径；无需认证）
 .\tests\health-check.ps1   -Base http://127.0.0.1:8091
 
+# 基础数据域（科室/医生/排班的 CRUD + 分诊推荐 + ★ 排班可改：不变量与乐观锁）
+.\tests\base-check.ps1     -Base http://127.0.0.1:8091 -AdminPw <管理员口令>
+
+# AI 模型配置（管理台「AI 模型配置」页）：CRUD / 校验闸门 / 连通性测试 / 缓存失效
+.\tests\ai-model-check.ps1 -Base http://127.0.0.1:8091 -AdminPw <管理员口令>
+
+# 管理台前端冒烟（无头 Edge + CDP：11 个页面逐个渲染 + 控制台/异常/4xx 全收集 + 截图）
+& $env:NODE 'tests\admin-web-smoke.mjs' --base http://127.0.0.1:8091 --admin admin --pw <管理员口令>
+
 # 文档数字对账（防"文档与实测漂移"；-Fix 自动改写）
 .\tests\doc-counts.ps1
 ```
 
-三个脚本**互不依赖执行顺序**（自建夹具、自清数据）。
+各脚本**互不依赖执行顺序**（自建夹具、自清数据）。
 > ⚠ 必须用 `curl -K` config 文件传 header/body —— `Start-Process -ArgumentList` 会拆坏
 > 含空格的参数（详见 [../docs/P1-HANDOFF.md](../docs/P1-HANDOFF.md) §3.3）。
 > ⚠ `tls-check.ps1` **不用** `curl --cacert` 做主校验：Windows 的 Schannel 对自签证书的
 > `--cacert` 支持不完整（实测 `schannel: error 0x00000010`，而同刻 `curl -k` 是 200），
 > 所以它走 .NET `SslStream` + 显式链校验 + 自解析 SAN。理由与两个坑写在脚本头注释里。
 
+### 管理台（`/admin/`，2026-10-14 增）
+
+服务端**自带一个浏览器管理台**：`server/admin-web/` 是**零构建纯静态**页面（无 npm / 无打包产物），
+由 `main.cj` 用轻舟的 `serveWithOpts` 挂在 `/admin`，与 API **同源同端口**（因此没有 CORS / 证书 /
+反向代理话题）。
+
+```powershell
+# 起服务端后直接开（先登录：admin / create-admin 打印的口令）
+start http://127.0.0.1:8091/admin
+```
+
+| 项 | 口径 |
+| --- | --- |
+| 页面 | 运营看板 / 用户 / 科室 / 医生 / 排班号源 / **AI 模型配置** / AI 全局设置 / Prompt 模板 / 工具中心 / 医学知识库 / 系统公告（11 页；患者档案、症状标签库、Agent 执行观测**未做**，侧栏灰显并写明原因） |
+| 鉴权 | 静态页面**本身不鉴权**（谁来都能拿到 HTML），数据一律走 `/api/v1/admin/*` 逐条校验；令牌存 `localStorage`，`401` 即回登录页 |
+| 密钥 | 配置里只存 `env:变量名` / `file:路径` 这类**引用**；列表接口只回 `key_ref_set` / `key_ref_kind`，**永不回显**引用本体 |
+| 改配置要重启吗 | 不用。写库后立即 `invalidate()`，下一次 AI 请求按新配置动态构建模型实例（页面上的「失效配置缓存」按钮是同一件事的手动兜底） |
+
+细节（页面 ↔ 接口映射、安全口径、为什么不用前端框架/不加构建步骤）见 [../docs/ADMIN-WEB.md](../docs/ADMIN-WEB.md)。
+
 ### 验收依据：源码哈希，不是产物哈希
 
 cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构建，exe 的 SHA256 不同，行为一致）。
-所以 `build.ps1` 每次构建都会重写 **`build/SOURCE-MANIFEST.sha256`**（轻舟框架 38 + 业务 36 =
-**74 个参与编译源文件**的 SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是**稳定**的。
+所以 `build.ps1` 每次构建都会重写 **`build/SOURCE-MANIFEST.sha256`**（轻舟框架 38 + 业务 37 =
+**75 个参与编译源文件**的 SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是**稳定**的。
 **验收请比 `SOURCE-MANIFEST.sha256` + 测试结果，不要比 exe 哈希。**
 
 ---
@@ -210,7 +239,7 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 | `src/http_common.cj` | 统一响应/错误码表（`{ok,data}` / `{ok:false,error}`） |
 | `src/http_app.cj` | HTTP 装配 + 三端权限矩阵 + `principalOf()`（令牌优先，开发态头可选）+ **登录限流闸门** + **会话/列表端点** |
 | `src/auth_repo.cj` | 鉴权仓储：**口令强度校验（仓储层强制）** + 登录名归一 + 限流计数 + 会话按设备 |
-| `src/acceptance.cj` | AC-1…AC-15 验收测试（含异常兜底与变异测试记录；AC-8 已于 2026-10-07 随 `booking_idem` 删除、AC-9 未使用；**AC-13 = 退号状态机**，2026-10-12 增；**AC-14 = 令牌续期后 `/auth/me` 回报的 `expires_at`**、**AC-15 = `/health` 的 `today`/`timezone` 口径**，均 2026-10-14 增（跨端审计 F11/F14）） |
+| `src/acceptance.cj` | AC-1…AC-17 验收测试（含异常兜底与变异测试记录；AC-8 已于 2026-10-07 随 `booking_idem` 删除、AC-9 未使用；**AC-13 = 退号状态机**，2026-10-12 增；**AC-14 = 令牌续期后 `/auth/me` 回报的 `expires_at`**、**AC-15 = `/health` 的 `today`/`timezone` 口径**，均 2026-10-14 增（跨端审计 F11/F14）；**AC-16 = `ai_model` 模型配置**（播种幂等 / 默认行解析 / 温度注入运行时 / 缓存失效）、**AC-17 = 账号列表 + 排班可改**（`listUsers` 不读口令材料、`updateSchedule` 的"放号数 ≥ 已约数"不变量与乐观锁），均 2026-10-14 管理台轮增） |
 | `src/acceptance_triage.cj` | AC-P2-1…AC-P2-5：分诊**验证层** + 预问诊**会话隔离**在库级成立（含变异测试记录） |
 | `src/previsit.cj` | **P2 预问诊**：多轮采集状态机 + SSE 帧 + 结构化问诊单（业务值，非流式） |
 | `src/ai_settings.cj` | **P3 AI 能力中心**：配置 KV 表 + 缓存失效 + ★★ 密钥引用校验（密钥不落库）+ 脱敏回显 |
@@ -220,12 +249,13 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 | `src/dashboard.cj` | **P4 运营看板**：只出聚合、绝不出明细（隐私红线写在文件头） |
 | `src/triage_stat.cj` | **P4 分诊统计**：只存结论；`record()` 签名里**没有主诉参数**（类型层面存不进敏感文本） |
 | `src/http_p4.cj` | **P4 接口层**：11 个端点（接诊队列 / 病历 / 看板）；路由注册仍集中在 http_app.cj |
-'| `src/acceptance_p4.cj` | AC-P4-1…4：病历锁定不可改 / 状态机 / 看板隐私 / 统计不落敏感文本 |
+| `src/acceptance_p4.cj` | AC-P4-1…4：病历锁定不可改 / 状态机 / 看板隐私 / 统计不落敏感文本 |
 | `src/domain_base.cj` | **基础数据域（科室/医生）仓储**：CRUD + 唯一键冲突分类 + **引用保护**（有引用不删）+ **软删**（force） |
 | `src/http_base.cj` | **基础数据域接口**（12 个端点）：科室/医生的管理端 CRUD（仅 `ManageBaseData`，管理员）+ **患者可读字典** `GET /api/v1/departments`、`GET /api/v1/doctors` |
 | `src/domain_notice.cj` | **公告域仓储**（2026-10-12）：院内公告/健康提示的 CRUD；列顺序单一定义 + 列数守卫；⚠ 公告**不进检索、不出站**（与 `kb_doc` 的边界写在文件头） |
 | `src/http_notice.cj` | **公告域接口**（6 个端点）：`GET /api/v1/notices`（三端可读）+ 管理端 CRUD（仅 `ManageNotice`）；`published_at` 支持预排期 |
-| `src/ai_call.cj` | **真模型出站**（P5 第一步）：TLS 出站 + 密钥**引用**解析 + **脱敏** + 失败不抛异常 |
+| `src/ai_call.cj` | **真模型出站**（P5 第一步）：TLS 出站 + 密钥**引用**解析 + **脱敏** + 失败不抛异常；2026-10-14 起请求体带 `temperature`，并新增**连通性探测**（`aiProbeChat` / `aiProbeEmbedding`） |
+| `src/ai_model.cj` | **AI 模型配置域**（2026-10-14，管理台）：一个模型一行（类型 `CHAT`/`EMBEDDING`、提供方、`base_url`、模型名、温度、上限、密钥引用、启停、默认位）；`defaultOf()` 决定运行时用哪条；`aiModelSeedDefaults()` 首次播种两条默认行；密钥**只存引用、永不回显** |
 | `src/ai_triage.cj` | **模型增强层**：只写 `aiNote`/`aiReason`，**绝不碰 `options`**（硬性验证层不可绕过）+ 安全清理层 |
 | `src/acceptance_base.cj` | AC-BASE-1…3：科室唯一性 / 不许孤儿医生 / 删除的两种语义 |
 | `src/acceptance_ai_call.cj` | AC-AICALL-1…3：可调用性 / **安全清理层（医疗建议一律丢弃）** / 响应解析 + 可选真实出站 |
@@ -234,8 +264,11 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 | `new-tls-cert.ps1` | 生成带 SAN 的自签证书 + ASCII 运行副本 + ACL 收紧 |
 | `tests/tls-check.ps1` | TLS 验证（SslStream 真校验、反向验证、HTTPS 业务链路） |
 | `tests/health-check.ps1` | 探活接口（`/health` + `/api/v1/health`）：无需认证、响应形状、**医院日期口径 `today`/`timezone`**、两路径同实现 |
+| `tests/ai-model-check.ps1` | **AI 模型配置端到端**（45 项，2026-10-14）：鉴权 / 播种 / 密钥不回显 / 校验闸门 / PATCH 语义 / 默认位唯一与 `in_use` / 连通性测试 / 缓存失效 / `settings` 登记表闸门 |
+| `tests/admin-web-smoke.mjs` | **管理台前端冒烟**（2026-10-14）：无头 Edge + CDP，11 个页面逐个真实渲染 + 控制台/异常/`>=400` 全收集 + 逐页截图；任一项失败 `exit 1` |
+| `admin-web/` | **后台管理台的静态资源**（零构建：`index.html` + `css/` + `js/` 四个脚本），由服务端按 `/admin` 前缀托管；页面本身不鉴权，数据全走 `/api/v1/admin/*`（详见 [../docs/ADMIN-WEB.md](../docs/ADMIN-WEB.md)） |
 
-**最小表集（15 张 / 9 域）**：
+**最小表集（16 张 / 10 域）**：
 
 | 表 | 域 · 纪律 | 数据访问 |
 | --- | --- | --- |
@@ -245,6 +278,7 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 | `auth_user` `auth_token` `auth_login_attempt` | **鉴权域** | 直接 SQL（仅 `AuthRepo` 写） |
 | `previsit_session` | **预问诊域** · 医疗数据 | 直接 SQL（仅 `PrevisitRepo` 写；★ P2 起**刻意不进**任何缓存范式） |
 | `ai_setting` | **AI 配置域** · 配置 | 直接 SQL（KV；写库即失效缓存 ⇒ 改配置零重启）；⚠ 密钥**只存引用**不存明文 |
+| `ai_model` | **AI 模型配置域**（2026-10-14） · 配置 | 直接 SQL（仅 `AiModelRepo` 写；一个模型一行、同类型唯一默认位；⚠ 密钥同样**只存引用**；运行时由 `AiSettingsRepo.options()` 按默认行**整体覆盖**旧 KV） |
 | `medical_record` | **病历域** · 临床数据 | 直接 SQL（仅 `MedicalRecordRepo` 写；锁定后不可改） |
 | `triage_stat` | **统计域** · 聚合 | 直接 SQL（只存计数，**不含任何患者标识**，带 180 天 TTL） |
 | `notice` | **公告域** · 展示内容 | 直接 SQL（仅 `NoticeRepo` 写）；⚠ **不进检索、不随 Prompt 出站**（与 `kb_doc` 的分界）；`published_at` 支持预排期 |
@@ -361,6 +395,10 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 | AI | ★★ **"按今天过滤"的新规则会把固定日期的验收夹具整体判成过期**（2026-10-14 跨平台审计后） | 上游给号源加了可售谓词（`work_date >= 今天` + 科室/医生启用且归属一致）后，`accept` 从全绿变成 **466/497（31 项红）**，症状全是"扣号不生效、`remain_num` 不变、`响应 seq_no 与落库 seq_no 一致（0 == -1）`"—— 看起来像并发/回填出了大问题，实际一行 SQL 都没错 | 夹具日期**必须写死**（确定性），所以修法是给 `book()` 加 `today!` 注入口（`tryDeductSlot` / `findBookableSchedule` 上游已有同款），夹具显式传 `today: ACC_FIXTURE_DATE`（`acceptance.cj` 顶部两个常量）。⇒ **凡是新增"按今天过滤"的规则，都要同时给夹具留注入口**，否则回归会伪装成业务缺陷 |
 | AJ | ★★ **"服务端自己知道的事实"必须能从接口读回来**（2026-10-14，跨端审计 F11） | 服务端会**滑动续期**（`principalByToken` 里 `expires_at = now + TTL` 回写、每天最多写一次），但 `/auth/me` **不回** `expires_at` ⇒ 各端只能拿登录那一刻的旧值倒计时：Android 在令牌**仍然有效**时把用户踢回登录页、并清掉预问诊恢复状态。**这不是客户端 bug**，是服务端少回了一个字段 | `/auth/me` 返回**续期后**的 `expires_at`（`Principal.expiresAt` 每次请求都回填，不依赖"这次是否真的写了库"—— 测试 24h 节流下会漏）；`auth-check.ps1` 新增"与登录响应一致且在未来"。⇒ **凡是服务端会在后台改变的状态，都要有接口能读到它当前的值** |
 | AK | ★★ **"今天"这种环境事实不能靠客户端猜**（2026-10-14，跨端审计 F14） | 全项目 `today` 一律 `Asia/Shanghai`（`HOSPITAL_TZ_OFFSET_SECONDS`），但客户端拿**设备本地时区**拼 `work_date` ⇒ 设备时区不对或跨零点就查不到当天号源，现象是"App 说今天没号、网页有号" | `/health` 与 `/api/v1/health` 回 `today` + `timezone`；`accept` 的 AC-15 与 `tests\health-check.ps1` 同时钉住"等于 UTC+8 当天"（**不要**只断言"字段存在"——那在错误的时区实现下也绿）。⇒ **凡属"当前环境事实"（今天、时区、汇率、费率），服务端要主动发** |
+| AL | ★★ **静态托管的前缀不能带尾斜杠**（2026-10-14 管理台接入时实测） | 轻舟 `static.cj` 的前缀守卫是"**余部要么为空、要么以 `/` 开头**"：`prefix="/admin/"` 时 `/admin/js/app.js` 的余部是 `js/app.js`（不以 `/` 开头）⇒ 一律 `next()` 透传 ⇒ **除 `/admin/` 之外所有资源 404**，而 404 体是**路由**的（`{"error":"Not Found","path":…}`）—— 看起来像"路由把静态路径抢了"，方向完全错 | 前缀写 `"/admin"`（不带尾斜杠）：子路径余部 `"/js/…"` 正常；裸 `/admin` 余部为空 ⇒ 被静态层按**目录**认领回 `index.html`（所以那条 `/admin → 302 /admin/` 的路由是**永不执行的死代码**，已删）⇒ `index.html` 里的资源**必须写绝对路径**（`/admin/css/…`），否则浏览器停在 `/admin` 时会去取 `/css/…`。另：`spaFallback=false`，避免打错的 js 回一段 HTML 让浏览器报 `Unexpected token '<'` |
+| AM | ★ **仓颉的块注释可以嵌套** ⇒ 注释里永远不要出现 `/*` | 我在注释里写了挂载路径的 glob 写法（`/admin/**`、`js/*.js`），其中 `/*` 又开了一层块注释 ⇒ `error: unterminated block comment`，报错位置指到文件末尾，**看不出是注释的问题** | 注释里写"`/admin` 前缀下的所有资源"这种**不含 `/*` 的表述**。⇒ 同类坑：写路径/正则进注释时，先想"这里有没有 `/*`" |
+| AN | ★★ **"用户指定的默认"与"运行时真正生效"是两个事实，不能只回一个**（2026-10-14 管理台） | 模型配置有 `is_default`（用户指定）。默认行被**停用**或**删除**后，运行时 `defaultOf()` 会退到"该类型第一条启用的行"—— 但接口只回 `is_default` ⇒ 页面出现**一行"默认"标记都没有、而 AI 确实在用某一行**的状态，用户永远找不到自己在用哪条配置（这正是 AJ 的又一实例） | 列表/新建/修改三处回显都带 `in_use`（由 `aiModelInUse()` 统一算，避免三处各写一遍分叉）；页面在 `in_use && !is_default` 时显示「生效中」并注明原因 |
+| AO | ★★ **测试脚本的"自清"要覆盖它改过的**所有**状态，否则会出现"首跑红、复跑绿"**（2026-10-14） | `ai-model-check.ps1` 为了验证"同类型只有一个默认行"，把 `is_default` 抢到探针行上，删掉探针后**该类型就没有默认行了** —— 清掉了自己的行，却把"播种行不再默认"留在了库里。表现：第一次跑 3 项红、第二次全绿，**看起来像偶发**（最难查的一类假故障） | 清理段补一步"把默认位还给播种行"，并断言 `default_rows >= 2` + 夹具残留为 0。⇒ **夹具自清的验收标准是"跑完的库与跑前一致"，不是"我建的行没了"** |
 
 ## 六、明确**未**做
 

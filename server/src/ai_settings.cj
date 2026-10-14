@@ -413,6 +413,18 @@ public class AiRuntimeOptions {
     public var timeoutSecs: Int64 = 30
     public var maxConcurrent: Int64 = 4
     public var maxTokens: Int64 = 2048
+    /*
+     * ★ 采样温度（2026-10-14 新增，跨端审计之外的产品需求：管理台「AI 模型配置」页
+     *   每行都可配温度）。
+     *
+     * ⚠ 旧口径**根本不发 temperature** —— 也就是"用服务商的默认值"
+     *   （OpenAI 兼容协议默认 1.0）。这不是"中性选择"，而是**把决定性交给了别人**：
+     *   同一个主诉在两次分诊里可能给出不同的科室排序，而排班/挂号要的是稳定。
+     *   ⇒ 现在显式发一个偏保守的 0.7，并允许每行覆盖。
+     *   ⚠ 与"温度能否为 0"分开说：0 是合法取值（最确定），**不是**"未配置"。
+     *     所以这里用 Float64 而不是"0 表示没设"的 Int64。
+     */
+    public var temperature: Float64 = 0.7
     /* ⚠ 本版本**恒为 false**（没有任何赋值点，见下方说明）。 */
     public var allowPlaintextEndpoint: Bool = false
 
@@ -551,9 +563,27 @@ public class AiSettingsRepo {
     /* 缓存：所有项的 key→value。`cacheAt = 0` 表示未加载/已失效。 */
     private var cache: HashMap<String, String> = HashMap<String, String>()
     private var cacheAt: Int64 = 0
+    /*
+     * ★ 多模型配置（`ai_model` 表，见 `ai_model.cj`）的**可选**装配点。
+     *
+     *   `None` ⇒ 完全走旧口径（只有 KV 里的 `ai.endpoint` / `ai.model`）。
+     *   为什么做成可选而不是构造参数：
+     *     · 这个仓储的**单元测试与 `ai_settings` 的老用例**只关心 KV 语义，
+     *       不该被迫先造一张 `ai_model` 表；
+     *     · 让"没接模型表"成为一个**合法状态**（而不是崩溃），
+     *       这样"迁移期只有 KV"与"已经建了模型表"两条路都能跑。
+     *   ⚠ 反过来，**不能**在 `options()` 里 `models.getOrThrow()` ——
+     *     那会把"没接"变成运行期崩溃，而不是"回落到 KV"。
+     */
+    private var models: ?AiModelRepo = None
 
     public init(db: DbBackend) {
         this.db = db
+    }
+
+    /* 接上模型表（`main.cj` 里构造完两个仓储后调用一次）。 */
+    public func attachModels(m: AiModelRepo): Unit {
+        models = Some(m)
     }
 
     /*
@@ -740,6 +770,42 @@ public class AiSettingsRepo {
          *   这样"库里存引用、本体在环境/文件"这条边界在类型上就不会被混。
          */
         let masterOn = get(SET_AI_ENABLED, now).trimAscii() == "1"
+        /*
+         * ★★ 新口径优先：`ai_model` 里"默认对话模型"那一行**整体覆盖** KV 的
+         *     endpoint / model / key_ref / temperature / max_tokens。
+         *
+         *   ⚠ 覆盖（而不是"逐字段择优合并"）是有意为之：
+         *     一行模型配置 = 该模型的事实全集。如果按字段分别取"新表有就用新的、
+         *     没有就用旧的"，就会出现"新表填了 base_url、旧表填了另一个 model"
+         *     这种**两个来源拼出来的模型** —— 排查时没人知道请求到底发给了谁。
+         *     语义要能一句话说清：「有默认行就全用它，没有才全用 KV」。
+         *
+         *   ⚠⚠ 唯一**不**覆盖的是 `key_ref` 为空的情形：空 = "这一行没自带密钥，
+         *     用全局那把"（`ai_model` 的写入校验允许留空，见 `aiModelValidate`）。
+         *     若在这里无脑覆盖成空串，`aiRuntimeValidate` 会报"未配置 key_ref"，
+         *     于是"只想给向量模型单独配一把密钥"就变成了"对话模型也用不了"。
+         *
+         *   ⚠ `base_url` 是**基地址**（如 https://host/compatible-mode/v1），
+         *     而 `aiCallChatRaw` 直接把 `o.endpoint` 当**完整请求 URL** 用（:453）
+         *     ⇒ 这里必须过 `aiModelRequestUrl` 拼上 `/chat/completions`。
+         *     漏了这一步的表现是"连通性测试能过、真实分诊 404"——
+         *     因为探针自己拼 URL，两条路走的不是同一个函数。
+         */
+        match (models) {
+            case Some(mr) =>
+                match (mr.defaultOf(AI_MODEL_KIND_CHAT, now)) {
+                    case Some(m) =>
+                        o.endpoint = aiModelRequestUrl(m.baseUrl, AI_MODEL_KIND_CHAT)
+                        o.model = m.model
+                        if (m.keyRef.size > 0) {
+                            o.keyRef = m.keyRef
+                        }
+                        o.temperature = m.temperature
+                        o.maxTokens = m.maxTokens
+                    case None => ()
+                }
+            case None => ()
+        }
         aiRuntimeValidate(o)
         if (!masterOn && o.enabled) {
             // 总开关关掉 ⇒ 即使配置自洽也不可用（且理由要说清是**开关**，不是配置错）

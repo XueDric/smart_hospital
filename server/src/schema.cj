@@ -604,6 +604,68 @@ public let NOTICE_SCHEMA_DDL: Array<String> = [
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
 ]
 
+/* ===================== AI 模型配置 DDL（拼在 SCHEMA_DDL 上）===================== */
+
+/*
+ * ★★ 为什么要有这张表（2026-10-14，管理台需求）：
+ *
+ *   在这之前，AI 出站所需的四件事（endpoint / model / max_tokens / key_ref）
+ *   全是 `ai_setting` 里的**单份 KV** —— 也就是"全系统只有一个模型"。
+ *   而真实需求（管理台「AI 模型配置」页，见 docs/ADMIN-WEB.md）是
+ *   **多条命名配置**：默认对话模型 + 默认向量模型，各自有类型、提供方、
+ *   接口地址、模型名、温度、max_tokens、启停。
+ *
+ * ⚠ 为什么**新建一张表**而不是继续往 `ai_setting` 塞 KV：
+ *   ① "多条"这件事 KV 表达不了（`ai.model.1.model` 这种键名会立刻失控）；
+ *   ② 每条配置的**字段有类型与范围**（温度 0..2、max_tokens 64..8192、kind 枚举），
+ *      用列表达才能在**写入那一刻**被 SQL 约束 + 校验拦住；
+ *   ③ `is_default` 需要"每个 kind 最多一条"这样的**集合级不变量**，
+ *      KV 里没有任何地方能查这个。
+ *
+ * ⚠ 与 `ai_setting` 的关系（**刻意保留旧表，不迁移不删除**）：
+ *   · `ai.enabled` 仍是**总开关**（一次关掉全部模型，运维在故障时的第一反应）；
+ *   · 旧 KV 的 `ai.endpoint`/`ai.model`/`ai.max_tokens` 仍被读取，作为
+ *     **没有任何默认模型时**的回落（存量库升级后不会突然"AI 不可用"）；
+ *   · 新表有默认模型时**优先用新表**（见 ai_settings.cj 的 aiRuntimeResolve）。
+ *   📌 一般化：**新机制上线时给旧机制留一条"读得到"的回退路**，
+ *     这样升级顺序（先升级服务端、后建配置）不会造成一个"静默不可用"的窗口。
+ *
+ * ⚠ `name` 加唯一键：运维要靠名字认配置（"默认对话模型"），重名会让
+ *   "我改的到底是哪条"变成一个无法回答的问题（同 kb_doc.title 的理由）。
+ * ⚠ `enabled` 而不是删除：停用后**历史调用记录仍可解释**（同部门/医生的理由）。
+ * ⚠ `key_ref` 存的是**引用**（`env:名` / `file:路径`），**绝不是密钥本体**
+ *   —— 与 `ai_setting.ai.key_ref` 同一条纪律（brief §5.3），
+ *   由 `aiModelValidate` 复用 `validateKeyRef` 机制性保证。
+ */
+public let AI_MODEL_SCHEMA_DDL: Array<String> = [
+    "CREATE TABLE IF NOT EXISTS ai_model (" +
+    "id BIGINT NOT NULL AUTO_INCREMENT, " +
+    "name VARCHAR(64) NOT NULL, " +
+    /* CHAT / EMBEDDING —— 两种出站协议不同（见 ai_model.cj 的 aiModelKindOf）。 */
+    "kind VARCHAR(16) NOT NULL, " +
+    /* 提供方只是**给人看的标签**（百练/OpenAI/自建），不参与出站逻辑。 */
+    "provider VARCHAR(64) NOT NULL DEFAULT '', " +
+    "base_url VARCHAR(512) NOT NULL, " +
+    "model VARCHAR(128) NOT NULL, " +
+    /*
+     * ⚠ 温度用 DOUBLE 而不是 KV 里的字符串：它要参与**范围校验**（0..2），
+     *   而字符串列在数据库里没有任何东西能拦住 `temperature = "abc"`。
+     */
+    "temperature DOUBLE NOT NULL DEFAULT 0.3, " +
+    "max_tokens BIGINT NOT NULL DEFAULT 2048, " +
+    "key_ref VARCHAR(512) NOT NULL DEFAULT '', " +
+    "enabled TINYINT NOT NULL DEFAULT 1, " +
+    "is_default TINYINT NOT NULL DEFAULT 0, " +
+    "created_at BIGINT NOT NULL DEFAULT 0, " +
+    "updated_at BIGINT NOT NULL DEFAULT 0, " +
+    "updated_by BIGINT NOT NULL DEFAULT 0, " +
+    "PRIMARY KEY (id), " +
+    "UNIQUE KEY uk_ai_model_name (name), " +
+    /* 解析"某 kind 的默认模型"走的正是这个索引形状。 */
+    "KEY idx_ai_model_active (kind, enabled, is_default)" +
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+]
+
 /* ===================== 建表入口 ===================== */
 
 /*
@@ -632,6 +694,11 @@ public func ensureSchema(db: DbBackend): Int64 {
     }
     /* ★ 公告表（同上：单独数组、末尾拼接）。 */
     for (sql in NOTICE_SCHEMA_DDL) {
+        db.exec(sql, Array<DbValue>())
+        n = n + 1
+    }
+    /* ★ AI 模型配置表（2026-10-14 管理台；同上：单独数组、末尾拼接）。 */
+    for (sql in AI_MODEL_SCHEMA_DDL) {
         db.exec(sql, Array<DbValue>())
         n = n + 1
     }
@@ -667,6 +734,9 @@ public func allSchemaDdl(): Array<String> {
         out.add(sql)
     }
     for (sql in NOTICE_SCHEMA_DDL) {
+        out.add(sql)
+    }
+    for (sql in AI_MODEL_SCHEMA_DDL) {
         out.add(sql)
     }
     return out.toArray()
