@@ -52,21 +52,25 @@ export class DoctorRepository {
     if (ApiConfig.isMock()) {
       return MockDoctorRepository.startVisit(appointmentId);
     }
-    await HttpClient.getInstance().post(`/api/v1/doctor/visits/${appointmentId}/start`, {});
+    // ArkTS 禁止"无类型对象字面量"（arkts-no-untyped-obj-literals）：先声明类型再传。
+    const body: Record<string, Object> = {};
+    await HttpClient.getInstance().post(`/api/v1/doctor/visits/${appointmentId}/start`, body);
   }
 
   async finishVisit(appointmentId: number): Promise<void> {
     if (ApiConfig.isMock()) {
       return MockDoctorRepository.finishVisit(appointmentId);
     }
-    await HttpClient.getInstance().post(`/api/v1/doctor/visits/${appointmentId}/finish`, {});
+    const body: Record<string, Object> = {};
+    await HttpClient.getInstance().post(`/api/v1/doctor/visits/${appointmentId}/finish`, body);
   }
 
   async noShow(appointmentId: number): Promise<void> {
     if (ApiConfig.isMock()) {
       return MockDoctorRepository.noShow(appointmentId);
     }
-    await HttpClient.getInstance().post(`/api/v1/doctor/visits/${appointmentId}/no-show`, {});
+    const body: Record<string, Object> = {};
+    await HttpClient.getInstance().post(`/api/v1/doctor/visits/${appointmentId}/no-show`, body);
   }
 
   async getRecord(appointmentId: number): Promise<EmrRecord> {
@@ -100,8 +104,9 @@ export class DoctorRepository {
     if (ApiConfig.isMock()) {
       return MockDoctorRepository.lockRecord(appointmentId);
     }
+    const body: Record<string, Object> = {};
     const response = asRecord(await HttpClient.getInstance()
-      .post(`/api/v1/doctor/visits/${appointmentId}/record/lock`, {}));
+      .post(`/api/v1/doctor/visits/${appointmentId}/record/lock`, body));
     return this.parseRecord(response);
   }
 

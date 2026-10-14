@@ -56,7 +56,9 @@ class MockDoctorState {
     return result;
   }
 
-  private static skeleton(appointmentId: number, patientId: number): EmrRecord {
+  // 非 private：本文件的 MockDoctorRepository 需要复用这两个夹具工厂
+  // （私有静态成员不能被类外访问，ArkTS 编译期直接报错）。
+  static skeleton(appointmentId: number, patientId: number): EmrRecord {
     const result = new EmrRecord();
     result.id = appointmentId;
     result.appointmentId = appointmentId;
@@ -70,7 +72,7 @@ class MockDoctorState {
     return result;
   }
 
-  private static section(key: string, label: string, value: string, maxLen: number,
+  static section(key: string, label: string, value: string, maxLen: number,
     required: boolean): EmrSection {
     const result = new EmrSection();
     result.key = key;

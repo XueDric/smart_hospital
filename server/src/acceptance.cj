@@ -59,6 +59,20 @@ func hResetAll(db: DbBackend): Unit {
 }
 
 /*
+ * 验收夹具用的**固定排班日**。
+ *
+ * ⚠ 为什么需要它：可售谓词要求 `schedule.work_date >= 今天`（见 `bookingSchedulePredicate`），
+ *   而夹具日期是写死的（确定性要求，绝不能改成 `hTodayDate()+N`）。
+ *   ⇒ 凡是在夹具排班上调用**走可售谓词**的仓储方法（`book` / `tryDeductSlot` /
+ *   `findBookableSchedule`），都必须显式注入夹具当天，否则夹具排班会被判成
+ *   "过期不可售"，把真实回归淹没在夹具噪声里。
+ *   `ACC_FIXTURE_DATE_P4` 目前是未来日期，同样注入 —— 为的是**不依赖墙上时钟**：
+ *   等 2026-12-24 过去以后，不注入的用例会自己变红。
+ */
+let ACC_FIXTURE_DATE: String = "2026-10-08"
+let ACC_FIXTURE_DATE_P4: String = "2026-12-24"
+
+/*
  * 建一个测试排班（显式 id，便于用例可读）。返回 (scheduleId, patientId, doctorId, deptId)。
  *
  * ⚠ 用 `INSERT IGNORE`：P0 的用例每次都会重建部门/医生/患者（id 固定为 1），
@@ -221,7 +235,7 @@ public class TestRunner {
         println("=== AC-2 号满不超卖 ===")
         section("AC-2", { =>
             hSeedSchedule(db, 9001, 0, "2026-10-08")     // total=0, remain=0
-            let deducted = repo.tryDeductSlot(9001)
+            let deducted = repo.tryDeductSlot(9001, today: ACC_FIXTURE_DATE)
             let (remain, ver) = hScheduleState(db, 9001)
             check("remain_num=0 时扣减返回 false", !deducted)
             check("扣减失败后 remain_num 仍为 0（未变负）", remain == 0)
@@ -247,7 +261,7 @@ public class TestRunner {
             var ok: Int64 = 0
             var i: Int64 = 0
             while (i < 5) {
-                if (repo.tryDeductSlot(9002)) {
+                if (repo.tryDeductSlot(9002, today: ACC_FIXTURE_DATE)) {
                     ok = ok + 1
                 }
                 i = i + 1
@@ -257,7 +271,7 @@ public class TestRunner {
             check("remain_num 归零（5 → 0）", remain == 0)
             check("version 随每次成功 +1（0 → 5）", ver == 5)
             // 第 6 次必须失败（号已售完）
-            check("第 6 次扣减失败（号已售完，不超卖）", !repo.tryDeductSlot(9002))
+            check("第 6 次扣减失败（号已售完，不超卖）", !repo.tryDeductSlot(9002, today: ACC_FIXTURE_DATE))
             let (remain2, _) = hScheduleState(db, 9002)
             check("售完后 remain_num 仍为 0（未变负）", remain2 == 0)
         })
@@ -282,7 +296,7 @@ public class TestRunner {
             var ok: Int64 = 0
             var i: Int64 = 0
             while (i < n) {
-                if (repo.tryDeductSlot(9008)) {
+                if (repo.tryDeductSlot(9008, today: ACC_FIXTURE_DATE)) {
                     ok = ok + 1
                 }
                 i = i + 1
@@ -318,7 +332,7 @@ public class TestRunner {
             // 先全部借出
             var i: Int64 = 0
             while (i < n) {
-                let _ = repo.tryDeductSlot(9009)
+                let _ = repo.tryDeductSlot(9009, today: ACC_FIXTURE_DATE)
                 i = i + 1
             }
             let (afterLend, _) = hScheduleState(db, 9009)
@@ -434,7 +448,7 @@ public class TestRunner {
 
             /* ④ 反向：号源域**确实有数据**，否则上面是"空比空"的假绿 */
             hSeedSchedule(db, 9011, 3, "2026-10-08")
-            let a = repo.book(1, 9011, "tok-ac4", hNowEpoch())
+            let a = repo.book(1, 9011, "tok-ac4", hNowEpoch(), today: ACC_FIXTURE_DATE)
             check("④ ★★ 反向：号源域确实有数据（造出一张挂号单）—— 否则③可能是「因为什么都没做」而假绿",
                   isBooked(a))
             let schedRows = hTableRowCount(db, TABLE_SCHEDULE)
@@ -475,7 +489,7 @@ public class TestRunner {
              */
             hResetAll(db)
             hSeedSchedule(db, 9010, 5, "2026-10-08")
-            let a = repo.book(1, 9010, "tok-ac12-a", hNowEpoch())
+            let a = repo.book(1, 9010, "tok-ac12-a", hNowEpoch(), today: ACC_FIXTURE_DATE)
             check("第一次挂号成功", isBooked(a))
             check("响应 seq_no = 1", a.seqNo == 1)
             let dbSeq1 = hAppointmentSeqNo(db, a.appointmentId)
@@ -484,7 +498,7 @@ public class TestRunner {
             // 退掉它（seq_no 不回收），再挂一单 → 应为 2，且响应与库一致
             let c = repo.cancel(a.appointmentId, hNowEpoch())
             check("退号成功", isCancelled(c))
-            let b = repo.book(1, 9010, "tok-ac12-b", hNowEpoch())
+            let b = repo.book(1, 9010, "tok-ac12-b", hNowEpoch(), today: ACC_FIXTURE_DATE)
             check("退号后再次挂号成功", isBooked(b))
             let dbSeq2 = hAppointmentSeqNo(db, b.appointmentId)
             /*
@@ -503,8 +517,8 @@ public class TestRunner {
         section("AC-5", { =>
             hResetAll(db)
             hSeedSchedule(db, 9003, 1, "2026-10-08")
-            let a = repo.book(1, 9003, "tok-ac5-a", hNowEpoch())   // 抢走唯一号
-            let b = repo.book(1, 9003, "tok-ac5-b", hNowEpoch())   // 号已满 → 必然失败
+            let a = repo.book(1, 9003, "tok-ac5-a", hNowEpoch(), today: ACC_FIXTURE_DATE)   // 抢走唯一号
+            let b = repo.book(1, 9003, "tok-ac5-b", hNowEpoch(), today: ACC_FIXTURE_DATE)   // 号已满 → 必然失败
             let (remain, _) = hScheduleState(db, 9003)
             let count = hAppointmentCount(db, 9003)
             check("首个挂号成功", isBooked(a))
@@ -521,8 +535,8 @@ public class TestRunner {
             hResetAll(db)
             hSeedSchedule(db, 9004, 3, "2026-10-08")
             let tok = "tok-ac3-fixed"
-            let a = repo.book(1, 9004, tok, hNowEpoch())
-            let b = repo.book(1, 9004, tok, hNowEpoch())          // 重复提交
+            let a = repo.book(1, 9004, tok, hNowEpoch(), today: ACC_FIXTURE_DATE)
+            let b = repo.book(1, 9004, tok, hNowEpoch(), today: ACC_FIXTURE_DATE)          // 重复提交
             let count = hAppointmentCount(db, 9004)
             let (remain, _) = hScheduleState(db, 9004)
             check("首次挂号成功", isBooked(a))
@@ -539,7 +553,7 @@ public class TestRunner {
         section("AC-6", { =>
             hResetAll(db)
             hSeedSchedule(db, 9005, 3, "2026-10-08")
-            let a = repo.book(1, 9005, "tok-ac6", hNowEpoch())
+            let a = repo.book(1, 9005, "tok-ac6", hNowEpoch(), today: ACC_FIXTURE_DATE)
             let before = hVisitDate(db, a.appointmentId)
             // 管理员一键顺延排班：2026-10-08 → 2026-10-15
             db.exec("UPDATE schedule SET work_date = ?, version = version + 1 WHERE id = ?",
@@ -560,7 +574,7 @@ public class TestRunner {
         section("AC-7", { =>
             hResetAll(db)
             hSeedSchedule(db, 9006, 2, "2026-10-08")
-            let a = repo.book(1, 9006, "tok-ac7", hNowEpoch())
+            let a = repo.book(1, 9006, "tok-ac7", hNowEpoch(), today: ACC_FIXTURE_DATE)
             // 正常退号
             let c1 = repo.cancel(a.appointmentId, hNowEpoch())
             let (remain1, _) = hScheduleState(db, 9006)
@@ -580,7 +594,7 @@ public class TestRunner {
              *   让调用方知道"已退号但号源需运维修"，而不是以为退号失败。 */
             hResetAll(db)
             hSeedSchedule(db, 9007, 1, "2026-10-08")
-            let b = repo.book(1, 9007, "tok-ac7b", hNowEpoch())
+            let b = repo.book(1, 9007, "tok-ac7b", hNowEpoch(), today: ACC_FIXTURE_DATE)
             // 管理员重置号源：remain_num 顶满到 total_num（version 也随之变）
             db.exec("UPDATE schedule SET remain_num = total_num, version = version + 1 " +
                     "WHERE id = ?", [DbInt(9007)])
@@ -610,10 +624,10 @@ public class TestRunner {
             hResetAll(db)
             hSeedSchedule(db, 9401, 4, "2026-12-24")
             let now = hNowEpoch()
-            let a = repo.book(1, 9401, "tok-ac13-visiting", now)
-            let b = repo.book(1, 9401, "tok-ac13-done", now)
-            let c = repo.book(1, 9401, "tok-ac13-noshow", now)
-            let d = repo.book(1, 9401, "tok-ac13-booked", now)
+            let a = repo.book(1, 9401, "tok-ac13-visiting", now, today: ACC_FIXTURE_DATE_P4)
+            let b = repo.book(1, 9401, "tok-ac13-done", now, today: ACC_FIXTURE_DATE_P4)
+            let c = repo.book(1, 9401, "tok-ac13-noshow", now, today: ACC_FIXTURE_DATE_P4)
+            let d = repo.book(1, 9401, "tok-ac13-booked", now, today: ACC_FIXTURE_DATE_P4)
             check("四张单都建成功（夹具就位）", isBooked(a) && isBooked(b) && isBooked(c) && isBooked(d))
             /*
              * 直接把三张单拨到"不该被退"的状态。

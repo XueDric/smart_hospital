@@ -666,9 +666,17 @@ public class BookingRepo {
      *   所以判据必须严格 —— 只retry 那些"下次大概率会不同"的错误。
      */
     public func book(patientId: Int64, scheduleId: Int64, clientToken: String,
-                     now: Int64, maxRetry!: Int64 = MAX_BOOKING_RETRY): BookingResult {
+                     now: Int64, maxRetry!: Int64 = MAX_BOOKING_RETRY,
+                     today!: String = ""): BookingResult {
         let r = BookingResult()
-        let today = hDateStringOf(now)
+        /*
+         * 「今天」默认取 `now` 所在的那一天。`today` 是给**验收夹具**用的注入口：
+         *   夹具刻意用写死的排班日期（如 2026-10-08）来保证确定性，而可售谓词要求
+         *   `work_date >= 今天` —— 不注入就会把夹具排班一律判成"过期不可售"，
+         *   于是把"回填号源"这类真实回归淹没在夹具噪声里。
+         *   生产路径（HTTP 层）不传该参数，语义与加注入前**完全一致**。
+         */
+        let todayDate = if (today.size > 0) { today } else { hDateStringOf(now) }
 
         // 1) 幂等快路径：该患者**当前有效**的单 → 直接返回（只读，不开事务）
         let dup = findAppointmentByToken(patientId, clientToken)
@@ -679,7 +687,7 @@ public class BookingRepo {
         // 2) 读一次排班（拿 doctor/department/就诊日快照；**version 不再参与扣号**）
         var attempt: Int64 = 0
         while (attempt <= maxRetry) {
-            let cur = findBookableSchedule(scheduleId, today: today)
+            let cur = findBookableSchedule(scheduleId, today: todayDate)
             if (cur.isNone()) {
                 r.outcome = BookingOutcome.ScheduleNotFound
                 return r
@@ -691,7 +699,7 @@ public class BookingRepo {
             let tx = TxResult()
             try {
                 db.withTransaction({ =>
-                    if (tryDeductSlot(scheduleId, today: today)) {
+                    if (tryDeductSlot(scheduleId, today: todayDate)) {
                         /*
                          * ★ 把真正写进库的那个 seq **带出来**（存进 tx），
                          *   供响应回填使用 —— 不要回填时另算一遍（2026-10-07 修）。
@@ -751,7 +759,7 @@ public class BookingRepo {
              *   明确结论拖成"重试耗尽后的 SlotGone"—— 结果一样，但白烧预算，
              *   而且在高并发下会掩盖真正的问题（少卖就是被这个掩盖出来的）。
              */
-            if (findBookableSchedule(scheduleId, today: today).isNone()) {
+            if (findBookableSchedule(scheduleId, today: todayDate).isNone()) {
                 r.outcome = BookingOutcome.ScheduleNotFound
                 return r
             }

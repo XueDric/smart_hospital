@@ -152,7 +152,7 @@ Android [SessionStore.kt:114](F:/cj_cup/smart_hospital/android-patient/app/src/m
 - SSE 主诉方式不同：鸿蒙 query、Android 空 query 开流后 JSON answer。服务端支持两种，未发现由此产生的必然契约错误；query 方式会让敏感文本进入 URL，可沿 Android 方式统一。
 - 已核对的核心路径包括登录/身份、排班、分诊、预问诊开流与 answer、挂号/退号、患者病历列表/详情。未发现足以报告的 Android 路径、请求方法或基础信封字段整体不匹配。此结论不代替在线联调。
 - 上轮 SSE done、主诉 JSON、冷却按钮状态分离、Android 幂等键持久化、退号 slot_restored 警示均已有实现，没有重复报告为未修。
-- 服务端成功测试夹具仍大量使用已过去的 `2026-10-08`：[acceptance.cj:237](F:/cj_cup/smart_hospital/server/src/acceptance.cj:237)。新可售日期规则会拒绝它们，需要用动态当前/未来日期更新成功夹具；历史负例继续保留。本轮没有运行有数据库副作用的套件。
+- 服务端成功测试夹具仍大量使用已过去的 `2026-10-08`：[acceptance.cj:237](F:/cj_cup/smart_hospital/server/src/acceptance.cj:237)。新可售日期规则会拒绝它们，需要用动态当前/未来日期更新成功夹具；历史负例继续保留。本轮没有运行有数据库副作用的套件。**（2026-10-14 跟进：已处置，见文末 R2 —— 夹具日期**保留写死**，改为向 `book()` / `tryDeductSlot()` 注入夹具当天，避免套件依赖墙上时钟。）**
 - 未验证：完整 Android/Harmony 构建、真机布局、Release 签名、真实 TLS 信任、慢网 SSE、目标数据库 SQL 兼容与并发守恒。已有文档中的“待复测”没有转换为已通过。
 
 ## 安卓技能检索与后续工作流
@@ -171,3 +171,14 @@ Android [SessionStore.kt:114](F:/cj_cup/smart_hospital/android-patient/app/src/m
 4. 独立 QA 先修动态日期夹具，再在隔离数据库和声明明确的在线模式下跑流程；检查账号、地址、模式切换、响应丢失和进程重启。
 
 本轮产物是审查报告，共 5 项 P1、10 项 P2、1 项 P3。最小下一步为先修 F01/F02/F03/F04/F05 并添加对应有区分力的回归，再处理患者挂号/问诊主流程。
+
+## 修复记录（2026-10-14 跟进）
+
+> 本节由服务端 owner 在"拉取后按报告与实测复核"时补写：先修**阻断项**（编译不过、验收红、客户端构建红），不代替 F01–F16 的功能修复。
+
+| # | 问题 | 现象与根因 | 处置与证据 |
+| --- | --- | --- | --- |
+| R1 | 服务端**编不过** | `error: 'containsKey' is not a member of class 'HashMap<Struct-String, Struct-String>'`（[domain_emr.cj:457](../server/src/domain_emr.cj#L457)）。`patch` 是 `HashMap<String,String>`，`containsKey` 是 **JsonObject** 的 API；同仓 `acceptance_kb.cj` 里的 `containsKey` 都作用在 JsonObject 上，所以此前从未暴露 | 改 `patch.contains(k)`。已核对：本机只装 cjc 1.0.5 / 1.2.0，1.2.0 下 `HashMap.contains` 编译并运行通过 |
+| R2 | `accept` **466/497（31 项红）**——即本报告"差异与验证缺口"最后一条预言的那件事 | 号源新增可售谓词 `work_date >= 今天`（+ 科室/医生启用且归属一致）后，夹具写死的 `2026-10-08` 等日期一律被判"过期不可售"，于是"扣号成功/remain 递减/seq_no 回填"整片红 | **没有**按报告建议把夹具改成动态日期（那会让套件依赖墙上时钟），而是给 `book()` 加 `today!` 注入口（与上游给 `tryDeductSlot` / `findBookableSchedule` 加的同款），夹具显式注入 `ACC_FIXTURE_DATE` / `ACC_FIXTURE_DATE_P4`。理由与"新规则必须给夹具留注入口"一并记入 [server/README.md](../server/README.md) 坑 AI。证据：`accept` **497 项 0 失败**，`selftest` 50 / `authtest` 17 / `triagetest` 108 全绿，`doc-counts.ps1` 文档数字与实测一致 |
+| R3 | 鸿蒙 HAP **编不过**（17 条 ArkTS 错误，[feature-doctor](../feature-doctor/src/main/ets/data/DoctorRepository.ets)、[feature-admin](../feature-admin/src/main/ets/data/MockAdminRepository.ets)） | ① 4× `arkts-no-untyped-obj-literals`：`DoctorRepository.ets` 向 `HttpClient.post` 传裸 `{}`；② 13× 私有静态成员被**类外**访问（`MockDoctorState.skeleton/section`、`MockAdminState.doctorName/doctorTitle/deptName`） | ① 一律先声明 `const body: Record<string, Object> = {}`；② 这 5 个夹具工厂改为非 private（保留"只在同文件 Mock 层复用"的边界）。证据：ASCII 路径副本内 `ohpm install --all` + `hvigorw assembleHap` → **BUILD SUCCESSFUL in 21 s 968 ms**，产物 `entry-default-unsigned.hap`（1,410,641 B）。⚠ hvigor **拒绝含中文的工程路径**，构建必须在 ASCII 路径下做 |
+| R4 | 说明 | 本次**没有**动 F01–F16 的功能实现，也没有跑 Android 侧构建；R1–R3 只是让"上游 main 能编、能过验收、能出包" | 复核命令：`build.ps1` → `selftest` / `authtest` / `triagetest` / `accept <dsn>` → `tests\doc-counts.ps1`；客户端 ASCII 副本内 `hvigorw assembleHap` |
