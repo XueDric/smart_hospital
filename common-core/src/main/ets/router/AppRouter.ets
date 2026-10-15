@@ -28,6 +28,7 @@ export class AppRouter {
   private static instance: AppRouter = new AppRouter();
   private currentRoute: string = RouteName.LOGIN;
   private observer?: (route: string) => void;
+  private routeGuard?: (route: string) => string;
   private params: Record<string, Object> = {};
   private routeStack: string[] = [];
 
@@ -38,6 +39,10 @@ export class AppRouter {
   setObserver(observer: (route: string) => void): void {
     this.observer = observer;
     observer(this.currentRoute);
+  }
+
+  setGuard(guard: (route: string) => string): void {
+    this.routeGuard = guard;
   }
 
   current(): string {
@@ -53,10 +58,11 @@ export class AppRouter {
   }
 
   replace(route: string, params?: Record<string, Object>): void {
+    const target = this.routeGuard !== undefined ? this.routeGuard(route) : route;
     this.params = params ?? {};
-    this.currentRoute = route;
+    this.currentRoute = target;
     if (this.observer) {
-      this.observer(route);
+      this.observer(target);
     }
   }
 

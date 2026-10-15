@@ -1,7 +1,7 @@
 import { ApiError, AppRouter, RouteName } from 'common-core';
 import { PatientRepository } from '../data/PatientRepository';
 import { TriageOption, TriageResult } from '../model/PatientModels';
-import { AppButton, InfoBanner, LoadingBlock, PageHeader, SectionTitle, StatusChip } from '../ui/CommonComponents';
+import { AppButton, InfoBanner, LoadingBlock, PageHeader, SectionTitle, StatusChip } from 'common-core';
 import {
   AppColor,
   AppSize,
@@ -9,7 +9,7 @@ import {
   periodText,
   reasonText,
   sourceText
-} from '../ui/Theme';
+} from 'common-core';
 
 @ComponentV2
 export struct TriagePage {

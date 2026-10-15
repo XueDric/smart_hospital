@@ -7,8 +7,8 @@ import {
   LoadingBlock,
   PageHeader,
   StatusChip
-} from '../ui/CommonComponents';
-import { AppColor, AppSize, AppText, formatEpoch } from '../ui/Theme';
+} from 'common-core';
+import { AppColor, AppSize, AppText, formatEpoch } from 'common-core';
 
 @ComponentV2
 export struct RecordsPage {

@@ -39,9 +39,9 @@ export struct PageHeader {
     Row() {
       if (this.showBack) {
         Button('‹')
-          .width(40)
-          .height(40)
-          .fontSize(26)
+          .width(AppSize.TOUCH_MIN)
+          .height(AppSize.TOUCH_MIN)
+          .fontSize(AppText.TITLE)
           .fontColor(AppColor.TEXT)
           .backgroundColor(Color.Transparent)
           .onClick(() => AppRouter.getInstance().back())
@@ -88,7 +88,8 @@ export struct SectionTitle {
         Text(this.action)
           .fontSize(AppText.CAPTION)
           .fontColor(AppColor.PRIMARY_DARK)
-          .padding({ left: 12, top: 8, bottom: 8 })
+          .constraintSize({ minHeight: AppSize.TOUCH_MIN })
+          .padding({ left: 12, right: 4, top: 8, bottom: 8 })
           .onClick(() => this.onAction())
       }
     }
@@ -118,7 +119,7 @@ export struct InfoBanner {
         .layoutWeight(1)
         if (this.actionText.length > 0) {
           Button(this.actionText)
-            .height(36)
+            .height(AppSize.TOUCH_MIN)
             .fontSize(AppText.CAPTION)
             .fontColor(this.foreground())
             .backgroundColor(Color.Transparent)
@@ -169,7 +170,7 @@ export struct EmptyState {
   build() {
     Column() {
       Text('—')
-        .fontSize(28)
+        .fontSize(AppText.GLYPH)
         .fontColor(AppColor.PRIMARY)
       Text(this.title)
         .fontSize(AppText.SUBHEADING)
@@ -277,11 +278,11 @@ export struct BottomNav {
       ForEach(this.items, (item: NavItem) => {
         Column() {
           Text(item.glyph)
-            .fontSize(20)
+            .fontSize(AppSize.ICON_SM)
             .fontColor(this.isActive(item.route) ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
-            .height(24)
+            .height(AppSize.ICON_SM)
           Text(item.label)
-            .fontSize(11)
+            .fontSize(AppText.MICRO)
             .fontColor(this.isActive(item.route) ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
             .margin({ top: 2 })
         }

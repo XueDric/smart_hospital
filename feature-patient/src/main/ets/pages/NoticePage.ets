@@ -1,7 +1,7 @@
 import { PatientRepository } from '../data/PatientRepository';
 import { PatientNotice } from '../model/PatientModels';
-import { EmptyState, PageHeader, StatusChip } from '../ui/CommonComponents';
-import { AppColor, AppSize, AppText } from '../ui/Theme';
+import { EmptyState, PageHeader, StatusChip } from 'common-core';
+import { AppColor, AppSize, AppText } from 'common-core';
 
 @ComponentV2
 export struct NoticePage {

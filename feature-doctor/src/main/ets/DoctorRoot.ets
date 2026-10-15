@@ -1,4 +1,4 @@
-import { AppColor, AppRouter, RouteName, SessionStore } from 'common-core';
+import { AppColor, AppText, RouteName } from 'common-core';
 import { DoctorLoginPage } from './pages/DoctorLoginPage';
 import { EmrEditPage } from './pages/EmrEditPage';
 import { VisitQueuePage } from './pages/VisitQueuePage';
@@ -6,12 +6,6 @@ import { VisitQueuePage } from './pages/VisitQueuePage';
 @ComponentV2
 export struct DoctorRoot {
   @Param route: string = RouteName.DOCTOR_LOGIN;
-
-  aboutToAppear(): void {
-    if (this.route !== RouteName.DOCTOR_LOGIN && !SessionStore.hasToken()) {
-      AppRouter.getInstance().reset(RouteName.DOCTOR_LOGIN);
-    }
-  }
 
   build() {
     Stack() {
@@ -40,7 +34,7 @@ export struct DoctorRoot {
   placeholder() {
     Column() {
       Text('页面建设中')
-        .fontSize(18)
+        .fontSize(AppText.HEADING)
         .fontColor(AppColor.TEXT_SECONDARY)
     }
     .width('100%')

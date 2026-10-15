@@ -307,7 +307,7 @@ export struct VisitQueuePage {
                    */
                   if (item.status === 'booked') {
                     Button('爽约')
-                      .height(36)
+                      .height(AppSize.TOUCH_MIN)
                       .fontSize(AppText.CAPTION)
                       .fontColor(AppColor.DANGER)
                       .backgroundColor(Color.Transparent)
@@ -349,7 +349,7 @@ export struct VisitQueuePage {
                       .borderRadius(AppSize.CONTROL_RADIUS)
                       .onClick(() => this.noShow(item))
                     Button('开始接诊')
-                      .height(36)
+                      .height(AppSize.TOUCH_MIN)
                       .fontSize(AppText.CAPTION)
                       .fontColor(AppColor.SURFACE)
                       .backgroundColor(AppColor.PRIMARY)
@@ -358,14 +358,14 @@ export struct VisitQueuePage {
                       .onClick(() => this.start(item))
                   } else if (item.status === 'visiting') {
                     Button('写病历')
-                      .height(36)
+                      .height(AppSize.TOUCH_MIN)
                       .fontSize(AppText.CAPTION)
                       .fontColor(AppColor.PRIMARY)
                       .backgroundColor(AppColor.PRIMARY_SOFT)
                       .borderRadius(AppSize.CONTROL_RADIUS)
                       .onClick(() => this.writeRecord(item))
                     Button('完成就诊')
-                      .height(36)
+                      .height(AppSize.TOUCH_MIN)
                       .fontSize(AppText.CAPTION)
                       .fontColor(AppColor.SURFACE)
                       .backgroundColor(AppColor.PRIMARY)
@@ -413,7 +413,7 @@ export struct VisitQueuePage {
   segment(value: string, label: string) {
     Button(label)
       .layoutWeight(1)
-      .height(40)
+      .height(AppSize.TOUCH_MIN)
       .fontSize(AppText.CAPTION)
       .fontColor(this.filter === value ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
       .backgroundColor(this.filter === value ? AppColor.PRIMARY_SOFT : Color.Transparent)

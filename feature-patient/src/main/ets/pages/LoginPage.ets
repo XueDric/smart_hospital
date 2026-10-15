@@ -1,8 +1,8 @@
 import { ApiConfig, ApiError, ApiMode, AppRouter, ErrorCode, RouteName, SessionStore } from 'common-core';
 import { PatientRepository } from '../data/PatientRepository';
 import { LoginResult } from '../model/PatientModels';
-import { AppButton, FieldLabel } from '../ui/CommonComponents';
-import { AppColor, AppSize, AppText } from '../ui/Theme';
+import { AppButton, FieldLabel } from 'common-core';
+import { AppColor, AppSize, AppText } from 'common-core';
 
 @ComponentV2
 export struct LoginPage {
@@ -61,7 +61,7 @@ export struct LoginPage {
       Column() {
         Column() {
           Text('智慧医院')
-            .fontSize(30)
+            .fontSize(AppText.DISPLAY)
             .fontWeight(FontWeight.Bold)
             .fontColor(AppColor.TEXT)
           Text('患者端')
@@ -81,14 +81,14 @@ export struct LoginPage {
           Row() {
             Button('在线服务')
               .layoutWeight(1)
-              .height(40)
+              .height(AppSize.TOUCH_MIN)
               .fontSize(AppText.CAPTION)
               .fontColor(this.mockMode ? AppColor.TEXT_SECONDARY : AppColor.PRIMARY_DARK)
               .backgroundColor(this.mockMode ? Color.Transparent : AppColor.PRIMARY_SOFT)
               .onClick(() => this.changeMode(false))
             Button('演示数据')
               .layoutWeight(1)
-              .height(40)
+              .height(AppSize.TOUCH_MIN)
               .fontSize(AppText.CAPTION)
               .fontColor(this.mockMode ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
               .backgroundColor(this.mockMode ? AppColor.PRIMARY_SOFT : Color.Transparent)

@@ -1,5 +1,4 @@
-import { AppRouter, RouteName, SessionStore } from 'common-core';
-import { BottomNav } from './ui/CommonComponents';
+import { AppColor, AppText, BottomNav, RouteName } from 'common-core';
 import { AppointmentsPage } from './pages/AppointmentsPage';
 import { BookingPage } from './pages/BookingPage';
 import { HomePage } from './pages/HomePage';
@@ -10,17 +9,10 @@ import { ProfilePage } from './pages/ProfilePage';
 import { RecordDetailPage } from './pages/RecordDetailPage';
 import { RecordsPage } from './pages/RecordsPage';
 import { TriagePage } from './pages/TriagePage';
-import { AppColor } from './ui/Theme';
 
 @ComponentV2
 export struct PatientRoot {
   @Param route: string = RouteName.LOGIN;
-
-  aboutToAppear(): void {
-    if (this.route !== RouteName.LOGIN && !SessionStore.hasToken()) {
-      AppRouter.getInstance().reset(RouteName.LOGIN);
-    }
-  }
 
   private isTabRoute(route: string): boolean {
     return route === RouteName.HOME || route === RouteName.TRIAGE ||
@@ -84,7 +76,7 @@ export struct PatientRoot {
   placeholder() {
     Column() {
       Text('页面建设中')
-        .fontSize(18)
+        .fontSize(AppText.HEADING)
         .fontColor(AppColor.TEXT_SECONDARY)
     }
     .width('100%')

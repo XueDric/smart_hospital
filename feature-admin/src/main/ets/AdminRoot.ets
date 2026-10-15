@@ -1,4 +1,4 @@
-import { AppColor, AppRouter, RouteName, SessionStore } from 'common-core';
+import { AppColor, AppRouter, AppSize, AppText, RouteName, SessionStore } from 'common-core';
 import { AdminLoginPage } from './pages/AdminLoginPage';
 import { AiCenterPage } from './pages/AiCenterPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -32,12 +32,6 @@ export struct AdminRoot {
     new AdminNavItem(RouteName.ADMIN_KB, '知识库')
   ];
 
-  aboutToAppear(): void {
-    if (this.route !== RouteName.ADMIN_LOGIN && !SessionStore.hasToken()) {
-      AppRouter.getInstance().reset(RouteName.ADMIN_LOGIN);
-    }
-  }
-
   private isLogin(): boolean {
     return this.route === RouteName.ADMIN_LOGIN;
   }
@@ -57,11 +51,11 @@ export struct AdminRoot {
         Row() {
           Column() {
             Text('智慧医院')
-              .fontSize(18)
+              .fontSize(AppText.HEADING)
               .fontWeight(FontWeight.Bold)
-              .fontColor(AppColor.SURFACE)
+              .fontColor(AppColor.NAV_TEXT)
             Text('管理端')
-              .fontSize(12)
+              .fontSize(AppText.MICRO)
               .fontColor(AppColor.PRIMARY_SOFT)
               .margin({ top: 4 })
 
@@ -69,11 +63,11 @@ export struct AdminRoot {
               ForEach(this.items, (item: AdminNavItem) => {
                 Button(item.label)
                   .width('100%')
-                  .height(44)
-                  .fontSize(15)
-                  .fontColor(this.route === item.route ? AppColor.PRIMARY_DARK : AppColor.TEXT)
+                  .height(AppSize.CONTROL_HEIGHT)
+                  .fontSize(AppText.BODY)
+                  .fontColor(this.route === item.route ? AppColor.PRIMARY_DARK : AppColor.NAV_TEXT)
                   .backgroundColor(this.route === item.route ? AppColor.PRIMARY_SOFT : Color.Transparent)
-                  .borderRadius(8)
+                  .borderRadius(AppSize.CONTROL_RADIUS)
                   .margin({ bottom: 4 })
                   .onClick(() => {
                     if (this.route !== item.route) {
@@ -84,22 +78,22 @@ export struct AdminRoot {
             }
             .width('100%')
             .layoutWeight(1)
-            .margin({ top: 24 })
+            .margin({ top: AppSize.SECTION_GAP })
 
             Button('退出登录')
               .width('100%')
-              .height(40)
-              .fontSize(14)
+              .height(AppSize.TOUCH_MIN)
+              .fontSize(AppText.CAPTION)
               .fontColor(AppColor.PRIMARY_SOFT)
               .backgroundColor(Color.Transparent)
               .border({ width: 1, color: AppColor.PRIMARY_DARK })
-              .borderRadius(8)
+              .borderRadius(AppSize.CONTROL_RADIUS)
               .onClick(() => this.logout())
           }
           .width(150)
           .height('100%')
           .padding({ left: 12, right: 12, top: 24, bottom: 16 })
-          .backgroundColor(AppColor.TEXT)
+          .backgroundColor(AppColor.NAV_BACKGROUND)
 
           Column() {
             this.content()
@@ -141,7 +135,7 @@ export struct AdminRoot {
   placeholder() {
     Column() {
       Text('页面建设中')
-        .fontSize(18)
+        .fontSize(AppText.HEADING)
         .fontColor(AppColor.TEXT_SECONDARY)
     }
     .width('100%')

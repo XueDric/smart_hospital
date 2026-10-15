@@ -5,8 +5,8 @@ import {
   PrevisitSlots,
   SlotDefinition
 } from '../model/PatientModels';
-import { AppButton, InfoBanner, PageHeader } from '../ui/CommonComponents';
-import { AppColor, AppSize, AppText } from '../ui/Theme';
+import { AppButton, InfoBanner, PageHeader } from 'common-core';
+import { AppColor, AppSize, AppText } from 'common-core';
 
 class ChatMessage {
   role: string = '';

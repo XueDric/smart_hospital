@@ -178,7 +178,7 @@ export struct UsersPage {
           this.roleButton('patient', '患者')
           Button('新增账号')
             .layoutWeight(1)
-            .height(40)
+            .height(AppSize.TOUCH_MIN)
             .fontSize(AppText.CAPTION)
             .fontColor(AppColor.SURFACE)
             .backgroundColor(AppColor.PRIMARY)
@@ -251,7 +251,7 @@ export struct UsersPage {
                   .margin({ top: AppSize.GAP })
                 } else {
                   Button('重置密码')
-                    .height(36)
+                    .height(AppSize.TOUCH_MIN)
                     .fontSize(AppText.CAPTION)
                     .fontColor(AppColor.DANGER)
                     .backgroundColor(AppColor.DANGER_SOFT)
@@ -285,7 +285,7 @@ export struct UsersPage {
   roleButton(value: string, label: string) {
     Button(label)
       .layoutWeight(1)
-      .height(40)
+      .height(AppSize.TOUCH_MIN)
       .fontSize(AppText.CAPTION)
       .fontColor(this.role === value ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
       .backgroundColor(this.role === value ? AppColor.PRIMARY_SOFT : AppColor.SURFACE_ALT)
