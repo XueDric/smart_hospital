@@ -207,6 +207,16 @@ ai_call.cj：请求体 model / max_tokens / messages / **temperature**
 > 显式 bind 该区间会拿到 `WSAEACCES(10013)`「以一种访问权限不允许的方式做了一个访问套接字的尝试」。
 > 服务端/冒烟脚本请用 **≥15001** 的端口（文档里的 8091 是给正常机器写的）。
 
+**2026-10-16 复跑**（本轮改了 `server/admin-web` 的 CSS/JS 之后）：
+
+```powershell
+$node = "D:\DevEco Studio\tools\node\node.exe"   # 或任何 ≥18 的 node
+& $node tests\admin-web-smoke.mjs --base http://127.0.0.1:18096 --admin zzcheck --pw <口令> `
+  --out $env:TEMP\adm-smoke --edge "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+```
+
+退出码 **0**：11 个页面逐个渲染 + 写路径全绿，且 `consoleErrors` / `exceptions` / `badResponses` / `writeFailures` 四个数组**全空**（截图在 `--out` 目录）。
+
 ---
 
 ## 九、已知边界（明确未做）
@@ -230,6 +240,11 @@ ai_call.cj：请求体 model / max_tokens / messages / **temperature**
    用户管理），其余列表按显式 `limit=200` 拉取，**超出部分在界面上有红字警告**（见 §4.1）——
    要彻底解决就是给这几个列表页补分页控件，或给排班号源页的服务端接口补 `total`/`offset`
    （它现在只回 `count`，所以页面写的是"本页 N 条"而不是"共 N 条"）。
+7. **窄屏（手机 / 竖屏）已修到"能用"，没做到"好看"**（2026-10-16，详见 §十一）：
+   侧栏横过来当标签条、表格在卡片内部横向滚动、弹窗全宽、顶栏换行。仍未做的：
+   ① 表格的「操作」列要**横向滑一下**才看得到（表内滚动，属预期）；
+   ② `启用` 这种 2 字复选框标签在窄屏会**竖排折行**（能读，不好看，没为它单独调样式）；
+   ③ 端内 `feature-admin` 看板**没有** arrived/waiting 计数（网页看板有，那是 2026-10-16 复核的另一项）。
 
 ---
 
@@ -243,3 +258,54 @@ ai_call.cj：请求体 model / max_tokens / messages / **temperature**
 | AO | 测试脚本的自清要覆盖它改过的**所有**状态：抢走默认位再删掉自己那行 ⇒ 库进入"该类型没有默认行"，表现为**首跑红、复跑绿**的假偶发 |
 | — | PowerShell 下 `curl -d '<json>'` 的引号会被剥（服务端报 `Invalid JSON body`）⇒ JSON 写文件 + `-d "@file"`；`Invoke-WebRequest` 在非交互模式直接不可用 |
 | — | 含中文的 `server/**/*.ps1` **必须 UTF-8 with BOM**；`edit` 工具会剥掉 BOM ⇒ 改完要用 `UTF8Encoding($true)` 重写（否则 PS 5.1 按 ANSI 解析报"意外的标记"） |
+| AP | ★★ **模拟器会自己息屏 + 上锁，"黑屏截图"不等于应用崩了** | `snapshot_display` 在息屏/锁屏时给**全黑**图（1320×2856、≈60 KB），此时 `uitest uiInput click` 全部打空；`power-shell timeout -o` 只挡息屏超时、**挡不住锁屏** | 截图**按字节数**判活（>100 KB 才算有内容）；恢复：`power-shell wakeup` → 仍黑则 `uinput -K -d 18 -u 18`（电源键，**是切换**）→ 上滑解锁 |
+| AQ | ★★ **IME 弹出后注入文本会被输入法吞掉** | 登录名能填、紧接着点「口令」再注入就**始终为空**；地址栏那次表现为**开头 `http:` 被吃掉** | 输入前先收键盘（点空白处），或用 `hdc shell "uinput -K -t <文本>"`；`click 1031 2618` 只在键盘弹出时才是"回车"，否则是浏览器工具栏 |
+| AR | ★★ **静态文件改了却看到旧样式 ⇒ 先怀疑浏览器缓存** | 静态响应只有 `ETag` + `Last-Modified`、**没有 `Cache-Control`**；服务端已吐新规则，浏览器仍用旧 CSS | 验证静态改动**换 origin**（另起端口 + `hdc rport`）或清缓存；**"刷新后没变"不能当结论** |
+
+---
+
+## 十一、窄屏（手机 / 模拟器）修复与实测（2026-10-16）
+
+**怎么发现的**：把管理台放到 HarmonyOS 模拟器（Pura 90，1320×2856 @560dpi，浏览器视口约 **377 CSS px**）里逐页走了一遍。
+旧规则只有一条 `@media (max-width: 820px){ .sidebar{display:none} }` ⇒ 手机上出现三个**真**问题：
+
+| # | 现象 | 根因 | 修法 |
+| --- | --- | --- | --- |
+| 1 | 手机上**没有任何页面入口**（侧栏是唯一导航，被藏掉了），只能手改地址栏哈希 | 藏侧栏却没有替代导航 | 侧栏在窄屏**横过来当标签条**：`.sidebar{flex-direction:row}` + `.sidebar > #nav{display:flex;overflow-x:auto}`，`.nav-group-title{display:none}`，`.nav-item.active` 改用下边框高亮。**不新增 JS 分支**（同一份 `.nav-item`） |
+| 2 | 列多的表把**整页**撑宽 ⇒ 横向滚动条把顶栏/卡片/弹窗一起拖走，看起来像「页面坏了」 | `table.grid` 直接挂在卡片里，没有滚动容器 | `js/ui.js` 的 `table()` 外面包一层 `.table-wrap{overflow-x:auto}`；长英文串（URL / `key_ref` / 表名）加 `overflow-wrap:anywhere`，让它在卡片里折行 |
+| 3 | 顶栏一行放不下，中文被挤成**竖排单字**；弹窗固定宽度超出视口 ⇒ **复选框标签被推到屏幕外**（看起来像「没有标签」） | `.topbar` 固定高度不换行；`.modal.wide` 宽度写死 | 窄屏 `.topbar{height:auto;flex-wrap:wrap}`、面包屑 `flex:1 1 100%;order:3` 独占一行、`.whoami` 省略号；`.modal,.modal.wide{width:100%}` + `.modal-mask{padding:20px 10px}` |
+
+改动共 **2 个文件、+48 行**：`server/admin-web/css/style.css`（+44/−1）、`server/admin-web/js/ui.js`（+4/−1）。
+
+### 11.1 模拟器实测证据
+
+设备 `127.0.0.1:5555`（HarmonyOS 6.1.1 / API 24 / x86_64），浏览器 `com.huawei.hmos.browser`；
+服务端 **另起一份**在 18097（换 origin 绕开缓存），`hdc rport tcp:18097 tcp:18097`，管理员 `zzcheck` 登录。
+截图存主机 `%TEMP%`（`C:\Users\ASUS\AppData\Local\Temp\`）：
+
+| 图 | 内容 |
+| --- | --- |
+| `hos_n2.jpeg`、`hos_r5.jpeg` | `http://127.0.0.1:18097/admin/` 登录页 |
+| `hos_L3.jpeg` | **运营看板**：顶栏一行（品牌 + `管理员 (admin)` + 退出登录）、面包屑独占一行、**导航标签条**出现；数据与库一致（科室/医生 `1 / 1`、挂号总数 `22`、已约 19 · 已到院 1 · 候诊 1 · 就诊中 1 · 完成 0、号源余量 `38 / 60`） |
+| `hos_L4.jpeg` | **用户管理**：表格在卡片内横向滚动，列宽不再挤压整页 |
+| `hos_L5.jpeg` | **新增账号弹窗**：完全落在视口内，`登录名 / 初始口令 / 角色 / 关联 ID / 显示名` 标签齐全 |
+| `hos_M2.jpeg` | **AI 模型配置**：接口地址列**自动折行**（`dashscope.aliyuncs.com/compatible-mode/v1`） |
+| `hos_M4.jpeg` | **新增模型配置弹窗**底部：`启用`、`设为该类型的默认（同类型只有一个默认）` 及提示**都可见**（修复前它们在视口外） |
+
+复现命令：
+
+```powershell
+# 1) 另起一份服务端（新 origin，避开浏览器缓存与已占用的端口）
+& server\build\hospital-server.exe serve 'mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital' --port 18097 --dev-auth
+# 2) 端口反向映射：模拟器里的 127.0.0.1:18097 ⇒ 主机 18097
+& "<SDK>\openharmony\toolchains\hdc.exe" rport tcp:18097 tcp:18097
+# 3) 浏览器进 http://127.0.0.1:18097/admin/ ，用管理员账号登录
+```
+
+> ⚠ 模拟器驱动有三个坑（息屏上锁 / IME 吞字 / 浏览器缓存），已单独记进 §十 的 AP、AQ、AR 三行。
+
+### 11.2 同时跑的门禁
+
+- `tests\admin-web-smoke.mjs`（无头 Edge + CDP，见 §八）：退出码 **0**，11 页渲染 + 写路径全绿，四个错误数组全空。
+- 模拟器逐页（本轮实际走过）：`#/dashboard`、`#/users`（含新增弹窗）、`#/ai-models`（含新增弹窗）。
+  其余页共用同一批组件（顶栏/标签条/表格/弹窗），由上面的冒烟脚本覆盖。

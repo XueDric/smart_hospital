@@ -141,6 +141,13 @@ table.grid th, table.grid td {
 table.grid th { background: #fafbfc; color: var(--ink-2); font-weight: 500; white-space: nowrap; }
 table.grid tbody tr:hover { background: #fafdff; }
 table.grid td.actions { white-space: nowrap; }
+/*
+ * 表格的横向滚动**只发生在卡片内部**（配 js/ui.js 里 table() 外面那层 .table-wrap）。
+ * 少了这一层，列多的表会把 body 撑宽 ⇒ 整页横向滚动，窄屏上顶栏/卡片/弹窗一起被拖走。
+ */
+.table-wrap { overflow-x: auto; }
+/* 长英文串（URL / key_ref / 表名）不换行会把卡片与弹窗顶宽 ⇒ 允许在任意处断行 */
+.note, .card-sub, .hint, .modal-sub, .mono, pre.out, table.grid td { overflow-wrap: anywhere; }
 .empty { padding: 28px; text-align: center; color: var(--ink-3); font-size: 13px; }
 
 /* ============================ 按钮 / 徽标 ============================ */
@@ -236,8 +243,44 @@ pre.out {
   font-size: 12px; overflow: auto; max-height: 260px; margin: 0;
 }
 
+/*
+ * 窄屏（手机 / 竖屏平板）。2026-10-16 在 HarmonyOS 模拟器（Pura 90，1320×2856）里
+ * 用管理台实测过：原来的规则只有「藏掉侧栏 + 缩小内边距」，于是有三个真问题：
+ *   ① **手机上没有任何导航**——侧栏是唯一的页面入口，藏掉之后只能手改地址栏哈希；
+ *   ② 宽表格把整页撑宽 ⇒ 横向滚动条拖走顶栏、卡片、弹窗；
+ *   ③ 顶栏一行放不下，中文被挤成「一列一个字」的竖排。
+ * 这里三条一起修，且**不引入新的 JS 分支**：侧栏仍是同一份 .nav-item，只是横过来。
+ */
 @media (max-width: 820px) {
-  .sidebar { display: none; }
+  .topbar { height: auto; min-height: 56px; flex-wrap: wrap; gap: 4px 10px; padding: 8px 12px; }
+  .topbar-brand { font-size: 15px; white-space: nowrap; }
+  .topbar-right { margin-left: auto; white-space: nowrap; }
+  .whoami { max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .breadcrumb {
+    flex: 1 1 100%; order: 3; font-size: 12px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  .layout { flex-direction: column; min-height: 0; }
+  .sidebar {
+    width: auto; flex: 0 0 auto; flex-direction: row; padding: 0;
+    border-right: none; border-bottom: 1px solid var(--line);
+  }
+  .sidebar > #nav { display: flex; align-items: stretch; overflow-x: auto; width: 100%; }
+  .nav-group { display: flex; align-items: stretch; margin: 0; }
+  .nav-group-title { display: none; }
+  .nav-item {
+    white-space: nowrap; border-left: none; border-bottom: 3px solid transparent;
+    padding: 10px 12px;
+  }
+  .nav-item.active { border-left-color: transparent; border-bottom-color: var(--teal); }
+  .sidebar-foot { display: none; }
+
   .content { padding: 12px; }
+  .card { padding: 12px 14px; }
+  .card-head { flex-wrap: wrap; }
+  .field-row { flex-direction: column; gap: 0; }
+  .modal, .modal.wide { width: 100%; }
+  .modal-mask { padding: 20px 10px; }
   .modal { padding: 16px; }
 }

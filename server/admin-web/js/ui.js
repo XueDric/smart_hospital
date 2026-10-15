@@ -93,7 +93,10 @@ function table(columns, rows) {
     const cell = c.render ? c.render(row) : row[c.key];
     return h('td', { class: c.className || '' }, cell === undefined || cell === null ? '—' : cell);
   }))));
-  return h('table', { class: 'grid' }, thead, tbody);
+  /* ⚠ 表格必须**裹一层** `.table-wrap`（`overflow-x: auto`），否则列多的表会把
+     整个页面撑出横向滚动条：窄屏上顶栏、卡片、弹窗会被一起拖走，看起来像"页面坏了"。
+     2026-10-16 在 HarmonyOS 模拟器（1320×2856）上实测到过这个形态。 */
+  return h('div', { class: 'table-wrap' }, h('table', { class: 'grid' }, thead, tbody));
 }
 
 /* --------------------------------- 格式化 ------------------------------ */

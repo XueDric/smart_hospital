@@ -707,6 +707,19 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 | 新发现（待决策） | 客户端本地兜底 `appointmentStatusText` 与服务端权威 `visitStatusLabel` 在 **4/7 态**上不一致（`booked` 待就诊/已挂号、`visiting` 就诊中/接诊中、`cancelled` 已取消/已退号、`no_show` 爽约/已爽约） | ✅ **已按服务端术语对齐（2026-10-16 晚）**：`common-core/.../ui/Theme.ets` 改为 `已挂号`/`接诊中`/`已退号`/`已爽约`，`feature-patient/.../ui/Theme.ets` 改为直接转调 `common-core`（词汇表只剩一份）；模拟器复验就诊列表胶囊显示「已挂号」 |
 | 工具坑 | 软键盘弹出后点击键盘内的输入框不转移焦点、`完成` 键也点不掉键盘（连续输入会追加到同一框）；`uitest dumpLayout` 的中文是 `\uXXXX` 转义，按中文 grep 必然 0 命中 |
 
+### 8.5 网页管理台在模拟器上的窄屏复验（2026-10-16 晚）
+
+用户接着要求「继续在模拟器上验证管理台」。用模拟器自带浏览器 `com.huawei.hmos.browser` 打开 `http://127.0.0.1:18097/admin/`（另起一份服务端换 origin 绕开浏览器缓存 + `hdc rport tcp:18097 tcp:18097`）逐页走：
+
+| 项 | 结论 |
+| --- | --- |
+| 复核项落地（看板拆列） | 运营看板显示 `已约 19 · 已到院 1 · 候诊 1 · 就诊中 1 · 完成 0`，与库里逐项吻合；把医生端状态机点完后**再刷新**数字跟着变（`已约 21`→`19`）⇒ 是**动态**读库，不是写死 |
+| 复核项落地（红标口径） | 用 `POST /api/v1/triage`（`chief_complaint`）造两条：`degrade_reason=AI_DISABLED` 与 `=RED_FLAG`（库里 `red_flag` 0/1）⇒ 看板「分诊调用 2 · 规则路 rules · 危急 1」，与 `triage_stat` 完全一致 |
+| 新发现（已修） | 窄屏（视口≈377 CSS px）三个真问题：**①** 手机上没有任何导航（侧栏是唯一入口却被 `display:none` 藏掉）；**②** 宽表格把整页撑宽 ⇒ 顶栏/卡片/弹窗被横向拖走；**③** 顶栏中文被挤成竖排单字、弹窗固定宽度超出视口（复选框标签被推到屏幕外）。修法：侧栏窄屏横过来当标签条 + `table()` 外包 `.table-wrap{overflow-x:auto}` + 窄屏顶栏换行/弹窗全宽（`server/admin-web/css/style.css` +44/−1、`server/admin-web/js/ui.js` +4/−1，**无新增 JS 分支**），详见 `docs/ADMIN-WEB.md` §十一 |
+| 复验 | 同一台模拟器上重看：顶栏一行、面包屑独占一行、导航标签条出现、表格卡片内横滑、接口地址列折行、新增模型弹窗里 `启用` / `设为该类型的默认` 标签可见；同时复跑 `tests/admin-web-smoke.mjs`（无头 Edge，11 页 + 写路径）**退出码 0**，`consoleErrors`/`exceptions`/`badResponses`/`writeFailures` 全空 |
+| 工具坑（新增） | 模拟器会**自己息屏 + 上锁**（黑屏截图 ≠ 应用崩了，`power-shell timeout -o` 挡不住锁屏）；**IME 弹出后注入文本被输入法吞掉**（第二个输入框尤其明显）；静态响应只有 `ETag`/`Last-Modified`、**没有 `Cache-Control`** ⇒ 改完 CSS 看到旧样式时先换 origin，别急着回滚 |
+| 未做 | 表格「操作」列在窄屏需横滑才可见；2 字复选框标签会竖排折行；端内 `feature-admin` 看板没有 arrived/waiting 计数（网页看板有） |
+
 ---
 
 ## 附：本篇引用的关键位置索引
