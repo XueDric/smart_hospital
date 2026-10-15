@@ -109,6 +109,37 @@ public class TriageVerdict {
     public var aiNote: String = ""
     /* 为什么没用上模型（给运维看；不含密钥）。 */
     public var aiReason: String = ""
+    /*
+     * ★ 2026-10-15 增（改进 7）：**排障遥测**（随结论一起回给 http 层落 `triage_stat`）。
+     *
+     * ⚠⚠ 这五个全部是"**调用事实**"，没有一个是患者输入：
+     *   `aiElapsedMs` 是模型这次实际花了多少毫秒（0 = 根本没调），
+     *   `aiDegradeReason` 是降级原因的**稳定码**
+     *     （`RED_FLAG` / `CONFIG_READ_FAILED` / `AI_DISABLED` / `INVALID_OUTPUT` /
+     *      `CALL_FAILED`；空串 = 真的用上了模型），
+     *     它**刻意与 `aiReason` 分开**：`aiReason` 是给人看的一句话（会改文案），
+     *     而这个码要进库按原因**聚合**（改一个字，历史聚合就断成两段），
+     *   `aiUsedKb` 是这次是否用了知识库检索命中，
+     *   `aiModelId`/`aiModelName` 是**当时**那个默认对话模型的标识。
+     *
+     * ⚠ 为什么模型标识要**随结论带走**（而不是落库时再去查一次配置）：
+     *   落库与调用之间可能隔着一次配置修改（管理员改模型是**零重启**生效的），
+     *   再去查就会把"A 模型的结果"记成"B 模型" ——
+     *   排障日志最不能容忍的就是"事后看到的事实与当时不同"。
+     *   📌 `aiModelName` 冗余存名字（不只存 id）：模型行可以被改名或删除，
+     *     只存 id 会让历史聚合的**含义**悄悄变化（同 `triage_stat.department` 存名字）。
+     */
+    public var aiElapsedMs: Int64 = 0
+    public var aiDegradeReason: String = ""
+    public var aiUsedKb: Bool = false
+    public var aiModelId: Int64 = 0
+    public var aiModelName: String = ""
+    /*
+     * 本次带给模型的**知识库文档 id**（逗号分隔；空 = 没用知识库）。
+     * ⚠ 存的是文档 id 而不是文档正文：排障要回答的是"这个结论是不是被某篇
+     *   （可能过期的）文档带偏的"，那只需要**能定位到文档**，不需要把正文抄一遍。
+     */
+    public var aiKbDocIds: String = ""
     /* 是否**真的**给出了可挂号的推荐。 */
     public func hasBookable(): Bool {
         return options.size > 0

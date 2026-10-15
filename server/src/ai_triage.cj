@@ -171,6 +171,7 @@ public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
      */
     if (v.redFlag) {
         v.aiReason = "危急征象：优先让患者立刻看到处置建议，不进模型"
+        v.aiDegradeReason = "RED_FLAG"
         return
     }
     /*
@@ -195,12 +196,45 @@ public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
     } catch (e: Exception) {
         /* 读配置失败 ⇒ 降级，不把分诊搞挂。 */
         v.aiReason = "读取 AI 配置失败，已降级为规则"
+        v.aiDegradeReason = "CONFIG_READ_FAILED"
         return
     }
     let (can, why) = aiCanCall(opts)
     if (!can) {
         v.aiReason = why
+        v.aiDegradeReason = "AI_DISABLED"
         return
+    }
+    /*
+     * ★ 2026-10-15（改进 7）：**过了闸门之后就把"当时的调用事实"记进结论**。
+     *
+     * ⚠ 位置很关键：必须在 `aiCanCall` **之后**、`aiCallChatBudget` **之前**。
+     *   · 之前：还没确定真的会调模型，记下模型名会造成"用了模型"的假象；
+     *   · 之后：调用失败时仍需知道"本来是要发给谁"（`r.elapsedMs` 也会照记）。
+     *
+     * ⚠ `aiUsedKb` 的语义是"**这次真的把知识库片段带给了模型**"，
+     *   所以判据是 `ragHits` 非空（与 `aiTriagePrompt` 里"rag 为空则整段不加"
+     *   同一条件）—— 不能写成"知识库检索过"，那两者不是一回事。
+     */
+    v.aiModelId = opts.modelId
+    v.aiModelName = opts.modelName
+    v.aiUsedKb = ragHits.size > 0
+    if (v.aiUsedKb) {
+        /*
+         * ⚠ 拼的是**文档 id**（`KbHit.docId`），不是标题/正文 ——
+         *   排障要的是"能定位到哪篇"，而正文属于知识库自己的数据，
+         *   抄进统计表只会在文档被修订后留下**一份与原文不一致的副本**。
+         * ⚠ 用 `,` 分隔的可读形式（而不是 JSON 数组）：这一列是给人扫一眼的，
+         *   且长度可控（片段数本就是个位数）。
+         */
+        var ids = ""
+        for (h in ragHits) {
+            if (ids.size > 0) {
+                ids = ids + ","
+            }
+            ids = ids + h.docId.toString()
+        }
+        v.aiKbDocIds = ids
     }
     /*
      * ③ 组 Prompt。
@@ -218,6 +252,11 @@ public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
         deadlineMs - DateTime.now().toUnixTimeStamp().toMilliseconds()
     } else { TRIAGE_ENHANCEMENT_BUDGET_MS }
     let r = aiCallChatBudget(opts, prompt, now, remaining)
+    /*
+     * ★ 2026-10-15（改进 7）：耗时**无论成败都记**（0 表示"没走到拿到响应的那一步"，
+     *   与 `AiCallResult.elapsedMs` 的口径一致）。排障看 p50/p95 要的正是这个数。
+     */
+    v.aiElapsedMs = r.elapsedMs
     if (r.ok) {
         let clean = aiSanitizeNote(r.text)
         if (clean.size == 0) {
@@ -228,6 +267,7 @@ public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
              */
             v.source = "model:invalid"
             v.aiReason = "模型输出未通过安全检查（疑似诊断/用药或格式不合格），已用规则文案"
+            v.aiDegradeReason = "INVALID_OUTPUT"
             return
         }
         v.aiNote = clean
@@ -236,6 +276,13 @@ public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
     }
     /* ④ 调用失败 ⇒ 降级。`source` 保持 `rules`（**不假装成功**）。 */
     v.aiReason = r.reason
+    /*
+     * ⚠ `degrade_reason` 存的是**稳定的码**而不是 `r.reason` 那句人话：
+     *   这个列要给看板按原因聚合（"上周 30% 是超时"），
+     *   而人话会被改写（改一次文案，历史聚合就断成两段）。
+     *   人话仍在 `aiReason` 里随接口回给调用方（`ai_reason`）。
+     */
+    v.aiDegradeReason = "CALL_FAILED"
 }
 
 /* 组给模型的 Prompt（只含规则已判定的事实 + 可选的知识库片段）。 */

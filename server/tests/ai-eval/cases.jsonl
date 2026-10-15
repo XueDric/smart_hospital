@@ -1,0 +1,20 @@
+{"id":"case-0001","chief_complaint":"咳嗽三天，有黄痰，晚上躺下更厉害，没有发烧","expected_departments":["呼吸内科"],"expected_red_flag":false,"note":"典型急性支气管炎，非急症","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0002","chief_complaint":"胸口压榨性疼痛半小时，出冷汗，喘不上气","expected_departments":["心血管内科","急诊科"],"expected_red_flag":true,"note":"疑似急性冠脉综合征 —— 必须立刻急诊","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0003","chief_complaint":"突然说话不清楚，右边手脚没力气，已经一个小时了","expected_departments":["神经内科","急诊科"],"expected_red_flag":true,"note":"疑似脑卒中，溶栓时间窗内","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0004","chief_complaint":"肚子隐隐痛两天，吃饭后加重，没有呕吐","expected_departments":["消化内科"],"expected_red_flag":false,"note":"常见上腹不适","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0005","chief_complaint":"发烧三十九度两天，嗓子疼，吞口水都疼","expected_departments":["呼吸内科","耳鼻喉科"],"expected_red_flag":false,"note":"急性咽炎/扁桃体炎","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0006","chief_complaint":"反复头晕一个月，起床时明显","expected_departments":["神经内科"],"expected_red_flag":false,"note":"体位性头晕待查","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0007","chief_complaint":"右侧腰部绞痛，疼得直不起腰，尿里有血","expected_departments":["泌尿外科","急诊科"],"expected_red_flag":true,"note":"疑似输尿管结石绞痛；规则词表可能不认「绞痛」","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0008","chief_complaint":"小孩子三岁，发烧咳嗽两天，精神还好","expected_departments":["儿科"],"expected_red_flag":false,"note":"儿童呼吸道感染","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0009","chief_complaint":"脸上起红疹两天，很痒，没有呼吸困难","expected_departments":["皮肤科"],"expected_red_flag":false,"note":"过敏/皮炎；已排除呼吸困难","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0010","chief_complaint":"月经推迟十天，肚子偶尔痛","expected_departments":["妇产科"],"expected_red_flag":false,"note":"停经待查","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0011","chief_complaint":"眼睛红了两天，分泌物多，看东西有点模糊","expected_departments":["眼科"],"expected_red_flag":false,"note":"结膜炎可能","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0012","chief_complaint":"牙疼三天，咬东西疼，脸有点肿","expected_departments":["口腔科"],"expected_red_flag":false,"note":"牙髓炎/根尖周炎","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0013","chief_complaint":"呼吸困难，嘴唇发紫，坐着都喘","expected_departments":["急诊科","呼吸内科"],"expected_red_flag":true,"note":"呼吸衰竭征象，危急","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0014","chief_complaint":"被狗咬伤手指，破了皮，两个小时前","expected_departments":["急诊科","普外科"],"expected_red_flag":false,"note":"需狂犬疫苗与伤口处理，有时效","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0015","chief_complaint":"膝盖疼半年，上下楼梯加重","expected_departments":["骨科"],"expected_red_flag":false,"note":"骨关节炎可能","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0016","chief_complaint":"失眠两个月，白天没精神","expected_departments":["精神心理科","神经内科"],"expected_red_flag":false,"note":"慢性失眠","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0017","chief_complaint":"痔疮出血三天，量不多","expected_departments":["肛肠科","普外科"],"expected_red_flag":false,"note":"下消化道出血需排除其他原因","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0018","chief_complaint":"血压一百八，后脑勺胀痛","expected_departments":["心血管内科"],"expected_red_flag":true,"note":"高血压急症倾向 —— 规则若不认数字血压就是召回缺口","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0019","chief_complaint":"喉咙里卡了鱼刺，咽口水就疼","expected_departments":["耳鼻喉科"],"expected_red_flag":false,"note":"咽喉异物","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}
+{"id":"case-0020","chief_complaint":"儿童误吞了一枚硬币，刚发生","expected_departments":["急诊科","儿科"],"expected_red_flag":true,"note":"消化道异物，儿童","labeled_by":"模板（待业务人员复核）","labeled_at":"2026-10-15"}

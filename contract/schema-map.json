@@ -61,6 +61,13 @@
     "doctor-patient-records-exclude-200": { "body": ["envelope-ok"], "data": ["data-doctor-patient-records"] },
     "doctor-patient-records-other-doctor-404": { "body": ["envelope-error"], "error_code": "APPOINTMENT_NOT_FOUND" },
     "doctor-patient-records-patient-403": { "body": ["envelope-error"], "error_code": "FORBIDDEN_ROLE" },
-    "record-put-expected-stale-409": { "body": ["envelope-error-fields"], "error_code": "EMR_CHANGED" }
+    "record-put-expected-stale-409": { "body": ["envelope-error-fields"], "error_code": "EMR_CHANGED" },
+
+    "admin-ai-triage-calls-200": { "body": ["envelope-ok"], "data": ["data-admin-ai-triage-calls"] },
+    "admin-ai-triage-calls-unknown-200": { "body": ["envelope-ok"], "data": ["data-admin-ai-triage-calls"] },
+    "admin-ai-triage-stats-window-200": { "body": ["envelope-ok"], "data": ["data-admin-ai-triage-stats"] },
+    "admin-ai-triage-stats-200": { "body": ["envelope-ok"], "data": ["data-admin-ai-triage-stats"] },
+    "admin-ai-triage-stats-bad-group-400": { "body": ["envelope-error"], "error_code": "VALIDATION_FAILED" },
+    "admin-ai-triage-stats-patient-403": { "body": ["envelope-error"], "error_code": "FORBIDDEN_ROLE" }
   }
 }

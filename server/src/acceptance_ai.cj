@@ -15,6 +15,7 @@
 package qingzhou
 
 import std.collection.*
+import stdx.encoding.json.*
 
 /* 清 AI 配置表（测试用）。 */
 func hResetAiSettings(db: DbBackend): Unit {
@@ -589,5 +590,393 @@ public func acP3_6(runner: TestRunner, db: DbBackend): Unit {
         // ⑥ ★ 开关**零重启**：写后同一实例立刻生效
         runner.check("★★ ⑥ 开关零重启（写后立即生效，无需重启）",
                      aiToolEnabled(settings, target, now))
+    })
+}
+
+/* ===================== AC-P3-7：分诊遥测与排障（改进 7）===================== */
+
+/*
+ * JSON 取值小工具。
+ *
+ * ⚠ 缺字段一律回"**不可能的值**"（-1 / `<缺字段>`），**不回**看起来正常的默认值：
+ *   如果回 0/空串，那么"这个字段压根没写进响应"会被断言悄悄放过 ——
+ *   而"字段名写错"正是这类改动最常见的缺陷。
+ * ⚠ `JsonObject.get` 返回 `?JsonValue` ⇒ 必须先 match 再判类型
+ *   （本仓的坑：直接对 Option 调 `asInt()` 会报
+ *    `'asInt' is not a member of enum 'Option<...>'`）。
+ */
+func hT7JsonInt(o: JsonObject, key: String): Int64 {
+    match (o.get(key)) {
+        case Some(jv) =>
+            if (jv is JsonInt) {
+                return jv.asInt().getValue()
+            }
+            return -1
+        case None => return -1
+    }
+}
+
+func hT7JsonStr(o: JsonObject, key: String): String {
+    match (o.get(key)) {
+        case Some(jv) =>
+            if (jv is JsonString) {
+                return jv.asString().getValue()
+            }
+            return "<非字符串>"
+        case None => return "<缺字段>"
+    }
+}
+
+func hT7JsonBool(o: JsonObject, key: String): Bool {
+    match (o.get(key)) {
+        case Some(jv) =>
+            if (jv is JsonBool) {
+                return jv.asBool().getValue()
+            }
+            return false
+        case None => return false
+    }
+}
+
+func hT7JsonFloat(o: JsonObject, key: String): Float64 {
+    match (o.get(key)) {
+        case Some(jv) =>
+            if (jv is JsonFloat) {
+                return jv.asFloat().getValue()
+            }
+            return -1.0
+        case None => return -1.0
+    }
+}
+
+/* 数一数配置表里**真配置项**的行数（保留行不算 —— 它不是配置项）。 */
+func hT7SettingRows(db: DbBackend): Int64 {
+    let rs = db.query("SELECT COUNT(*) FROM ai_setting WHERE k <> ?", [DbStr(SET_AI_REVISION_ROW)])
+    return rs.getInt(0, 0)
+}
+
+/* 取嵌套对象（缺字段/类型不符回**空对象** ⇒ 里面的取值会回 -1/`<缺字段>`）。 */
+func hT7Sub(o: JsonObject, key: String): JsonObject {
+    match (o.get(key)) {
+        case Some(jv) =>
+            if (jv is JsonObject) {
+                return jv.asObject()
+            }
+            return JsonObject()
+        case None => return JsonObject()
+    }
+}
+
+/* 取 `groups` 数组的第 i 个元素（越界回空对象）。 */
+func hT7GroupAt(o: JsonObject, i: Int64): JsonObject {
+    match (o.get("groups")) {
+        case Some(jv) =>
+            if (jv is JsonArray) {
+                let arr = jv.asArray()
+                if (i < arr.size()) {
+                    return arr[i].asObject()
+                }
+            }
+            return JsonObject()
+        case None => return JsonObject()
+    }
+}
+
+/*
+ * AC-P3-7 ★★ 分诊遥测：**调用事实**可排障，而主诉仍然一个字都不落库。
+ *
+ * ── 这条守的是什么 ────────────────────────────────────────────────────────
+ *   改进 7 往 `triage_stat` 加了七列排障遥测（请求号 / 模型 / 模板版本 / 耗时 /
+ *   降级原因 / 是否用知识库 / 命中的文档 id）。它一次开了**两个**风险口：
+ *     ① **隐私**：列变多了，主诉原文会不会"顺手"被记进去？
+ *     ② **口径**：数字记错了比不记更坏 —— 一个错的 p95 会让整场排障走偏。
+ *   所以断言分三块：**隐私否定断言**、**逐字段往返**、**统计量可手算**。
+ *
+ * ── 为什么分位数要"可手算"（本组的核心手法）──────────────────────────────
+ *   样本是我自己造的 5 个已知耗时 [0, 120, 200, 310, 450]。最近秩法下
+ *   p50 = 第 ⌈0.5×5⌉ = 3 个 = 200、p95 = 第 ⌈0.95×5⌉ = 5 个 = 450。
+ *   如果实现改成"线性插值"，p50 会给出 200（巧合相同）但 p95 会给出
+ *   450 与 310 之间的插值 ⇒ 断言里那两个**精确值**会立刻变红。
+ *   📌 断言"统计量 == 手算值"能让实现方式的分歧暴露出来，而
+ *      "p50 >= p0 && p50 <= p95"这种松断言对任何实现都成立。
+ */
+public func acP3_7(runner: TestRunner, db: DbBackend): Unit {
+    println("=== AC-P3-7 ★★ 分诊遥测：排障可见，主诉仍不落库 ===")
+    runner.section("AC-P3-7", { =>
+        db.exec("DELETE FROM triage_stat", Array<DbValue>())
+        db.exec("DELETE FROM ai_model", Array<DbValue>())
+        hResetAiSettings(db)
+        let ts = TriageStatRepo(db)
+        let now = hNowEpoch()
+
+        /*
+         * ① 造 5 行**已知**样本：3 行走模型（其中 2 行降级为 0）、1 行规则兜底、
+         *    1 行模型输出非法。两行共用 `ac7-req-a`（专门用来验"同一请求多行"）。
+         */
+        ts.record("OK", false, "呼吸内科", false, "model", now, requestId: "ac7-req-a",
+                  modelId: 7, modelName: "通义千问-正式", promptRevision: 3, elapsedMs: 120,
+                  usedKb: true, kbDocIds: "11,22")
+        ts.record("OK", false, "心内科", false, "model", now, requestId: "ac7-req-a",
+                  modelId: 7, modelName: "通义千问-正式", promptRevision: 3, elapsedMs: 200)
+        ts.record("OK", false, "消化内科", true, "model", now, requestId: "ac7-req-b",
+                  modelId: 9, modelName: "备用模型", promptRevision: 3, elapsedMs: 310,
+                  usedKb: true, kbDocIds: "33")
+        ts.record("RED_FLAG", true, "急诊科", false, "rules", now, requestId: "ac7-req-c",
+                  promptRevision: 3, degradeReason: "RED_FLAG")
+        ts.record("NO_DEPT", false, "", false, "model:invalid", now, requestId: "ac7-req-c",
+                  modelId: 7, modelName: "通义千问-正式", promptRevision: 3, elapsedMs: 450,
+                  degradeReason: "INVALID_OUTPUT")
+        runner.check("① 五行样本已写入（实得 ${ts.count()} 行）", ts.count() == 5)
+
+        // ② 逐字段往返：**存进去什么，取出来就是什么**（新列全部走一遍）
+        let from = now - 60
+        let to = now + 60
+        let w = ts.windowRows(from, to, 100)
+        runner.check("② 窗口取回 5 行且未被截断（实得 ${w.rows.size} 行，truncated=${w.truncated}）",
+                     w.rows.size == 5 && !w.truncated)
+        // 同一 created_at 时按 id DESC ⇒ 第一行是最后插入的那条
+        let newest = w.rows[0]
+        runner.check("② 最新一行 = 输出非法那条（source='${newest.source}'、" +
+                     "degrade='${newest.degradeReason}'）",
+                     newest.source == "model:invalid" && newest.degradeReason == "INVALID_OUTPUT" &&
+                     newest.requestId == "ac7-req-c" && newest.elapsedMs == 450)
+        // 找出"用了知识库且带文档 id"的那行
+        var kbRow = TriageCallRow()
+        var foundKb = false
+        for (r in w.rows) {
+            if (r.usedKb && r.kbDocIds.size > 0) {
+                kbRow = r
+                foundKb = true
+            }
+        }
+        runner.check("② used_kb / kb_doc_ids 往返一致（实得 '${kbRow.kbDocIds}'）",
+                     foundKb && (kbRow.kbDocIds == "11,22" || kbRow.kbDocIds == "33"))
+        runner.check("② 模型行标识往返一致（实得 id=${kbRow.modelId} name='${kbRow.modelName}'）",
+                     kbRow.modelId > 0 && kbRow.modelName.size > 0 &&
+                     kbRow.promptRevision == 3)
+        runner.check("② 未降级行的 degrade_reason 是**空串**（= 真用上了模型）",
+                     !kbRow.degradeReason.contains("降级") && kbRow.degradeReason.size == 0)
+
+        // ③ 统计量：**手算值**逐一对账（见函数头"为什么可手算"）
+        let agg = triageStatAggregate(w.rows, "source", 20)
+        let all = agg[0]
+        runner.check("③ 总体样本数 = 5（实得 ${all.total}）", all.total == 5)
+        runner.check("③ 降级数 = 2（rules + model:invalid；实得 ${all.degraded}）", all.degraded == 2)
+        runner.check("★ ③ p50 = 200（最近秩第 3 个；实得 ${all.p50Ms}）", all.p50Ms == 200)
+        runner.check("★ ③ p95 = 450（最近秩第 5 个；实得 ${all.p95Ms}）", all.p95Ms == 450)
+
+        // ④ 分组：按 source 三组，按样本量降序、并列按 bucket 升序（顺序必须确定）
+        let groups = agg[1]
+        runner.check("④ 按 source 分出 3 组（实得 ${groups.size}）", groups.size == 3)
+        if (groups.size == 3) {
+            runner.check("④ 第 1 组 = model（3 条，0 降级；实得 '${groups[0].bucket}'/" +
+                         "${groups[0].total}/${groups[0].degraded}）",
+                         groups[0].bucket == "model" && groups[0].total == 3 &&
+                         groups[0].degraded == 0)
+            runner.check("④ 第 2 组 = model:invalid（并列时按名字升序 ⇒ 顺序确定）",
+                         groups[1].bucket == "model:invalid")
+            runner.check("④ 第 3 组 = rules（且降级数 = 1）",
+                         groups[2].bucket == "rules" && groups[2].degraded == 1)
+        } else {
+            runner.check("④ 分组数应为 3", false)
+        }
+
+        /*
+         * ⑤ `group_by` 是**安全边界**：列名要拼进 SQL，所以只认白名单里的三个。
+         *   ⚠ 非法值必须**判否**（由 HTTP 层回 400），绝不"回退默认值继续查"。
+         */
+        runner.check("⑤ 白名单接受 source / reason_code / model_name",
+                     triageStatGroupByOk("source") && triageStatGroupByOk("reason_code") &&
+                     triageStatGroupByOk("model_name"))
+        runner.check("★★ ⑤ 白名单拒绝空串、注入串与其它列（含 id/department）",
+                     !triageStatGroupByOk("") && !triageStatGroupByOk(";DROP TABLE triage_stat") &&
+                     !triageStatGroupByOk("id") && !triageStatGroupByOk("department"))
+
+        // ⑥ 返回体形状（HTTP 层就是把这个对象塞进 data）
+        let jo = triageStatWindowJson(w, "source", from, to, 100, 20)
+        runner.check("⑥ 回显窗口参数（from/to/group_by/sample_limit）",
+                     hT7JsonInt(jo, "from") == from && hT7JsonInt(jo, "to") == to &&
+                     hT7JsonStr(jo, "group_by") == "source" &&
+                     hT7JsonInt(jo, "sample_limit") == 100)
+        runner.check("⑥ sampled = 5、truncated = false（**没被截断就不许报截断**）",
+                     hT7JsonInt(jo, "sampled") == 5 && !hT7JsonBool(jo, "truncated"))
+        let overall = hT7Sub(jo, "overall")
+        runner.check("⑥ overall 的 total/degraded/p50/p95 与聚合一致",
+                     hT7JsonInt(overall, "total") == 5 && hT7JsonInt(overall, "degraded") == 2 &&
+                     hT7JsonInt(overall, "p50_ms") == 200 && hT7JsonInt(overall, "p95_ms") == 450)
+        let rate = hT7JsonFloat(overall, "degrade_rate")
+        runner.check("⑥ 降级率 = 2/5 = 0.4（实得 ${rate}）", rate > 0.3999 && rate < 0.4001)
+        let g0 = hT7GroupAt(jo, 0)
+        runner.check("⑥ groups[0] 是 model 组（bucket/total 都对）",
+                     hT7JsonStr(g0, "bucket") == "model" && hT7JsonInt(g0, "total") == 3)
+        runner.check("⑥ 分组数上限字段回显（group_limit = 20）", hT7JsonInt(jo, "group_limit") == 20)
+
+        /*
+         * ⑦ ★★ 隐私否定断言（本组最重要的方向）。
+         *   逐条列出"绝不能出现在响应里"的键名 —— 这份清单是**枚举**的，
+         *   不是"记得别写"：将来有人加字段时，只要名字落在这几类里就会变红。
+         */
+        let text = jo.toString()
+        runner.check("★★ ⑦ 响应里没有 patient_id / doctor_id / phone / 姓名形状的键",
+                     !text.contains("patient_id") && !text.contains("doctor_id") &&
+                     !text.contains("phone") && !text.contains("\"name\""))
+        runner.check("★★ ⑦ 响应里没有 complaint / 主诉字段（本表根本没有这一列）",
+                     !text.contains("complaint") && !text.contains("主诉"))
+        let callJson = triageCallJson(newest).toString()
+        runner.check("★★ ⑦ 单次调用视图同样干净（且不含知识库正文片段字段）",
+                     !callJson.contains("complaint") && !callJson.contains("patient_id") &&
+                     !callJson.contains("content"))
+        runner.check("⑦ 单次调用视图带齐排障字段（request_id/model/prompt_revision/耗时/降级）",
+                     callJson.contains("request_id") && callJson.contains("model_name") &&
+                     callJson.contains("prompt_revision") && callJson.contains("elapsed_ms") &&
+                     callJson.contains("degrade_reason") && callJson.contains("used_kb") &&
+                     callJson.contains("kb_doc_ids"))
+        // 表结构层面：没有任何自由文本列（与 AC-P4-4 同口径，这里是加重申明）
+        let cols = db.query(
+            "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() " +
+            "AND TABLE_NAME = 'triage_stat' AND (COLUMN_NAME LIKE '%complaint%' " +
+            "OR COLUMN_NAME LIKE '%text%' OR COLUMN_NAME LIKE '%note%')", Array<DbValue>())
+        runner.check("★★ ⑦ 加完七列之后表结构**仍然**没有自由文本列（实得 ${cols.getInt(0, 0)} 列）",
+                     cols.getInt(0, 0) == 0)
+
+        // ⑧ 按请求号反查：同一 requestId 的多行都要出来，且新→旧
+        let byReq = ts.callsByRequest("ac7-req-a", 20)
+        runner.check("⑧ 同一 requestId 的 2 行都取到（实得 ${byReq.size} 行）", byReq.size == 2)
+        if (byReq.size == 2) {
+            runner.check("⑧ 且按 id 降序（新→旧；实得 ${byReq[0].id} > ${byReq[1].id}）",
+                         byReq[0].id > byReq[1].id)
+            runner.check("⑧ 两行都带着同一个 request_id",
+                         byReq[0].requestId == "ac7-req-a" && byReq[1].requestId == "ac7-req-a")
+        } else {
+            runner.check("⑧ 同一 requestId 应取到 2 行", false)
+        }
+        runner.check("★★ ⑧ 未知 requestId 回**空数组**（不抛异常、也不假装 404）",
+                     ts.callsByRequest("ac7-nope", 20).size == 0)
+        runner.check("⑧ limit 生效（limit=1 ⇒ 只回 1 行）", ts.callsByRequest("ac7-req-a", 1).size == 1)
+
+        // ⑨ 截断信号：抽样上限真的取到 limit+1 时，必须如实标记 truncated
+        let w2 = ts.windowRows(from, to, 2)
+        runner.check("★ ⑨ limit=2 时 rows=2 且 **truncated=true**（少算必须说出来）",
+                     w2.rows.size == 2 && w2.truncated)
+        let w3 = ts.windowRows(from, to, 5)
+        runner.check("⑨ limit=5（= 总行数）时**不**报截断（边界不多报）",
+                     w3.rows.size == 5 && !w3.truncated)
+        let w4 = ts.windowRows(now + 10, now + 60, 100)
+        runner.check("⑨ 窗口外（from 在未来）取回 0 行", w4.rows.size == 0 && !w4.truncated)
+
+        // ⑩ 分位数边界：空样本回 0（口径里必须与"真的 0ms"区分开 —— 由 total=0 区分）
+        let empty: Array<Int64> = []
+        runner.check("⑩ 空样本 p50/p95 回 0", triagePercentile(empty, 50) == 0 &&
+                     triagePercentile(empty, 95) == 0)
+        let one: Array<Int64> = [7]
+        runner.check("⑩ 单样本 p50 = p95 = 该值", triagePercentile(one, 50) == 7 &&
+                     triagePercentile(one, 95) == 7)
+        let two: Array<Int64> = [10, 20]
+        runner.check("★★ ⑩ 两样本 p50 = 10、p95 = 20（**最近秩**，不是插值出的 15/19.5）",
+                     triagePercentile(two, 50) == 10 && triagePercentile(two, 95) == 20)
+
+        // ⑪ 配置版本号：写入/删除**都要**让版本前进（删除也是改配置）
+        let settings = AiSettingsRepo(db)
+        runner.check("⑪ 还没写过配置时版本号回 0（**不是** 1 —— 兜底成 1 会与" +
+                     "「第一次改配置后」撞号，版本号就白记了；实得 ${settings.revision(now)}）",
+                     settings.revision(now) == 0)
+        let v0 = settings.revision(now)
+        let _p1 = settings.put(SET_AI_TIMEOUT, "31", now)
+        let v1 = settings.revision(now)
+        runner.check("★ ⑪ 第一项配置写进去 ⇒ 版本号**严格增加**（${v0} -> ${v1}）", v1 > v0)
+        let _p2 = settings.put(SET_AI_TIMEOUT, "32", now)
+        let v2 = settings.revision(now)
+        runner.check("★ ⑪ 连续改两次 ⇒ 版本再增（${v1} -> ${v2}）", v2 > v1)
+        /*
+         * ★★ 「删掉**最后一项**配置」是这条机制最容易栽的地方（最初的
+         *   "整表 +1"写法就栽在这里：表被删空 ⇒ `MAX(revision)` 归 NULL ⇒
+         *   版本号**倒退**）。所以这里先确认表里只剩那一项，再删。
+         */
+        runner.check("⑪ 删之前表里只剩 1 项配置（实得 ${hT7SettingRows(db)} 行）",
+                     hT7SettingRows(db) == 1)
+        let _r1 = settings.remove(SET_AI_TIMEOUT, now)
+        runner.check("⑪ 删之后表里**一项配置都没有**了（保留行不计入；实得 " +
+                     "${hT7SettingRows(db)} 行）", hT7SettingRows(db) == 0)
+        let v3 = settings.revision(now)
+        runner.check("★★ ⑪ 删掉最后一项配置，版本号**仍然前进**（${v2} -> ${v3}）：" +
+                     "删除也是一次配置变更，且版本号不寄生在会被删掉的行上", v3 > v2)
+
+        // ⑫ 保留行：接口写不进、删不掉，也不出现在任何回显里
+        runner.check("★★ ⑫ 保留行（版本号所在那行）**写不进**：" +
+                     "它不在 ai.*/prompt.*/ai.tool.* 命名空间里",
+                     !settings.put(SET_AI_REVISION_ROW, "999", now).ok)
+        runner.check("★★ ⑫ 保留行**删不掉**", !settings.remove(SET_AI_REVISION_ROW, now))
+        runner.check("⑫ 上面两次被拒的调用**没有**动版本号（仍为 ${v3}）",
+                     settings.revision(now) == v3)
+        let settingsView = aiSettingsJson(settings, now).toString()
+        runner.check("★★ ⑫ 保留行不出现在配置回显里（回显按登记清单遍历，" +
+                     "不是裸查 KV）", !settingsView.contains(SET_AI_REVISION_ROW))
+
+        // ⑬ 模型标识：有默认模型行 ⇒ 带 id 与**行名**；只有 KV ⇒ id 为 0 但名字仍可见
+        let models = AiModelRepo(db)
+        settings.attachModels(models)
+        let draft = AiModel()
+        draft.name = "AC7-排障验证模型"
+        draft.kind = "chat"
+        draft.provider = "本地"
+        draft.baseUrl = "https://ac7.example.com/v1"
+        draft.model = "ac7-model"
+        draft.temperature = 0.3
+        draft.maxTokens = 1024
+        draft.keyRef = "env:AC7_KEY"
+        draft.enabled = true
+        draft.isDefault = true
+        let created = models.create(draft, now, 1)
+        runner.check("⑬ 造一行默认对话模型", created.ok && created.id > 0)
+        let o1 = settings.options(now)
+        runner.check("★★ ⑬ 有模型行 ⇒ model_id = 行 id（${o1.modelId}）、model_name = 行名（'${o1.modelName}'）",
+                     o1.modelId == created.id && o1.modelName == "AC7-排障验证模型")
+        let _rm = models.remove(created.id, now)
+        let _kv = settings.put(SET_AI_MODEL, "kv-model-x", now)
+        let o2 = settings.options(now)
+        runner.check("★★ ⑬ 没有模型行 ⇒ model_id = 0（那是「走 KV」的语义，不是缺省）" +
+                     "，但 model_name 仍是**当时真的发出去的**模型名（'${o2.modelName}'）",
+                     o2.modelId == 0 && o2.modelName == "kv-model-x")
+
+        // ⑭ 降级原因用**稳定码**：空串 = 真用上了模型（给人看的 aiReason 与它分开）
+        let v = TriageVerdict()
+        runner.check("★★ ⑭ 默认 degrade_reason 是空串（= 真用上模型），" +
+                     "且与给人看的 aiReason 是两个字段",
+                     v.aiDegradeReason.size == 0 && v.aiReason.size == 0 && v.aiElapsedMs == 0 &&
+                     !v.aiUsedKb && v.aiModelId == 0)
+
+        /*
+         * ⑮ ★★ "降级"的判据**只有一条**：`degrade_reason` 非空。
+         *   用两行**刻意不一致**的样本把它钉死（不写库，纯内存聚合）：
+         *     · source = "rules" 但 degrade_reason = ""（结论来自规则，却没记降级原因）
+         *     · source = "model" 但 degrade_reason = "CALL_FAILED"（模型那次调用失败了）
+         *   若判据写成 `source != "model"`，总体 degraded 会得 2 —— 本断言立刻变红。
+         *   口径分叉的代价：看板上"单行 degraded 之和"与"分组小计"对不上，排障时谁也说不清哪个对。
+         */
+        let r15a = TriageCallRow()
+        r15a.source = "rules"
+        r15a.degradeReason = ""
+        r15a.elapsedMs = 10
+        let r15b = TriageCallRow()
+        r15b.source = "model"
+        r15b.degradeReason = "CALL_FAILED"
+        r15b.elapsedMs = 20
+        let rows15: Array<TriageCallRow> = [r15a, r15b]
+        let agg15 = triageStatAggregate(rows15, "source", 20)
+        let all15 = agg15[0]
+        var sum15: Int64 = 0
+        for (g in agg15[1]) {
+            sum15 = sum15 + g.degraded
+        }
+        runner.check("★★ ⑮ degraded 只按 degrade_reason 非空算（写成 source != model 会得 2），" +
+                     "且分组小计 = 总体（实得 ${all15.degraded} / 小计 ${sum15}）",
+                     all15.total == 2 && all15.degraded == 1 && sum15 == all15.degraded)
+        runner.check("★★ ⑮ 总体行的 bucket 是 'all'（空串在 JSON 里与「没算出来」长得一样）",
+                     all15.bucket == "all")
+
+        // 收尾：本用例的行不留给后续用例（它们各自会清，但"不留痕"是本仓纪律）
+        db.exec("DELETE FROM triage_stat", Array<DbValue>())
+        db.exec("DELETE FROM ai_model", Array<DbValue>())
+        hResetAiSettings(db)
     })
 }

@@ -100,14 +100,15 @@ function Scrub-Text([string]$s) {
 function Normalize-Node($node) {
     if ($null -eq $node) { return $null }
     if ($node -is [string]) { return (Scrub-Text $node) }
-    if ($node -is [bool] -or $node -is [int] -or $node -is [int64] -or $node -is [double]) { return $node }
+    if ($node -is [bool] -or $node -is [int] -or $node -is [int64] -or $node -is [double] -or
+        $node -is [decimal] -or $node -is [single]) { return $node }
     if ($node -is [System.Collections.IDictionary]) {
         # 见 To-CanonicalJson 里同一处注释：ordered 字典必须走 Keys，不能走 PSObject 属性。
         $o = [ordered]@{}
         foreach ($k in @($node.Keys)) {
             $v = $node[$k]
             if ($NormStr.ContainsKey($k) -and ($v -is [string])) { $o[$k] = $NormStr[$k]; continue }
-            if (($NormZero -contains $k) -and ($v -is [int] -or $v -is [int64] -or $v -is [double])) { $o[$k] = 0; continue }
+            if (($NormZero -contains $k) -and ($v -is [int] -or $v -is [int64] -or $v -is [double] -or $v -is [decimal] -or $v -is [single])) { $o[$k] = 0; continue }
             $o[$k] = Normalize-Node $v
         }
         return $o
@@ -119,7 +120,7 @@ function Normalize-Node($node) {
             $k = $p.Name
             $v = $p.Value
             if ($NormStr.ContainsKey($k) -and ($v -is [string])) { $o[$k] = $NormStr[$k]; continue }
-            if (($NormZero -contains $k) -and ($v -is [int] -or $v -is [int64] -or $v -is [double])) { $o[$k] = 0; continue }
+            if (($NormZero -contains $k) -and ($v -is [int] -or $v -is [int64] -or $v -is [double] -or $v -is [decimal] -or $v -is [single])) { $o[$k] = 0; continue }
             $o[$k] = Normalize-Node $v
         }
         return $o
@@ -197,7 +198,14 @@ function To-CanonicalJson($node, [int]$indent = 0) {
     if ($null -eq $node) { return 'null' }
     if ($node -is [bool]) { if ($node) { return 'true' } else { return 'false' } }
     if ($node -is [int] -or $node -is [int64]) { return ([string]$node) }
-    if ($node -is [double]) { return $node.ToString([System.Globalization.CultureInfo]::InvariantCulture) }
+    # ⚠ 非整数 JSON 数字在这一层**不是** [double]：Windows PowerShell 5.1 的 `ConvertFrom-Json`
+    #   （JavaScriptSerializer）把 0.6667 这类解析成 **[decimal]**，PS 7 才是 [double]。
+    #   只判 [double] 会让它落到下面的对象分支、序列化成 `{}`（2026-10-15 实测：
+    #   `degrade_rate: 0.6667` 在样例里成了 `{}`）—— 契约会"看起来有这一项"而实际没钉住数值。
+    #   小数点后的位数按输入原样保留（decimal 带 Scale），且一律用不变文化格式化，保证跨机器逐字节可比。
+    if ($node -is [double] -or $node -is [decimal] -or $node -is [single]) {
+        return $node.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+    }
     if ($node -is [string]) { return (Quote-Json $node) }
     if ($node -is [System.Array]) {
         $items = @($node)
@@ -520,6 +528,42 @@ $null = Cap 'doctor-patient-records-patient-403' 'record' 'GET' '/api/v1/doctor/
 # 乐观锁：拿**过期**版本提交 ⇒ 409 EMR_CHANGED，且 error.fields 回报当前那一版
 $null = Cap 'record-put-expected-stale-409' 'record' 'PUT' ("/api/v1/doctor/visits/$appt3/record") 'doctor' $A `
         '{"chief_complaint":"并发改的","expected_updated_at":1}'
+
+# ── [6.7] AI 分诊遥测与排障（改进 7）────────────────────────────────────────
+Write-Host ""
+Write-Host "[6.7] AI 分诊遥测：质量聚合与单次调用排障（改进 7）"
+# ⚠ 这一节**直接写库造遥测行**，而不是真去调一次分诊 —— 两个理由：
+#   ① 单次排障样例要能**逐字段**比对；真调一次的话 source/degrade_reason/model_name
+#      取决于这台机器上的 AI 配置（配没配、配的是哪个模型）⇒ 样例会随环境变，导出即红。
+#   ② 聚合样例要能钉住**统计量**（p50/p95 用最近秩法算整数毫秒），只有"窗口里恰好只有
+#      这几行"时才可能确定。
+#   时间全部固定在 1700000000 附近（**远在过去**：别的脚本造的遥测行都落在"现在"，
+#   进不了这个窗口），查询窗口就用 [1700000000, 1700000002]。
+$null = SqlFile 'ai-tel' @"
+DELETE FROM triage_stat WHERE request_id LIKE 'contract-ai-tel%';
+INSERT INTO triage_stat (created_at, source, reason_code, red_flag, department, truncated, request_id, model_id, model_name, prompt_revision, elapsed_ms, degrade_reason, used_kb, kb_doc_ids) VALUES
+ (1700000000, 'model',         'OK',       0, '契约验证科', 0, 'contract-ai-tel',     0, 'kv-mock-model', 3, 900, '',               1, '11,22'),
+ (1700000000, 'model:invalid', 'OK',       0, '契约验证科', 0, 'contract-ai-tel-bad', 0, 'kv-mock-model', 3, 412, 'INVALID_OUTPUT', 0, ''),
+ (1700000001, 'rules',         'RED_FLAG', 1, '',           0, 'contract-ai-tel-red', 0, '',              3,   0, 'RED_FLAG',       0, '');
+"@
+$telRows = RowCount '遥测夹具行数' "SELECT COUNT(*) FROM triage_stat WHERE request_id LIKE 'contract-ai-tel%'"
+if ("$telRows" -ne '3') { Fail "遥测夹具未就绪：期望 3 行，实得 $telRows" }
+# 单次调用排障：**逐字段**钉住（items 不声明 volatile ⇒ Schema 会把 16 个键全查一遍）
+$null = Cap 'admin-ai-triage-calls-200' 'admin' 'GET' '/api/v1/admin/ai/triage-calls/contract-ai-tel' 'admin' $AD $null
+# 查不到 ⇒ 200 + 空 items（**不是 404**）：请求可能在鉴权/限流/校验阶段就被拦下，那些路径
+# 本来就不写统计 ⇒ "没有遥测行"是如实答案，说成"请求号不存在"会把排障的人引向错误方向。
+$null = Cap 'admin-ai-triage-calls-unknown-200' 'admin' 'GET' '/api/v1/admin/ai/triage-calls/contract-no-such-request' 'admin' $AD $null
+# 质量聚合（窗口里恰好这 3 行 ⇒ 统计量**确定**）：total=3、degraded=2、degrade_rate=0.6667；
+# 耗时 [0,412,900] ⇒ p50=412（最近秩 rank=(50*3+99)/100=2）、p95=900；按 source 分组是
+# model / model:invalid / rules 各 1 条（并列按 bucket 升序 ⇒ 连顺序也钉住了）。
+$null = Cap 'admin-ai-triage-stats-window-200' 'admin' 'GET' '/api/v1/admin/ai/triage-stats?from=1700000000&to=1700000002&group_by=source' 'admin' $AD $null
+# 默认窗口（不给 from/to ⇒ 最近 24h）：聚合结果依赖全院数据 ⇒ 只钉形状与夹取后的参数。
+$null = Cap 'admin-ai-triage-stats-200' 'admin' 'GET' '/api/v1/admin/ai/triage-stats' 'admin' $AD $null `
+        @('data.from', 'data.to', 'data.sampled', 'data.truncated', 'data.overall', 'data.groups')
+# group_by 是要拼进 SQL 的列名 ⇒ 不在白名单一律 400（绝不"回退默认值继续查"）。
+$null = Cap 'admin-ai-triage-stats-bad-group-400' 'admin' 'GET' '/api/v1/admin/ai/triage-stats?group_by=id' 'admin' $AD $null
+# 权限：这一屏是"模型/模板的运行效果" ⇒ 复用 Action.ManageAi（患者令牌 403，不是 404）。
+$null = Cap 'admin-ai-triage-stats-patient-403' 'admin' 'GET' '/api/v1/admin/ai/triage-stats' 'patient' $P $null
 
 # ── [7] 列表分页与上限（成员集合依赖全院数据 ⇒ 只钉形状）────────────────────
 Write-Host ""

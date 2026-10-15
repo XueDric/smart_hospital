@@ -1,0 +1,38 @@
+{
+    "case_id":  "case-0017",
+    "chief_complaint":  "痔疮出血三天，量不多",
+    "recorded_at":  "2026-10-15T16:27:34",
+    "triage":  {
+                   "red_flag":  false,
+                   "reason_code":  "NEED_CLARIFY",
+                   "source":  "rules",
+                   "patient_note":  "暂时无法判断该看哪个科，请补充：主要不适是什么、持续了多久、有没有伴随症状（如发热、呕吐）。",
+                   "truncated":  false,
+                   "ai_note":  "",
+                   "ai_reason":  "未配置 ai.key_ref（必须是 env:名 或 file:路径）",
+                   "options":  [
+
+                               ],
+                   "count":  0,
+                   "request_id":  "AI-EVAL-4cb2b3dc-case-0017",
+                   "server_time":  1792052854
+               },
+    "telemetry":  {
+                      "id":  1300,
+                      "created_at":  1792052853,
+                      "source":  "rules",
+                      "reason_code":  "NEED_CLARIFY",
+                      "red_flag":  false,
+                      "department":  "",
+                      "truncated":  false,
+                      "request_id":  "AI-EVAL-4cb2b3dc-case-0017",
+                      "model_id":  0,
+                      "model_name":  "",
+                      "prompt_revision":  1,
+                      "elapsed_ms":  0,
+                      "degrade_reason":  "AI_DISABLED",
+                      "degraded":  true,
+                      "used_kb":  false,
+                      "kb_doc_ids":  ""
+                  }
+}

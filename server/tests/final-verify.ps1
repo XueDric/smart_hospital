@@ -80,6 +80,10 @@ try {
         #   而契约导出机要用 final-verify 现场生成的那个口令登录。
         @{ n = 'contract-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'ai-model-check'; p = @{ Base = $dev; AdminPw = $pw } },
+        # ai-telemetry-check（改进 7）自建 AI-TEL-CHK-* 夹具：真调一次 POST /triage（按
+        # X-Request-Id 取号）再读两个新管理端排障端点，并校验隐私红线（响应里不得出现主诉指纹）。
+        # 它要 DB 直连（common.ps1 的 MySql 客户端）与管理员口令，故排在 ai-model-check 之后。
+        @{ n = 'ai-telemetry-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'rate-limit-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'p1-extra-check'; p = @{ Base = $dev; AdminPw = $pw } }
     )

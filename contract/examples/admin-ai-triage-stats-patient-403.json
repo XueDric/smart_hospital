@@ -1,0 +1,20 @@
+{
+  "name": "admin-ai-triage-stats-patient-403",
+  "group": "admin",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/admin/ai/triage-stats",
+    "auth": "patient"
+  },
+  "response": {
+    "status": 403,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "FORBIDDEN_ROLE",
+        "message": "角色 patient 无权执行 manage_ai"
+      }
+    }
+  }
+}

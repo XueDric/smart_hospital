@@ -1,0 +1,35 @@
+{
+  "name": "admin-ai-triage-stats-200",
+  "group": "admin",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/admin/ai/triage-stats",
+    "auth": "admin"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": true,
+      "data": {
+        "from": "<volatile>",
+        "to": "<volatile>",
+        "group_by": "source",
+        "sample_limit": 5000,
+        "group_limit": 20,
+        "sampled": "<volatile>",
+        "truncated": "<volatile>",
+        "overall": "<volatile>",
+        "groups": "<volatile>"
+      }
+    }
+  },
+  "volatile": [
+    "data.from",
+    "data.to",
+    "data.sampled",
+    "data.truncated",
+    "data.overall",
+    "data.groups"
+  ]
+}

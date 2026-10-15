@@ -1,0 +1,50 @@
+{
+  "title": "data：AI 分诊单次调用排障（改进 7）",
+  "description": "GET /api/v1/admin/ai/triage-calls/:requestId 的 data。⚠ 这张 Schema 钉的是**排障看板的数据边界**：① item 里**没有**主诉原文（表里根本没这列，机制性保证），也没有 patient_id/doctor_id/姓名/手机号（additionalProperties: false 让它们加不进来）；② request_id 是客户端请求头的值，**是排障关联键、不是身份凭证**，所以它出现在这里不代表任何患者身份；③ kb_doc_ids 只给命中的**文档 id**，不给文档正文片段；④ 查不到就返回空 items（200），不是 404 —— “没有遥测行”和“这个请求号不存在”在这里是同一件事（请求可能在鉴权/限流/校验阶段就被拦下，那些路径本来不写统计），所以契约里两种情形都是同一个 data 形状。",
+  "type": "object",
+  "required": ["request_id", "items", "count", "order"],
+  "additionalProperties": false,
+  "properties": {
+    "request_id": { "type": "string", "minLength": 1, "description": "回显查询用的请求号（路径参数原样回显，便于客户端确认自己查的是哪个）" },
+    "count": { "type": "integer", "minimum": 0, "description": "items 的条数（= items 长度；为 0 是正常答案）" },
+    "order": { "type": "string", "const": "id_desc", "description": "排序口径**写进契约**：同一个请求号可能有多行（request_id 无唯一约束，中间件信任客户端请求头），必须说清给的是哪一头" },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id", "created_at", "source", "reason_code", "red_flag", "department",
+          "truncated", "request_id", "model_id", "model_name", "prompt_revision",
+          "elapsed_ms", "degrade_reason", "degraded", "used_kb", "kb_doc_ids"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "integer", "description": "triage_stat 自增主键（排序即以它为准）；导出机把库内自增 id 归一化为 0，故不设 minimum" },
+          "created_at": { "type": "integer", "minimum": 0, "description": "分诊发生的时刻（epoch 秒，服务端时间）" },
+          "source": {
+            "type": "string",
+            "enum": ["rules", "model", "model:invalid"],
+            "description": "结论来自规则、来自模型、还是模型返回了没过安全检查的内容（那一档服务端会退回规则结论）"
+          },
+          "reason_code": { "type": "string", "description": "分诊结论码（服务端常量，不是患者输入）" },
+          "red_flag": { "type": "boolean", "description": "是否命中危急信号（命中时根本不会调用模型，degrade_reason 会是 RED_FLAG）" },
+          "department": { "type": "string", "description": "当时给出的首选科室名（机构信息，不是患者信息；可能为空串）" },
+          "truncated": { "type": "boolean", "description": "主诉是否因超长被截断后才参与判断" },
+          "request_id": { "type": "string", "minLength": 1, "description": "客户端 `X-Request-Id` 的值（写入时按 64 字符截断，与列宽一致）" },
+          "model_id": { "type": "integer", "minimum": 0, "description": "当时用的 ai_model 行 id；**0 = 本次走的是 KV 配置**（没有模型行）" },
+          "model_name": { "type": "string", "description": "当时**真正发出去**的模型名（走 KV 配置时就是 KV 里的串；空串表示没走到调用）" },
+          "prompt_revision": { "type": "integer", "minimum": 0, "description": "调用发生那一刻的 `ai_setting.revision` —— 用来判读“两次调用是不是同一套配置”（0 = 从没写过配置）" },
+          "elapsed_ms": { "type": "integer", "minimum": 0, "description": "模型调用耗时（毫秒）；0 = 本次没走到拿到响应（降级路径）" },
+          "degrade_reason": {
+            "type": "string",
+            "enum": ["", "RED_FLAG", "CONFIG_READ_FAILED", "AI_DISABLED", "INVALID_OUTPUT", "CALL_FAILED"],
+            "description": "**稳定码**（不是给人看的文案，改文案不会让历史聚合断成两段）：空串 = 这次真的用上了模型"
+          },
+          "degraded": { "type": "boolean", "description": "degrade_reason 非空的冗余布尔（省得前端记“空串=用上模型”这条口径）" },
+          "used_kb": { "type": "boolean", "description": "这次是否把知识库检索结果喂进了提示词" },
+          "kb_doc_ids": { "type": "string", "description": "命中的知识库文档 id，逗号分隔（只有 id，没有正文片段；写入时按 255 字符截断）" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "name": "admin-ai-triage-calls-200",
+  "group": "admin",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/admin/ai/triage-calls/contract-ai-tel",
+    "auth": "admin"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": true,
+      "data": {
+        "request_id": "<request_id>",
+        "items": [
+          {
+            "id": 0,
+            "created_at": 0,
+            "source": "model",
+            "reason_code": "OK",
+            "red_flag": false,
+            "department": "<dept>",
+            "truncated": false,
+            "request_id": "<request_id>",
+            "model_id": 0,
+            "model_name": "kv-mock-model",
+            "prompt_revision": 3,
+            "elapsed_ms": 900,
+            "degrade_reason": "",
+            "degraded": false,
+            "used_kb": true,
+            "kb_doc_ids": "11,22"
+          }
+        ],
+        "count": 1,
+        "order": "id_desc"
+      }
+    }
+  }
+}

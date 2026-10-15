@@ -148,6 +148,63 @@
 
 ---
 
+## 2026-10-15 —— 改进 7：AI 分诊遥测与排障端点（59 条样例 / 26 个 Schema）
+
+**新增 6 条、更新 0 条**（原 53 条全部保留）。覆盖 `docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md` §改进 7 的服务端部分。
+
+### 变更
+
+- **新增端点 `GET /api/v1/admin/ai/triage-stats`**（样例 `admin-ai-triage-stats-200`、`admin-ai-triage-stats-window-200`）
+  —— 分诊质量看板：给 `total` / `degraded` / `degrade_rate` / `p50_ms` / `p95_ms`，可按
+  `group_by=source|reason_code|model_name` 分桶。
+  - `group_by` 是**要拼进 SQL 的列名** ⇒ 只认这三个字面量，其余（含空串、`id`、注入串）
+    一律 **400 `VALIDATION_FAILED`**（样例 `admin-ai-triage-stats-bad-group-400`）；**绝不回退默认值继续查**。
+  - `from` / `to` 缺省 = 最近 24 小时；`from > to` ⇒ **400**（不自动交换 —— 交换会把客户的参数错误掩盖成"查询成功但空"）。
+  - `limit`（样本上限）默认 `5000`、夹到 `1..20000`；`group_limit` 默认 `20`、夹到 `1..100`。
+    回显实际用的 `sample_limit` / `group_limit` / `sampled` / `truncated`，客户端不必猜。
+  - `overall.bucket` 恒为 `"all"`（聚合体不是分组体，但字段形状完全一致，前端一套渲染）。
+- **新增端点 `GET /api/v1/admin/ai/triage-calls/:requestId`**（样例 `admin-ai-triage-calls-200`、`-unknown-200`）
+  —— 单次调用的全链路：`source` / `reason_code` / `model_id` / `model_name` / `prompt_revision` /
+  `elapsed_ms` / `degrade_reason` / `used_kb` / `kb_doc_ids`。
+  - 未知 `requestId` ⇒ **200 + `count: 0`**，**不是 404**：没有遥测行 ≠ 这个编号不存在
+    （限流、参数校验、鉴权阶段拦下的请求本来就不写统计），回 404 会把排障的人引向不存在的错误。
+  - `items[]` 按 `id` 降序（`order: "id_desc"`）；`request_id` 无唯一约束，故返回**数组**。
+- **`POST /api/v1/triage` 的响应新增 `request_id` 与 `server_time`**（与挂号类响应一致，见初版条目）。
+  这是本次唯一的**既有端点形状变更**：排障闭环只能按 `request_id` 查，而患者端默认不带
+  `X-Request-Id`；响应里不回编号，患者说"这条分诊不对"时运营就无从取号。
+- **两个新端点都要管理员权限**（`Action.ManageAi`，样例 `admin-ai-triage-stats-patient-403`），
+  没有新造权限动作：这一屏是"模型/模板的运行效果"，本就在 AI 配置责任范围内。
+
+### 为什么
+
+- 改进 7 要的是"**能看着数据排障**"：在此之前 `triage_stat` 只写不读，线上分诊质量、降级率、
+  耗时分布全靠猜；新增的列（`request_id` / `model_id` / `model_name` / `prompt_revision` /
+  `elapsed_ms` / `degrade_reason` / `used_kb` / `kb_doc_ids`）就是为这两个端点服务的。
+- **`p50/p95` 用最近秩法、对整数毫秒不做插值**：插值会造出一个**从未真实发生过**的耗时
+  （比如 p95 = 437.6ms），排障时去日志里找这个数只会白费时间。契约把窗口样例的
+  `p50_ms = 412`、`p95_ms = 900`（3 行样本）逐字节钉住，任何"更聪明的"实现都会红。
+- **降级率带 4 位小数**（`0.6667`）：`degrade_rate` 是给人看的比例，精度写进契约后
+  "0.67 还是 0.6667"就不再是实现自由。
+- **合规红线：这两个端点永远拿不到主诉原文**。机制性保证：`triage_stat` 表里**根本没有主诉列**
+  （`triageStat.record()` 的签名里没有这个参数），只有 `truncated` 布尔与科室名；
+  `kb_doc_ids` 只给命中的文档 **id**，不给正文片段；`request_id` 是客户端传来的关联键，
+  **不是身份凭证**，也不含患者标识。看板既有口径（不得出现 patient_id / doctor_id / 手机号 /
+  姓名形状）在这两个端点上继续成立，Schema 里也没有这些字段的位置。
+- `degrade_reason` 用**稳定码**（`RED_FLAG` / `CONFIG_READ_FAILED` / `AI_DISABLED` /
+  `INVALID_OUTPUT` / `CALL_FAILED`，空串 = 真用上了模型）而不是给人看的说明文字：
+  改文案不会让历史聚合断成两段；`degraded` 是它的冗余布尔，省得前端记"空串 = 正常"。
+- `prompt_revision` 取的是**调用当时的配置版本号**（`ai_setting` 的整表版本）。
+
+### 客户端要不要动
+
+- **管理端（新增）**：AI 质量页接这两个端点。列表为空是正常结果，别当错误处理；
+  `truncated: true` 要显式提示"样本被截断，分位数是抽样的"。
+- **患者端 / 医生端**：不用动。`POST /api/v1/triage` 只是**多**了 `request_id` / `server_time`，
+  旧解析不受影响；但如果要做"反馈这条分诊不对"，把 `request_id` 一起带上（运营才能定位）。
+- **别把 `request_id` 当权限**：它是客户端可自造的关联键，服务端只用来串联日志与遥测。
+
+---
+
 ## 模板（新增条目照抄）
 
 ```markdown

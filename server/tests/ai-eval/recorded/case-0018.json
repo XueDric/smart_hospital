@@ -1,0 +1,49 @@
+{
+    "case_id":  "case-0018",
+    "chief_complaint":  "血压一百八，后脑勺胀痛",
+    "recorded_at":  "2026-10-15T16:27:34",
+    "triage":  {
+                   "red_flag":  false,
+                   "reason_code":  "ALTERNATIVES",
+                   "source":  "rules",
+                   "patient_note":  "建议就诊：心血管内科（该科当前无可挂号源）。以下这些科室当前有号，如需尽快就诊可考虑。",
+                   "truncated":  false,
+                   "ai_note":  "",
+                   "ai_reason":  "未配置 ai.key_ref（必须是 env:名 或 file:路径）",
+                   "options":  [
+                                   {
+                                       "department_id":  1,
+                                       "department_name":  "内科",
+                                       "doctor_id":  1,
+                                       "doctor_name":  "张医生",
+                                       "doctor_title":  "主任医师",
+                                       "schedule_id":  9501,
+                                       "work_date":  "2026-12-24",
+                                       "period":  "AM",
+                                       "remain_num":  2,
+                                       "total_remain":  2
+                                   }
+                               ],
+                   "count":  1,
+                   "request_id":  "AI-EVAL-4cb2b3dc-case-0018",
+                   "server_time":  1792052854
+               },
+    "telemetry":  {
+                      "id":  1301,
+                      "created_at":  1792052854,
+                      "source":  "rules",
+                      "reason_code":  "ALTERNATIVES",
+                      "red_flag":  false,
+                      "department":  "内科",
+                      "truncated":  false,
+                      "request_id":  "AI-EVAL-4cb2b3dc-case-0018",
+                      "model_id":  0,
+                      "model_name":  "",
+                      "prompt_revision":  1,
+                      "elapsed_ms":  0,
+                      "degrade_reason":  "AI_DISABLED",
+                      "degraded":  true,
+                      "used_kb":  false,
+                      "kb_doc_ids":  ""
+                  }
+}

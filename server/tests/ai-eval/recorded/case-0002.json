@@ -1,0 +1,38 @@
+{
+    "case_id":  "case-0002",
+    "chief_complaint":  "胸口压榨性疼痛半小时，出冷汗，喘不上气",
+    "recorded_at":  "2026-10-15T16:27:28",
+    "triage":  {
+                   "red_flag":  true,
+                   "reason_code":  "RED_FLAG",
+                   "source":  "rules",
+                   "patient_note":  "您描述的情况可能属于急症，请立即前往急诊科或拨打 120，不要等待门诊挂号。",
+                   "truncated":  false,
+                   "ai_note":  "",
+                   "ai_reason":  "危急征象：优先让患者立刻看到处置建议，不进模型",
+                   "options":  [
+
+                               ],
+                   "count":  0,
+                   "request_id":  "AI-EVAL-4cb2b3dc-case-0002",
+                   "server_time":  1792052848
+               },
+    "telemetry":  {
+                      "id":  1285,
+                      "created_at":  1792052848,
+                      "source":  "rules",
+                      "reason_code":  "RED_FLAG",
+                      "red_flag":  true,
+                      "department":  "",
+                      "truncated":  false,
+                      "request_id":  "AI-EVAL-4cb2b3dc-case-0002",
+                      "model_id":  0,
+                      "model_name":  "",
+                      "prompt_revision":  1,
+                      "elapsed_ms":  0,
+                      "degrade_reason":  "RED_FLAG",
+                      "degraded":  true,
+                      "used_kb":  false,
+                      "kb_doc_ids":  ""
+                  }
+}

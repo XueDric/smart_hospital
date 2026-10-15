@@ -30,7 +30,7 @@
 | **预问诊 → 病历的预填桥**（⭐ 容易被当成"不存在"） | `PUT /doctor/visits/:id/record` 支持可选 `use_intake_session`；服务端按 **`WHERE id=? AND patient_id=?`** 校验"是你这个患者的单"，再把六槽位映射到病历四段（主诉；现病史＝病程+程度+伴随；既往史；过敏史），**仅在"该单还没有病历"时**写一次，已有病历一律不覆盖 | `server/src/http_p4.cj:355-372`（路由）、`server/src/domain_emr.cj:655-708`（`intakePrefill`）、`domain_emr.cj:710-722`（`saveDraftWithIntake`）、用例 `server/tests/emr-check.ps1:280-291` |
 | 请求编号 | 框架 `requestId` 中间件**已装**，响应头回传 `X-Request-Id`，也接受客户端传入 | `server/third_party/qingzhou/src/requestid.cj:39-53`、`server/src/http_app.cj:2447` |
 | 时间口径 | 服务端业务时间戳 = **epoch 秒**；`elapsed_ms` 是**毫秒** | `server/src/acceptance.cj:37-39`（`hNowEpoch`）、`server/src/ai_call.cj:158` |
-| 服务端门禁 | 进程内 4 套件（`selftest` / `authtest` / `triagetest` / `accept`）+ **15 项** live 检查脚本汇总入口（含 `contract-check`、`revision-check`、`workbench-check`） | `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1` |
+| 服务端门禁 | 进程内 4 套件（`selftest` / `authtest` / `triagetest` / `accept`）+ **16 项** live 检查脚本汇总入口（含 `contract-check`、`revision-check`、`workbench-check`、`ai-telemetry-check`） | `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1` |
 
 ### 1.2 真正的缺口（7 条各自指向的地方）
 
@@ -502,6 +502,38 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 **投入**：后端 3 人日（落库 + 2 端点 + 迁移）/ 评测脚本 1.5 人日（含与业务人员对齐标注口径）/ 管理台 2 人日。
 **依赖**：改进 5（`triage` 响应进契约样例）+ 合规确认（主诉原文能否入库/展示）。
 
+#### ✅ 实施状态：**服务端已实现（2026-10-15）**，与本文计划的差异如下
+
+落地位置：`server/src/schema.cj`（`triage_stat` 新增 8 列 + `idx_triage_stat_req`、`ai_setting.revision`、
+迁移 ⑪ `addTriageTelemetryColumns` 与 ⑫）、`server/src/triage_stat.cj`（`record()` 的遥测具名参数、
+`windowRows` / `callsByRequest` / `triageStatAggregate` / `triagePercentile` / `triageStatGroupByOk` 与
+`triageStatWindowJson` / `triageCallJson`）、`server/src/triage.cj`（`TriageVerdict` 遥测字段）、
+`server/src/ai_triage.cj`（降级稳定码 + 模型标识 + 耗时贯通）、`server/src/ai_settings.cj`
+（`AiRuntimeOptions.modelId/modelName`、保留行 `SET_AI_REVISION_ROW` 与 `revision()`）、
+`server/src/http_app.cj`（两个管理端点 + 分诊响应回 `request_id`）。
+验收：`accept` 新增 **AC-P3-7**（692 项断言全过）+ 新增 live 脚本
+**`server/tests/ai-telemetry-check.ps1`（44 条）**，已并入 `final-verify.ps1`（15 → **16 项**）；
+契约新增 6 条样例（59 条 / 26 个 Schema），见 `contract/CHANGELOG.md` 的 2026-10-15 改进 7 条目。
+评测：`server/tests/ai-eval/cases.jsonl`（20 条中文主诉）+ `run-ai-eval.ps1`，首份报告
+`docs/ai-eval/2026-10-15.md`（回放模式连跑两次指纹一致 `41dc644dcb0034d0`）。
+
+**与本文档的落地差异（10 条，逐条给理由）**
+
+| # | 文档写法 | 实际落地 | 为什么 |
+| --- | --- | --- | --- |
+| 1 | 遥测列 7 个（到 `used_kb`） | **8 列**，多 `kb_doc_ids VARCHAR(255)` | `used_kb` 只回答"用没用上"，排障要回答"用的是哪几篇"；只给 id 不给正文片段，红线不受影响 |
+| 2 | "`source` 的 `reason`（降级原因）"直接落库 | 另立 `TriageVerdict.aiDegradeReason` **稳定码**（`RED_FLAG` / `CONFIG_READ_FAILED` / `AI_DISABLED` / `INVALID_OUTPUT` / `CALL_FAILED`，空串 = 真用上模型） | 给人看的 `aiReason` 会随时改文案；拿它聚合会让历史数据断成两段 |
+| 3 | `ai_setting.revision` 每次 PUT 自增 | **保留行 `__revision__`** 做整表计数器（`INSERT … ON DUPLICATE KEY UPDATE revision = revision + 1`） | AC-P3-7 ⑪ 证伪了"整表 +1"：写第一项时版本不变（空表兜底 1）、删掉最后一项时版本**倒退**；版本号不能寄生在会被删的行上。"先读 MAX 再写"并发丢格、另开一张表则写配置变成两处写两处失效缓存，均否掉 |
+| 4 | 模板 revision 直接读 `MAX(revision)` | 同上，但**行数为 0 时回 0**（不再兜底 1） | 0 的语义 = "这套部署还没写过配置"；兜底成 1 会与"第一次改配置后"撞号 |
+| 5 | 耗时 p50/p95（未说算法） | **最近秩法**（`rank = (p*n + 99) / 100`，夹到 1..n），整数毫秒**不插值** | 插值会造出从未真实发生过的耗时（如 412 与 900 之间算出 656），排障时在日志里找不到对应请求 |
+| 6 | `group_by` 三值（未说非法值） | 白名单外一律 **400 `VALIDATION_FAILED`**，绝不回落默认值 | `GROUP BY` 不能用占位符 ⇒ 白名单是 SQL 注入的安全边界；"回落默认值继续查"会把注入面伪装成正常响应 |
+| 7 | 未说 `from`/`to` 越界 | `to <= 0` ⇒ 取当前时间；`from <= 0` ⇒ `to - 86400`；**`from > to` ⇒ 400**（不自动交换） | 自动交换会把"参数写反"这类客户端错误变成静默成功 |
+| 8 | 排障端点"查不到"未说 | 未知 `requestId` ⇒ **200 + `count = 0`**（空 `items`） | 没有遥测行 ≠ 这个 id 不存在：请求可能在限流/校验/鉴权阶段就被拦下，那些路径本来就不写统计；回 404 会把排障的人引向不存在的错误 |
+| 9 | `X-Request-Id` "已经在跑"（未说响应体） | 分诊响应**补回 `request_id`**（复用 `putTrace`，与挂号一致） | 否则患者说"这条分诊不对"时，运营**无从取号**——`triage-calls/:requestId` 的入口在响应体里，闭环第一步就断 |
+| 10 | 未说 `request_id` 长度 | 落库前 `previsitTruncateChars(requestId, 64)` | 它是唯一**由客户端决定长度**的入参（HTTP 头）；超长会让 INSERT 报 1406 并被 `record()` 的 catch 吞成"整条不记"，而"整条不记"正好是想藏痕迹的人要的结果 |
+
+**客户端仍需做**：管理台 AI 看板（两个新端点）与 `request_id` 展示（患者端/医生端错误页，与改进 4 同一处实现）；评测的**标注**仍需业务人员（当前 20 条是我按规则引擎现状标注的种子，指标口径见 `docs/ai-eval/README.md`）。本机未配置 AI key ⇒ 首份报告的科室命中率为 `0/0`（诚实标注"本环境可判定 = 0"），接上真模型后重跑即可。
+
 ---
 
 ## 三、实施顺序（按依赖，不按优先级）
@@ -546,7 +578,7 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 | --- | --- | --- |
 | 服务端任何改动 | `server/build.ps1`（框架 38 + 业务 37 = 75 文件） | 编译不过就别谈测试 |
 | 服务端业务逻辑 | 进程内四套件：`selftest`（51 项）/ `authtest`（17 项）/ `triagetest`（110 项）/ `accept <dsn>`（**638 项**） | `accept` 需要 DSN；`server/tests/doc-counts.ps1` 会顺带重跑并核对文档数字 |
-| HTTP 契约层 | `server/tests/final-verify.ps1`（现 **15 项**，全绿 exit 0；含 `previsit-bridge-check`、`revision-check`、`workbench-check` 与 `contract-check`） | ⚠ 本机端口必须 ≥15001；脚本前先 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`；含中文的 .ps1 必须带 **UTF-8 BOM** |
+| HTTP 契约层 | `server/tests/final-verify.ps1`（现 **16 项**，全绿 exit 0；含 `previsit-bridge-check`、`revision-check`、`workbench-check`、`contract-check` 与 `ai-telemetry-check`） | ⚠ 本机端口必须 ≥15001；脚本前先 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`；含中文的 .ps1 必须带 **UTF-8 BOM** |
 | 契约变更 | `server/tests/contract-check.ps1`（改进 5，已并入 final-verify 的 `$specs`）：改动**响应形状** ⇒ 逐字节比对红 / Schema 红 / 登记缺失红 | 更新样例 = 不带 `-Check` 跑 `export-contract.ps1`（写盘），再 review diff + 登记 `schema-map.json` + 写 `contract/CHANGELOG.md` |
 | 管理台（浏览器） | `server/tests/admin-web-smoke.mjs`（`SMOKE-EXIT=0`，写路径 + 模态框 + 逐页断言） | 需要 Edge；断言失败会写进退出码 |
 | 文档数字 | `server/tests/doc-counts.ps1` | 加表/加端点/加 AC 后**必然**失败，这是设计意图：改代码的人必须同步文档 |
@@ -598,7 +630,7 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 - `server/src/domain_emr.cj:655-722`（**预问诊→病历预填桥**：`intakePrefill` / `saveDraftWithIntake`）、`:738-742`（就诊状态常量）
 - `server/src/domain_emr.cj`（**改进 3**：`lock`/`reopen` 签名与落版、`writeRevision`/`ensureLockRevision`/`revisions`/`revisionAt`/`backfillRevisions`）、`server/src/schema.cj`（`medical_record_revision` DDL + 迁移第 ⑩ 步）、`server/src/http_p4.cj:688-775`（修订历史三条端点）
 - `server/src/ai_call.cj:125-158`（`source`/`reason`/`elapsedMs`）、`server/src/triage_stat.cj:57`（落库写入点）
-- `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1`、`server/tests/admin-web-smoke.mjs`、`server/tests/emr-check.ps1:280-291`（`use_intake_session` 用例）、`server/tests/revision-check.ps1`（改进 3 的 46 条 live 断言）、`server/tests/workbench-check.ps1`（改进 2 的 29 条 live 断言）、`server/tests/export-contract.ps1` / `contract-check.ps1`（改进 5 契约门禁）
+- `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1`、`server/tests/admin-web-smoke.mjs`、`server/tests/emr-check.ps1:280-291`（`use_intake_session` 用例）、`server/tests/revision-check.ps1`（改进 3 的 46 条 live 断言）、`server/tests/workbench-check.ps1`（改进 2 的 29 条 live 断言）、`server/tests/ai-telemetry-check.ps1`（改进 7 的 44 条 live 断言）、`server/tests/ai-eval/`（改进 7 评测：`cases.jsonl` + `run-ai-eval.ps1` + `recorded/`）、`server/tests/export-contract.ps1` / `contract-check.ps1`（改进 5 契约门禁）
 
 **客户端**
 - `common-core/src/main/ets/config/ApiConfig.ets:6-51`（LIVE/MOCK 与 baseUrl）、`.../network/ApiError.ets:1-16`（`ErrorCode` 清单）

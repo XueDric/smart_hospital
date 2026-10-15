@@ -1166,6 +1166,7 @@ public func runAcceptance(db: DbBackend): Int64 {
     acP3_4(runner, db)
     acP3_5(runner, db)
     acP3_6(runner, db)
+    acP3_7(runner, db)
     // P4 电子病历 + 接诊队列 + 运营看板（定义在 acceptance_p4.cj）
     acP4_1(runner, db)
     acP4_2(runner, db)

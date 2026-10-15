@@ -571,15 +571,71 @@ public let SCHEMA_DDL: Array<String> = [
     "red_flag TINYINT NOT NULL DEFAULT 0, " +
     "department VARCHAR(64) NOT NULL DEFAULT '', " +
     "truncated TINYINT NOT NULL DEFAULT 0, " +
+    /*
+     * ★ 2026-10-15 增（改进 7）：**排障遥测**。这七列回答的是
+     *   "那一刻到底发生了什么"，而不是"又统计了一次"。
+     *
+     * ⚠⚠ 它们**全部是"调用事实"，没有一个是患者输入**：
+     *     `request_id` 来自 `X-Request-Id` 中间件（`ctx._id`），
+     *     模型/模板/耗时/降级原因来自 `AiCallResult` 与配置读取。
+     *     主诉原文**依然不落库**（本表头部的硬约束①），
+     *     `POST /triage` 的写入点也没有把 `text` 传进来的路径。
+     *
+     * ⚠ 为什么"模型名"要**冗余**存一份（而不是只存 model_id 去关联 `ai_model`）：
+     *   模型行可以被**改**或**删**（`ai_model` 是可维护的配置表）。
+     *   若只存 id，历史统计会在"那行被改名"之后**悄悄改变含义** ——
+     *   排障最忌"事后看到的数字与当时不同"。两个都存，是**有意的冗余**
+     *   （同 `triage_stat` 存 `department` 名而不是 department_id 的道理）。
+     */
+    "request_id VARCHAR(64) NOT NULL DEFAULT '', " +
+    "model_id BIGINT NOT NULL DEFAULT 0, " +
+    "model_name VARCHAR(64) NOT NULL DEFAULT '', " +
+    "prompt_revision BIGINT NOT NULL DEFAULT 0, " +
+    "elapsed_ms BIGINT NOT NULL DEFAULT 0, " +
+    "degrade_reason VARCHAR(64) NOT NULL DEFAULT '', " +
+    "used_kb TINYINT NOT NULL DEFAULT 0, " +
+    /*
+     * ★ 2026-10-15 增（改进 7）：**这次检索命中的知识库文档 id**（逗号分隔）。
+     *
+     * ⚠ 与 `used_kb` 的关系：`used_kb` 回答"用没用上"（看板要的是这个布尔值），
+     *   本列回答"**用的是哪几篇**"（排障要的是这个）。
+     *   ⇒ 两者**不是**冗余：只存布尔值时，回答不了"这个结论是不是被某篇过期文档带偏的"。
+     *
+     * ⚠ 存的是**文档 id**（内部数字），不是文档正文、更不是主诉 —— 不引入新的敏感信息。
+     *   ⚠ 长度上限 255：`aiRagContext` 本就把片段数限得很小（个位数），
+     *     写入前按字符截断（见 `triage_stat.cj`）。
+     */
+    "kb_doc_ids VARCHAR(255) NOT NULL DEFAULT '', " +
     "PRIMARY KEY (id), " +
     "KEY idx_triage_stat_at (created_at), " +
-    "KEY idx_triage_stat_reason (reason_code)" +
+    "KEY idx_triage_stat_reason (reason_code), " +
+    /* 排障按请求编号反查单次调用（`GET /admin/ai/triage-calls/:requestId`）。 */
+    "KEY idx_triage_stat_req (request_id)" +
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 
     "CREATE TABLE IF NOT EXISTS ai_setting (" +
     "k VARCHAR(64) NOT NULL, " +
     "v TEXT NOT NULL, " +
     "updated_at BIGINT NOT NULL DEFAULT 0, " +
+    /*
+     * ★ 2026-10-15 增（改进 7）：**配置版本号**。
+     *
+     * ⚠ 它在一张 KV 表上，所以语义是"整张表的版本"：写入/删除任何一项配置都 +1。
+     *   这样做的理由：Prompt 模板、模型参数、工具开关**共用这张表**，
+     *   而排障要回答的是"这条分诊结果产生于哪一版配置" ——
+     *   那是一个**整体**事实，不是某一项的事实。
+     *   📌 为什么不做成独立一张表：那会让"写配置"变成两处写、两处失效缓存，
+     *     而 `ai_setting` 的"改配置零重启"靠的就是**单点失效**（见 AiSettingsRepo.invalidate）。
+     *
+     * ⚠⚠ 版本号**只由一个保留行持有**（`SET_AI_REVISION_ROW = "__revision__"`，
+     *   见 ai_settings.cj），普通配置行的本列保持 0、读的时候取 `MAX(revision)`。
+     *   最初写的是"每次改配置把现有行全部 +1"，被 AC-P3-7 ⑪ 当场证伪：
+     *   版本号寄生在**会被删掉的行**上 ⇒ 空表写第一项配置后版本号没变、
+     *   删掉最后一项配置还会让版本号倒退。保留行不在 `ai.*`/`prompt.*`/`ai.tool.*`
+     *   命名空间里 ⇒ 接口既写不进也删不掉；也不出现在任何回显里
+     *   （回显都按登记清单遍历，没人裸查 KV）。
+     */
+    "revision BIGINT NOT NULL DEFAULT 0, " +
     "PRIMARY KEY (k)" +
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 
@@ -1144,5 +1200,86 @@ public func migrateSchema(db: DbBackend): Int64 {
         done = done + 1
     }
 
+    /*
+     * ⑪ ★ 2026-10-15（改进 7）：`triage_stat` 的七列排障遥测。
+     *
+     * ⚠ 七列**逐个独立判断**（而不是"查一列就 ALTER 全部"）：
+     *   上线过程中若有人手工加过其中一两列（本仓历史上真的发生过：
+     *   有人手工补了索引没补列），一次性 ALTER 会因为"列已存在"整条失败，
+     *   把**其余**该加的列一起挡在门外。逐列判断最多重复一次无害的查询。
+     * ⚠ 与 DDL 的分工：新库走上面的 `CREATE TABLE`（已含七列），
+     *   老库走这里 —— 两处必须一致，否则"新库有、老库没有"，
+     *   而表现是**写统计时静默少列**（insert 列多值少 ⇒ 整个 insert 失败 ⇒
+     *   被 `record()` 吞掉 ⇒ 排障时"那天没有任何记录"，最难查的一类）。
+     */
+    done = done + addTriageTelemetryColumns(db)
+
+    /*
+     * ⑫ ★ 2026-10-15（改进 7）：`ai_setting.revision`（配置版本号）。
+     *
+     * ⚠ 默认 0 是**有意义的**：`0` = "这一行早于版本号上线"，
+     *   于是历史统计的 `prompt_revision = 0` 读作"当时还没记版本"，
+     *   而不是"第 0 版配置"（后者会诱导人去比对"第 0 版"到底是什么）。
+     */
+    let hasRevision = db.query(
+        "SELECT COUNT(*) FROM information_schema.columns " +
+        "WHERE table_schema = DATABASE() AND table_name = 'ai_setting' " +
+        "AND column_name = 'revision'",
+        Array<DbValue>())
+    if (hasRevision.rowCount() > 0 && hasRevision.getInt(0, 0) == 0) {
+        db.exec("ALTER TABLE ai_setting ADD COLUMN revision BIGINT NOT NULL DEFAULT 0",
+                Array<DbValue>())
+        done = done + 1
+    }
+
     return done
+}
+
+/*
+ * ⑪ 的实现：给 `triage_stat` 补八列遥测（返回本次真的加了几列）。
+ *
+ * ⚠ 索引单独加：`idx_triage_stat_req (request_id)` 是排障反查的入口。
+ *   没有它，`GET /admin/ai/triage-calls/:requestId` 会**全表扫**；
+ *   分诊是匿名入口、行数增长最快的一张表（180 天 TTL），
+ *   所以这条索引不是"优化"，是"能不能用"。
+ */
+private func addTriageTelemetryColumns(db: DbBackend): Int64 {
+    let cols = [
+        "request_id VARCHAR(64) NOT NULL DEFAULT ''",
+        "model_id BIGINT NOT NULL DEFAULT 0",
+        "model_name VARCHAR(64) NOT NULL DEFAULT ''",
+        "prompt_revision BIGINT NOT NULL DEFAULT 0",
+        "elapsed_ms BIGINT NOT NULL DEFAULT 0",
+        "degrade_reason VARCHAR(64) NOT NULL DEFAULT ''",
+        "used_kb TINYINT NOT NULL DEFAULT 0",
+        "kb_doc_ids VARCHAR(255) NOT NULL DEFAULT ''"
+    ]
+    var added: Int64 = 0
+    for (spec in cols) {
+        /* 列名 = 规范里第一个空格之前的部分。 */
+        var name = spec
+        let sp = spec.indexOf(" ")
+        if (sp.isSome()) {
+            name = spec[0..sp.getOrThrow()]
+        }
+        let rs = db.query(
+            "SELECT COUNT(*) FROM information_schema.columns " +
+            "WHERE table_schema = DATABASE() AND table_name = 'triage_stat' " +
+            "AND column_name = ?",
+            [DbStr(name)])
+        if (rs.rowCount() > 0 && rs.getInt(0, 0) == 0) {
+            db.exec("ALTER TABLE triage_stat ADD COLUMN " + spec, Array<DbValue>())
+            added = added + 1
+        }
+    }
+    let idx = db.query(
+        "SELECT COUNT(*) FROM information_schema.statistics " +
+        "WHERE table_schema = DATABASE() AND table_name = 'triage_stat' " +
+        "AND index_name = 'idx_triage_stat_req'",
+        Array<DbValue>())
+    if (idx.rowCount() > 0 && idx.getInt(0, 0) == 0) {
+        db.exec("ALTER TABLE triage_stat ADD KEY idx_triage_stat_req (request_id)",
+                Array<DbValue>())
+    }
+    return added
 }

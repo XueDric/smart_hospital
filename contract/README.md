@@ -12,8 +12,8 @@
 
 | 路径 | 是什么 | 生成方式 |
 | --- | --- | --- |
-| `contract/examples/*.json` | **53 条**真实响应样例（含请求、状态码、`content-type`、响应体） | `server/tests/export-contract.ps1` **自动生成，不要手工改** |
-| `contract/schema/*.schema.json` | **24 个** JSON Schema：9 个 **body 级**（`artifact` / `envelope-ok` / `envelope-error` / `envelope-error-fields` / `flat-error` / `static-not-found` / `method-not-allowed` / `health` / `previsit-stream`），15 个 **data 级**（`data-*.schema.json`，校验 `response.body.data`） | 手工维护 |
+| `contract/examples/*.json` | **59 条**真实响应样例（含请求、状态码、`content-type`、响应体） | `server/tests/export-contract.ps1` **自动生成，不要手工改** |
+| `contract/schema/*.schema.json` | **26 个** JSON Schema：9 个 **body 级**（`artifact` / `envelope-ok` / `envelope-error` / `envelope-error-fields` / `flat-error` / `static-not-found` / `method-not-allowed` / `health` / `previsit-stream`），17 个 **data 级**（`data-*.schema.json`，校验 `response.body.data`） | 手工维护 |
 | `contract/schema-map.json` | 样例 → Schema 的映射（`body` / `data` / `body_text` / `error_code`）+ 文件级 Schema 声明 | 手工维护，**新增样例必须登记** |
 | `contract/CHANGELOG.md` | 形状变更日志（给人看：改了什么、客户端要不要动） | 手工维护 |
 

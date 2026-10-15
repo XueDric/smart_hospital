@@ -1,0 +1,20 @@
+{
+  "name": "admin-ai-triage-stats-bad-group-400",
+  "group": "admin",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/admin/ai/triage-stats?group_by=id",
+    "auth": "admin"
+  },
+  "response": {
+    "status": 400,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "group_by 只支持 source、reason_code、model_name"
+      }
+    }
+  }
+}

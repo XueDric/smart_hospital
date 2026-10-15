@@ -126,6 +126,34 @@ public let SET_AI_KEY_REF: String = "ai.key_ref"
 public let SET_AI_CA_BUNDLE: String = "ai.ca_bundle_path"
 
 /*
+ * ★ 2026-10-15 增（改进 7）：**配置版本号所在的那一行**（保留键）。
+ *
+ * ⚠⚠ 为什么版本号要"占一行"，而不是"每次改配置把现有行全部 +1"：
+ *   验收测试（AC-P3-7 ⑪）当场抓到了后者的问题 ——
+ *   `MAX(revision)` 是**从现有行算出来的**，于是：
+ *     · 表本来是空的（新部署、或刚被"清空配置"）⇒ 读回兜底值 1；
+ *       紧接着写第一项配置 ⇒ 唯一那行 revision 变成 1 ⇒ **还是 1**。
+ *       两次读到的版本号一样，可配置**明明变了** ——
+ *       这正是版本号唯一的用途（比对两次调用是不是同一套配置），等于没有。
+ *     · 更糟的是"删掉最后一项配置"：表被删空 ⇒ `MAX` 归 NULL ⇒
+ *       版本号从 N **倒退**回兜底值，历史排障结论会被反向对账。
+ *   结论：**版本号不能寄生在"会被删掉的行"上**。
+ *
+ * ⚠ 为什么不干脆另开一张表：`ai_setting` 的"改配置零重启"靠的是
+ *   **单点失效**（`invalidate()`）；多一张表就多一处写入、多一处失效要同步。
+ *   而这一行放在同一张表里**不破坏任何读路径** ——
+ *   所有回显都按"登记清单"（`aiSettingSpecs()` / `promptSlots()` /
+ *   `aiToolToggles()`）遍历，**没有**任何接口裸查 `SELECT k, v`：
+ *     `aiSettingsJson()` 只走登记表 ⇒ 保留行天然不出现在管理台。
+ *   ⚠ 因此**将来若有人加"列出全部 KV"的接口，必须显式过滤这一行**。
+ *
+ * ⚠ 键名刻意**不落在** `ai.*` / `prompt.*` / `ai.tool.*` 三个命名空间里：
+ *   `aiSettingKeyKnown()` 只认登记表里的键 ⇒ 保留行**通过接口写不进、也删不掉**
+ *   （AC-P3-7 ⑪ 对此有断言）。
+ */
+public let SET_AI_REVISION_ROW: String = "__revision__"
+
+/*
  * 可配置项清单。
  *
  * ⚠ 刻意**收哪些、不收哪些**（可解释，不是照抄命令行参数）：
@@ -429,6 +457,20 @@ public class AiRuntimeOptions {
     /* ⚠ 本版本**恒为 false**（没有任何赋值点，见下方说明）。 */
     public var allowPlaintextEndpoint: Bool = false
 
+    /*
+     * ★ 2026-10-15 增（改进 7）：**这一次用的是哪个模型**（排障遥测要带走的事实）。
+     *
+     * ⚠ 为什么不能等落库时再去查配置：`ai_setting`/`ai_model` 都是**改配置零重启**的，
+     *   调用与落库之间可能插进一次管理员改配置 ⇒ 再去查就会把"A 模型的结果"
+     *   记成"B 模型"。排障日志最不能容忍的就是"事后看到的事实与当时不同"。
+     *
+     * ⚠ `modelId = 0` 是**有语义的**：表示"本次走的是 KV 配置（没有 `ai_model` 行）"，
+     *   而不是"第 0 号模型"。此时 `modelName` 仍是**当时真的发出去的模型名**
+     *   （`o.model`），而不是空串 —— 空串会让排障看不出用的是什么。
+     */
+    public var modelId: Int64 = 0
+    public var modelName: String = ""
+
     /* 校验结果。 */
     public var enabled: Bool = false
     public var disabledReason: String = ""
@@ -652,8 +694,7 @@ public class AiSettingsRepo {
     }
 
     /* 写某项配置（含**未登记 key 拒绝**与**密钥引用校验**两道闸门）。 */
-    public func put(key: String, value: String, now: Int64): AiSettingPutResult {
-        let r = AiSettingPutResult()
+    public func put(key: String, value: String, now: Int64): AiSettingPutResult {        let r = AiSettingPutResult()
         /*
          * 闸门①：必须是"**已登记**"的 key（否则 KV 表会变垃圾场）。
          *
@@ -745,9 +786,51 @@ public class AiSettingsRepo {
         db.exec("INSERT INTO ai_setting (k, v, updated_at) VALUES (?, ?, ?) " +
                 "ON DUPLICATE KEY UPDATE v = VALUES(v), updated_at = VALUES(updated_at)",
                 [DbStr(key), DbStr(stored), DbInt(now)])
+        /*
+         * ★ 2026-10-15（改进 7）：**每次写入把版本号推进一格**。
+         *   实现全部在 `bumpRevision()` 里（含"为什么不是整表 +1"的说明 ——
+         *   那个写法被 AC-P3-7 ⑪ 当场证明会丢格）。
+         */
+        bumpRevision(now)
         invalidate()
         r.ok = true
         return r
+    }
+
+    /*
+     * ★ 2026-10-15 增（改进 7）：**把配置版本号推进一格**。
+     *
+     * ── 语义（一句话）────────────────────────────────────────────────────────
+     *   "配置变了一次" ⇒ 版本号 +1。写入、删除**都算**变（删除会让生效值从
+     *   "设过的值"跳回默认值，在排障视角就是一次配置变更）。
+     *
+     * ── 为什么是"一个保留行上的计数器"，而不是别的写法 ──────────────────────
+     *   ① **不是"现有行全部 +1"**（最初的写法）：版本号寄生在"会被删掉的行"上，
+     *      于是空表读回兜底值、写第一项后还是同一个值（**配置变了而版本没变**），
+     *      删掉最后一项还会让版本号**倒退**。AC-P3-7 ⑪ 把这两种情况都钉住了。
+     *   ② **不是"先读 MAX 再写"**：并发下两个管理员各读到 N、各写 N+1
+     *      ⇒ 配置变了两次而版本只动一格。而 `ON DUPLICATE KEY UPDATE ... + 1`
+     *      是**库内自增**，不依赖本进程读到的值 ⇒ 不丢格。
+     *   ③ **不是另开一张表**：那样"写配置"就有两处写、两处要失效缓存。
+     *
+     * ⚠ 保留行的键 `SET_AI_REVISION_ROW` 不在 `ai.*` / `prompt.*` / `ai.tool.*`
+     *   三个命名空间里 ⇒ 接口既写不进也删不掉（`aiSettingKeyKnown()` 不认它）。
+     * ⚠ 保留行**不出现在任何回显**里：回显都按登记清单遍历，没人裸查 KV（详见
+     *   `SET_AI_REVISION_ROW` 的注释 —— 含"将来加裸查接口要过滤它"的提醒）。
+     * ⚠ 保留行的 `v` 存空串：它**不是配置项**，不该有值。
+     */
+    private func bumpRevision(now: Int64): Unit {
+        /*
+         * 一句 `INSERT ... ON DUPLICATE KEY UPDATE` 同时管两种情况：
+         *   · 保留行不存在 ⇒ 插进去，revision = 1（第一版配置）；
+         *   · 已存在      ⇒ 库内自增，不读回内存（并发下不丢格）。
+         * ⚠ 并发首插：两条语句同时插同一主键 ⇒ 输的那条落到 `UPDATE` 分支、
+         *   照样 +1 ⇒ **两次变更记两格**，不会并成一格。
+         */
+        let _ = db.exec(
+            "INSERT INTO ai_setting (k, v, updated_at, revision) VALUES (?, '', ?, 1) " +
+            "ON DUPLICATE KEY UPDATE revision = revision + 1, updated_at = VALUES(updated_at)",
+            [DbStr(SET_AI_REVISION_ROW), DbInt(now)])
     }
 
     /* 删某项配置（回到默认值）。 */
@@ -755,9 +838,41 @@ public class AiSettingsRepo {
         if (!aiSettingKeyKnown(key)) {
             return false
         }
+        /*
+         * ★ 2026-10-15（改进 7）：删除也是**改配置**，同样推进版本号。
+         *   ⚠ 不能"删了就完了"：删掉一项会让生效值从"设过的值"跳回默认值，
+         *     在排障视角这就是**一次配置变更**（"那天开始模型变成默认的了"）。
+         *   ⚠ 版本号记在**保留行**上（见 `bumpRevision`），所以"删掉最后一项配置"
+         *     也不会把版本号一起删掉 —— 这正是最初"整表 +1"写法栽的地方。
+         */
         let _ = db.exec("DELETE FROM ai_setting WHERE k = ?", [DbStr(key)])
+        bumpRevision(now)
         invalidate()
         return true
+    }
+
+    /*
+     * ★ 2026-10-15 增（改进 7）：**当前配置版本号**。
+     *
+     * ⚠ 读用 `MAX(revision)`：版本号实际只由**保留行**持有（`bumpRevision`），
+     *   普通配置行的 `revision` 保持 0，所以取最大值就是取保留行的值。
+     *   这样读的好处是**表里一行都没有时也不会读错**（回 0 = 还没有任何配置）。
+     *
+     * ⚠ 「还没有任何配置」用 **0** 表达，不是 1：
+     *   0 的含义是"这套部署还没写过配置"（出厂状态），排障时看到 0
+     *   应当理解为"当时用的是默认值"。若兜底成 1，就会与"第一次改配置后"
+     *   的版本号撞在一起 —— 配置变了而版本号没变，版本号就白记了
+     *   （AC-P3-7 ⑪ 钉住了这条）。
+     *
+     * ⚠ 不要指望它在**并发写入的瞬间**精确：它是"事后比对两次调用是不是同一套
+     *   配置"用的，不是事务隔离级别。
+     */
+    public func revision(now: Int64): Int64 {
+        let rs = db.query("SELECT IFNULL(MAX(revision), 0) FROM ai_setting", Array<DbValue>())
+        if (rs.rowCount() > 0) {
+            return rs.getInt(0, 0)
+        }
+        return 0
     }
 
     /*
@@ -770,6 +885,13 @@ public class AiSettingsRepo {
         let o = AiRuntimeOptions()
         o.endpoint = get(SET_AI_ENDPOINT, now).trimAscii()
         o.model = get(SET_AI_MODEL, now).trimAscii()
+        /*
+         * ★ 2026-10-15（改进 7）：先记下"KV 口径下的模型名"，再由默认模型行覆盖。
+         *   ⚠ 默认值取 `o.model` 而不是空串：即便走的是 KV 配置（没有 `ai_model` 行），
+         *     排障也必须看得出**当时真的发出去的模型名**是什么。
+         *     `modelId` 保持 0 —— 那是"没有模型行"的**语义**，不是缺省。
+         */
+        o.modelName = o.model
         o.timeoutSecs = parseInt64Or(get(SET_AI_TIMEOUT, now), 30)
         o.maxConcurrent = parseInt64Or(get(SET_AI_MAX_CONCURRENT, now), 4)
         o.maxTokens = parseInt64Or(get(SET_AI_MAX_TOKENS, now), 2048)
@@ -808,6 +930,14 @@ public class AiSettingsRepo {
                     case Some(m) =>
                         o.endpoint = aiModelRequestUrl(m.baseUrl, AI_MODEL_KIND_CHAT)
                         o.model = m.model
+                        /*
+                         * ★ 2026-10-15（改进 7）：把"这一行是谁"带走（排障遥测）。
+                         *   ⚠ 名字优先用**行名**（`m.name`，管理员起的"通义千问-正式"），
+                         *     因为它才是人话；但行名为空时退回 `m.model`
+                         *     （否则排障看到空名字，等于没记）。
+                         */
+                        o.modelId = m.id
+                        o.modelName = if (m.name.size > 0) { m.name } else { m.model }
                         if (m.keyRef.size > 0) {
                             o.keyRef = m.keyRef
                         }

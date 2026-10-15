@@ -496,6 +496,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | 5.28 | `GET /api/v1/doctor/visits/:id/previsit` | 是 | **仅医生** | **读这一单的预问诊摘要**（★ 2026-10-14 新增，见 §5.28） |
 | 5.29 | `GET …/record/revisions`、`…/revisions/:version`、`…/revisions/:version/diff?against=` | 是 | **仅医生（本单）+ 管理员** | **病历修订历史**：列表 / 单版详情 / 逐段对比（★ 2026-10-15 新增，见 §5.29；同节含 `reopen` 必填 `reason` 与 `revision_version`） |
 | 5.30 | `GET /api/v1/doctor/patients/:patientId/records` | 是 | **仅医生（须接诊过该患者）** | **既往已定稿病历**（录入工作台同屏对比；★ 2026-10-15 新增，见 §5.30；同节含 `PUT …/record` 的可选 `expected_updated_at` 乐观锁与 409 `EMR_CHANGED` 的 `error.fields`） |
+| 5.31 | `GET /api/v1/admin/ai/triage-stats`、`GET /api/v1/admin/ai/triage-calls/:requestId` | 是 | **仅 admin** | **AI 分诊遥测**：质量聚合（分位数/降级率/分组）+ 单次调用全链路排障（★ 2026-10-15 新增，见 §5.31；同节含 `POST /api/v1/triage` 响应新增的 `request_id`） |
 
 > 权限判定收敛在**单一函数** `can(role, action)`（`http_app.cj:162-230`）。相关动作与角色：
 > `book` = 仅 patient；`view_schedule` = 三端；`query_own_medical_record` = patient | doctor；
@@ -559,6 +560,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | `ai_note` | String | 模型生成的患者向文案；未启用时为 `""` |
 | `ai_reason` | String | 为什么是这个 `source`（给运维看，不含密钥） |
 | `options` | Array | 推荐号源，**每一个都已用真实数据库验证 `remain_num > 0`**（`http_app.cj:1146-1149`） |
+| `request_id` | String | 本次请求编号（★ 2026-10-15 新增，改进 7）。**请原样保存**：用户说"这条分诊不对"时要拿它去 `GET /api/v1/admin/ai/triage-calls/:requestId` 查全链路（§5.31）；它不是身份凭证 |
 | `options[].department_id` | Int64 | |
 | `options[].department_name` | String | ⚠ 患者端**唯一**能拿到科室名的来源（见 §9 缺口 1） |
 | `options[].doctor_id` | Int64 | |
@@ -1423,6 +1425,97 @@ POST /api/v1/doctor/visits/:id/record/reopen
 
 ---
 
+### 5.31 2026-10-15 新增：AI 分诊遥测与排障（仅 admin）
+
+**要解决什么**：`triage_stat` 从此前"只写不读"变成可查 —— 管理台能回答两个问题：
+「这几天的分诊质量怎么样」（聚合）与「这一次分诊到底发生了什么」（单次全链路）。
+两者都要 `Action.ManageAi`（与 AI 模型配置同一道闸门，**没有新造权限动作**）；
+患者/医生令牌下一律 **403 `FORBIDDEN_ROLE`**。
+
+#### 5.31.1 `GET /api/v1/admin/ai/triage-stats` —— 质量聚合
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `from` / `to` | `to = 现在`、`from = to - 86400`（最近 24h） | epoch **秒**；`from > to` ⇒ **400 `VALIDATION_FAILED`**（**不自动交换** —— 交换会把参数写错掩盖成"查到了但是空"） |
+| `group_by` | `source` | **只认 `source` / `reason_code` / `model_name`**。它是**要拼进 SQL 的列名**，所以非白名单值（含空串、`id`、注入串）一律 400，**绝不回退默认值继续查** |
+| `limit` | `5000` | 抽样行数上限，夹到 `1..20000`（分位数在内存里算，不设上限等于一次请求把整表拉进内存） |
+| `group_limit` | `20` | 返回的分组数上限，夹到 `1..100` |
+
+响应 `data`：`from` / `to` / `group_by` / `sample_limit` / `group_limit`（**回显实际用的值**，客户端不必猜）/
+`sampled`（实际取到的行数）/ `truncated`（是否被 `limit` 截断）/ `overall` / `groups`。
+`overall` 与 `groups[]` 是**同一个形状**：`bucket` / `total` / `degraded` / `degrade_rate` / `p50_ms` / `p95_ms`
+（`overall.bucket` 恒为 `"all"`；`groups[]` 按 `total` 降序，并列按 `bucket` 升序）。
+
+- **`degrade_rate`** = `degraded / total`，带 **4 位小数**（如 `0.6667`）；`total = 0` 时为 `0`。
+- **`p50_ms` / `p95_ms` 用最近秩法（nearest-rank），整数毫秒**：取排序后第 `ceil(p/100 × n)` 个**真实样本**，
+  不做插值 —— 插值会造出一个从未发生过的耗时，排障时去日志里根本找不到这个数。
+- 样本为空时一切计数为 `0`、`groups` 为 `[]`。
+
+#### 5.31.2 `GET /api/v1/admin/ai/triage-calls/:requestId` —— 单次调用全链路
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `:requestId` | — | 客户端 `X-Request-Id`（服务端未收到时会自铸 32 位十六进制）；空 ⇒ 400 |
+| `limit` | `20` | 夹到 `1..100` |
+
+响应 `data`：`request_id` / `items[]` / `count` / `order`（恒 `"id_desc"`）。
+`items[]` 每项 16 个字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `id` | `triage_stat` 自增主键（排序以它为准） |
+| `created_at` | 落库时间（epoch 秒） |
+| `source` | `rules` / `model` / `model:invalid` |
+| `reason_code` | 规则判定的业务码（`OK` / `EMERGENCY_HINT` …） |
+| `red_flag` / `department` / `truncated` | 是否红旗 / 推荐科室名 / 主诉是否被截断（**只有布尔，没有原文**） |
+| `request_id` | 关联键（同一编号可能有多行：一次请求最多落一行，重试会多行） |
+| `model_id` / `model_name` | 走的是哪条模型行（`0` = 本次走 KV 配置、没有 `ai_model` 行；`model_name` 仍是真正发出去的模型名） |
+| `prompt_revision` | **调用当时**的配置版本号（见下） |
+| `elapsed_ms` | 出站耗时（未走到拿响应时为 `0`） |
+| `degrade_reason` | 降级**稳定码**：`""`（真用上了模型）/ `RED_FLAG` / `CONFIG_READ_FAILED` / `AI_DISABLED` / `INVALID_OUTPUT` / `CALL_FAILED` |
+| `degraded` | 冗余布尔 = `degrade_reason != ""`（省得前端记"空串 = 正常"） |
+| `used_kb` / `kb_doc_ids` | 是否用了知识库 / 命中的**文档 id 列表**（逗号分隔，**不含正文片段**） |
+
+- **未知 `requestId` ⇒ 200 + `count: 0`，不是 404**：没有遥测行 ≠ 这个编号不存在
+  （限流、参数校验、鉴权阶段拦下的请求本来就不写统计），回 404 会把排障的人引向不存在的错误。
+- `requestId` 在库里**没有唯一约束**（它是客户端可自造的关联键）⇒ 返回的是**数组**，按 `id` 降序。
+
+#### 5.31.3 合规红线（实现层机制性保证，客户端也请守）
+
+1. **主诉原文永不出现**：`triage_stat` 表里**根本没有主诉列**（`triageStat.record()` 签名里没有这个参数），
+   这两个端点因此拿不到它 —— 只有 `truncated` 布尔、科室名与命中的**文档 id**。
+2. **没有 `patient_id` / `doctor_id` / 手机号 / 姓名形状的字段**（看板既有口径，Schema 里也没有位置）。
+3. **`request_id` 是关联键、不是身份凭证**：它来自客户端请求头，服务端只用来串联日志与遥测，
+   **不能**用它做鉴权或把它当"某人某次就诊"的证据。
+
+#### 5.31.4 `POST /api/v1/triage` 的响应新增两个字段
+
+| 字段 | 说明 |
+| --- | --- |
+| `request_id` | 本次请求的编号（= 服务端落库的 `triage_stat.request_id`）。**这是排障闭环的入口**：患者端默认不带 `X-Request-Id`，响应里不回编号，运营就无从取号 |
+| `server_time` | 服务端时间（epoch 秒），与挂号类响应同一口径 |
+
+这是**纯增量**（旧解析不受影响），也是本次唯一改动既有端点形状的地方。
+
+#### 5.31.5 客户端要做什么
+
+| 端 | 要做什么 |
+| --- | --- |
+| 管理端（Web） | 新增"AI 质量"页：默认查最近 24h，支持切换 `group_by`；`truncated: true` 必须显式提示"样本被截断，分位数是抽样的"；列表为空是**正常结果**，别当错误处理 |
+| 患者端（鸿蒙/安卓） | 若要"反馈这条分诊不对"，把响应里的 `request_id` 一并带给客服/后台（不要用它做权限判断） |
+| 医生端（鸿蒙） | 不用动 |
+
+#### 5.31.6 错误表
+
+| 情况 | 状态码 | `error.code` |
+| --- | --- | --- |
+| 非 admin 令牌（患者/医生） | 403 | `FORBIDDEN_ROLE` |
+| 无令牌 | 401 | `AUTH_REQUIRED` |
+| `group_by` 非白名单 / `from > to` / `:requestId` 为空 | 400 | `VALIDATION_FAILED` |
+| `limit` / `group_limit` 越界或非法 | 200 | —（**静默夹取**，并把夹取后的值回显在 `sample_limit` / `group_limit`） |
+
+---
+
 ## 6. 不能调的端点（前端不应出现这些路径）
 
 以下端点**确实存在**，但权限矩阵把它们挡在患者之外（`http_app.cj:162-230`）。
@@ -1437,6 +1530,7 @@ POST /api/v1/doctor/visits/:id/record/reopen
 | `POST /api/v1/admin/users/:id/password` | `:id` 是 `auth_user.id`（**不是 `ref_id`**）；会**吊销该账号全部令牌**；账号不存在 → 404 | `http_app.cj:989-1007`、`auth_repo.cj:568-583` |
 | `POST /api/v1/admin/schedules` | body `doctor_id`/`department_id`/`work_date`/`period`/`total_num`；**201** `{schedule_id,total_num,remain_num}` | `http_app.cj:1523-1543` |
 | `GET /api/v1/admin/ai/settings`、`PUT/DELETE /api/v1/admin/ai/settings/:key` | AI 配置中心；**密钥绝不回显**（只回"是否已设置 + 引用类型"） | `http_app.cj:1029-1136` |
+| `GET /api/v1/admin/ai/triage-stats`、`GET /api/v1/admin/ai/triage-calls/:requestId` | **AI 分诊遥测**（★ 2026-10-15 新增，见 §5.31）；同一道 `manage_ai` 闸门；`group_by` 只认 `source`/`reason_code`/`model_name`（拼进 SQL 的列名）；**永不返回主诉原文**（表里没有这一列）；未知 `requestId` ⇒ **200 + `count: 0`**（不是 404） | `http_app.cj:1925`、`http_app.cj:1990` |
 | `GET /api/v1/admin/ai/prompts`、`PUT/DELETE /api/v1/admin/ai/prompts/:name` | Prompt 模板 CRUD（正文原样回显，它不是机密） | `http_app.cj:1066-1098` |
 | `GET /api/v1/admin/ai/tools`、`PUT /api/v1/admin/ai/tools/:name` | 工具开关；`enabled` **只接受 JSON 布尔** | `http_app.cj:1101-1126` |
 | `GET/POST /api/v1/admin/departments`、`GET/PUT/DELETE /…/:id` | 科室 CRUD（`manage_base_data`）；**列表支持 `limit`/`offset`，响应含 `total`/`limit`/`offset`**（`limit` 缺省/非法/`>200` ⇒ 200） | `http_base.cj:172-256` |

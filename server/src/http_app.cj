@@ -1894,6 +1894,127 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         }
     })
 
+    /* ---------- GET /api/v1/admin/ai/triage-stats —— 分诊遥测聚合（仅管理员）---------- */
+    /*
+     * ★ 2026-10-15（改进 7「AI 评测与排障闭环」）。
+     *
+     * ── 它解决什么问题 ────────────────────────────────────────────────────
+     *   `triage_stat` 从 P4 起就在**写**（source / reason_code / red_flag / 科室），
+     *   但**从来没有读的出口**：想知道"这周模型调用占比 / 降级率 / 耗时分布"，
+     *   只能登库敲 SQL。⇒ 这里补上读的一侧，让"分诊质量"变成可查的聚合。
+     *
+     * ── 权限为什么是 `ManageAi` 而不是新动作 ──────────────────────────────
+     *   与 `/admin/ai/` 下的其余端点**同一道闸门**（settings / prompts / tools /
+     *   models 都是 `Action.ManageAi`）。这一屏的内容是"模型与模板的运行效果"，
+     *   属于 AI 配置的责任范围 ⇒ 复用既有动作，不新造权限
+     *   （新动作要么有第二个用处、要么复用，见 P4-HANDOFF 纪律）。
+     *
+     * ── 参数与边界 ────────────────────────────────────────────────────────
+     *   · `group_by`：**白名单**（source / reason_code / model_name），
+     *     非法值一律 400 —— 列名要拼进 SQL，绝不"回退默认值继续查"；
+     *   · `from` / `to`：epoch 秒，缺省 = 最近 24 小时；`from > to` 直接 400
+     *     （**不自动交换**：交换会把调用方的参数错误掩盖成一次"成功"的查询）；
+     *   · `limit`：抽样上限（默认 5000，上限 20000）—— 分位数是**在内存里算**的
+     *     （MySQL 无 percentile 函数），必须有上限；被截断时 `truncated = true`，
+     *     调用方必须在界面上说出来，否则"命中率下降"的结论会失去依据；
+     *   · `group_limit`：返回的分组数上限（默认 20，上限 100）。
+     *
+     * ⚠ 隐私：响应里**不含**主诉原文、患者/医生 id、手机号（见 `triageStatWindowJson`
+     *   顶部的合规红线）。本表根本就没存主诉，是**机制性**保证而不是"记得过滤"。
+     */
+    r.get("/api/v1/admin/ai/triage-stats", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageAi)
+        let groupBy = ctx.queryParamOr("group_by", "source").trimAscii()
+        if (!triageStatGroupByOk(groupBy)) {
+            throw apiErrorMsg("VALIDATION_FAILED",
+                              "group_by 只支持 source、reason_code、model_name")
+        }
+        let now = hNowEpoch()
+        var to = parseInt64Or(ctx.queryParamOr("to", "0"), 0)
+        var from = parseInt64Or(ctx.queryParamOr("from", "0"), 0)
+        if (to <= 0) {
+            to = now
+        }
+        if (from <= 0) {
+            from = to - 86400
+        }
+        if (from > to) {
+            throw apiErrorMsg("VALIDATION_FAILED", "from 不能大于 to")
+        }
+        var sampleLimit = parseInt64Or(ctx.queryParamOr("limit",
+                                                        "${TRIAGE_STAT_SAMPLE_DEFAULT}"),
+                                       TRIAGE_STAT_SAMPLE_DEFAULT)
+        if (sampleLimit < 1) {
+            sampleLimit = 1
+        }
+        if (sampleLimit > TRIAGE_STAT_SAMPLE_MAX) {
+            sampleLimit = TRIAGE_STAT_SAMPLE_MAX
+        }
+        var groupLimit = parseInt64Or(ctx.queryParamOr("group_limit",
+                                                       "${TRIAGE_STAT_GROUP_DEFAULT}"),
+                                      TRIAGE_STAT_GROUP_DEFAULT)
+        if (groupLimit < 1) {
+            groupLimit = 1
+        }
+        if (groupLimit > TRIAGE_STAT_GROUP_MAX) {
+            groupLimit = TRIAGE_STAT_GROUP_MAX
+        }
+        let w = triageStat.windowRows(from, to, sampleLimit)
+        sendOk(ctx, triageStatWindowJson(w, groupBy, from, to, sampleLimit, groupLimit))
+    })
+
+    /* ---------- GET /api/v1/admin/ai/triage-calls/:requestId —— 单次调用全链路（仅管理员）---------- */
+    /*
+     * ★ 2026-10-15（改进 7）。
+     *
+     *   用途：患者/运营报"这条主诉分诊得不对"时，凭 `X-Request-Id` 把**那一次**
+     *   的链路捞出来对质：走了模型还是规则、降级原因、模型与模板版本、耗时、
+     *   有没有用知识库、命中哪几篇 `kb_doc`。
+     *
+     * ── 为什么返回**数组**（而不是一个对象）────────────────────────────────
+     *   `request_id` 来自客户端请求头（`X-Request-Id`），**没有唯一约束** ——
+     *   同一个 id 被复用（或伪造）时会有多行。⇒ 如实体贴"这次 id 对应的所有行"，
+     *   而不是假装它唯一、丢掉其余行。
+     *
+     * ── 为什么空数组是 **200** 而不是 404 ────────────────────────────────
+     *   "没有遥测行"是一个**如实的答案**：请求可能在分诊落库之前就被拦下
+     *   （限流、参数校验失败、鉴权失败），那些路径**本来就不写统计**。
+     *   回 404 会把"没记录"说成"id 不存在"，让排障的人去查一个并不存在的错误。
+     *   ⇒ 200 + `count: 0`，并在文档里把这条口径写清。
+     *
+     * ⚠ 隐私同 `triageCallJson`：只有结论码/科室名/文档 id，没有主诉原文与个人信息。
+     *   也**不要**把这个端点当成"按 requestId 查患者"的入口 —— 它查的是遥测，
+     *   而遥测按设计就没有患者标识。
+     */
+    r.get("/api/v1/admin/ai/triage-calls/:requestId", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageAi)
+        let requestId = ctx.paramOr("requestId", "").trimAscii()
+        if (requestId.size == 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "requestId 不能为空")
+        }
+        var limit = parseInt64Or(ctx.queryParamOr("limit", "20"), 20)
+        if (limit < 1) {
+            limit = 1
+        }
+        if (limit > 100) {
+            limit = 100
+        }
+        let rows = triageStat.callsByRequest(requestId, limit)
+        let items = JsonArray()
+        for (r in rows) {
+            items.add(triageCallJson(r))
+        }
+        let o = JsonObject()
+        o.put("request_id", JsonString(requestId))
+        o.put("items", items)
+        o.put("count", JsonInt(Int64(items.size())))
+        /* 口径显式回显：新→旧（`id DESC`）。调用方不必去猜顺序。 */
+        o.put("order", JsonString("id_desc"))
+        sendOk(ctx, o)
+    })
+
     /* ===================== 业务接口 ===================== */
 
     /* ---------- POST /api/v1/triage —— 智能分诊（P2）---------- */
@@ -1982,10 +2103,45 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
          *
          * ⚠ `record()` 内部**吞异常** —— 统计是旁路，
          *   绝不能把患者正在等的分诊响应变成 500。
+         *
+         * ★ 2026-10-15（改进 7）：除结论字段外，再落一批**调用事实**
+         *   （`ctx._id` 请求编号 / 模型 id+名 / 配置版本 / 耗时 / 降级码 / 是否用知识库）。
+         *   ⚠ 它们全部来自 `v` 上的遥测字段（由 `aiEnhanceTriage` 在**调用当时**记下），
+         *     而**不是**在这里回头去查一次配置 —— 配置是"改了就生效（零重启）"的，
+         *     回头查会把"A 模型的结果"记成"B 模型"（这是排障日志最不能容忍的失真）。
+         *   ⚠ 唯一的例外是 `promptRevision`：它是**配置库**的属性，只能现查
+         *     （`aiSetting.revision` 一句 `SELECT MAX(revision)`，表极小、有主键）。
+         *     代价是每请求一次点查；换来的是"这条结果产生于哪一版配置"可追溯。
+         *   ⚠⚠ `ctx._id` 同样**不是**患者输入（框架中间件填的请求编号），
+         *     与"绝不落主诉原文"这条红线无关 —— 红线仍然由 `record()` 的签名守着。
          */
         let topDept = if (v.options.size > 0) { v.options[0].departmentName } else { "" }
-        triageStat.record(v.reasonCode, v.redFlag, topDept, truncated, v.source, hNowEpoch())
-        sendOk(ctx, triageJson(v, truncated))
+        triageStat.record(v.reasonCode, v.redFlag, topDept, truncated, v.source, hNowEpoch(),
+                          requestId: ctx._id,
+                          modelId: v.aiModelId,
+                          modelName: v.aiModelName,
+                          promptRevision: aiSettings.revision(hNowEpoch()),
+                          elapsedMs: v.aiElapsedMs,
+                          degradeReason: v.aiDegradeReason,
+                          usedKb: v.aiUsedKb,
+                          kbDocIds: v.aiKbDocIds)
+        /*
+         * ★★ 2026-10-15（改进 7）：分诊响应体里回 `request_id`（+ `server_time`，见 `putTrace`）。
+         *
+         * 为什么必须有（写 live 检查时被自己的用例红出来的）：
+         *   `record()` 把 `ctx._id` 落进了 `triage_stat`，排障端点又**只能按它查**，
+         *   于是"这一次分诊"的编号就是唯一的入口。可原来的分诊响应体里**没有**它 ——
+         *   患者端只发主诉、不带 `X-Request-Id` 头时（默认就是如此），这个编号只存在于
+         *   服务端日志与统计表里：患者说"这条分诊不对"，运营**无从取号**，
+         *   改进 7 的排障闭环就在第一步断了。
+         *   ⇒ 与挂号（`appointmentJson` 里的 `putTrace`）保持同一口径：编号回到调用方手里。
+         *
+         * ⚠ 纯增量：两个字段都在 `data` 里、不改变任何既有字段含义（老客户端可忽略），
+         *   且**不引入**主诉原文或任何个人信息 —— 编号是框架中间件填的请求号。
+         */
+        let triageOut = triageJson(v, truncated)
+        putTrace(ctx, triageOut)
+        sendOk(ctx, triageOut)
     })
     /* ===================== 预问诊（P2，SSE 流式）===================== */
 
