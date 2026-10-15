@@ -468,7 +468,7 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 | 8 | live 新脚本 `visit-check.ps1` | 落地为 `server/tests/visit-timeline-check.ps1`（**42 项断言**，已并入 `final-verify.ps1`）；**2026-10-16 复核 D6/D7/D8 后为 47 项**（补混合态排序、退号错误码、夹具清理收窄） | 名字点明它钉的是"时间线"（哪一步写哪个戳、被拒的流转一个都不写） |
 | 9 | 三个时间戳进契约样例 | 样例里**归一化为 0**（与 `created_at` 同类的"跑一次就变"字段） | 语义改由 `hospital-server.exe accept` 的 AC-P4-8 与 AC-P4-2 ⑨ 逐格矩阵（本次 accept 692 → **743**，共 +51 条断言）以及 live 脚本逐字段钉住 —— 契约层钉形状、用例层钉语义 |
 
-**客户端仍需做（2026-10-16 更新：医生端与患者端已落地，仅差编译验证）**：医生端 `VisitQueuePage` 已把动作拆成「确认到院 → 进入候诊 → 开始接诊 → 完成就诊」（`DoctorRepository.arriveVisit` / `waitingVisit` 补上了缺失的前两步 —— 此前只有 `startVisit`，对着 `booked` 的单按下去必然 409，**主流程整个走不通**），`status` 分支已含 `arrived`/`waiting` 且中文优先用 `status_label`（兜底映射在 `feature-patient/.../Theme.ets` 与 `common-core` 同名字符串逐字一致），候诊/就诊时长按 `started_at - arrived_at` / `finished_at - started_at` 算（`0` = 还没发生）。管理台看板已拆出「已到院 / 候诊」（此前全藏进"已约"里）。⚠ 客户端这批改动只做了**静态核对**，无 DevEco/真机编译环境，`BuildArkTS` 需在有 SDK 的机器上补做。前端落点见本文 §改进 6 前端任务表与 `docs/FRONTEND-INTEGRATION.md` §5.32。
+**客户端仍需做（2026-10-16 更新：医生端与患者端已落地，并已在 DevEco 模拟器上编译运行 + 与真实服务端联调通过）**：医生端 `VisitQueuePage` 已把动作拆成「确认到院 → 进入候诊 → 开始接诊 → 完成就诊」（`DoctorRepository.arriveVisit` / `waitingVisit` 补上了缺失的前两步 —— 此前只有 `startVisit`，对着 `booked` 的单按下去必然 409，**主流程整个走不通**），`status` 分支已含 `arrived`/`waiting` 且中文优先用 `status_label`（兜底映射在 `feature-patient/.../Theme.ets` 与 `common-core` 同名字符串逐字一致），候诊/就诊时长按 `started_at - arrived_at` / `finished_at - started_at` 算（`0` = 还没发生）。管理台看板已拆出「已到院 / 候诊」（此前全藏进"已约"里）。✅ 客户端这批改动**已在本机 DevEco 真编译**（`:entry:default@CompileArkTS` 通过、零 error），**未签名 HAP 装进 HarmonyOS 6.1.1 模拟器跑起来**，并在模拟器上把状态链 `booked → arrived → waiting → visiting` 通过真实服务端点通、负向用例（`booked` 直接 `start`）确认 409；完整配方与实测见本文 §8.4 与 `docs/FRONTEND-INTEGRATION.md` §5.33。前端落点见本文 §改进 6 前端任务表与 `docs/FRONTEND-INTEGRATION.md` §5.32。
 
 ---
 
@@ -686,9 +686,25 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 | `doc-counts.ps1` | 3 处 accept 数字漂移已 `-Fix`（743 → 750） |
 | `ai-eval` 回放 | 同一批 `cases.jsonl` 连跑两次指纹一致（证明可重复）；降级口径已改读服务端 |
 
-⚠ **未完成的验证**：客户端（鸿蒙 `.ets`）与 `admin-web` 的改动只做了**静态核对**（逐字段对照服务端返回与
-`contract/schema`），本机没有 DevEco/真机环境，`BuildArkTS` 需在有 SDK 的机器上补做；
-管理台 UI 的改动由 `admin-web-smoke.mjs`（11 页）覆盖到"页面能加载"，未覆盖交互细节。
+✅ **客户端的编译与运行验证已完成（2026-10-16 晚）**：鸿蒙 `.ets` 那批改动在本机 DevEco Studio
+（`D:\DevEco Studio`，SDK HarmonyOS 26.0.0）真编译通过（`:entry:default@CompileArkTS`，零 error），产出的
+**未签名 HAP** 直接装进 `Pura 90` 模拟器（HarmonyOS 6.1.1）运行，并与 `--dev-auth` 的真实服务端联调：
+医生端状态链 `booked → arrived → waiting → visiting` 在界面上点通、库里三个时间戳落库、负向用例返回
+`409 VISIT_BAD_STATE`。配方、坑与实测结论见 §8.4 与 `docs/FRONTEND-INTEGRATION.md` §5.33。
+管理台 UI 的改动仍由 `admin-web-smoke.mjs`（11 页）覆盖到"页面能加载"，**未覆盖交互细节**；
+`visit-timeline-check.ps1` 的 HTTP 层断言与本文 §8.3 的闸门结果不受影响。
+
+### 8.4 鸿蒙客户端：模拟器构建 + 端到端实测（2026-10-16）
+
+| 环节 | 结论 |
+| --- | --- |
+| 构建 | `hvigor` **拒绝含中文的工程路径**（`ERROR: 00306003 … Invalid project path`），`subst` 也绕不过（会 realpath）⇒ 用 `robocopy` 建 ASCII 副本后构建：`$env:DEVECO_SDK_HOME='D:\DevEco Studio\sdk'`、`$env:JAVA_HOME='D:\DevEco Studio\jbr'`（PATH 上的 java 1.7 会让 PackageHap 报 `UnsupportedClassVersionError(52.0)`），`hvigorw.bat --mode module -p product=default -p module=entry@default assembleHap --no-daemon` ⇒ `BUILD SUCCESSFUL`（65 任务，零 error，7 条既有 WARN） |
+| 安装 | **未签名 HAP 模拟器直接收**：`hdc install -r entry-default-unsigned.hap` ⇒ `install bundle successfully`，`aa start -a EntryAbility -b com.smart.hospital.patient` 起来 |
+| 界面验证 | 医生端队列四态与「下一步唯一动作」全部正确（`接诊中`→写病历/完成就诊、`候诊中`→爽约/开始接诊、`已挂号`→爽约/到院登记、`已完成`→无动作）；患者端七态文案与首页状态胶囊正常 |
+| live 联调 | 客户端默认 `baseUrl` 是 `127.0.0.1:8091`，但 **8091 落在 Windows 排除端口段 8037–8136**（bind 报 10013）⇒ 服务端起在 **18096** 并 `hdc rport tcp:18096 tcp:18096` 反向映射；用真实医生令牌预置会话后直接进队列，点「到院登记 → 转入候诊 → 开始接诊」⇒ 库里 `booked → arrived → waiting → visiting`、`arrived_at=1792065257` / `started_at=1792065264`；对 `booked` 直接 `start` ⇒ `409 VISIT_BAD_STATE` |
+| 新发现（已修） | 医生端夹具漏给 `booked` 单设 `statusLabel` ⇒ 队列页兜底显示「待就诊」，与服务端 `visitStatusLabel(booked)='已挂号'` 不一致；已补 `MockDoctorRepository.ets` 并在模拟器复验 |
+| 新发现（待决策） | 客户端本地兜底 `appointmentStatusText` 与服务端权威 `visitStatusLabel` 在 **4/7 态**上不一致（`booked` 待就诊/已挂号、`visiting` 就诊中/接诊中、`cancelled` 已取消/已退号、`no_show` 爽约/已爽约）。患者可见文案属产品表述，未擅自改；建议以服务端 `status_label` 为单点权威 |
+| 工具坑 | 软键盘弹出后点击键盘内的输入框不转移焦点、`完成` 键也点不掉键盘（连续输入会追加到同一框）；`uitest dumpLayout` 的中文是 `\uXXXX` 转义，按中文 grep 必然 0 命中 |
 
 ---
 

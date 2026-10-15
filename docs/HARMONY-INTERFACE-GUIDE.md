@@ -249,4 +249,23 @@ $env:HVIGOR_USER_HOME='D:\Desktop\smart_hospital-main\.hvigor'
 
 * 成功标志：`BUILD SUCCESSFUL`，产物在 `entry/build/default/outputs/default/`。
 * 当前仅有 `SessionStore` 的「同步 Preferences 可能抛异常」ArkTS 警告，属预期，不影响构建。
+
+### 10.1 本机（2026-10-16）实测可用的配方
+
+上面那行 `hvigorw.bat` 的路径是**另一台机器**的（`D:\Program Files\Huawei\DevEco Studio-26`）；本机是 `D:\DevEco Studio`。
+实测通过的完整配方：
+
+```powershell
+# ⚠ 工程路径不能含中文：hvigor 报 00306003 Specification Limit Violation / Invalid project path，
+#   subst 映射盘符也绕不过（hvigor 会 realpath 回真实路径）。
+#   做法：robocopy 一份字节等价的 ASCII 副本（排除 .git/oh_modules/build 等），在副本里构建。
+$env:DEVECO_SDK_HOME = 'D:\DevEco Studio\sdk'
+$env:JAVA_HOME       = 'D:\DevEco Studio\jbr'   # 必须：PATH 上的 java 若是 1.7，PackageHap 会 UnsupportedClassVersionError(52.0)
+$env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Studio\tools\ohpm\bin;D:\DevEco Studio\tools\hvigor\bin;$env:Path"
+& 'D:\DevEco Studio\tools\hvigor\bin\hvigorw.bat' --mode module -p product=default -p module=entry@default assembleHap --no-daemon
+```
+
+* `signingConfigs` 为空时，把 `products` 里的 `"signingConfig": "default"` 去掉，只留一条 `WARN: No signingConfig found for product default`，产物是**未签名 HAP**——模拟器可直接 `hdc install -r` 装上。
+* 模拟器安装、UI 自动化、与真实服务端联调的完整命令与实测结论见
+  [docs/FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) §5.33。
 * 服务端联调（本机库、建库、起服务）见 [docs/FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) §2。

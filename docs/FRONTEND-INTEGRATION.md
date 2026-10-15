@@ -1618,6 +1618,8 @@ POST /api/v1/doctor/visits/:id/record/reopen
 | 完成就诊但病历未锁定 | 409 | `EMR_NOT_LOCKED` |
 | 不是自己的单 / 单不存在 | 404 | `APPOINTMENT_NOT_FOUND` |
 | **退号**时状态不允许（如已到院/已完成） | 409 | `APPOINTMENT_NOT_CANCELLABLE`（**不是** `VISIT_BAD_STATE`：退号走患者端点 `POST /api/v1/appointments/:id/cancel`，它有自己的业务码，`message` 带中文状态名 —— 两个码分工不同，客户端按码分支时别混用） |
+| 患者或管理员令牌 | 403 | `FORBIDDEN_ROLE` |
+| 无令牌 | 401 | `AUTH_REQUIRED` |
 
 #### 5.32.7 2026-10-16 复核修正（客户端已落地，服务端行为补充）
 
@@ -1630,11 +1632,62 @@ POST /api/v1/doctor/visits/:id/record/reopen
 | 3 | 管理台看板仍只显示 `booked`/`visiting` ⇒ "候诊 12 人"全藏进"已约"里 | 看板拆出 `已到院` / `候诊`（`dashboard` 端点早就算好了这两个数） | `server/admin-web/js/pages.js` |
 | 4 | 模型配置表单的「清空密钥引用」勾选框：清空靠**显式发 `key_ref: ""`**，而原实现让输入框残留值优先 ⇒ 勾了也可能没清掉 | 勾选框**优先于**输入框（勾了就是 `key_ref: ""`）；并注明服务端从不读 `clear_key_ref` 这个键 | `server/admin-web/js/pages.js` |
 
-⚠ 本次客户端改动只做了**静态核对（逐字段对照服务端返回与 Schema）**，没有 DevEco/真机编译环境；
-`BuildArkTS` 之类的编译验证要在有 SDK 的机器上补做。服务端侧复核修正（D1/D2/D4/D5…）见
-`docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md` §八。
-| 患者或管理员令牌 | 403 | `FORBIDDEN_ROLE` |
-| 无令牌 | 401 | `AUTH_REQUIRED` |
+#### 5.33 2026-10-16 鸿蒙客户端在 DevEco 模拟器上的构建与端到端实测
+
+本节把 §5.32 那批客户端改动从「只做静态核对」升级为**本机真编译 + 模拟器运行 + 与真实服务端联调**的实测记录。
+环境：DevEco Studio `DS-261.23567.138.36.2600821`（装在 `D:\DevEco Studio`）、SDK `HarmonyOS 26.0.0`（apiVersion 26）、
+模拟器 `Pura 90`（HarmonyOS 6.1.1 / API 24 / x86_64 / 1320x2856）、服务端 `hospital-server.exe serve --dev-auth`。
+
+**① 构建（先解决工程路径）**：`hvigor` **拒绝含中文的工程路径**
+（`ERROR: 00306003 Specification Limit Violation / Invalid project path. Current path does not match: E:\harmonyOS\智能医院客户端`），
+`subst` 映射盘符也绕不过（hvigor 会 realpath 回真实路径）。做法是 `robocopy` 一份**字节等价的 ASCII 副本**
+（排除 `.git`/`server`/`docs`/`contract`/`build`/`oh_modules` 等），在副本里构建：
+
+```powershell
+$env:DEVECO_SDK_HOME = 'D:\DevEco Studio\sdk'
+$env:JAVA_HOME       = 'D:\DevEco Studio\jbr'   # 必须：PATH 上的 java 若是 1.7，PackageHap 会 UnsupportedClassVersionError(52.0)
+$env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Studio\tools\ohpm\bin;D:\DevEco Studio\tools\hvigor\bin;$env:Path"
+& 'D:\DevEco Studio\tools\hvigor\bin\hvigorw.bat' --mode module -p product=default -p module=entry@default assembleHap --no-daemon
+```
+
+`BUILD SUCCESSFUL`（65 个任务，`:entry:default@CompileArkTS` 干净通过），产物 `entry/build/default/outputs/default/entry-default-unsigned.hap`（≈1.4 MB）。
+本仓 `signingConfigs` 是空数组，副本里去掉 `products` 的 `"signingConfig": "default"` 后 hvigor 只发一条
+`WARN: No signingConfig found for product default`。
+
+**② 安装与运行（未签名也能装）**：模拟器**接受未签名 HAP**，签名不是模拟器验证的前置条件：
+
+```powershell
+& $hdc install -r '<...>\entry-default-unsigned.hap'      # msg:install bundle successfully.
+& $hdc shell "aa start -a EntryAbility -b com.smart.hospital.patient"
+& $hdc shell "snapshot_display -f /data/local/tmp/shot.jpeg"; & $hdc file recv /data/local/tmp/shot.jpeg .
+```
+
+**③ UI 自动化（不需要 DevEco 点界面）**：`uitest uiInput click <x> <y>` / `inputText <x> <y> <text>`（设备像素，1320x2856）。
+两个坑：`uitest dumpLayout -p /data/local/tmp/l.json` 的 JSON 里**中文是 `\uXXXX` 转义**（按中文 grep 必然 0 命中，且单行超长会让 `ConvertFrom-Json` 失败）；
+软键盘弹出后，点击**键盘区域内的输入框**不会转移焦点、**完成键也点不掉键盘** ⇒ 连续输入会追加到第一个输入框。验证时要么只点键盘上方区域，要么绕过登录页（见④）。
+
+**④ 与真实服务端联调**：客户端默认 `baseUrl` 是 `http://127.0.0.1:8091`，但 **8091 落在 Windows 动态排除端口段 8037–8136**
+（服务端绑 8091 直接 `SocketException … Failed to bind 10013`），改用 `--dev-auth` 起在 **18096**，再端口反向映射进模拟器：
+`hdc rport tcp:18096 tcp:18096`（`hdc fport ls` 里显示 `[Reverse]`）。
+登录页在演示数据模式下可用任意非空账号，但**医生端/管理台入口在冷启动时装不到**——`EntryAbility.onCreate` 只注册一个端，
+医生端 shell 只有会话里角色已是 doctor 时才会被注册，所以联调时在**验证副本**里预置会话后直接跳队列：
+`ApiConfig.mode = ApiMode.LIVE; ApiConfig.baseUrl = 'http://127.0.0.1:18096'; SessionStore.setApiConfig('live', …); SessionStore.saveLogin(<真令牌>, <过期>, <userId>, 'doctor', <refId>, 0, <显示名>); AppRouter.getInstance().reset(RouteName.DOCTOR_QUEUE);`
+（这类改动只在 ASCII 副本里，**不进仓库**；真机流程里分别由设置页与登录页完成。）
+
+**⑤ 实测结果**：
+* 医生端队列四态渲染正确：`接诊中` 给「写病历 / 完成就诊」、`候诊中` 给「爽约 / 开始接诊」、`已挂号` 给「爽约 / 到院登记」、`已完成` 无动作；候诊/就诊时长按时间戳算出。
+* **状态链全程点通（真实服务端）**：在模拟器上依次点「到院登记 → 转入候诊 → 开始接诊」，库里同一行
+  `booked → arrived → waiting → visiting`，`arrived_at` / `started_at` 落库（本次 `arrived_at=1792065257`、`started_at=1792065264`），界面同步变为 `接诊中`。
+* **负向用例**：对仍是 `booked` 的单直接 `POST /api/v1/doctor/visits/:id/start` ⇒ `409 {"code":"VISIT_BAD_STATE","message":"开始接诊：当前状态 'booked' 不允许流转到 'visiting'"}`。
+
+**⑥ 实测新发现（一条已修、一条待决策）**：
+
+| # | 现象 | 处置 |
+| --- | --- | --- |
+| 1 | 医生端**演示夹具**漏给 `booked` 那单设 `statusLabel`，队列页兜底成本地文案「待就诊」，而服务端 `visitStatusLabel(booked)` 是「已挂号」⇒ 演示与线上文案对不上 | 已修：`feature-doctor/.../MockDoctorRepository.ets` 给 603 补 `statusLabel = '已挂号'`，并在模拟器上复验 |
+| 2 | 客户端本地兜底 `appointmentStatusText`（`common-core` 与 `feature-patient` 各一份、逐字相同）与服务端权威 `visitStatusLabel` **7 态里有 4 态不一致**：`booked` 待就诊/已挂号、`visiting` 就诊中/接诊中、`cancelled` 已取消/已退号、`no_show` 爽约/已爽约 | **未改**：患者可见文案属产品表述，不宜由工程单方面改动；建议单点化（服务端 `status_label` 为准，客户端只在拿不到 label 时兜底），或明确"患者视角文案"与"院内术语"是两套并有文档依据。`VisitQueuePage.ets:124-131` 的注释已经预警过这个双实现漂移 |
+
+服务端侧复核修正（D1/D2/D4/D5…）见 `docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md` §八；本节对应的构建/联调命令也在该文 §8.4 有摘要。
 
 ---
 

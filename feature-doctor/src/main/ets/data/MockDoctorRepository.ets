@@ -39,6 +39,9 @@ class MockDoctorState {
     MockDoctorState.visits[0].startedAt = nowSec - 600;
     MockDoctorState.visits[1].statusLabel = '候诊中';
     MockDoctorState.visits[1].arrivedAt = nowSec - 480;
+    // 603（booked）以前漏了 statusLabel ⇒ 队列页兜底用本地 appointmentStatusText 渲染成「待就诊」，
+    // 而真实服务端 visitStatusLabel(booked) 是「已挂号」—— 演示与线上文案对不上（2026-10-16 在模拟器上实测发现）。
+    MockDoctorState.visits[2].statusLabel = '已挂号';
     MockDoctorState.visits[3].statusLabel = '已完成';
     MockDoctorState.visits[3].arrivedAt = nowSec - 5400;
     MockDoctorState.visits[3].startedAt = nowSec - 4800;
