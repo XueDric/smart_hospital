@@ -81,6 +81,7 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 5. 状态的中文与颜色映射**有两份**：`feature-patient/.../ui/Theme.ets:49-66`（待就诊/就诊中/已完成/已取消/爽约）
    与 `common-core/.../ui/Theme.ets:50-63`；病历状态映射在 `common-core/.../ui/Theme.ets:84-105`（`none/draft/locked`）。
    ⇒ 加状态必须两处一起改（建议顺手合并成一处，否则第 6 条一定会漏一处）。
+   **（2026-10-16 晚已处置：两份合并为一份 —— `feature-patient` 改为转调 `common-core`；同时把 7 个中文值逐字对齐服务端 `visitStatusLabel`，见 §8.4。）**
 6. Mock 仓库目前兼作"接口样例"：`MockPatientRepository.ets`（363 行）、`MockDoctorRepository.ets`（212 行）、
    `MockAdminRepository.ets`（543 行）、安卓 `res/values/data_strings.xml`（75 行）
    ⇒ 第 5 条要把这个角色正式接过来，不能让"样例"继续散在假数据里。
@@ -337,7 +338,7 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 | | `BookingPage.ets:116-125` | 现在只对 `SLOT_GONE` 特判、其余走 `apiError.userMessage()`（兜底"请求失败，请稍后重试"）：改为**区分"结果未确认"**（超时/断连/5xx/`NETWORK_ERROR`/`SSE_INCOMPLETE`）⇒ 显示「预约结果尚未确认」+ 两个动作：**继续确认同一预约**（同 token 重发）/ **查询这次请求的结果**（by-token GET）。**不出现"重新挂号"**（换 token 会重复占号） |
 | | `common-core/.../network/ApiError.ets:1-16` | `ErrorCode` 15 个里没有"结果未确认"这一态 ⇒ 新增（例如 `BOOKING_UNCONFIRMED`）并给出面向用户的文案；**不要**复用 `NETWORK_ERROR` 的通用文案（那会让用户以为"没提交，重来就行"） |
 | | `HomePage.ets` / `AppointmentsPage.ets` | 冷启动若发现未确认的 pending 记录 ⇒ 顶部卡片「有一次未确认的预约」 |
-| | `common-core/.../ui/Theme.ets:50-63`（**合并** `feature-patient/.../ui/Theme.ets:49-66`） | 状态人话映射：`booked`=已预约 / `visiting`=接诊中 / `done`=已完成 / `no_show`=爽约 / `cancelled`=已退号（现在两份，先合并成一处，见 §一.3 事实 5） |
+| | `common-core/.../ui/Theme.ets:50-63`（**合并** `feature-patient/.../ui/Theme.ets:49-66`） | 状态人话映射：`booked`=已挂号 / `arrived`=已到院 / `waiting`=候诊中 / `visiting`=接诊中 / `done`=已完成 / `cancelled`=已退号 / `no_show`=已爽约（✅ 2026-10-16 晚已合并成一处并逐字对齐服务端 `visitStatusLabel`，见 §8.4） |
 | 安卓患者端 | `SessionStore.kt:133-214`、`PatientRepository.kt:152-205`、`MainActivity.kt:342-365`、`res/values/strings.xml:84,87` | **已完成，作为参照**：① `bookingToken(scheduleId)` 用 preferences 持久化并在读取时校验（`:140`）；② `markBookingCompleted` / `markBookingReplacementIfCurrent`（A→B 交接 CAS，`:166-189`）/ `clearBookingIfCompleted`（tombstone，保留 token，`:191-214`）；③ `replayed = status == 200 \|\| knownId == appointmentId`（`:189`）且**成功后仍保留 token**（`:193` 有注释）；④ 三条结果横幅（成功/回放/`booking_result_status`）与 `appointmentOutcomeWarning`（`:348`）。本项只需**接上新端点**（by-token 反查）——若暂不做 UI，至少把它用于"结果未确认"时的一次静默对账 |
 
 `slot_restored:false` + `warning` 必须原样展示（不要让用户反复点退号），口径见 `FRONTEND-INTEGRATION.md:760-769`；安卓已有 `cancel_incomplete` / `cancel_restore_unconfirmed` 两条文案可直接抄。
@@ -703,7 +704,7 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 | 界面验证 | 医生端队列四态与「下一步唯一动作」全部正确（`接诊中`→写病历/完成就诊、`候诊中`→爽约/开始接诊、`已挂号`→爽约/到院登记、`已完成`→无动作）；患者端七态文案与首页状态胶囊正常 |
 | live 联调 | 客户端默认 `baseUrl` 是 `127.0.0.1:8091`，但 **8091 落在 Windows 排除端口段 8037–8136**（bind 报 10013）⇒ 服务端起在 **18096** 并 `hdc rport tcp:18096 tcp:18096` 反向映射；用真实医生令牌预置会话后直接进队列，点「到院登记 → 转入候诊 → 开始接诊」⇒ 库里 `booked → arrived → waiting → visiting`、`arrived_at=1792065257` / `started_at=1792065264`；对 `booked` 直接 `start` ⇒ `409 VISIT_BAD_STATE` |
 | 新发现（已修） | 医生端夹具漏给 `booked` 单设 `statusLabel` ⇒ 队列页兜底显示「待就诊」，与服务端 `visitStatusLabel(booked)='已挂号'` 不一致；已补 `MockDoctorRepository.ets` 并在模拟器复验 |
-| 新发现（待决策） | 客户端本地兜底 `appointmentStatusText` 与服务端权威 `visitStatusLabel` 在 **4/7 态**上不一致（`booked` 待就诊/已挂号、`visiting` 就诊中/接诊中、`cancelled` 已取消/已退号、`no_show` 爽约/已爽约）。患者可见文案属产品表述，未擅自改；建议以服务端 `status_label` 为单点权威 |
+| 新发现（待决策） | 客户端本地兜底 `appointmentStatusText` 与服务端权威 `visitStatusLabel` 在 **4/7 态**上不一致（`booked` 待就诊/已挂号、`visiting` 就诊中/接诊中、`cancelled` 已取消/已退号、`no_show` 爽约/已爽约） | ✅ **已按服务端术语对齐（2026-10-16 晚）**：`common-core/.../ui/Theme.ets` 改为 `已挂号`/`接诊中`/`已退号`/`已爽约`，`feature-patient/.../ui/Theme.ets` 改为直接转调 `common-core`（词汇表只剩一份）；模拟器复验就诊列表胶囊显示「已挂号」 |
 | 工具坑 | 软键盘弹出后点击键盘内的输入框不转移焦点、`完成` 键也点不掉键盘（连续输入会追加到同一框）；`uitest dumpLayout` 的中文是 `\uXXXX` 转义，按中文 grep 必然 0 命中 |
 
 ---

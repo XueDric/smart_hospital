@@ -140,7 +140,7 @@ export struct HomePage {
           .onClick(() => AppRouter.getInstance().reset(RouteName.APPOINTMENTS))
         } else {
           InfoBanner({
-            message: '目前没有待就诊预约，可以先完成智能分诊再选择号源。',
+            message: '目前没有已挂号的预约，可以先完成智能分诊再选择号源。',
             tone: 'info',
             actionText: '去分诊',
             onAction: () => AppRouter.getInstance().push(RouteName.TRIAGE)

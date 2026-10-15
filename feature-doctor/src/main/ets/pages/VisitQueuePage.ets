@@ -123,6 +123,9 @@ export struct VisitQueuePage {
    * ⚠ 2026-10-16（复核 D3）：状态中文名**优先用服务端下发的 status_label**。
    *   本地 appointmentStatusText 只是兜底：中文名只该有一份权威实现（服务端
    *   `visitStatusLabel`），两边各写一份迟早会出现"服务端说已到院、客户端说候诊中"。
+   *   —— 这个预言在 2026-10-16 晚的模拟器实测里应验了（7 个值漂了 4 个：
+   *   booked/visiting/cancelled/no_show），现已把 `common-core` 的本地兜底逐字对齐服务端，
+   *   并让 `feature-patient` 直接转调 `common-core`，不再有第二份词汇表。
    */
   private statusTextOf(item: VisitItem): string {
     if (item.statusLabel.length > 0) {

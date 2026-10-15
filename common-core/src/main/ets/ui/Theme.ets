@@ -50,12 +50,14 @@ export function periodText(period: string): string {
  * 就诊状态 → 中文。⚠ 2026-10-16（复核 D3）：服务端在改进 6 里把状态机扩到 7 个值
  * （新增 arrived/waiting），这里必须同步 —— 否则已到院/候诊中的单在界面上会显示成
  * 英文机器码（`arrived` / `waiting`），比不显示更让人困惑。
- * 与 `server/src/domain_emr.cj` 的 `visitStatusLabel` **逐字一致**：状态码是机器判据，
- * 中文名只应该有一份权威实现；两边不一致时以服务端下发的 `status_label` 为准。
+ * ⚠ 2026-10-16 晚（DevEco 模拟器实测发现）：此前 7 个值里有 4 个与服务端对不上 ——
+ * booked「待就诊」/「已挂号」、visiting「就诊中」/「接诊中」、cancelled「已取消」/「已退号」、
+ * no_show「爽约」/「已爽约」。现已按 `server/src/domain_emr.cj` 的 `visitStatusLabel` **逐字对齐**。
+ * 状态码是机器判据，中文名只应该有一份权威实现；服务端下发了 `status_label` 时一律以它为准。
  */
 export function appointmentStatusText(status: string): string {
   if (status === 'booked') {
-    return '待就诊';
+    return '已挂号';
   }
   if (status === 'arrived') {
     return '已到院';
@@ -64,16 +66,16 @@ export function appointmentStatusText(status: string): string {
     return '候诊中';
   }
   if (status === 'visiting') {
-    return '就诊中';
+    return '接诊中';
   }
   if (status === 'done') {
     return '已完成';
   }
   if (status === 'cancelled') {
-    return '已取消';
+    return '已退号';
   }
   if (status === 'no_show') {
-    return '爽约';
+    return '已爽约';
   }
   return status.length > 0 ? status : '未知状态';
 }

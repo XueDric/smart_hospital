@@ -714,7 +714,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 | 参数 | 类型 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
-| `include_cancelled` | String | 否 | 不含已取消 | **必须正好是字符串 `"true"`** 才生效（其他值一律当 false，`http_app.cj:1401`） |
+| `include_cancelled` | String | 否 | 不含已退号 | **必须正好是字符串 `"true"`** 才生效（其他值一律当 false，`http_app.cj:1401`） |
 | `limit` | Int64 | 否 | `50` | 夹到 `(0,200]`，`<= 0` 回退 50（`domain_booking.cj:278`） |
 
 > `patient_id` **一律取自令牌**，查询参数里传了也没用（`domain_booking.cj:271-272` 明确写死这条纪律）。
@@ -1628,11 +1628,11 @@ POST /api/v1/doctor/visits/:id/record/reopen
 | # | 问题 | 修正 | 落点 |
 | --- | --- | --- | --- |
 | 1 | 医生端只有 `startVisit`，「开始接诊」对着 `booked` 的单按下去必然 409 ⇒ 医生主流程断死 | 补 `arriveVisit` / `waitingVisit`，队列页按钮随 `status` 给"下一步唯一动作"，并给"爽约" | `feature-doctor/.../DoctorRepository.ets`（`arriveVisit`/`waitingVisit`）、`VisitQueuePage.ets` |
-| 2 | 患者端状态文案只有 `booked`/`visiting`/`cancelled`/`no_show` ⇒ 新状态在患者自己列表里显示英文机器码 | 补齐七态中文（与 `common-core` 同名字符串逐字一致），**优先用服务端 `status_label`**、本地映射只作兜底 | `feature-patient/.../Theme.ets`（`appointmentStatusText`）、`common-core/.../Theme.ets` |
+| 2 | 患者端状态文案只有 `booked`/`visiting`/`cancelled`/`no_show` ⇒ 新状态在患者自己列表里显示英文机器码 | 补齐七态中文，**优先用服务端 `status_label`**、本地映射只作兜底；**2026-10-16 晚**把本地兜底逐字对齐服务端 `visitStatusLabel`（`已挂号`/`已到院`/`候诊中`/`接诊中`/`已完成`/`已退号`/`已爽约`），并让 `feature-patient` 直接转调 `common-core`（词汇表只留一份） | `common-core/.../Theme.ets`（`appointmentStatusText`/`appointmentStatusColor`）、`feature-patient/.../Theme.ets`（转调） |
 | 3 | 管理台看板仍只显示 `booked`/`visiting` ⇒ "候诊 12 人"全藏进"已约"里 | 看板拆出 `已到院` / `候诊`（`dashboard` 端点早就算好了这两个数） | `server/admin-web/js/pages.js` |
 | 4 | 模型配置表单的「清空密钥引用」勾选框：清空靠**显式发 `key_ref: ""`**，而原实现让输入框残留值优先 ⇒ 勾了也可能没清掉 | 勾选框**优先于**输入框（勾了就是 `key_ref: ""`）；并注明服务端从不读 `clear_key_ref` 这个键 | `server/admin-web/js/pages.js` |
 
-#### 5.33 2026-10-16 鸿蒙客户端在 DevEco 模拟器上的构建与端到端实测
+### 5.33 2026-10-16 鸿蒙客户端在 DevEco 模拟器上的构建与端到端实测
 
 本节把 §5.32 那批客户端改动从「只做静态核对」升级为**本机真编译 + 模拟器运行 + 与真实服务端联调**的实测记录。
 环境：DevEco Studio `DS-261.23567.138.36.2600821`（装在 `D:\DevEco Studio`）、SDK `HarmonyOS 26.0.0`（apiVersion 26）、
@@ -1685,9 +1685,15 @@ $env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Stud
 | # | 现象 | 处置 |
 | --- | --- | --- |
 | 1 | 医生端**演示夹具**漏给 `booked` 那单设 `statusLabel`，队列页兜底成本地文案「待就诊」，而服务端 `visitStatusLabel(booked)` 是「已挂号」⇒ 演示与线上文案对不上 | 已修：`feature-doctor/.../MockDoctorRepository.ets` 给 603 补 `statusLabel = '已挂号'`，并在模拟器上复验 |
-| 2 | 客户端本地兜底 `appointmentStatusText`（`common-core` 与 `feature-patient` 各一份、逐字相同）与服务端权威 `visitStatusLabel` **7 态里有 4 态不一致**：`booked` 待就诊/已挂号、`visiting` 就诊中/接诊中、`cancelled` 已取消/已退号、`no_show` 爽约/已爽约 | **未改**：患者可见文案属产品表述，不宜由工程单方面改动；建议单点化（服务端 `status_label` 为准，客户端只在拿不到 label 时兜底），或明确"患者视角文案"与"院内术语"是两套并有文档依据。`VisitQueuePage.ets:124-131` 的注释已经预警过这个双实现漂移 |
+| 2 | 客户端本地兜底 `appointmentStatusText`（`common-core` 与 `feature-patient` 各一份、逐字相同）与服务端权威 `visitStatusLabel` **7 态里有 4 态不一致**：`booked` 待就诊/已挂号、`visiting` 就诊中/接诊中、`cancelled` 已取消/已退号、`no_show` 爽约/已爽约 | ✅ **已按服务端术语对齐（2026-10-16 晚）**：`common-core/.../ui/Theme.ets` 把那 4 个值改成 `已挂号` / `接诊中` / `已退号` / `已爽约`；`feature-patient/.../ui/Theme.ets` 的 `appointmentStatusText` / `appointmentStatusColor` 改为**直接转调 `common-core`**（第二份词汇表已删），`HomePage.ets:143` 空态文案同步改为「目前没有已挂号的预约」。设备复验：就诊列表里 `2026-11-20 上午` 那张单的胶囊由「待就诊」变为「已挂号」 |
 
 服务端侧复核修正（D1/D2/D4/D5…）见 `docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md` §八；本节对应的构建/联调命令也在该文 §8.4 有摘要。
+
+**证据留存**：本轮 7 张模拟器截图暂存在本机 `.scratch-evidence-2026-10-16/`（仓库根的 `.scratch-*` 已被 `.gitignore` 忽略，
+所以截图不入库、仓库保持纯文本）；文件名与内容见该目录的 `README.md`：`01-patient-home.jpeg`（患者首页）、
+`02-doctor-queue-mock.jpeg`（医生队列四态）、`03-doctor-arrived.jpeg`（点「到院登记」后 `已到院` + 「转入候诊」）、
+`04-live-queue.jpeg`（联调：真实队列与 `已挂号`）、`05-live-visiting.jpeg`（联调走完 `booked→arrived→waiting→visiting`）、
+`06-mock-label-fixed.jpeg`（夹具补 `statusLabel` 后复验）、`07-patient-appointments-aligned.jpeg`（文案对齐后就诊列表 `已挂号`）。
 
 ---
 
@@ -2255,7 +2261,7 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 | `waiting` | 候诊中（进候诊队列） | `visiting` `no_show` |
 | `visiting` | 接诊中（医生端流转，写 `started_at`） | `done` `no_show` |
 | `done` | 已完成就诊（病历须已锁定，写 `finished_at`） | 终态 |
-| `cancelled` | 已取消（退号；**只能从 `booked` 来**） | 终态 |
+| `cancelled` | 已退号（患者退号；**只能从 `booked` 来**） | 终态 |
 | `no_show` | 爽约 | 终态 |
 
 > 中文名一律用响应里的 `status_label`（`visitStatusLabel`），不要在前端抄一份表。

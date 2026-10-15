@@ -1,3 +1,8 @@
+import {
+  appointmentStatusColor as coreAppointmentStatusColor,
+  appointmentStatusText as coreAppointmentStatusText
+} from 'common-core';
+
 export class AppColor {
   static readonly PRIMARY: string = '#00A9A7';
   static readonly PRIMARY_DARK: string = '#007F7D';
@@ -47,53 +52,17 @@ export function periodText(period: string): string {
 }
 
 /*
- * 就诊状态 → 中文。⚠ 2026-10-16（复核 D3）：服务端在改进 6 里把状态机扩到 7 个值
- * （新增 arrived/waiting），患者端必须同步 —— 否则"我已到院"在患者自己的列表里
- * 会显示成英文机器码 `arrived`，患者根本不知道那是"已到院"还是报错。
- * 与 `common-core` 的同名函数、与服务端 `visitStatusLabel` 逐字一致。
+ * 就诊状态 → 中文/配色：**直接转调 common-core 的实现**（2026-10-16 晚）。
+ * 这里原本抄了一份，结果与服务端 `visitStatusLabel` 的 7 个值里漂了 4 个
+ * （booked / visiting / cancelled / no_show），演示与线上文案对不上（DevEco 模拟器实测发现）。
+ * 就诊状态是跨端共享词汇表 —— 只留一处实现，就不会再漂。
  */
 export function appointmentStatusText(status: string): string {
-  if (status === 'booked') {
-    return '待就诊';
-  }
-  if (status === 'arrived') {
-    return '已到院';
-  }
-  if (status === 'waiting') {
-    return '候诊中';
-  }
-  if (status === 'visiting') {
-    return '就诊中';
-  }
-  if (status === 'done') {
-    return '已完成';
-  }
-  if (status === 'cancelled') {
-    return '已取消';
-  }
-  if (status === 'no_show') {
-    return '爽约';
-  }
-  return status.length > 0 ? status : '未知状态';
+  return coreAppointmentStatusText(status);
 }
 
 export function appointmentStatusColor(status: string): string {
-  if (status === 'booked') {
-    return AppColor.INFO;
-  }
-  if (status === 'arrived' || status === 'waiting') {
-    return AppColor.INFO;
-  }
-  if (status === 'visiting') {
-    return AppColor.PRIMARY_DARK;
-  }
-  if (status === 'done') {
-    return AppColor.SUCCESS;
-  }
-  if (status === 'cancelled' || status === 'no_show') {
-    return AppColor.DANGER;
-  }
-  return AppColor.TEXT_SECONDARY;
+  return coreAppointmentStatusColor(status);
 }
 
 export function sourceText(source: string): string {

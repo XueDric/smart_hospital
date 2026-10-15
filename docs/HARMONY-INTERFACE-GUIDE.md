@@ -266,6 +266,9 @@ $env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Stud
 ```
 
 * `signingConfigs` 为空时，把 `products` 里的 `"signingConfig": "default"` 去掉，只留一条 `WARN: No signingConfig found for product default`，产物是**未签名 HAP**——模拟器可直接 `hdc install -r` 装上。
+* 构建用的 ASCII 副本以 `E:\harmonyOS\sh_client_check` 为例：它在仓库外、一次性、可随时删掉重建；
+  重建命令 `robocopy '<仓库根>' 'E:\harmonyOS\sh_client_check' /E /XD .git server docs contract .hvigor build oh_modules node_modules .idea .vscode _fetch .tools`。
+  副本里可以改 `EntryAbility` 预置会话 / 强制路由做界面验证，但**绝不回写仓库**（改动只属于验证脚手架）。
 * 模拟器安装、UI 自动化、与真实服务端联调的完整命令与实测结论见
   [docs/FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) §5.33。
 * 服务端联调（本机库、建库、起服务）见 [docs/FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) §2。
