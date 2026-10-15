@@ -1,0 +1,20 @@
+{
+  "name": "doctor-visit-start-skip-409",
+  "group": "record",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/doctor/visits/{id}/start",
+    "auth": "doctor"
+  },
+  "response": {
+    "status": 409,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "VISIT_BAD_STATE",
+        "message": "开始接诊：当前状态 'booked' 不允许流转到 'visiting'"
+      }
+    }
+  }
+}

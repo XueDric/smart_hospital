@@ -184,6 +184,16 @@ Write-Host ""
 Write-Host "[3] 接诊状态机"
 $r = Req 'finish0' 'POST' '/api/v1/doctor/visits/700001/finish' @("Authorization: Bearer $docTok") $null
 Check "★ 未开始接诊就「完成」→ 409（状态冲突，不是 400）" ($r.Http -eq 409) ("HTTP $($r.Http)")
+$r = Req 'start0' 'POST' '/api/v1/doctor/visits/700001/start' @("Authorization: Bearer $docTok") $null
+Check "★★ 改进 6：没到院就直接「开始接诊」→ 409（不能跳步）" ($r.Http -eq 409) ("HTTP $($r.Http)")
+Check "★★ 且错误码是 VISIT_BAD_STATE" (($r.Body | ConvertFrom-Json).error.code -eq 'VISIT_BAD_STATE') (($r.Body | ConvertFrom-Json).error.code)
+$r = Req 'arrive' 'POST' '/api/v1/doctor/visits/700001/arrive' @("Authorization: Bearer $docTok") $null
+Check "★ 到院登记 → 200" ($r.Http -eq 200) ("HTTP $($r.Http)")
+Check "★ 状态变为 arrived" (($r.Body | ConvertFrom-Json).data.status -eq 'arrived')
+Check "★ 且写了 arrived_at（> 0）" ((($r.Body | ConvertFrom-Json).data.arrived_at) -gt 0)
+$r = Req 'waiting' 'POST' '/api/v1/doctor/visits/700001/waiting' @("Authorization: Bearer $docTok") $null
+Check "★ 进入候诊 → 200" ($r.Http -eq 200) ("HTTP $($r.Http)")
+Check "★ 状态变为 waiting" (($r.Body | ConvertFrom-Json).data.status -eq 'waiting')
 $r = Req 'start' 'POST' '/api/v1/doctor/visits/700001/start' @("Authorization: Bearer $docTok") $null
 Check "开始接诊 → 200" ($r.Http -eq 200) ("HTTP $($r.Http)")
 Check "★ 状态变为 visiting" (($r.Body | ConvertFrom-Json).data.status -eq 'visiting')

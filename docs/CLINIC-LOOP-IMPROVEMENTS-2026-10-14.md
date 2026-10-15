@@ -1,4 +1,4 @@
-# 门诊闭环与工程质量改进方案（2026-10-14）
+﻿# 门诊闭环与工程质量改进方案（2026-10-14）
 
 > **来源**：第三方复查给出的 7 条改进方向（高 5 / 中 2）。
 > **本文做什么**：把每条方向拆成**后端要改什么**、**前端要改什么**（鸿蒙患者端 / 鸿蒙医生端 / 管理台 / 安卓患者端），
@@ -30,7 +30,7 @@
 | **预问诊 → 病历的预填桥**（⭐ 容易被当成"不存在"） | `PUT /doctor/visits/:id/record` 支持可选 `use_intake_session`；服务端按 **`WHERE id=? AND patient_id=?`** 校验"是你这个患者的单"，再把六槽位映射到病历四段（主诉；现病史＝病程+程度+伴随；既往史；过敏史），**仅在"该单还没有病历"时**写一次，已有病历一律不覆盖 | `server/src/http_p4.cj:355-372`（路由）、`server/src/domain_emr.cj:655-708`（`intakePrefill`）、`domain_emr.cj:710-722`（`saveDraftWithIntake`）、用例 `server/tests/emr-check.ps1:280-291` |
 | 请求编号 | 框架 `requestId` 中间件**已装**，响应头回传 `X-Request-Id`，也接受客户端传入 | `server/third_party/qingzhou/src/requestid.cj:39-53`、`server/src/http_app.cj:2447` |
 | 时间口径 | 服务端业务时间戳 = **epoch 秒**；`elapsed_ms` 是**毫秒** | `server/src/acceptance.cj:37-39`（`hNowEpoch`）、`server/src/ai_call.cj:158` |
-| 服务端门禁 | 进程内 4 套件（`selftest` / `authtest` / `triagetest` / `accept`）+ **16 项** live 检查脚本汇总入口（含 `contract-check`、`revision-check`、`workbench-check`、`ai-telemetry-check`） | `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1` |
+| 服务端门禁 | 进程内 4 套件（`selftest` / `authtest` / `triagetest` / `accept`）+ **17 项** live 检查脚本汇总入口（含 `contract-check`、`revision-check`、`workbench-check`、`ai-telemetry-check`、`visit-timeline-check`） | `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1` |
 
 ### 1.2 真正的缺口（7 条各自指向的地方）
 
@@ -454,6 +454,22 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 
 **投入**：后端 2.5 人日 / 医生端 1.5 人日 / 患者端 1 人日。**依赖**：改进 3（改状态机会牵动病历锁定的测试）+ 改进 5（新状态要进契约样例）。
 
+#### ✅ 实施状态：**服务端已实现（2026-10-15）**，与本文计划的差异如下
+
+| # | 计划 | 实际落地 | 为什么 |
+| --- | --- | --- | --- |
+| 1 | `arrived → cancelled` 放行（流转表第 2 行） | **不允许**：`cancelled` 只能从 `booked` 来 | 写入侧 `domain_booking.cj` 的退号 `UPDATE … WHERE status = 'booked'` 是硬编码的（`http_app.cj` 的 `POST /appointments/:id/cancel` 是唯一退号端点）。矩阵放行而写入拒绝 = 两个真相，正是本仓反复踩的病；且到院后号源已消耗，退号本就该走人工/管理员 |
+| 2 | 流转矩阵写成显式表 + 逐格单测 | `visitTransitionAllowed(from, to)` 用四条 `if` 把 `booked`/`arrived`/`waiting`/`visiting` 的出边**逐个列全**（`done`/`cancelled`/`no_show`/未知一律 false）；矩阵逐格断言落在 **AC-P4-2 ⑨（13 条）**，非法流转另由 **AC-P4-8 ⑤（7 条）** 覆盖 | 同计划；`from` 是运行期字符串，用 `if` 链比建 28 格的表更直白，逐格断言才是防漏的那一半 |
+| 3 | 三个时间戳列 `BIGINT DEFAULT 0` | `arrived_at`/`started_at`/`finished_at` 落在 `appointment` 表，迁移是 `migrateSchema` 的 **⑬**（`addVisitTimelineColumns`，沿用 ⑪ 的逐列 `information_schema` 判断写法） | 与既有迁移风格一致（`CREATE TABLE IF NOT EXISTS` 改不动老库） |
+| 4 | 队列排序 `arrived/waiting` 优先 + `seq_no` 升序 | 排序在 **SQL 里**做（`ORDER BY (CASE status …) , seq_no ASC`），CASE 的分支数字与 `domain_emr.cj` 的 `visitQueueRank` **必须一致**；AC-P4-8 ① 用 `visitQueueRank` 预测顺序、再与 SQL 实际返回逐项比对（两处表述分歧会立刻红）；队列 item 另带 `status_label` 与三个时间戳 | 让"待处理优先"与"同一状态内按序号"只在一个地方定义；客户端重排会把待处理项排到后面 |
+| 5 | 患者自助签到 | **不做**（与计划一致），到院确认只有医生端 `POST /visits/:id/arrive` | 同计划 §六 |
+| 6 | 新状态要进契约样例 | 新增 8 条样例（5 个 200 + 3 个 409）与 1 份 Schema（`data-visit-state`），改动 3 份既有 Schema（挂号类 + 队列）⇒ 样例 **59 → 67 条**、Schema **26 → 27 个** | 新状态/新字段是响应形状变更 |
+| 7 | `data-queue` 的 `status` 枚举 | 顺手修了一个**既有错误**：枚举里写的是 `finished`，而服务端常量一直是 `done`（此前样例里只有 `booked`，所以门禁没抓到） | 契约要把枚举钉住才有人发现这类漂移 |
+| 8 | live 新脚本 `visit-check.ps1` | 落地为 `server/tests/visit-timeline-check.ps1`（**42 项断言**，已并入 `final-verify.ps1`） | 名字点明它钉的是"时间线"（哪一步写哪个戳、被拒的流转一个都不写） |
+| 9 | 三个时间戳进契约样例 | 样例里**归一化为 0**（与 `created_at` 同类的"跑一次就变"字段） | 语义改由 `hospital-server.exe accept` 的 AC-P4-8 与 AC-P4-2 ⑨ 逐格矩阵（本次 accept 692 → **743**，共 +51 条断言）以及 live 脚本逐字段钉住 —— 契约层钉形状、用例层钉语义 |
+
+**客户端仍需做**：医生端 `VisitQueuePage` 把动作拆成「确认到院 → 进入候诊 → 开始接诊 → 完成就诊」，`status` 分支新增 `arrived`/`waiting` 且中文一律用 `status_label`（不要自抄映射表），**不要再按 `seq_no` 重排队列**（排序由服务端给），候诊/就诊时长用 `started_at - arrived_at` / `finished_at - started_at`（`0` = 还没发生，不是缺字段）；患者端可按三个时间戳画状态时间线；管理台看板（今日到院率 / 当前候诊人数）仍未做。前端落点见本文 §改进 6 前端任务表与 `docs/FRONTEND-INTEGRATION.md` §5.32。
+
 ---
 
 ### 改进 7（中）AI 评测与排障闭环
@@ -577,8 +593,8 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 | 改动范围 | 必须跑的闸门 | 说明 |
 | --- | --- | --- |
 | 服务端任何改动 | `server/build.ps1`（框架 38 + 业务 37 = 75 文件） | 编译不过就别谈测试 |
-| 服务端业务逻辑 | 进程内四套件：`selftest`（51 项）/ `authtest`（17 项）/ `triagetest`（110 项）/ `accept <dsn>`（**638 项**） | `accept` 需要 DSN；`server/tests/doc-counts.ps1` 会顺带重跑并核对文档数字 |
-| HTTP 契约层 | `server/tests/final-verify.ps1`（现 **16 项**，全绿 exit 0；含 `previsit-bridge-check`、`revision-check`、`workbench-check`、`contract-check` 与 `ai-telemetry-check`） | ⚠ 本机端口必须 ≥15001；脚本前先 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`；含中文的 .ps1 必须带 **UTF-8 BOM** |
+| 服务端业务逻辑 | 进程内四套件：`selftest`（51 项）/ `authtest`（17 项）/ `triagetest`（110 项）/ `accept <dsn>`（**743 项**） | `accept` 需要 DSN；`server/tests/doc-counts.ps1` 会顺带重跑并核对文档数字 |
+| HTTP 契约层 | `server/tests/final-verify.ps1`（现 **17 项**，全绿 exit 0；含 `previsit-bridge-check`、`revision-check`、`workbench-check`、`visit-timeline-check`、`contract-check` 与 `ai-telemetry-check`） | ⚠ 本机端口必须 ≥15001；脚本前先 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`；含中文的 .ps1 必须带 **UTF-8 BOM** |
 | 契约变更 | `server/tests/contract-check.ps1`（改进 5，已并入 final-verify 的 `$specs`）：改动**响应形状** ⇒ 逐字节比对红 / Schema 红 / 登记缺失红 | 更新样例 = 不带 `-Check` 跑 `export-contract.ps1`（写盘），再 review diff + 登记 `schema-map.json` + 写 `contract/CHANGELOG.md` |
 | 管理台（浏览器） | `server/tests/admin-web-smoke.mjs`（`SMOKE-EXIT=0`，写路径 + 模态框 + 逐页断言） | 需要 Edge；断言失败会写进退出码 |
 | 文档数字 | `server/tests/doc-counts.ps1` | 加表/加端点/加 AC 后**必然**失败，这是设计意图：改代码的人必须同步文档 |
@@ -630,7 +646,7 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 - `server/src/domain_emr.cj:655-722`（**预问诊→病历预填桥**：`intakePrefill` / `saveDraftWithIntake`）、`:738-742`（就诊状态常量）
 - `server/src/domain_emr.cj`（**改进 3**：`lock`/`reopen` 签名与落版、`writeRevision`/`ensureLockRevision`/`revisions`/`revisionAt`/`backfillRevisions`）、`server/src/schema.cj`（`medical_record_revision` DDL + 迁移第 ⑩ 步）、`server/src/http_p4.cj:688-775`（修订历史三条端点）
 - `server/src/ai_call.cj:125-158`（`source`/`reason`/`elapsedMs`）、`server/src/triage_stat.cj:57`（落库写入点）
-- `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1`、`server/tests/admin-web-smoke.mjs`、`server/tests/emr-check.ps1:280-291`（`use_intake_session` 用例）、`server/tests/revision-check.ps1`（改进 3 的 46 条 live 断言）、`server/tests/workbench-check.ps1`（改进 2 的 29 条 live 断言）、`server/tests/ai-telemetry-check.ps1`（改进 7 的 44 条 live 断言）、`server/tests/ai-eval/`（改进 7 评测：`cases.jsonl` + `run-ai-eval.ps1` + `recorded/`）、`server/tests/export-contract.ps1` / `contract-check.ps1`（改进 5 契约门禁）
+- `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1`、`server/tests/admin-web-smoke.mjs`、`server/tests/emr-check.ps1:280-291`（`use_intake_session` 用例）、`server/tests/revision-check.ps1`（改进 3 的 46 条 live 断言）、`server/tests/workbench-check.ps1`（改进 2 的 29 条 live 断言）、`server/tests/visit-timeline-check.ps1`（改进 6 的 42 条 live 断言）、`server/tests/ai-telemetry-check.ps1`（改进 7 的 44 条 live 断言）、`server/tests/ai-eval/`（改进 7 评测：`cases.jsonl` + `run-ai-eval.ps1` + `recorded/`）、`server/tests/export-contract.ps1` / `contract-check.ps1`（改进 5 契约门禁）
 
 **客户端**
 - `common-core/src/main/ets/config/ApiConfig.ets:6-51`（LIVE/MOCK 与 baseUrl）、`.../network/ApiError.ets:1-16`（`ErrorCode` 清单）

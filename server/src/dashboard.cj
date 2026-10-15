@@ -144,12 +144,22 @@ public class DashboardRepo {
         let total = count1("SELECT COUNT(*) FROM appointment", Array<DbValue>())
         let booked = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_BOOKED)])
         let visiting = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_VISITING)])
+        /*
+         * ★ 2026-10-15（改进 6）：到院/候诊两态也进看板。
+         *   为什么必须有这两个数字：它们回答"现在有多少人**在现场等**" ——
+         *   这是运营最关心的一个量（等太久要加开诊室），而原口径里
+         *   这些人全都挤在 `booked` 里，与"还没出门的患者"混在一起，看不出来。
+         */
+        let arrived = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_ARRIVED)])
+        let waiting = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_WAITING)])
         let done = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_DONE)])
         let cancelled = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_CANCELLED)])
         let noShow = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_NO_SHOW)])
         let appt = JsonObject()
         appt.put("total", JsonInt(total))
         appt.put("booked", JsonInt(booked))
+        appt.put("arrived", JsonInt(arrived))
+        appt.put("waiting", JsonInt(waiting))
         appt.put("visiting", JsonInt(visiting))
         appt.put("done", JsonInt(done))
         appt.put("cancelled", JsonInt(cancelled))

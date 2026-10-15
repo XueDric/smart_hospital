@@ -76,6 +76,10 @@ try {
         @{ n = 'workbench-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'previsit-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'previsit-bridge-check'; p = @{ Base = $dev; AdminPw = $pw } },
+        # visit-timeline-check（改进 6）自建 707xxx 段夹具（6 张不同状态的挂号单），跑
+        # booked→arrived→waiting→visiting→done 全链路并逐字段钉住三个时间戳；它自己会
+        # 造/清挂号单，故放在 previsit-bridge 之后（那一节也会造单）。
+        @{ n = 'visit-timeline-check'; p = @{ Base = $dev; AdminPw = $pw } },
         # ⚠ contract-check 必须排在 p1-extra-check **之前**：后者会重设管理员口令，
         #   而契约导出机要用 final-verify 现场生成的那个口令登录。
         @{ n = 'contract-check'; p = @{ Base = $dev; AdminPw = $pw } },

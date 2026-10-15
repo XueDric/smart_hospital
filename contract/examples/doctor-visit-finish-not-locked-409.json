@@ -1,0 +1,20 @@
+{
+  "name": "doctor-visit-finish-not-locked-409",
+  "group": "record",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/doctor/visits/{id}/finish",
+    "auth": "doctor"
+  },
+  "response": {
+    "status": 409,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "EMR_NOT_LOCKED",
+        "message": "完成就诊前必须先提交锁定病历（草稿状态不算完成诊疗）"
+      }
+    }
+  }
+}

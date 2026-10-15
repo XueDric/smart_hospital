@@ -1,0 +1,20 @@
+{
+  "title": "就诊状态流转 data（到院 / 候诊 / 接诊 / 完成 / 爽约的每次响应）",
+  "description": "应用于 response.body.data。由 `p4VisitStateJson` 生成：**任何一次流转的响应都自带完整时间线**，客户端不需要为此再查一次队列。三个时间戳是机构的客观事实（人几点到、医生几点看、几点结束），所以：① 0 的含义是「这一步还没发生」（不是缺字段）；② 每一次流转只写自己那一个时间戳（到院不许顺手把 started_at 写了）；③ 被拒绝的流转**一个都不写**（画面上不能出现「接诊中但没有到院时间」的洞）。`status` 是机器判据（客户端做分支、改文案不影响它），`status_label` 是给人看的中文名，两边同源（`visitStatusLabel`，客户端不要自己抄一份）。`record_status`/`record_filled` 是这张单的病历摘要：完成就诊要求病历已 `locked`（没锁定时本端点不会成功，只会回 409 EMR_NOT_LOCKED）。",
+  "type": "object",
+  "required": ["appointment_id", "status", "status_label", "arrived_at", "started_at", "finished_at", "visit_date", "period", "seq_no", "record_status", "record_filled"],
+  "additionalProperties": false,
+  "properties": {
+    "appointment_id": { "type": "integer" },
+    "status": { "type": "string", "enum": ["booked", "arrived", "waiting", "visiting", "done", "cancelled", "no_show"] },
+    "status_label": { "type": "string", "minLength": 1, "description": "已挂号 / 已到院 / 候诊中 / 接诊中 / 已完成 / 已退号 / 已爽约" },
+    "arrived_at": { "type": "integer", "minimum": 0, "description": "到院登记时刻（epoch 秒）；0 = 还没到院" },
+    "started_at": { "type": "integer", "minimum": 0, "description": "开始接诊时刻（epoch 秒）；0 = 还没开始。等待时长 = started_at - arrived_at" },
+    "finished_at": { "type": "integer", "minimum": 0, "description": "完成就诊时刻（epoch 秒）；0 = 还没结束。就诊时长 = finished_at - started_at" },
+    "visit_date": { "type": "string", "minLength": 6, "description": "日期；样例里归一化成占位符 <date>（6 字符），真实值是 YYYY-MM-DD" },
+    "period": { "type": "string", "enum": ["AM", "PM"] },
+    "seq_no": { "type": "integer" },
+    "record_status": { "type": "string", "enum": ["none", "draft", "locked"] },
+    "record_filled": { "type": "integer", "minimum": 0 }
+  }
+}

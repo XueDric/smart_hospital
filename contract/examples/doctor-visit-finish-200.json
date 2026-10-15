@@ -1,0 +1,29 @@
+{
+  "name": "doctor-visit-finish-200",
+  "group": "record",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/doctor/visits/{id}/finish",
+    "auth": "doctor"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": true,
+      "data": {
+        "appointment_id": 0,
+        "status": "done",
+        "status_label": "已完成",
+        "arrived_at": 0,
+        "started_at": 0,
+        "finished_at": 0,
+        "visit_date": "<date>",
+        "period": "AM",
+        "seq_no": 0,
+        "record_status": "locked",
+        "record_filled": 3
+      }
+    }
+  }
+}

@@ -335,7 +335,26 @@ public let SCHEMA_DDL: Array<String> = [
     "visit_date VARCHAR(16) NOT NULL, " +          // ★ 就诊日快照
     "period VARCHAR(16) NOT NULL DEFAULT 'AM', " +
     "seq_no BIGINT NOT NULL DEFAULT 0, " +         // 就诊序号
-    "status VARCHAR(16) NOT NULL DEFAULT 'booked', " + // booked / cancelled / done
+    "status VARCHAR(16) NOT NULL DEFAULT 'booked', " + // booked / arrived / waiting / visiting / done / cancelled / no_show
+    /*
+     * ★ 就诊时间线三列（2026-10-15 增，改进 6）。
+     *
+     * 为什么要落库：`arrived_at`/`started_at`/`finished_at` 是"患者实际等了多久、
+     *   这次就诊用了多久"的**唯一**依据。原实现只有 `created_at`（挂号时间），
+     *   于是"10:00 挂号、10:40 才被叫到"这件事实在库里根本不存在，
+     *   前端只能靠自己的内存状态猜 —— 换台设备就没了。
+     *
+     * 为什么是三个 BIGINT 而不是 DATETIME：全库时间口径统一用 epoch 秒
+     *   （`created_at`/`cancelled_at`/`updated_at` 都是），跨时区/跨驱动比较
+     *   不需要任何转换，也避免 MySQL 时区设置悄悄改变含义。
+     *
+     * 为什么用 0 表示"还没发生"而不是 NULL：与 `created_at` 等既有列一致，
+     *   且 0 在排序与算术里天然安全（`finished_at - started_at` 不会变 NULL）。
+     *   语义上 epoch 0（1970）不可能是真实就诊时间。
+     */
+    "arrived_at BIGINT NOT NULL DEFAULT 0, " +     // 到院登记
+    "started_at BIGINT NOT NULL DEFAULT 0, " +     // 开始接诊
+    "finished_at BIGINT NOT NULL DEFAULT 0, " +    // 完成就诊
     /*
      * ★ 幂等键。**可空**，且退号时会被置为 NULL（2026-10-07 修）。
      *
@@ -1232,7 +1251,52 @@ public func migrateSchema(db: DbBackend): Int64 {
         done = done + 1
     }
 
+    /*
+     * ⑬ ★ 2026-10-15（改进 6）：`appointment` 的**就诊时间线**三列。
+     *
+     * ⚠ 与创建表的 DDL 必须一致（新库走 `CREATE TABLE`、老库走这里）：
+     *   不一致的表现是**老库写入直接失败**（`arrived_at` 列不存在 ⇒ UPDATE 报错
+     *   ⇒ 到院登记这个动作整体失败），而新库上测试全绿 —— 最难在测试里发现的一类。
+     * ⚠ 用逐列判断的助手（见 `addMissingColumns` 的注释）：上线过程中若有人手工
+     *   加过其中一两列，一次性 ALTER 会因为"列已存在"整条失败，
+     *   把其余该加的列一起挡在门外。
+     */
+    done = done + addMissingColumns(db, "appointment", [
+        "arrived_at BIGINT NOT NULL DEFAULT 0",
+        "started_at BIGINT NOT NULL DEFAULT 0",
+        "finished_at BIGINT NOT NULL DEFAULT 0"
+    ])
+
     return done
+}
+
+/*
+ * 通用：给某张表补**缺的列**（返回本次真的加了几列）。
+ *
+ * ⚠ 逐列独立判断（而不是"查一列就 ALTER 全部"）：见 ⑪/⑬ 的注释 ——
+ *   一次性 ALTER 会因某一列已存在而整条失败，把其余该加的列一起挡在门外。
+ * ⚠ `table` 与 `spec` 会被拼进 SQL —— **只允许传本文件的字面量常量**，
+ *   绝不允许来自请求参数（那是注入）。列名取"规范里第一个空格之前的部分"。
+ */
+private func addMissingColumns(db: DbBackend, table: String, cols: Array<String>): Int64 {
+    var added: Int64 = 0
+    for (spec in cols) {
+        var name = spec
+        let sp = spec.indexOf(" ")
+        if (sp.isSome()) {
+            name = spec[0..sp.getOrThrow()]
+        }
+        let rs = db.query(
+            "SELECT COUNT(*) FROM information_schema.columns " +
+            "WHERE table_schema = DATABASE() AND table_name = ? " +
+            "AND column_name = ?",
+            [DbStr(table), DbStr(name)])
+        if (rs.rowCount() > 0 && rs.getInt(0, 0) == 0) {
+            db.exec("ALTER TABLE " + table + " ADD COLUMN " + spec, Array<DbValue>())
+            added = added + 1
+        }
+    }
+    return added
 }
 
 /*
@@ -1254,24 +1318,7 @@ private func addTriageTelemetryColumns(db: DbBackend): Int64 {
         "used_kb TINYINT NOT NULL DEFAULT 0",
         "kb_doc_ids VARCHAR(255) NOT NULL DEFAULT ''"
     ]
-    var added: Int64 = 0
-    for (spec in cols) {
-        /* 列名 = 规范里第一个空格之前的部分。 */
-        var name = spec
-        let sp = spec.indexOf(" ")
-        if (sp.isSome()) {
-            name = spec[0..sp.getOrThrow()]
-        }
-        let rs = db.query(
-            "SELECT COUNT(*) FROM information_schema.columns " +
-            "WHERE table_schema = DATABASE() AND table_name = 'triage_stat' " +
-            "AND column_name = ?",
-            [DbStr(name)])
-        if (rs.rowCount() > 0 && rs.getInt(0, 0) == 0) {
-            db.exec("ALTER TABLE triage_stat ADD COLUMN " + spec, Array<DbValue>())
-            added = added + 1
-        }
-    }
+    let added = addMissingColumns(db, "triage_stat", cols)
     let idx = db.query(
         "SELECT COUNT(*) FROM information_schema.statistics " +
         "WHERE table_schema = DATABASE() AND table_name = 'triage_stat' " +

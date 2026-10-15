@@ -1,8 +1,8 @@
 {
   "title": "挂号成功 data（新号 / 幂等重放 / 反查）",
-  "description": "应用于 response.body.data。`previsit_bound` 表示「患者这次提交的预问诊单是否真的交到了医生手上」——**不要**把「客户端提交了 session_id」当成它。request_id/server_time 用于「响应丢了」时反查（配合 GET /appointments/by-token/:token，见 §5.27）。",
+  "description": "应用于 response.body.data。`previsit_bound` 表示「患者这次提交的预问诊单是否真的交到了医生手上」——**不要**把「客户端提交了 session_id」当成它。request_id/server_time 用于「响应丢了」时反查（配合 GET /appointments/by-token/:token，见 §5.27）。2026-10-15（改进 6）起带 `status_label`：`status` 是机器判据（客户端做分支、改文案不影响），`status_label` 是给人看的中文名（`visitStatusLabel`），两边**必须同源**（客户端不要自己抄一份中文表）；同日另带就诊时间线 `arrived_at`/`started_at`/`finished_at`（新建时必然都是 0；`0` 的含义是「这一步还没发生」，不是缺字段）。",
   "type": "object",
-  "required": ["appointment_id", "schedule_id", "patient_id", "doctor_id", "department_id", "visit_date", "period", "seq_no", "status", "slot_restored", "department_name", "doctor_name", "doctor_title", "remain_num", "previsit_bound", "request_id", "server_time"],
+  "required": ["appointment_id", "schedule_id", "patient_id", "doctor_id", "department_id", "visit_date", "period", "seq_no", "status", "status_label", "arrived_at", "started_at", "finished_at", "slot_restored", "department_name", "doctor_name", "doctor_title", "remain_num", "previsit_bound", "request_id", "server_time"],
   "additionalProperties": false,
   "properties": {
     "appointment_id": { "type": "integer" },
@@ -14,6 +14,10 @@
     "period": { "type": "string", "enum": ["AM", "PM"] },
     "seq_no": { "type": "integer" },
     "status": { "type": "string", "enum": ["booked"] },
+    "status_label": { "type": "string", "minLength": 1 },
+    "arrived_at": { "type": "integer", "minimum": 0, "description": "到院登记时刻（epoch 秒）；0 = 还没到院（新建时必为 0）" },
+    "started_at": { "type": "integer", "minimum": 0, "description": "开始接诊时刻（epoch 秒）；0 = 还没开始" },
+    "finished_at": { "type": "integer", "minimum": 0, "description": "完成就诊时刻（epoch 秒）；0 = 还没结束" },
     "slot_restored": { "type": "boolean" },
     "department_name": { "type": "string" },
     "doctor_name": { "type": "string" },

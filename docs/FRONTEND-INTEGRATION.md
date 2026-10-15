@@ -1,4 +1,4 @@
-# 智慧医院 · 前端对接说明书（服务端 HTTP 契约）
+﻿# 智慧医院 · 前端对接说明书（服务端 HTTP 契约）
 
 > **这份文档是干什么的**：把本仓库 `server/` 里**当前真实存在**的服务端 HTTP 契约，逐字段写清楚，
 > 让前端开发者**看完这一份就能开始接**。所有路径、字段名、错误码、默认值都逐字照抄实现，
@@ -497,6 +497,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | 5.29 | `GET …/record/revisions`、`…/revisions/:version`、`…/revisions/:version/diff?against=` | 是 | **仅医生（本单）+ 管理员** | **病历修订历史**：列表 / 单版详情 / 逐段对比（★ 2026-10-15 新增，见 §5.29；同节含 `reopen` 必填 `reason` 与 `revision_version`） |
 | 5.30 | `GET /api/v1/doctor/patients/:patientId/records` | 是 | **仅医生（须接诊过该患者）** | **既往已定稿病历**（录入工作台同屏对比；★ 2026-10-15 新增，见 §5.30；同节含 `PUT …/record` 的可选 `expected_updated_at` 乐观锁与 409 `EMR_CHANGED` 的 `error.fields`） |
 | 5.31 | `GET /api/v1/admin/ai/triage-stats`、`GET /api/v1/admin/ai/triage-calls/:requestId` | 是 | **仅 admin** | **AI 分诊遥测**：质量聚合（分位数/降级率/分组）+ 单次调用全链路排障（★ 2026-10-15 新增，见 §5.31；同节含 `POST /api/v1/triage` 响应新增的 `request_id`） |
+| 5.32 | `POST /api/v1/doctor/visits/:id/arrive`、`POST /api/v1/doctor/visits/:id/waiting` | 是 | **仅医生（本单）** | **就诊时间线**：到院/候诊两步 + 七态状态机 + `arrived_at`/`started_at`/`finished_at`（★ 2026-10-15 新增，见 §5.32；同节含队列排序变化与 `start` 前置状态收紧） |
 
 > 权限判定收敛在**单一函数** `can(role, action)`（`http_app.cj:162-230`）。相关动作与角色：
 > `book` = 仅 patient；`view_schedule` = 三端；`query_own_medical_record` = patient | doctor；
@@ -732,7 +733,9 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | `visit_date` | String | `YYYY-MM-DD`（**下单时的快照**，管理员之后改排班不会跟着变，`domain_booking.cj:517-519`） |
 | `period` | String | `AM` / `PM` |
 | `seq_no` | Int64 | 就诊序号（`MAX(seq_no)+1`，不回收已用过的号，`domain_booking.cj:721-729`） |
-| `status` | String | `booked` / `visiting` / `done` / `cancelled` / `no_show`（见 §14.3） |
+| `status` | String | `booked` / `arrived` / `waiting` / `visiting` / `done` / `cancelled` / `no_show`（★ 2026-10-15 起七态，见 §14.3 与 §5.32） |
+| `status_label` | String | 与 `status` 同源的中文名（★ 2026-10-15 新增，改进 6；**界面显示中文一律用它**，不要自抄映射表） |
+| `arrived_at` / `started_at` / `finished_at` | Int64 | 到院 / 开始接诊 / 完成就诊的 epoch 秒；`0` = 这一步还没发生（★ 2026-10-15 新增，改进 6） |
 | `slot_restored` | Bool | 号源是否已归还（退号相关） |
 
 > ⚠ `bookingJson` **没有** `created_at`：`BookingResult` 有该字段但不输出（`http_app.cj:411-426` 逐字段对照）。
@@ -1516,6 +1519,100 @@ POST /api/v1/doctor/visits/:id/record/reopen
 
 ---
 
+### 5.32 2026-10-15 新增：就诊时间线（到院 / 候诊 / 显式状态机）
+
+> 面向**医生端（鸿蒙）**与**患者端**。对应 `docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md` §改进 6。
+> 一句话：就诊状态从「挂号 → 接诊中 → 完成」三步，扩成**七态**，并把"人几点到、几点开始看、
+> 几点看完"落成三个时间戳。**医生端必须改流程**，否则会卡在 `booked → visiting` 已经不被允许。
+
+#### 5.32.1 状态取值（`status` 机器判据；`status_label` 给人看）
+
+| `status` | `status_label` | 含义 | 可流转到 |
+| --- | --- | --- | --- |
+| `booked` | 已挂号 | 已预约，人还没到 | `arrived`、`cancelled`、`no_show` |
+| `arrived` | 已到院 | 医护确认到院 | `waiting`、`no_show` |
+| `waiting` | 候诊中 | 已进候诊队列 | `visiting`、`no_show` |
+| `visiting` | 接诊中 | 医生已开始接诊 | `done`、`no_show` |
+| `done` | 已完成 | 病历锁定后完成 | 终态 |
+| `cancelled` | 已退号 | 仅**挂号后未到院**时可退 | 终态 |
+| `no_show` | 已爽约 | 到院/候诊/接诊中都可标爽约 | 终态 |
+
+⚠ **`cancelled` 只能从 `booked` 来**：到院之后号源已消耗，退号必须走人工/管理员路径。
+矩阵放行而写入拒绝会造成"人看完了、单子变已退号、号源还回池子"，所以服务端两处口径统一为 `booked`。
+
+⚠ **`status_label` 必须用服务端返回的值**，不要在前端抄一份中文表（改文案时两份必然会漂）。
+
+#### 5.32.2 两个新端点（医生端，`Action.ManageVisit`，只能操作自己的单）
+
+| 方法 | 路径 | 做什么 | 成功返回 |
+| --- | --- | --- | --- |
+| `POST` | `/api/v1/doctor/visits/:id/arrive` | 确认到院（写 `arrived_at`） | 就诊状态 + 完整时间线 |
+| `POST` | `/api/v1/doctor/visits/:id/waiting` | 进入候诊（不写时间戳） | 同上 |
+
+响应 `data`（`data-visit-state` Schema，**任何一次流转都自带完整时间线**，客户端不需要再查一次队列）：
+
+```json
+{
+  "appointment_id": 12,
+  "status": "arrived",
+  "status_label": "已到院",
+  "arrived_at": 1792054170,
+  "started_at": 0,
+  "finished_at": 0,
+  "visit_date": "2026-12-26",
+  "period": "AM",
+  "seq_no": 3,
+  "record_status": "none",
+  "record_filled": 0
+}
+```
+
+三个时间戳都是 **epoch 秒**，`0` 表示"这一步还没发生"（**不是**缺字段，不要当 1970 年显示）。
+每一次流转**只写自己那一个戳**（到院不许顺手写 `started_at`）；**被拒绝的流转一个都不写**。
+由此可直接算：候诊时长 = `started_at - arrived_at`，就诊时长 = `finished_at - started_at`。
+
+#### 5.32.3 既有端点的变化（形状变更，必须重新解析）
+
+| 端点 | 变化 |
+| --- | --- |
+| `GET /api/v1/doctor/visits` | item 新增 `status_label` 与三个时间戳；**排序规则变了**：`arrived`/`waiting` 排最前，其内按 `seq_no` 升序，然后 `visiting`、`booked`、终态 |
+| `POST /api/v1/doctor/visits/:id/start` | **前置状态收紧**：只能从 `waiting` 开始（原先允许 `booked` ⇒ "人没到就能叫号"在服务端是合法的） |
+| `POST /api/v1/doctor/visits/:id/finish` | 不变：要求病历已 `locked`，否则 409 `EMR_NOT_LOCKED` |
+| `POST /api/v1/doctor/visits/:id/no-show` | 允许来源扩到 `booked`/`arrived`/`waiting`/`visiting` |
+| `POST /api/v1/appointments`、`GET /api/v1/appointments/by-token/:token`、`POST /api/v1/appointments/:id/cancel` | 新增 `status_label` 与 `arrived_at`/`started_at`/`finished_at`（三端一套解析代码吃下全部挂号类响应） |
+
+⚠ **客户端不要再按 `seq_no` 重排队列**：待处理优先由服务端给，重排会把"人在现场等叫号"的排到后面。
+
+#### 5.32.4 医生端要做什么
+
+| 落点 | 做什么 |
+| --- | --- |
+| `VisitQueuePage.ets` | 动作随状态变化：`booked` → 「确认到院」`arrive`；`arrived` → 「进入候诊」`waiting`；`waiting` → 「开始接诊」`start`；`visiting` → 「完成就诊」`finish`；`booked`/`arrived`/`waiting`/`visiting` 均可「爽约」 |
+| 同上 | 按 `status` 分组显示（已到院 / 候诊中 / 接诊中 / 待到院 / 已完成）；**组内顺序用服务端给的顺序** |
+| 同上 | 行内显示候诊/就诊时长：`started_at - arrived_at`、`finished_at - started_at`（`0` 表示还没发生，显示为 `—`） |
+| 同上 | 中文一律用 `status_label`；`status` 只用于分支判断 |
+
+#### 5.32.5 患者端要做什么
+
+| 落点 | 做什么 |
+| --- | --- |
+| `AppointmentsPage.ets` | 状态时间线（已预约 → 已到院 → 候诊中 → 接诊中 → 已完成），用三个时间戳；未发生的节点灰显 |
+| `RecordDetailPage.ets` | 同上；到院后提示「请到 <科室> 分诊台报到」 |
+
+患者**自助签到仍不做**（需要当天窗口、频率限制、设备绑定一整组约束，否则等于开放的代刷接口）。
+
+#### 5.32.6 错误表
+
+| 情况 | 状态码 | `error.code` |
+| --- | --- | --- |
+| 非法流转（跳步 / 重复 / 终态回退） | 409 | `VISIT_BAD_STATE`（`message` 里带当前状态与目标状态） |
+| 完成就诊但病历未锁定 | 409 | `EMR_NOT_LOCKED` |
+| 不是自己的单 / 单不存在 | 404 | `APPOINTMENT_NOT_FOUND` |
+| 患者或管理员令牌 | 403 | `FORBIDDEN_ROLE` |
+| 无令牌 | 401 | `AUTH_REQUIRED` |
+
+---
+
 ## 6. 不能调的端点（前端不应出现这些路径）
 
 以下端点**确实存在**，但权限矩阵把它们挡在患者之外（`http_app.cj:162-230`）。
@@ -1543,16 +1640,17 @@ POST /api/v1/doctor/visits/:id/record/reopen
 
 | 方法 + 路径 | Action | 源码依据 |
 | --- | --- | --- |
-| `GET /api/v1/doctor/visits` | `manage_visit` | `http_p4.cj:443` |
-| `POST /api/v1/doctor/visits/:id/start` \| `/finish` \| `/no-show` | `manage_visit` | `http_p4.cj:467/487/508` |
-| `GET` / `PUT /api/v1/doctor/visits/:id/record` | `query_own_medical_record` / `write_own_medical_record` | `http_p4.cj:528/593`（★ 2026-10-15：PUT 支持可选 `expected_updated_at`，见 §5.30） |
-| `GET /api/v1/doctor/visits/:id/previsit` | `query_own_medical_record`（**且必须是我的号**，否则 404） | `http_p4.cj:563`（★ 2026-10-14 新增，见 §5.28） |
-| `POST /api/v1/doctor/visits/:id/record/lock` | `write_own_medical_record` | `http_p4.cj:648` |
-| `POST /api/v1/doctor/visits/:id/record/reopen` | **`manage_record_revision`（仅管理员）** —— 医生端也不能解锁；**必须带 `reason`** | `http_p4.cj:688`（★ 2026-10-15 改，见 §5.29） |
-| `GET /api/v1/doctor/visits/:id/record/revisions` | `query_own_medical_record`（**且必须是我的号**，否则 404；管理员可读任意单） | `http_p4.cj:743`（★ 2026-10-15 新增，见 §5.29） |
-| `GET /api/v1/doctor/visits/:id/record/revisions/:version` | 同上 | `http_p4.cj:769`（★ 同上） |
-| `GET /api/v1/doctor/visits/:id/record/revisions/:version/diff?against=N` | 同上 | `http_p4.cj:796`（★ 同上） |
-| `GET /api/v1/doctor/patients/:patientId/records` | `query_own_medical_record`（**且这位医生必须接诊过该患者**，否则 404；患者令牌 403） | `http_p4.cj:853`（★ 2026-10-15 新增，见 §5.30） |
+| `GET /api/v1/doctor/visits` | `manage_visit` | `http_p4.cj:455`（★ 2026-10-15：item 新增 `status_label` 与三个时间戳，排序改为待处理优先，见 §5.32） |
+| `POST /api/v1/doctor/visits/:id/arrive` \| `/waiting` | `manage_visit` | `http_p4.cj:488/507`（★ 2026-10-15 新增，见 §5.32） |
+| `POST /api/v1/doctor/visits/:id/start` \| `/finish` \| `/no-show` | `manage_visit` | `http_p4.cj:525/545/566`（★ 2026-10-15：`start` 只能从 `waiting` 来，见 §5.32） |
+| `GET` / `PUT /api/v1/doctor/visits/:id/record` | `query_own_medical_record` / `write_own_medical_record` | `http_p4.cj:592/657`（★ 2026-10-15：PUT 支持可选 `expected_updated_at`，见 §5.30） |
+| `GET /api/v1/doctor/visits/:id/previsit` | `query_own_medical_record`（**且必须是我的号**，否则 404） | `http_p4.cj:627`（★ 2026-10-14 新增，见 §5.28） |
+| `POST /api/v1/doctor/visits/:id/record/lock` | `write_own_medical_record` | `http_p4.cj:712` |
+| `POST /api/v1/doctor/visits/:id/record/reopen` | **`manage_record_revision`（仅管理员）** —— 医生端也不能解锁；**必须带 `reason`** | `http_p4.cj:752`（★ 2026-10-15 改，见 §5.29） |
+| `GET /api/v1/doctor/visits/:id/record/revisions` | `query_own_medical_record`（**且必须是我的号**，否则 404；管理员可读任意单） | `http_p4.cj:807`（★ 2026-10-15 新增，见 §5.29） |
+| `GET /api/v1/doctor/visits/:id/record/revisions/:version` | 同上 | `http_p4.cj:833`（★ 同上） |
+| `GET /api/v1/doctor/visits/:id/record/revisions/:version/diff?against=N` | 同上 | `http_p4.cj:860`（★ 同上） |
+| `GET /api/v1/doctor/patients/:patientId/records` | `query_own_medical_record`（**且这位医生必须接诊过该患者**，否则 404；患者令牌 403） | `http_p4.cj:917`（★ 2026-10-15 新增，见 §5.30） |
 
 ### 6.3 刻意对患者 403 的一个"看似通用"端点
 
@@ -2070,15 +2168,20 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 
 **`role`**（`http_app.cj:49-55`）：`patient` | `doctor` | `admin`
 
-**`appointment.status`**（`domain_emr.cj:661-673` 附近的接诊状态机）：
+**`appointment.status`**（`domain_emr.cj` 的 `visitTransitionAllowed`，★ 2026-10-15 改进 6 起为**七态**）：
 
-| 值 | 含义 |
-| --- | --- |
-| `booked` | 已挂号（新建单的默认值，`domain_booking.cj:530`） |
-| `visiting` | 接诊中（医生端流转） |
-| `done` | 已完成就诊 |
-| `cancelled` | 已取消（退号） |
-| `no_show` | 爽约 |
+| 值 | 含义 | 可流转到 |
+| --- | --- | --- |
+| `booked` | 已挂号（新建单的默认值，`domain_booking.cj:530`） | `arrived` `cancelled` `no_show` |
+| `arrived` | 已到院（医护确认，写 `arrived_at`） | `waiting` `no_show` |
+| `waiting` | 候诊中（进候诊队列） | `visiting` `no_show` |
+| `visiting` | 接诊中（医生端流转，写 `started_at`） | `done` `no_show` |
+| `done` | 已完成就诊（病历须已锁定，写 `finished_at`） | 终态 |
+| `cancelled` | 已取消（退号；**只能从 `booked` 来**） | 终态 |
+| `no_show` | 爽约 | 终态 |
+
+> 中文名一律用响应里的 `status_label`（`visitStatusLabel`），不要在前端抄一份表。
+> 每个状态的界面动作与时长算法见 §5.32。
 
 **`schedule.period`**：`AM` | `PM`（默认 `AM`，`domain_booking.cj:117`；**服务端不对取值做枚举校验**，前端要容错显示未知值）
 

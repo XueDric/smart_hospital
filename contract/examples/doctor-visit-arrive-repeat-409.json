@@ -1,0 +1,20 @@
+{
+  "name": "doctor-visit-arrive-repeat-409",
+  "group": "record",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/doctor/visits/{id}/arrive",
+    "auth": "doctor"
+  },
+  "response": {
+    "status": 409,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "VISIT_BAD_STATE",
+        "message": "到院登记：当前状态 'visiting' 不允许流转到 'arrived'"
+      }
+    }
+  }
+}

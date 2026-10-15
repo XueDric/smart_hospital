@@ -68,6 +68,15 @@
     "admin-ai-triage-stats-window-200": { "body": ["envelope-ok"], "data": ["data-admin-ai-triage-stats"] },
     "admin-ai-triage-stats-200": { "body": ["envelope-ok"], "data": ["data-admin-ai-triage-stats"] },
     "admin-ai-triage-stats-bad-group-400": { "body": ["envelope-error"], "error_code": "VALIDATION_FAILED" },
-    "admin-ai-triage-stats-patient-403": { "body": ["envelope-error"], "error_code": "FORBIDDEN_ROLE" }
+    "admin-ai-triage-stats-patient-403": { "body": ["envelope-error"], "error_code": "FORBIDDEN_ROLE" },
+
+    "doctor-visit-arrive-200": { "body": ["envelope-ok"], "data": ["data-visit-state"] },
+    "doctor-visit-waiting-200": { "body": ["envelope-ok"], "data": ["data-visit-state"] },
+    "doctor-visit-start-200": { "body": ["envelope-ok"], "data": ["data-visit-state"] },
+    "doctor-visit-finish-200": { "body": ["envelope-ok"], "data": ["data-visit-state"] },
+    "doctor-visit-no-show-from-arrived-200": { "body": ["envelope-ok"], "data": ["data-visit-state"] },
+    "doctor-visit-arrive-repeat-409": { "body": ["envelope-error"], "error_code": "VISIT_BAD_STATE" },
+    "doctor-visit-start-skip-409": { "body": ["envelope-error"], "error_code": "VISIT_BAD_STATE" },
+    "doctor-visit-finish-not-locked-409": { "body": ["envelope-error"], "error_code": "EMR_NOT_LOCKED" }
   }
 }

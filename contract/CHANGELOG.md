@@ -1,4 +1,4 @@
-# 接口契约变更日志
+﻿# 接口契约变更日志
 
 > 读法：先看**日期**，再看**客户端要不要动**。
 > 形状变更的权威是 `contract/examples/`；本文只解释「为什么变、谁受影响」。
@@ -202,6 +202,57 @@
 - **患者端 / 医生端**：不用动。`POST /api/v1/triage` 只是**多**了 `request_id` / `server_time`，
   旧解析不受影响；但如果要做"反馈这条分诊不对"，把 `request_id` 一起带上（运营才能定位）。
 - **别把 `request_id` 当权限**：它是客户端可自造的关联键，服务端只用来串联日志与遥测。
+
+---
+
+## 2026-10-15 —— 改进 6：就诊时间线与显式状态机（67 条样例 / 27 个 Schema）
+
+**新增 8 条样例**（`doctor-visit-arrive-200` / `doctor-visit-waiting-200` /
+`doctor-visit-start-200` / `doctor-visit-finish-200` / `doctor-visit-no-show-from-arrived-200` /
+`doctor-visit-arrive-repeat-409` / `doctor-visit-start-skip-409` / `doctor-visit-finish-not-locked-409`），
+**改 6 条既有样例**（5 条挂号类 + 医生队列）⇒ 覆盖 `docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md` §改进 6。
+
+### 变更
+
+- `POST /api/v1/doctor/visits/:id/arrive`、`POST /api/v1/doctor/visits/:id/waiting`：**两个新端点**。
+  响应体是同一份「就诊状态 + 完整时间线」（新 Schema `data-visit-state`）：
+  `appointment_id` / `status` / `status_label` / `arrived_at` / `started_at` / `finished_at` /
+  `visit_date` / `period` / `seq_no` / `record_status` / `record_filled`。
+- `status` 的合法取值扩到 **7 个**：`booked` / `arrived` / `waiting` / `visiting` / `done` /
+  `cancelled` / `no_show`。⚠ `data-queue` 的枚举原先写的是 `finished`，而服务端常量一直是
+  `done` —— 那时样例里只有 `booked`，所以没人发现；本次一并修正（这正是"契约要把枚举钉住"的意义）。
+- 所有挂号类响应（新建 / 幂等重放 / 反查 / 退号）**新增** `status_label` 与
+  `arrived_at` / `started_at` / `finished_at`（三个 epoch 秒，`0` = 这一步还没发生）。
+- 医生队列（`GET /api/v1/doctor/visits`）的每个 item 新增同样四个字段；**排序规则变化**：
+  `arrived`/`waiting`（待医生处理）排在最前，其内按 `seq_no` 升序。
+- `POST /visits/:id/start` 的**前置状态收紧**：只能从 `waiting` 开始（原先是 `booked`，
+  于是"人还没到就被叫号"在服务端是合法的）。
+- 非法流转 ⇒ `409 VISIT_BAD_STATE`；完成就诊但病历未锁定 ⇒ `409 EMR_NOT_LOCKED`（均沿用既有业务码）。
+- 三个时间戳在样例里**归一化为 0**：它们是"跑一次就变"的绝对时刻（与 `created_at` 同类）。
+  这**不代表**它们不重要 —— 语义（哪一步写哪个戳、别的不许写、被拒的流转一个都不写）由
+  `hospital-server.exe accept` 的 AC-P4-8 与 `server/tests/visit-timeline-check.ps1` 逐字段钉住。
+
+### 为什么
+
+- 原状态机把"挂号 → 接诊"压成一步（`booked → visiting`），到院时间、候诊时长、
+  接诊时长三个机构最关心的量**没有地方落**。改进 6 要求把"谁几点到、几点开始看、几点看完"
+  变成数据，并且把流转规则写成**显式矩阵**（原来散在各端点的 `allowFrom` 数组里，
+  一处松动就会漏）。触发文档：`docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md` §改进 6。
+- 退号仍然**只允许 `booked`**（`arrived` 之后不退号）。规格矩阵里写的是 `arrived → cancelled` 也放行，
+  但写入侧的 `UPDATE … WHERE status = 'booked'` 是硬编码的 —— 两处不一致就是本仓反复踩的病，
+  且到院之后号源已被消耗，退号本就该走人工/管理员路径。这条差异记录在该文档 §改进 6 的实施状态块。
+
+### 客户端要不要动
+
+- **医生端（必须改）**：① 接诊流程从 `start` 一步变成 `arrive → waiting → start → finish`
+  （界面上是"确认到院 → 入候诊 → 叫号接诊 → 完成"）；② `status` 分支里新增 `arrived`/`waiting`
+  两个取值，并且**必须**用 `status_label` 显示中文（不要自己抄一份映射表）；
+  ③ 队列现在是服务端排好序的，客户端**不要再按 `seq_no` 重排**（会把待处理的排到后面）；
+  ④ 显示候诊/就诊时长直接用 `started_at - arrived_at`、`finished_at - started_at`，
+  三个戳都是 epoch 秒，`0` 表示"还没发生"（**不是**缺字段，不要把它当 1970 年显示）。
+- **患者端（建议改）**：可以按 `status` 显示"已到院 / 候诊中 / 接诊中 / 已完成"的时间线；
+  `GET /appointments/by-token/:token`、挂号响应里已经带了 `status_label` 与三个时间戳。
+- **管理端**：不用动（可选：把 `arrived_at`/`started_at`/`finished_at` 放进就诊看板）。
 
 ---
 

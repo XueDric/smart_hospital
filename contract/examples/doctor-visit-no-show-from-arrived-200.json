@@ -1,0 +1,29 @@
+{
+  "name": "doctor-visit-no-show-from-arrived-200",
+  "group": "record",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/doctor/visits/{id}/no-show",
+    "auth": "doctor"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": true,
+      "data": {
+        "appointment_id": 0,
+        "status": "no_show",
+        "status_label": "已爽约",
+        "arrived_at": 0,
+        "started_at": 0,
+        "finished_at": 0,
+        "visit_date": "<date>",
+        "period": "AM",
+        "seq_no": 0,
+        "record_status": "none",
+        "record_filled": 0
+      }
+    }
+  }
+}

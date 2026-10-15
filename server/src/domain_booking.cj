@@ -46,6 +46,21 @@ package qingzhou
 import std.collection.*
 
 /*
+ * ★ 挂号单的**列清单**（读模型的唯一出处，2026-10-15 增）。
+ *
+ * ⚠ 为什么抽成常量：它有 4 个使用点（`findAppointment` /
+ *   `listAppointmentsByPatient` / `findAppointmentForDoctor` /
+ *   `listAppointmentsByDoctor`），而 `fillFromRow` 的下标顺序**只按这一份**写。
+ *   2026-10-15 加就诊时间线三列时要同时改 5 处 —— 复制粘贴式的列清单在
+ *   "类型恰好兼容"时错位**不会报错**，只会把隔壁列的值读进来（本项目踩过）。
+ *   📌 列清单与 `fillFromRow` 下标必须一起改；改这里就够，不必再找 4 个 SELECT。
+ */
+let APPT_COLS: String =
+    "id, schedule_id, patient_id, doctor_id, department_id, " +
+    "visit_date, period, seq_no, status, created_at, slot_restored, " +
+    "arrived_at, started_at, finished_at "
+
+/*
  * **瞬时错误**重试上限（ADR §6 调参项）。
  *
  * ⚠⚠ 语义在 2026-10-07 变了两次，注释必须跟着改（复查指出旧注释会误导）：
@@ -194,6 +209,15 @@ public class BookingResult {
      * 否则第二次退号会把第一次的 `SlotNotRestored` 告警吞成 `Cancelled`。
      */
     public var slotRestored: Bool = true
+    /*
+     * ★ 就诊时间线三个时间戳（2026-10-15 增，改进 6）：到院 / 开始接诊 / 完成。
+     *   0 = "这一步还没发生"（与 `createdAt` 同一口径：epoch 秒）。
+     *   为什么回给上层：患者端与医生端都要显示"10:05 到院、10:40 开始"，
+     *   而这两个数字**只能在库里**（前端自己记的换台设备就没了）。
+     */
+    public var arrivedAt: Int64 = 0
+    public var startedAt: Int64 = 0
+    public var finishedAt: Int64 = 0
 }
 
 /* ===================== 事务回传载体 ===================== */
@@ -324,8 +348,7 @@ public class BookingRepo {
     /* 读挂号单明细。 */
     public func findAppointment(appointmentId: Int64): ?BookingResult {
         let rs = db.query(
-            "SELECT id, schedule_id, patient_id, doctor_id, department_id, " +
-            "visit_date, period, seq_no, status, created_at, slot_restored " +
+            "SELECT " + APPT_COLS +
             "FROM appointment WHERE id = ?",
             [DbInt(appointmentId)])
         if (rs.rowCount() < 1) {
@@ -352,8 +375,7 @@ public class BookingRepo {
     public func listAppointmentsByPatient(patientId: Int64, includeCancelled!: Bool = false,
                                           limit!: Int64 = 50): Array<BookingResult> {
         let cap = if (limit <= 0) { 50 } else if (limit > 200) { 200 } else { limit }
-        let sql = "SELECT id, schedule_id, patient_id, doctor_id, department_id, " +
-                  "visit_date, period, seq_no, status, created_at, slot_restored " +
+        let sql = "SELECT " + APPT_COLS +
                   "FROM appointment WHERE patient_id = ?" +
                   (if (includeCancelled) { "" } else { " AND status <> 'cancelled'" }) +
                   " ORDER BY created_at DESC, id DESC LIMIT ?"
@@ -446,8 +468,7 @@ public class BookingRepo {
      */
     public func findAppointmentForDoctor(appointmentId: Int64, doctorId: Int64): ?BookingResult {
         let rs = db.query(
-            "SELECT id, schedule_id, patient_id, doctor_id, department_id, " +
-            "visit_date, period, seq_no, status, created_at, slot_restored " +
+            "SELECT " + APPT_COLS +
             "FROM appointment WHERE id = ? AND doctor_id = ?",
             [DbInt(appointmentId), DbInt(doctorId)])
         if (rs.rowCount() < 1) {
@@ -459,16 +480,27 @@ public class BookingRepo {
     /*
      * ★ 某医生的接诊队列（P4；不含已退号的单）。
      *
-     * 排序刻意是 `visit_date, period, seq_no` —— 与医生实际叫号顺序一致
-     *   （先按就诊日、再按上下午、最后按就诊序号）。
+     * ── 排序（2026-10-15 改进 6 改）───────────────────────────────────────
+     * 先按**就诊流程优先级**（`visitQueueRank`：已到院 → 候诊中 → 接诊中 →
+     *   已挂号 → 已完成 → 已爽约），再按 `visit_date, period, seq_no`。
+     *
+     * ⚠ 为什么必须把"到院/候诊"提到最前：队列原来是纯 `seq_no` 顺序，
+     *   于是 1 号患者没来、2 号已经到了，医生的屏幕上 2 号仍排在后面 ——
+     *   医生只能自己在一屏里找"谁到了"。到院状态落库后，排序就能如实反映
+     *   "谁在等"。终态（已完成/已爽约）排在最后，但**仍在队列里**：
+     *   医生需要回头核"今天这个号最后怎么了"。
+     * ⚠ 这个 CASE 与 `domain_emr.cj` 的 `visitQueueRank` **必须一致**
+     *   （SQL 里排序才能配合 LIMIT；AC-P4-8 用那个函数预测顺序并逐项比对）。
      */
     public func listAppointmentsByDoctor(doctorId: Int64, limit: Int64): Array<BookingResult> {
         let out = ArrayList<BookingResult>()
         let rs = db.query(
-            "SELECT id, schedule_id, patient_id, doctor_id, department_id, " +
-            "visit_date, period, seq_no, status, created_at, slot_restored " +
+            "SELECT " + APPT_COLS +
             "FROM appointment WHERE doctor_id = ? AND status <> ? " +
-            "ORDER BY visit_date ASC, period ASC, seq_no ASC LIMIT ?",
+            "ORDER BY (CASE status " +
+            "WHEN 'arrived' THEN 0 WHEN 'waiting' THEN 1 WHEN 'visiting' THEN 2 " +
+            "WHEN 'booked' THEN 3 WHEN 'done' THEN 4 WHEN 'no_show' THEN 5 ELSE 6 END) ASC, " +
+            "visit_date ASC, period ASC, seq_no ASC LIMIT ?",
             [DbInt(doctorId), DbStr("cancelled"), DbInt(limit)])
         var i: Int64 = 0
         while (i < rs.rowCount()) {
@@ -491,6 +523,10 @@ public class BookingRepo {
         r.status = rs.getString(i, 8)
         r.createdAt = rs.getInt(i, 9)
         r.slotRestored = rs.getInt(i, 10) != 0
+        /* ⚠ 下标 11/12/13 与 `APPT_COLS` 的列序一一对应（改一处必须改另一处）。 */
+        r.arrivedAt = rs.getInt(i, 11)
+        r.startedAt = rs.getInt(i, 12)
+        r.finishedAt = rs.getInt(i, 13)
         r.outcome = BookingOutcome.AlreadyBooked(r.appointmentId)
         return r
     }

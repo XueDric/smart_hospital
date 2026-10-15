@@ -64,7 +64,13 @@ $NormZero = @(
     'id', 'appointment_id', 'patient_id', 'doctor_id', 'department_id', 'schedule_id',
     'user_id', 'ref_id', 'updated_by', 'created_at', 'updated_at', 'server_time',
     'expires_at', 'captured_at', 'published_at', 'at', 'seq_no', 'doc_id', 'chunk_id',
-    'notice_id', 'chat_id', 'record_id', 'login_at', 'last_login_at', 'operator_user_id'
+    'notice_id', 'chat_id', 'record_id', 'login_at', 'last_login_at', 'operator_user_id',
+    # ★ 就诊时间线的三个时间戳（2026-10-15 改进 6）与 created_at 同类：都是"跑一次就变"的
+    #   绝对时刻 ⇒ 必须置 0，否则样例每次导出都不同、契约门禁天天红。
+    #   ⚠ 这**不代表**它们不重要：语义（哪一步写哪个戳、别的不许写）由
+    #     `hospital-server.exe accept` 的 AC-P4-8 与 tests/visit-timeline-check.ps1 逐字段钉住
+    #     —— 契约层钉形状，用例层钉语义。
+    'arrived_at', 'started_at', 'finished_at'
 )
 # 字符串型易变字段（换占位符）。
 $NormStr = @{
@@ -564,6 +570,40 @@ $null = Cap 'admin-ai-triage-stats-200' 'admin' 'GET' '/api/v1/admin/ai/triage-s
 $null = Cap 'admin-ai-triage-stats-bad-group-400' 'admin' 'GET' '/api/v1/admin/ai/triage-stats?group_by=id' 'admin' $AD $null
 # 权限：这一屏是"模型/模板的运行效果" ⇒ 复用 Action.ManageAi（患者令牌 403，不是 404）。
 $null = Cap 'admin-ai-triage-stats-patient-403' 'admin' 'GET' '/api/v1/admin/ai/triage-stats' 'patient' $P $null
+
+# ── [6.8] 就诊时间线：到院 / 候诊 / 三个时间戳（改进 6）─────────────────────
+Write-Host ""
+Write-Host "[6.8] 就诊时间线：到院 / 候诊 / 时间戳 / 状态机闸门（改进 6）"
+# 为什么这一节值得单列：这三个时间戳是**医疗机构的事实**（人几点到的、医生几点看的），
+# 一旦写错（比如到院时间被第二次点击覆盖、或完成就诊没写 finished_at），
+# 事后没有任何办法还原。所以样例要把"每一步落哪个时间戳、别的时间戳保持 0"钉死。
+# 排序与状态机闸门（不能跳步/重复/回退）同样在这里钉。
+$b4 = Req 'vt-book' 'POST' '/api/v1/appointments' $P '{"schedule_id":706001,"client_token":"contract-tok-vt"}'
+if ($b4.Http -ne 201) { Fail "时间线夹具挂号未成功（HTTP $($b4.Http)）：$($b4.Body)" }
+$appt4 = [int64]$b4.Json.data.appointment_id
+$b5 = Req 'vt-book2' 'POST' '/api/v1/appointments' $P '{"schedule_id":706001,"client_token":"contract-tok-vt2"}'
+if ($b5.Http -ne 201) { Fail "时间线夹具第二张挂号未成功（HTTP $($b5.Http)）：$($b5.Body)" }
+$appt5 = [int64]$b5.Json.data.appointment_id
+# 到院：booked → arrived，写 arrived_at；此刻另两个时间戳必须仍是 0（只写这一步）
+$null = Cap 'doctor-visit-arrive-200' 'record' 'POST' ("/api/v1/doctor/visits/$appt4/arrive") 'doctor' $A $null
+# 候诊：arrived → waiting（**没有**独立时间戳列：等待区间用 arrived_at → started_at 表达）
+$null = Cap 'doctor-visit-waiting-200' 'record' 'POST' ("/api/v1/doctor/visits/$appt4/waiting") 'doctor' $A $null
+# 开始接诊：waiting → visiting，写 started_at ⇒ 等待时长 = started_at - arrived_at
+$null = Cap 'doctor-visit-start-200' 'record' 'POST' ("/api/v1/doctor/visits/$appt4/start") 'doctor' $A $null
+# 重复到院 ⇒ 409：**不静默成功**（静默会让界面以为刚那一下生效了，而库里的 arrived_at 是第一次的）
+$null = Cap 'doctor-visit-arrive-repeat-409' 'record' 'POST' ("/api/v1/doctor/visits/$appt4/arrive") 'doctor' $A $null
+# 不能跳步：没到院就直接接诊 ⇒ 409（否则"等了多久"没有起点，时间线出现洞）
+$null = Cap 'doctor-visit-start-skip-409' 'record' 'POST' ("/api/v1/doctor/visits/$appt5/start") 'doctor' $A $null
+# 病历没锁定 ⇒ 不许完成就诊（"就诊完成但没病历"在真实医院里不成立）
+$null = Cap 'doctor-visit-finish-not-locked-409' 'record' 'POST' ("/api/v1/doctor/visits/$appt4/finish") 'doctor' $A $null
+# 爽约两个现实形态之一：来了没被叫到（arrived）也能标爽约（否则这类单无路可走）
+$null = Req 'vt-arrive5' 'POST' ("/api/v1/doctor/visits/$appt5/arrive") $A $null
+$null = Cap 'doctor-visit-no-show-from-arrived-200' 'record' 'POST' ("/api/v1/doctor/visits/$appt5/no-show") 'doctor' $A $null
+# 补好病历并锁定 ⇒ 完成就诊，写 finished_at（三个时间戳齐全 ⇒ 就医时长可算）
+$null = Req 'vt-rec4' 'PUT' ("/api/v1/doctor/visits/$appt4/record") $A `
+        '{"chief_complaint":"发热咳嗽 2 天","diagnosis":"急性上呼吸道感染","treatment":"对症退热，多饮水"}'
+$null = Req 'vt-lock4' 'POST' ("/api/v1/doctor/visits/$appt4/record/lock") $A $null
+$null = Cap 'doctor-visit-finish-200' 'record' 'POST' ("/api/v1/doctor/visits/$appt4/finish") 'doctor' $A $null
 
 # ── [7] 列表分页与上限（成员集合依赖全院数据 ⇒ 只钉形状）────────────────────
 Write-Host ""

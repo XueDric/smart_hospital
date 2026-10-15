@@ -28,6 +28,8 @@
 package qingzhou
 
 import std.collection.*
+/* 看板计数断言要读 JSON（AC-P4-8）。 */
+import stdx.encoding.json.*
 
 /*
  * 造一张"某医生名下的挂号单"，返回 appointment_id。
@@ -257,43 +259,103 @@ public func acP4_2(runner: TestRunner, db: DbBackend): Unit {
         let visit = VisitRepo(db)
         let apptId = hSeedAppointmentForDoctor(db, 2, 8802, VISIT_BOOKED)
 
-        // ① booked → visiting 允许
-        runner.check("① 开始接诊（booked → visiting）成功",
-                     visit.transition(apptId, 900002, VISIT_VISITING, [VISIT_BOOKED]).ok)
-        // ② ★ 病历未锁定时**不许完成就诊**
-        let f1 = visit.finishVisit(apptId, 900002)
-        runner.check("★★ ② 病历未锁定 ⇒ 完成就诊被拒（recordNotLocked）", f1.recordNotLocked)
-        runner.check("② 且库里状态仍是 visiting（没被偷偷改成 done）",
+        // ① 到院登记（booked → arrived）+ 落 arrived_at
+        let arr1 = visit.arriveVisit(apptId, 900002, now)
+        runner.check("① 到院登记（booked → arrived）成功", arr1.ok)
+        runner.check("① 且 arrived_at 落库（= 本次调用的时间）",
+                     visit.findForDoctor(apptId, 900002).getOrThrow().arrivedAt == now)
+        // ①-b ★ 重复到院 ⇒ 状态冲突（**不静默成功**：静默成功会让界面显示"已到院"
+        //      而 arrived_at 还是第一次的时间，使用者以为刚才那一下生效了）
+        runner.check("★ ① 重复到院登记 ⇒ badTransition（不静默成功）",
+                     visit.arriveVisit(apptId, 900002, now + 5).badTransition)
+        // ② 进入候诊（arrived → waiting）
+        runner.check("② 进入候诊（arrived → waiting）成功", visit.waitingVisit(apptId, 900002).ok)
+        // ③ ★★ 没走"到院→候诊"就**不许**开始接诊（改进 6 的核心约束）
+        let aNoArrive = hSeedAppointmentForDoctor(db, 2, 8805, VISIT_BOOKED)
+        runner.check("★★ ③ 未到院（booked）直接开始接诊被拒（badTransition）",
+                     visit.startVisit(aNoArrive, 900002, now).badTransition)
+        runner.check("③ 且库里状态仍是 booked（没被偷偷改成 visiting）",
+                     visit.findForDoctor(aNoArrive, 900002).getOrThrow().status == VISIT_BOOKED)
+        let aArrivedOnly = hSeedAppointmentForDoctor(db, 2, 8806, VISIT_ARRIVED)
+        runner.check("★★ ③ 只到院、未候诊 ⇒ 开始接诊也被拒",
+                     visit.startVisit(aArrivedOnly, 900002, now).badTransition)
+        // ④ 开始接诊（waiting → visiting）+ 落 started_at
+        let start1 = visit.startVisit(apptId, 900002, now + 1)
+        runner.check("④ 开始接诊（waiting → visiting）成功", start1.ok)
+        runner.check("④ 且 started_at 落库（= 本次调用的时间）",
+                     visit.findForDoctor(apptId, 900002).getOrThrow().startedAt == now + 1)
+        // ⑤ ★ 病历未锁定时**不许完成就诊**
+        let f1 = visit.finishVisit(apptId, 900002, now + 2)
+        runner.check("★★ ⑤ 病历未锁定 ⇒ 完成就诊被拒（recordNotLocked）", f1.recordNotLocked)
+        runner.check("⑤ 且库里状态仍是 visiting（没被偷偷改成 done）",
                      visit.findForDoctor(apptId, 900002).getOrThrow().status == VISIT_VISITING)
-        // ③ 写了病历但**只是草稿** ⇒ 仍不许完成
+        // ⑥ 写了病历但**只是草稿** ⇒ 仍不许完成
         let _w = hFillAllSections(emr, apptId, 900002, now, 9901)
-        runner.check("★★ ③ 病历只是草稿 ⇒ 完成就诊仍被拒（草稿不算完成诊疗）",
-                     visit.finishVisit(apptId, 900002).recordNotLocked)
-        // ④ 锁定后可以完成
+        runner.check("★★ ⑥ 病历只是草稿 ⇒ 完成就诊仍被拒（草稿不算完成诊疗）",
+                     visit.finishVisit(apptId, 900002, now + 3).recordNotLocked)
+        // ⑦ 锁定后可以完成，并落 finished_at
         let _l = emr.lock(apptId, now, 9901, "doctor")
-        runner.check("④ 病历锁定后可以完成就诊", visit.finishVisit(apptId, 900002).ok)
-        runner.check("④ 且库里状态是 done",
-                     visit.findForDoctor(apptId, 900002).getOrThrow().status == VISIT_DONE)
-        // ⑤ ★ done 是终态：不许再流转
-        runner.check("★★ ⑤ done 是终态：再次开始接诊被拒",
-                     visit.transition(apptId, 900002, VISIT_VISITING, [VISIT_BOOKED]).badTransition)
-        runner.check("★★ ⑤ done 是终态：标记爽约也被拒",
+        runner.check("⑦ 病历锁定后可以完成就诊", visit.finishVisit(apptId, 900002, now + 4).ok)
+        let doneRow = visit.findForDoctor(apptId, 900002).getOrThrow()
+        runner.check("⑦ 且库里状态是 done", doneRow.status == VISIT_DONE)
+        runner.check("⑦ 且 finished_at 落库（= 本次调用的时间）", doneRow.finishedAt == now + 4)
+        runner.check("⑦ ★ 时间线单调：arrived_at <= started_at <= finished_at",
+                     doneRow.arrivedAt <= doneRow.startedAt && doneRow.startedAt <= doneRow.finishedAt)
+        // ⑧ ★ done 是终态：不许再流转（含"再走一遍到院/候诊/接诊"）
+        runner.check("★★ ⑧ done 是终态：再次到院被拒",
+                     visit.arriveVisit(apptId, 900002, now + 10).badTransition)
+        runner.check("★★ ⑧ done 是终态：再次开始接诊被拒",
+                     visit.startVisit(apptId, 900002, now + 10).badTransition)
+        runner.check("★★ ⑧ done 是终态：标记爽约也被拒",
                      visit.transition(apptId, 900002, VISIT_NO_SHOW,
-                                      [VISIT_BOOKED, VISIT_VISITING]).badTransition)
-        // ⑥ 显式流转表本身（加状态时这里会一起被看见）
-        runner.check("⑥ 流转表：booked→visiting 允许", visitTransitionAllowed(VISIT_BOOKED, VISIT_VISITING))
-        runner.check("⑥ 流转表：visiting→done 允许", visitTransitionAllowed(VISIT_VISITING, VISIT_DONE))
-        runner.check("⑥ 流转表：done→任何 都不允许",
+                                      [VISIT_BOOKED, VISIT_ARRIVED, VISIT_WAITING,
+                                       VISIT_VISITING]).badTransition)
+        // ⑨ 显式流转表本身（**逐格**钉住；加状态时这里会一起被看见）
+        runner.check("⑨ 流转表：booked→arrived 允许", visitTransitionAllowed(VISIT_BOOKED, VISIT_ARRIVED))
+        runner.check("★★ ⑨ 流转表：booked→visiting **不允许**（必须先到院/候诊）",
+                     !visitTransitionAllowed(VISIT_BOOKED, VISIT_VISITING))
+        runner.check("⑨ 流转表：arrived→waiting 允许", visitTransitionAllowed(VISIT_ARRIVED, VISIT_WAITING))
+        runner.check("★★ ⑨ 流转表：arrived→visiting **不允许**（必须先候诊）",
+                     !visitTransitionAllowed(VISIT_ARRIVED, VISIT_VISITING))
+        runner.check("⑨ 流转表：waiting→visiting 允许", visitTransitionAllowed(VISIT_WAITING, VISIT_VISITING))
+        runner.check("⑨ 流转表：waiting→done **不允许**（没接诊就没有「完成」）",
+                     !visitTransitionAllowed(VISIT_WAITING, VISIT_DONE))
+        runner.check("⑨ 流转表：visiting→done 允许", visitTransitionAllowed(VISIT_VISITING, VISIT_DONE))
+        runner.check("★★ ⑨ 流转表：退号**只允许从 booked**",
+                     visitTransitionAllowed(VISIT_BOOKED, VISIT_CANCELLED) &&
+                     !visitTransitionAllowed(VISIT_ARRIVED, VISIT_CANCELLED) &&
+                     !visitTransitionAllowed(VISIT_WAITING, VISIT_CANCELLED) &&
+                     !visitTransitionAllowed(VISIT_VISITING, VISIT_CANCELLED))
+        runner.check("★★ ⑨ 流转表：爽约可从 booked/arrived/waiting/visiting 四条路进入",
+                     visitTransitionAllowed(VISIT_BOOKED, VISIT_NO_SHOW) &&
+                     visitTransitionAllowed(VISIT_ARRIVED, VISIT_NO_SHOW) &&
+                     visitTransitionAllowed(VISIT_WAITING, VISIT_NO_SHOW) &&
+                     visitTransitionAllowed(VISIT_VISITING, VISIT_NO_SHOW))
+        runner.check("⑨ 流转表：done→任何 都不允许",
                      !visitTransitionAllowed(VISIT_DONE, VISIT_VISITING) &&
                      !visitTransitionAllowed(VISIT_DONE, VISIT_NO_SHOW) &&
                      !visitTransitionAllowed(VISIT_DONE, VISIT_CANCELLED))
-        runner.check("⑥ 流转表：cancelled→任何 都不允许",
+        runner.check("⑨ 流转表：cancelled→任何 都不允许",
                      !visitTransitionAllowed(VISIT_CANCELLED, VISIT_VISITING))
-        // ⑦ 爽约路径：booked → no_show（不需要病历）
+        runner.check("⑨ 终态判定：arrived/waiting 不是终态，done/cancelled/no_show 是",
+                     !visitIsTerminal(VISIT_ARRIVED) && !visitIsTerminal(VISIT_WAITING) &&
+                     visitIsTerminal(VISIT_DONE) && visitIsTerminal(VISIT_CANCELLED) &&
+                     visitIsTerminal(VISIT_NO_SHOW))
+        runner.check("⑨ 状态中文名：arrived/waiting 有专属文案（新增状态不可能漏取名字）",
+                     visitStatusLabel(VISIT_ARRIVED) == "已到院" &&
+                     visitStatusLabel(VISIT_WAITING) == "候诊中")
+        // ⑩ 爽约路径：booked → no_show（不需要病历）
         let a2 = hSeedAppointmentForDoctor(db, 2, 8803, VISIT_BOOKED)
-        runner.check("⑦ 未接诊直接爽约（booked → no_show）允许",
-                     visit.transition(a2, 900002, VISIT_NO_SHOW, [VISIT_BOOKED, VISIT_VISITING]).ok)
-        // ⑧ 队列不含已退号
+        runner.check("⑩ 未接诊直接爽约（booked → no_show）允许",
+                     visit.transition(a2, 900002, VISIT_NO_SHOW,
+                                      [VISIT_BOOKED, VISIT_ARRIVED, VISIT_WAITING,
+                                       VISIT_VISITING]).ok)
+        let a2w = hSeedAppointmentForDoctor(db, 2, 8807, VISIT_WAITING)
+        runner.check("⑩ ★ 候诊中也能标爽约（来了但一直没进诊室）",
+                     visit.transition(a2w, 900002, VISIT_NO_SHOW,
+                                      [VISIT_BOOKED, VISIT_ARRIVED, VISIT_WAITING,
+                                       VISIT_VISITING]).ok)
+        // ⑪ 队列不含已退号
         let a3 = hSeedAppointmentForDoctor(db, 2, 8804, VISIT_CANCELLED)
         let q = visit.queueForDoctor(900002, 100)
         var hasCancelled = false
@@ -302,13 +364,39 @@ public func acP4_2(runner: TestRunner, db: DbBackend): Unit {
                 hasCancelled = true
             }
         }
-        runner.check("★★ ⑧ 队列**不含**已退号的单", !hasCancelled)
-        runner.check("⑧ 队列按 visit_date/period/seq_no 排序（长度 ${q.size}）", q.size >= 2)
-        // ⑨ 医生只能看/改自己的号
-        runner.check("★★ ⑨ 医生 B 查医生 A 的单 ⇒ None（不是「无权限」，是「不存在」）",
+        runner.check("★★ ⑪ 队列**不含**已退号的单", !hasCancelled)
+        runner.check("⑪ 队列长度 >= 2（长度 ${q.size}）", q.size >= 2)
+        /*
+         * ★★ 排序：先按状态优先级（到院/候诊优先），再按 visit_date/period/seq_no。
+         * ⚠ 断言方式刻意是"用 visitQueueRank 预测、再与实际返回逐项比对" ——
+         *   SQL 里的 CASE 与那个函数是同一件事的两处表述，两者分歧必须在这里变红
+         *   （否则队列会悄悄按错序展示，而使用者只会觉得"怎么又是这个顺序"）。
+         */
+        var orderOk = true
+        var prevRank = -1
+        var prevKey = ""
+        for (x in q) {
+            let rk = visitQueueRank(x.status)
+            let key = "${x.visitDate}|${x.period}|${x.seqNo}"
+            if (rk < prevRank) {
+                orderOk = false
+            }
+            if (rk == prevRank && key < prevKey) {
+                orderOk = false
+            }
+            prevRank = rk
+            prevKey = key
+        }
+        runner.check("★★ ⑪ 队列按状态优先级排序（到院/候诊在前，终态在后）", orderOk)
+        runner.check("⑪ 队列首项的优先级 <= 末项（同一口径的第二个视角）",
+                     q.size < 2 || visitQueueRank(q[0].status) <= visitQueueRank(q[q.size - 1].status))
+        // ⑫ 医生只能看/改自己的号
+        runner.check("★★ ⑫ 医生 B 查医生 A 的单 ⇒ None（不是「无权限」，是「不存在」）",
                      visit.findForDoctor(apptId, 8899).isNone())
-        runner.check("★★ ⑨ 医生 B 改医生 A 的单 ⇒ notFound",
-                     visit.transition(apptId, 8899, VISIT_VISITING, [VISIT_BOOKED]).notFound)
+        runner.check("★★ ⑫ 医生 B 到院登记医生 A 的单 ⇒ notFound",
+                     visit.arriveVisit(apptId, 8899, now).notFound)
+        runner.check("★★ ⑫ 医生 B 改医生 A 的单 ⇒ notFound",
+                     visit.startVisit(apptId, 8899, now).notFound)
     })
 }
 
@@ -813,4 +901,179 @@ public func acP4_7(runner: TestRunner, db: DbBackend): Unit {
         runner.check("★ ⑧ 已定稿的病历：即使版本号对不上也报 locked（不可改 ≠ 有人抢先改了）",
                      lockedWrite.locked && !lockedWrite.conflict)
     })
+}
+
+/*
+ * ============ AC-P4-8：就诊时间线（2026-10-15 改进 6）============
+ *
+ * 独占 id 段：seed 20–27（患者 9620–9627，医生 900020；另有 900021 作为"别人"）。
+ *
+ * ⚠ 这一组测的是**四件容易做成假的**事：
+ *   ① 队列排序：必须按状态优先级，**不是**按 seq_no —— 所以夹具故意让
+ *      `seq_no` 与状态优先级**相反**（已挂号的 seq_no 最小）：若实现偷懒只按
+ *      seq_no 排，断言会立刻红。而且同优先级内必须**确定**（否则测试会抖）。
+ *   ② 时间戳是**真的落库并且能算出差值**（"等了多久/看了多久"是本改进的产出，
+ *      只断言"状态变成 arrived"等于没测到它存在的理由）。
+ *   ③ 每一步**只能走一次**、且**不能跳步**（到院→候诊→接诊→完成），
+ *      否则"实际等了多久"里会出现没有起点的洞。
+ *   ④ 越权一律 notFound（医生 B 对医生 A 的单做**任何**一步）。
+ */
+public func acP4_8(runner: TestRunner, db: DbBackend): Unit {
+    println("=== AC-P4-8 ★★ 就诊时间线（改进 6：到院 / 候诊 / 时间戳 / 队列排序）===")
+    runner.section("AC-P4-8", { =>
+        hResetAll(db)
+        let now = hNowEpoch()
+        let emr = MedicalRecordRepo(db)
+        let visit = VisitRepo(db)
+        let doc: Int64 = 900020
+
+        /* ① 同一位医生名下的六张单状态各异；seq_no 故意与状态优先级相反 */
+        let aBooked = hSeedAppointmentForDoctor(db, 20, 9620, VISIT_BOOKED, asDoctorId: doc)
+        let aArrived = hSeedAppointmentForDoctor(db, 21, 9621, VISIT_ARRIVED, asDoctorId: doc)
+        let aWaiting = hSeedAppointmentForDoctor(db, 22, 9622, VISIT_WAITING, asDoctorId: doc)
+        let aVisiting = hSeedAppointmentForDoctor(db, 23, 9623, VISIT_VISITING, asDoctorId: doc)
+        let aDone = hSeedAppointmentForDoctor(db, 24, 9624, VISIT_DONE, asDoctorId: doc)
+        let aNoShow = hSeedAppointmentForDoctor(db, 25, 9625, VISIT_NO_SHOW, asDoctorId: doc)
+        let aCancelled = hSeedAppointmentForDoctor(db, 26, 9626, VISIT_CANCELLED, asDoctorId: doc)
+        /*
+         * ⚠ 行内 seq_no 是 seed 固定的 1 —— 那样"同优先级内"的顺序就没判据了
+         *   （MySQL 对完全并列的行不保证顺序，测试会抖）。这里逐行改写 seq_no，
+         *   并让**状态优先级越靠前的单 seq_no 越大**：只有真的按状态排序才会是期望顺序。
+         */
+        let seqOf: Array<(Int64, Int64)> = [(aBooked, 1), (aArrived, 6), (aWaiting, 5),
+                                           (aVisiting, 4), (aDone, 3), (aNoShow, 2)]
+        for (pair in seqOf) {
+            db.exec("UPDATE appointment SET seq_no = ? WHERE id = ?",
+                    [DbInt(pair[1]), DbInt(pair[0])])
+        }
+
+        let q = visit.queueForDoctor(doc, 100)
+        /* ② 队列：已退号不在其中，其余六张都在 */
+        var hasCancelled = false
+        for (x in q) {
+            if (x.appointmentId == aCancelled) {
+                hasCancelled = true
+            }
+        }
+        runner.check("★★ ① 队列不含已退号的单（长度 ${q.size}）", !hasCancelled)
+        runner.check("① 其余六张都在队列里（实得 ${q.size}）", q.size == 6)
+        /* ③ 顺序 = 状态优先级（不是 seq_no） */
+        let expected: Array<Int64> = [aArrived, aWaiting, aVisiting, aBooked, aDone, aNoShow]
+        var orderOk = q.size == expected.size
+        if (orderOk) {
+            var i = 0
+            while (i < expected.size) {
+                if (q[i].appointmentId != expected[i]) {
+                    orderOk = false
+                }
+                i = i + 1
+            }
+        }
+        var actual = ""
+        for (x in q) {
+            actual = actual + "${x.appointmentId},"
+        }
+        runner.check("★★ ① 队列按状态优先级排序（到院→候诊→接诊中→已挂号→已完成→爽约）" +
+                     "而不是 seq_no（实得 ${actual}）", orderOk)
+        runner.check("★ ① 且每行的 status_label 与 status 同源（界面不用自己抄中文表）",
+                     q[0].status == VISIT_ARRIVED && visitStatusLabel(q[0].status) == "已到院")
+
+        /* ④ 完整时间线：booked → arrived → waiting → visiting → done */
+        let b1 = hSeedAppointmentForDoctor(db, 27, 9627, VISIT_BOOKED, asDoctorId: doc)
+        let r0 = visit.findForDoctor(b1, doc).getOrThrow()
+        runner.check("④ 初始：三个时间戳都是 0（= 这一步还没发生）",
+                     r0.arrivedAt == 0 && r0.startedAt == 0 && r0.finishedAt == 0)
+        runner.check("④ 到院登记成功且 arrived_at 落库（= 本次调用时间）",
+                     visit.arriveVisit(b1, doc, now + 100).ok &&
+                     visit.findForDoctor(b1, doc).getOrThrow().arrivedAt == now + 100)
+        runner.check("④ 进入候诊成功", visit.waitingVisit(b1, doc).ok &&
+                     visit.findForDoctor(b1, doc).getOrThrow().status == VISIT_WAITING)
+        runner.check("④ 开始接诊成功且 started_at 落库",
+                     visit.startVisit(b1, doc, now + 200).ok &&
+                     visit.findForDoctor(b1, doc).getOrThrow().startedAt == now + 200)
+        /* ★ 没锁病历 ⇒ 不许完成，时间线必须停在 visiting（finished_at 仍为 0） */
+        runner.check("★★ ④ 病历未锁定 ⇒ 完成就诊被拒，且 finished_at 仍是 0（不写半个时间戳）",
+                     visit.finishVisit(b1, doc, now + 300).recordNotLocked &&
+                     visit.findForDoctor(b1, doc).getOrThrow().finishedAt == 0)
+        runner.check("④ 锁定病历后完成 ⇒ finished_at 落库",
+                     hFillAllSections(emr, b1, doc, now + 250, 9903).ok &&
+                     emr.lock(b1, now + 260, 9903, "doctor").ok &&
+                     visit.finishVisit(b1, doc, now + 300).ok &&
+                     visit.findForDoctor(b1, doc).getOrThrow().finishedAt == now + 300)
+        let rf = visit.findForDoctor(b1, doc).getOrThrow()
+        runner.check("★★ ④ 等待时长 = started_at - arrived_at（实得 ${rf.startedAt - rf.arrivedAt} 秒）" +
+                     "—— 时间线真的能回答「等了多久」",
+                     rf.startedAt - rf.arrivedAt == 100)
+        runner.check("★★ ④ 就诊时长 = finished_at - started_at（实得 ${rf.finishedAt - rf.startedAt} 秒）",
+                     rf.finishedAt - rf.startedAt == 100)
+        runner.check("★★ ④ 时间线单调：arrived_at <= started_at <= finished_at",
+                     rf.arrivedAt <= rf.startedAt && rf.startedAt <= rf.finishedAt)
+
+        /* ⑤ 每一步只能走一次、且不能跳步 */
+        runner.check("★★ ⑤ 重复到院（已 arrived）⇒ badTransition（不静默成功）",
+                     visit.arriveVisit(aArrived, doc, now + 400).badTransition)
+        runner.check("★★ ⑤ 已完成单再次到院 ⇒ badTransition（终态不可回退）",
+                     visit.arriveVisit(aDone, doc, now + 400).badTransition)
+        runner.check("★★ ⑤ 未到院就候诊 ⇒ badTransition（不能跳步）",
+                     visit.waitingVisit(aBooked, doc).badTransition)
+        runner.check("★★ ⑤ 已候诊再次候诊 ⇒ badTransition",
+                     visit.waitingVisit(aWaiting, doc).badTransition)
+        runner.check("★★ ⑤ 已挂号直接开始接诊 ⇒ badTransition（必须先到院/候诊）",
+                     visit.startVisit(aBooked, doc, now + 400).badTransition)
+        runner.check("★★ ⑤ 已到院但未候诊就接诊 ⇒ badTransition",
+                     visit.startVisit(aArrived, doc, now + 400).badTransition)
+        runner.check("★★ ⑤ 已完成的单时间戳不被后续拒绝调用改写（arrived_at 仍是原值）",
+                     visit.findForDoctor(aDone, doc).getOrThrow().arrivedAt == 0)
+
+        /* ⑥ 越权：另一位医生对以上任何一步都应当作「不存在」 */
+        let other: Int64 = 900021
+        hSeedIdleDoctor(db, other)
+        runner.check("★★ ⑥ 另一位医生到院登记我的单 ⇒ notFound",
+                     visit.arriveVisit(aBooked, other, now).notFound)
+        runner.check("★★ ⑥ 另一位医生让我的单进候诊 ⇒ notFound",
+                     visit.waitingVisit(aWaiting, other).notFound)
+        runner.check("★★ ⑥ 另一位医生开始我的单 ⇒ notFound",
+                     visit.startVisit(aWaiting, other, now).notFound)
+        runner.check("★★ ⑥ 另一位医生完成我的单 ⇒ notFound",
+                     visit.finishVisit(aVisiting, other, now).notFound)
+        runner.check("★★ ⑥ 另一位医生标记我的单爽约 ⇒ notFound",
+                     visit.transition(aVisiting, other, VISIT_NO_SHOW,
+                                      [VISIT_BOOKED, VISIT_ARRIVED, VISIT_WAITING,
+                                       VISIT_VISITING]).notFound)
+
+        /* ⑦ 看板：到院/候诊两态进聚合（回答「现在有多少人在现场等」） */
+        let dash = DashboardRepo(db)
+        let view = dash.build(now, AiSettingsRepo(db))
+        runner.check("★★ ⑦ 看板 appointments 含 arrived / waiting 两个计数",
+                     h8Int(view, "appointments", "arrived") == 1 &&
+                     h8Int(view, "appointments", "waiting") == 1 &&
+                     h8Int(view, "appointments", "visiting") == 1)
+        runner.check("★★ ⑦ 看板仍**绝不出明细**（新计数没有引入任何 id）",
+                     !view.toString().contains("patient_id") &&
+                     !view.toString().contains("doctor_id") &&
+                     !view.toString().contains("9620"))
+    })
+}
+
+/*
+ * 读看板响应里 `o[section][key]` 的整数（AC-P4-8 用）。
+ * ⚠ 缺字段 / 类型不符 ⇒ 回 **-1**（"不可能的值"），绝不回 0：
+ *   回 0 会让「字段压根没写进响应」被断言悄悄放过（本项目已有的教训）。
+ */
+func h8Int(o: JsonObject, section: String, key: String): Int64 {
+    match (o.get(section)) {
+        case Some(sv) =>
+            if (sv is JsonObject) {
+                match (sv.asObject().get(key)) {
+                    case Some(kv) =>
+                        if (kv is JsonInt) {
+                            return kv.asInt().getValue()
+                        }
+                        return -1
+                    case None => return -1
+                }
+            }
+            return -1
+        case None => return -1
+    }
 }

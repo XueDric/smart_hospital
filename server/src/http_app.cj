@@ -617,6 +617,21 @@ func bookingJson(r: BookingResult): JsonObject {
     o.put("period", JsonString(r.period))
     o.put("seq_no", JsonInt(r.seqNo))
     o.put("status", JsonString(r.status))
+    /*
+     * ★ 2026-10-15（改进 6）：就诊时间线也回给**患者**。
+     *
+     * 为什么必须在挂号/列表/退号的响应里就有（而不是只给医生端）：
+     *   患者打开"我的挂号"要看到的是"我 10:05 到院、10:40 开始接诊、11:20 完成"。
+     *   这些数字只有服务端知道（`appointment.arrived_at/started_at/finished_at`），
+     *   前端各自记一份换台设备就没了 —— 而这正是"我在医院等了三小时"这类
+     *   投诉时唯一能拿出的事实。
+     * ⚠ `status_label` 与 `status` 都给：见 `http_p4.cj` 的同一处理（机器判据 + 人话）。
+     * ⚠ 0 = 该步还没发生（与 `created_at` 同口径）。
+     */
+    o.put("status_label", JsonString(visitStatusLabel(r.status)))
+    o.put("arrived_at", JsonInt(r.arrivedAt))
+    o.put("started_at", JsonInt(r.startedAt))
+    o.put("finished_at", JsonInt(r.finishedAt))
     // ★ 退号时"号源是否已归还"必须回给客户端：否则客户端无从知道
     //   上一次那个 SlotNotRestored 告警还在不在（见 domain_booking.cj cancel 注释）。
     o.put("slot_restored", JsonBool(r.slotRestored))

@@ -1,8 +1,8 @@
 {
   "title": "退号成功 data",
-  "description": "应用于 response.body.data。与挂号响应的差别：status=cancelled，且**不带** previsit_bound（退号跟预问诊绑定无关）。slot_restored=false 表示号源归还失败（跨表写只成功了一半）—— 客户端必须把它当成「要提示用户看状态」的信号，而不是当成功静默掉。",
+  "description": "应用于 response.body.data。与挂号响应的差别：status=cancelled，且**不带** previsit_bound（退号跟预问诊绑定无关）。slot_restored=false 表示号源归还失败（跨表写只成功了一半）—— 客户端必须把它当成「要提示用户看状态」的信号，而不是当成功静默掉。2026-10-15（改进 6）起带 `status_label`（与 `status` 同源的中文名，如「已退号」）与就诊时间线 `arrived_at`/`started_at`/`finished_at`（退号只可能发生在 booked，故这个端点回出来三个都是 0；保留字段是为了让客户端**一套解析代码**吃下全部挂号类响应）。",
   "type": "object",
-  "required": ["appointment_id", "schedule_id", "patient_id", "doctor_id", "department_id", "visit_date", "period", "seq_no", "status", "slot_restored", "department_name", "doctor_name", "doctor_title", "remain_num", "request_id", "server_time"],
+  "required": ["appointment_id", "schedule_id", "patient_id", "doctor_id", "department_id", "visit_date", "period", "seq_no", "status", "status_label", "arrived_at", "started_at", "finished_at", "slot_restored", "department_name", "doctor_name", "doctor_title", "remain_num", "request_id", "server_time"],
   "additionalProperties": false,
   "properties": {
     "appointment_id": { "type": "integer" },
@@ -14,6 +14,10 @@
     "period": { "type": "string", "enum": ["AM", "PM"] },
     "seq_no": { "type": "integer" },
     "status": { "type": "string", "enum": ["cancelled"] },
+    "status_label": { "type": "string", "minLength": 1 },
+    "arrived_at": { "type": "integer", "minimum": 0, "description": "到院登记时刻（epoch 秒）；0 = 还没到院（退号端点的前置状态是 booked，故此端点必为 0）" },
+    "started_at": { "type": "integer", "minimum": 0, "description": "开始接诊时刻（epoch 秒）；0 = 还没开始（同上，必为 0）" },
+    "finished_at": { "type": "integer", "minimum": 0, "description": "完成就诊时刻（epoch 秒）；0 = 还没结束（同上，必为 0）" },
     "slot_restored": { "type": "boolean" },
     "department_name": { "type": "string" },
     "doctor_name": { "type": "string" },

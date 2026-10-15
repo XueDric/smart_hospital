@@ -1356,14 +1356,24 @@ public func emrBackfillRevisions(db: DbBackend): Int64 {
  * 挂号单在**就诊流程**里的状态。
  *
  * ⚠ 与"挂号状态"是**同一个字段**（`appointment.status`），不是两套：
- *   `booked`（已挂号）→ `visiting`（接诊中）→ `done`（已完成）
- *   旁路：`cancelled`（患者/管理员退号）、`no_show`（爽约）
+ *   `booked`（已挂号）→ `arrived`（已到院）→ `waiting`（候诊中）
+ *                     → `visiting`（接诊中）→ `done`（已完成）
+ *   旁路：`cancelled`（退号，**只允许从 booked**）、`no_show`（爽约）
  *   📌 用同一个字段是刻意的 —— 两个字段表达"这张单现在什么状态"
  *     必然会出现不一致（本项目反复踩的"同一语义两处"）。
  *
  * `done` / `cancelled` / `no_show` 是**终态**：不可再流转。
+ *
+ * 2026-10-15（改进 6）插入 `arrived` / `waiting` 两个状态：
+ *   · 为什么必须落库而不是前端自己推：到院/候诊是**机构事实** ——
+ *     患者到前台报到了、护士叫过号了，医生换一台设备看队列也得看到同一件事；
+ *     前端自推的状态换台设备就没了，且没有时间戳可解释"等了多久"。
+ *   · 为什么不用"患者自述到院"直接覆盖：避免与 `visiting`/`done` 打架，
+ *     每一步都走同一张流转表。
  */
 public let VISIT_BOOKED: String = "booked"
+public let VISIT_ARRIVED: String = "arrived"
+public let VISIT_WAITING: String = "waiting"
 public let VISIT_VISITING: String = "visiting"
 public let VISIT_DONE: String = "done"
 public let VISIT_CANCELLED: String = "cancelled"
@@ -1374,16 +1384,60 @@ public let VISIT_NO_SHOW: String = "no_show"
  *
  * 照 brief/ADR 的纪律"状态机要有显式流转表"：
  *   把"允许哪些流转"集中在一处 ⇒ 加状态只改这里，且**可被测试直接钉住**。
+ *
+ * ⚠ `cancelled` **只从 `booked` 允许**（患者自助退号）：
+ *   到院后号已被消耗，要取消必须人工处理（否则会出现"人已经看完了、
+ *   单子却变成已退号、号源还回池子"）。`domain_booking.cj` 的退号 UPDATE
+ *   也是 `WHERE status = 'booked'`，两处口径一致 —— 改这里必须同时改那里。
  */
 public func visitTransitionAllowed(from: String, to: String): Bool {
     if (from == VISIT_BOOKED) {
-        return to == VISIT_VISITING || to == VISIT_CANCELLED || to == VISIT_NO_SHOW
+        return to == VISIT_ARRIVED || to == VISIT_CANCELLED || to == VISIT_NO_SHOW
+    }
+    if (from == VISIT_ARRIVED) {
+        return to == VISIT_WAITING || to == VISIT_NO_SHOW
+    }
+    if (from == VISIT_WAITING) {
+        return to == VISIT_VISITING || to == VISIT_NO_SHOW
     }
     if (from == VISIT_VISITING) {
         return to == VISIT_DONE || to == VISIT_NO_SHOW
     }
     /* done / cancelled / no_show / 未知状态 —— 都是终态 */
     return false
+}
+
+/*
+ * 队列排序优先级（数字小的排前面）。
+ *
+ * ⚠ 与 `domain_booking.cj` 里 `listAppointmentsByDoctor` 的
+ *   `ORDER BY (CASE status ...)` **必须一致** —— 那是同一件事的两处表述
+ *   （SQL 里排序才能配合 LIMIT）。AC-P4-8 用本函数预测顺序、再与 SQL 的
+ *   实际返回逐项比对，两者的分歧会在测试里立刻变红。
+ *
+ * 排法：到院/候诊的人**排在前面**（他们人在现场等叫号），
+ *       其次接诊中，再其次还没到院的，最后是今天的终态单（留在队列里供追溯）。
+ */
+public func visitQueueRank(s: String): Int64 {
+    if (s == VISIT_ARRIVED) {
+        return 0
+    }
+    if (s == VISIT_WAITING) {
+        return 1
+    }
+    if (s == VISIT_VISITING) {
+        return 2
+    }
+    if (s == VISIT_BOOKED) {
+        return 3
+    }
+    if (s == VISIT_DONE) {
+        return 4
+    }
+    if (s == VISIT_NO_SHOW) {
+        return 5
+    }
+    return 6
 }
 
 /* 该状态是否终态。 */
@@ -1401,6 +1455,12 @@ public func visitIsTerminal(s: String): Bool {
 public func visitStatusLabel(s: String): String {
     if (s == VISIT_BOOKED) {
         return "已挂号"
+    }
+    if (s == VISIT_ARRIVED) {
+        return "已到院"
+    }
+    if (s == VISIT_WAITING) {
+        return "候诊中"
     }
     if (s == VISIT_VISITING) {
         return "接诊中"
@@ -1471,9 +1531,17 @@ public class VisitRepo {
      * ⚠ `extraWhere` 用于"完成就诊前必须已锁定病历"这类**跨表前置条件**：
      *   把它放进同一条 UPDATE 的 WHERE 里，才能做到"判据与写入是同一个原子动作"
      *   （否则"先查病历再改状态"在并发下会漏）。
+     *
+     * `stampCol` / `stampValue`（2026-10-15 改进 6 增）：顺手在同一句 UPDATE 里
+     *   写下这一步的时间戳（`arrived_at` / `started_at`）。
+     *   ⚠ `stampCol` 会被拼进 SQL —— **只允许传本文件的字面量常量**，
+     *     绝不允许来自请求参数（那是注入）。
+     *   📌 写在与 status 同一条 UPDATE 里是刻意的：分两句写会出现
+     *     "状态改了、时间戳没改"的中间态，而时间线正是排障要看的东西。
      */
     public func transition(appointmentId: Int64, doctorId: Int64,
-                           to: String, allowFrom: Array<String>): VisitOutcome {
+                           to: String, allowFrom: Array<String>,
+                           stampCol!: String = "", stampValue!: Int64 = 0): VisitOutcome {
         let out = VisitOutcome()
         var appt: BookingResult
         match (findForDoctor(appointmentId, doctorId)) {
@@ -1488,9 +1556,14 @@ public class VisitRepo {
             out.badTransition = true
             return out
         }
-        var sql = "UPDATE appointment SET status = ? WHERE id = ? AND doctor_id = ? AND status IN ("
+        var sql = "UPDATE appointment SET status = ?"
         var params = ArrayList<DbValue>()
         params.add(DbStr(to))
+        if (stampCol.size > 0) {
+            sql = sql + ", " + stampCol + " = ?"
+            params.add(DbInt(stampValue))
+        }
+        sql = sql + " WHERE id = ? AND doctor_id = ? AND status IN ("
         params.add(DbInt(appointmentId))
         params.add(DbInt(doctorId))
         var first = true
@@ -1513,8 +1586,40 @@ public class VisitRepo {
         return out
     }
 
-    /* 完成就诊：**要求病历已锁定**（同一条 UPDATE 里带上这个前置条件）。 */
-    public func finishVisit(appointmentId: Int64, doctorId: Int64): VisitOutcome {
+    /*
+     * 到院登记：`booked → arrived`，并记 `arrived_at`。
+     * 只允许从 `booked`（重复登记 ⇒ badTransition，前端刷新即可看到真相）。
+     */
+    public func arriveVisit(appointmentId: Int64, doctorId: Int64, now: Int64): VisitOutcome {
+        return transition(appointmentId, doctorId, VISIT_ARRIVED, [VISIT_BOOKED],
+                          stampCol: "arrived_at", stampValue: now)
+    }
+
+    /*
+     * 进入候诊：`arrived → waiting`。
+     * 没有时间戳列 —— "等了多久"由 `arrived_at` 与 `started_at` 之差表达，
+     * 再加一个 `waiting_at` 只会多一个可能不一致的字段。
+     */
+    public func waitingVisit(appointmentId: Int64, doctorId: Int64): VisitOutcome {
+        return transition(appointmentId, doctorId, VISIT_WAITING, [VISIT_ARRIVED])
+    }
+
+    /*
+     * 开始接诊：`waiting → visiting`，并记 `started_at`（就诊时长由此算）。
+     * ⚠ 只从 `waiting` 允许 —— 见 `visitTransitionAllowed`：到院/候诊是必须走的，
+     *   否则"实际等了多久/有没有跳过候诊"就无从查证。
+     */
+    public func startVisit(appointmentId: Int64, doctorId: Int64, now: Int64): VisitOutcome {
+        return transition(appointmentId, doctorId, VISIT_VISITING, [VISIT_WAITING],
+                          stampCol: "started_at", stampValue: now)
+    }
+
+    /*
+     * 完成就诊：**要求病历已锁定**（同一条 UPDATE 里带上这个前置条件），
+     * 并顺手记下 `finished_at`（本次就诊的终点，与 `started_at` 一起给出实际时长）。
+     * ⚠ 前置条件必须待在同一句 UPDATE 的 WHERE 里 —— 见 `transition` 的注释。
+     */
+    public func finishVisit(appointmentId: Int64, doctorId: Int64, now: Int64): VisitOutcome {
         let out = VisitOutcome()
         match (findForDoctor(appointmentId, doctorId)) {
             case Some(a) =>
@@ -1529,10 +1634,10 @@ public class VisitRepo {
             return out
         }
         let n = db.exec(
-            "UPDATE appointment SET status = ? WHERE id = ? AND doctor_id = ? AND status = ? " +
+            "UPDATE appointment SET status = ?, finished_at = ? WHERE id = ? AND doctor_id = ? AND status = ? " +
             "AND EXISTS (SELECT 1 FROM medical_record mr WHERE mr.appointment_id = appointment.id " +
             "AND mr.status = ?)",
-            [DbStr(VISIT_DONE), DbInt(appointmentId), DbInt(doctorId),
+            [DbStr(VISIT_DONE), DbInt(now), DbInt(appointmentId), DbInt(doctorId),
              DbStr(VISIT_VISITING), DbStr(EMR_LOCKED)])
         if (n == 0) {
             /* 两种可能：状态不是 visiting，或病历未锁定 —— 查一次给出**准确**原因 */

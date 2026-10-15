@@ -194,6 +194,18 @@ func emrReasonFromBody(ctx: Context): String {
     o.put("seq_no", JsonInt(a.seqNo))
     o.put("status", JsonString(a.status))
     /*
+     * ★ 到院 / 候诊 / 接诊的时间线（2026-10-15 改进 6）。
+     *
+     * ⚠ 为什么状态与 `status_label` 都回：`status` 是**机器判据**（客户端做分支用，
+     *   改文案不影响它），`status_label` 是给人看的中文名（`visitStatusLabel`）。
+     *   只回机器码会逼客户端各自抄一份中文表 —— 五处文案迟早不一致。
+     * ⚠ 三个时间戳 0 = "还没发生"（不是缺失）：队列页据此显示"10:05 到院"或"未到院"。
+     */
+    o.put("status_label", JsonString(visitStatusLabel(a.status)))
+    o.put("arrived_at", JsonInt(a.arrivedAt))
+    o.put("started_at", JsonInt(a.startedAt))
+    o.put("finished_at", JsonInt(a.finishedAt))
+    /*
      * ★ 本单是否有患者自述（2026-10-14 改进 1）：队列页据此标「预问诊」徽标，
      *   让医生在进病历页**之前**就知道有没有可看的摘要。
      * ⚠ 只要**绑定了本单**的会话才算（"该患者最近有一次问诊单"不算 ——
@@ -461,8 +473,54 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
     })
 
     /*
+     * POST /api/v1/doctor/visits/:id/arrive —— 到院登记（booked → arrived）。
+     *
+     * ★ 为什么这是**医生端**的动作而不是患者自助（2026-10-15 改进 6 的取舍）：
+     *   到院是"人到前台了"这件**机构事实**，由接待/护士在医生工作台上点一下最省事，
+     *   也避免患者在自己的手机上把状态改掉（那会把"是否按时到院"变成自述）。
+     *   📌 复用 `Action.ManageVisit`（与接诊同权限）：这是接诊流程的一步，
+     *     不是另一个权限域；新造一个动作会让每个角色配置都要跟着改。
+     *
+     * ⚠ 幂等由状态机给出：重复点 ⇒ `VISIT_BAD_STATE`（409），不是静默成功 ——
+     *   静默成功会让界面显示"已到院"而库里 `arrived_at` 其实是第一次的时间，
+     *   使用者以为刚才那一下生效了（它并没有）。
+     */
+    r.post("/api/v1/doctor/visits/:id/arrive", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageVisit)
+        let id = parseInt64Or(ctx.paramOr("id", "0"), 0)
+        if (id <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "挂号单 id 必须是正整数")
+        }
+        let out = visit.arriveVisit(id, p.doctorId, hNowEpoch())
+        p4ThrowVisit(out, "到院登记")
+        sendOk(ctx, p4VisitStateJson(id, p.doctorId, emr, visit))
+    })
+
+    /*
+     * POST /api/v1/doctor/visits/:id/waiting —— 进入候诊（arrived → waiting）。
+     *
+     * ⚠ 为什么"到院"与"候诊"是两个动作而不是一个：到院是登记（人来了），
+     *   候诊是叫号队列里的位置（可以被分诊台安排先后）。合成一步的话，
+     *   "到了但还没被叫"这个最常见的状态就无处表达，而它正是患者最关心的等待区间。
+     */
+    r.post("/api/v1/doctor/visits/:id/waiting", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.ManageVisit)
+        let id = parseInt64Or(ctx.paramOr("id", "0"), 0)
+        if (id <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "挂号单 id 必须是正整数")
+        }
+        let out = visit.waitingVisit(id, p.doctorId)
+        p4ThrowVisit(out, "进入候诊")
+        sendOk(ctx, p4VisitStateJson(id, p.doctorId, emr, visit))
+    })
+
+    /*
      * POST /api/v1/doctor/visits/:id/start —— 开始接诊。
-     * 只允许 `booked → visiting`。
+     * 只允许 `waiting → visiting`（并记下 `started_at`）。
+     * ⚠ 2026-10-15 起**不再**允许 `booked → visiting`：到院/候诊必须先发生，
+     *   否则"实际等了多久"没有起点，时间线会出现"接诊中但没有到院时间"的洞。
      */
     r.post("/api/v1/doctor/visits/:id/start", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
@@ -471,7 +529,7 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
         if (id <= 0) {
             throw apiErrorMsg("VALIDATION_FAILED", "挂号单 id 必须是正整数")
         }
-        let out = visit.transition(id, p.doctorId, VISIT_VISITING, [VISIT_BOOKED])
+        let out = visit.startVisit(id, p.doctorId, hNowEpoch())
         p4ThrowVisit(out, "开始接诊")
         sendOk(ctx, p4VisitStateJson(id, p.doctorId, emr, visit))
     })
@@ -491,7 +549,7 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
         if (id <= 0) {
             throw apiErrorMsg("VALIDATION_FAILED", "挂号单 id 必须是正整数")
         }
-        let out = visit.finishVisit(id, p.doctorId)
+        let out = visit.finishVisit(id, p.doctorId, hNowEpoch())
         if (out.recordNotLocked) {
             throw apiErrorMsg("EMR_NOT_LOCKED",
                               "完成就诊前必须先提交锁定病历（草稿状态不算完成诊疗）")
@@ -512,8 +570,14 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
         if (id <= 0) {
             throw apiErrorMsg("VALIDATION_FAILED", "挂号单 id 必须是正整数")
         }
+        /*
+         * ⚠ allowFrom 必须把 arrived / waiting 也算进去（2026-10-15 改进 6）：
+         *   患者挂了号没来（booked）与来了没被叫到（arrived/waiting）都是"爽约"的现实形态，
+         *   漏掉它们会让医生面对"人已经到了但一直没来诊室"的单**无路可走**
+         *   （既不能完成就诊，也不能标记爽约）。
+         */
         let out = visit.transition(id, p.doctorId, VISIT_NO_SHOW,
-                                  [VISIT_BOOKED, VISIT_VISITING])
+                                  [VISIT_BOOKED, VISIT_ARRIVED, VISIT_WAITING, VISIT_VISITING])
         p4ThrowVisit(out, "标记爽约")
         sendOk(ctx, p4VisitStateJson(id, p.doctorId, emr, visit))
     })
@@ -1018,6 +1082,11 @@ func p4VisitStateJson(appointmentId: Int64, doctorId: Int64,
     match (visit.findForDoctor(appointmentId, doctorId)) {
         case Some(a) =>
             o.put("status", JsonString(a.status))
+            /* 状态中文名与三个时间戳：任何一次流转的响应都自带完整时间线（改进 6）。 */
+            o.put("status_label", JsonString(visitStatusLabel(a.status)))
+            o.put("arrived_at", JsonInt(a.arrivedAt))
+            o.put("started_at", JsonInt(a.startedAt))
+            o.put("finished_at", JsonInt(a.finishedAt))
             o.put("visit_date", JsonString(a.visitDate))
             o.put("period", JsonString(a.period))
             o.put("seq_no", JsonInt(a.seqNo))
