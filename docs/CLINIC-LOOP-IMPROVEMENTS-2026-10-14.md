@@ -101,6 +101,27 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 > **③ 留下来源痕迹**（锁定后仍能回答"这段是患者说的"）。
 > ⚠ 同时**不要删** `use_intake_session`：`server/tests/emr-check.ps1:280-291` 有用例，且它是"医生一键预填"的落地通道。
 
+#### ✅ 实施状态：**服务端已实现（2026-10-14）**，与本文计划的差异如下
+
+> 交付物：`schema.cj`（两列 + 索引 + `migrateSchema` ⑧⑨）、`previsit.cj`（`appointmentId` / `ownedBy` / `bindAppointment` / `findByAppointment` / `latestCompleteForPatient` / `IntakeSlot.label`）、
+> `domain_emr.cj`（`previsit_ref` 落库 + `emrPrevisitRefJson`/`emrPrevisitRefSections`）、`http_p4.cj`（`visitPrevisitJson` + 新端点 + 队列 `previsit_ready`）、
+> `http_app.cj`（挂号 `previsit_id`/`previsit_bound` + `registerP4Routes` 传 `previsit`）、`http_common.cj`（`PREVISIT_NOT_FOUND` 登记）。
+> 验收：`accept` 新增 **AC-P4-5**（575 项断言全过）+ 新增 live 脚本 **`server/tests/previsit-bridge-check.ps1`（51 条）**；`emr-check` / `previsit-check` / `p1-extra-check` 回归全过。
+
+| # | 计划 | 实际落地 | 为什么 |
+| --- | --- | --- | --- |
+| 1 | `previsit_ref TEXT NOT NULL DEFAULT ''` | **`VARCHAR(1024) NOT NULL DEFAULT ''`** | 实测 MariaDB 允许 `TEXT DEFAULT ''`，但 **MySQL 不允许任何 `TEXT/BLOB` 带 DEFAULT**（本项目 DSN 写的是 `mysql://`，不能赌部署在 MariaDB 上）。JSON 约 260 字符，1024 足够 |
+| 2 | 跨患者 `previsit_id` ⇒ **400** | **201 + `previsit_bound=false`**（不报错） | 绑定是"附加交付物"，不该挡在挂号前面：断网重试时患者会因为一张过期的问诊单**挂不上号**。改成"挂号照常、如实告知没交上"，客户端文案「本次未提交预问诊」 |
+| 3 | （未提） | `IntakeSlot` 加第 5 个字段 **`label`**（主诉/病程/程度/伴随/既往史/过敏史） | 医生看的是短名，患者看的是问句 `question`；口径与 `emrJoinParts([("病程",…),("程度",…),("伴随",…)])` 一致，避免第二套命名 |
+| 4 | （未提） | 错误码表新增 **`PREVISIT_NOT_FOUND`**（404） | `http_common.cj` 的 `apiErrorSpec` 是白名单：不登记就 `throw` 不出来 |
+| 5 | 绑定语句 `UPDATE … WHERE (appointment_id=0 OR appointment_id=?)` | 同样语句，但**返回值不等于"绑上了"**：0 行受影响也可能是"已经绑到同一张单"⇒ 实现里**再查一次**确认 | MySQL 的 `affected_rows` 在"值没变"时为 0，直接当失败会让幂等重放误报 |
+| 6 | 队列标记 `previsit_ready` | 同左，但**只认"绑定了本单"**的会话（每行一次索引查询，队列 ≤100 行） | 用"该患者有历史会话"点亮会让所有历史行都亮徽标，徽标随即失去意义 |
+| 7 | 读端点响应加 `previsit_ref` | `previsit_ref` 只在**单查（`includeSections=true`）且确有预填**时出现 | 列表页不需要它；没预填过就不给字段（而不是给空对象） |
+| 8 | `previsit_ref` 由 `saveDraftWithIntake` 写入 | 同左，且**只记这次真的由预填写入的段**：医生在同一次请求里显式给出的段不算预填 | 诊断通常是医生自己填的，把它记成"患者自述"会误导 |
+
+> ⚠ 语义提醒（已写进 `docs/FRONTEND-INTEGRATION.md` §5.18）：`previsit_ref` 是**初值来源快照**，
+> 医生后续编辑**不会**改它 ⇒ 角标文案应是「患者自述（已由医生编辑）」。
+
 #### 后端任务
 
 1. **建绑定**：`previsit_session` 加 `appointment_id BIGINT NOT NULL DEFAULT 0` + `KEY idx_previsit_appointment (appointment_id)`。
@@ -243,13 +264,25 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 > ⇒ 真正的缺口只有两个：鸿蒙患者端的 token **只活在页面内存里**（`BookingPage.ets:29,98-125`，重进即换新 token），
 > 以及服务端少一个"按 token 反查"的出口。**安卓端基本不用改**，它的实现反过来就是鸿蒙的参照物。
 
-#### 后端任务（小）
+#### 后端任务（小）—— ✅ **已实现（2026-10-14）**，下面留原文 + 落地说明
 
-1. **反查端点**：`GET /api/v1/appointments/by-token/:clientToken`（患者身份，SQL 里带 `patient_id` 条件）⇒ 200 单 / 404（无此 token，或已退号释放）。给"两小时前那次到底成没成"一个确定性答案。
-2. **响应补两个字段**（挂/退号相关端点）：`server_time`（epoch 秒，与 §一.1 口径一致）与 `request_id`（= `ctx.id()`，与响应头 `X-Request-Id` 同值）。
-   理由：患者截图报障时能直接对上服务端日志——这也是改进 7 的排障入口。
-3. **契约写死"message 面向用户"**：`SLOT_GONE`、`APPOINTMENT_NOT_CANCELLABLE` 的 `message` 已经带中文状态名（`FRONTEND-INTEGRATION.md:777-788`）⇒ 客户端**直接展示服务端 message**，`code` 只用于程序分支。这一条要写进契约文档，否则两端各写一套文案，迟早不一致。
-4. **不要动 200/201 语义**（`FRONTEND-INTEGRATION.md:726-731`）：客户端靠"重发同 token 得 200 + 同一 `appointment_id`"来判定已成功。
+1. ✅ **反查端点已上线**：`GET /api/v1/appointments/by-token/:token`（患者身份；`patientId` 取自令牌并与 token 组合查询）
+   ⇒ 200 单 / 404（无此 token，或已退号释放）/ 400（空 token、或 > 64 字符）/ 403（非患者）。
+   实现 `server/src/http_app.cj`（`repo.findAppointmentByToken` 复用 `domain_booking.cj:310-322`，
+   此方法**本已存在**，只是此前只有"重提交"一条路径在用它）。契约见 `docs/FRONTEND-INTEGRATION.md` §5.27。
+2. ✅ **响应已补两个字段**（挂/退号相关端点，含 `slot_restored:false` 特例）：
+   `server_time`（epoch 秒，与 §一.1 口径一致）与 `request_id`。
+   ⚠ 落地细节与原文有一处不同：框架**没有** `ctx.id()` 访问器，请求编号是 `Context` 的公开字段 **`ctx._id`**
+   （由 `requestId()` 中间件填充，见 `third_party/qingzhou/src/context.cj:53`）；中间件未装配时它是空串，
+   服务端**不自己编一个**（编一个日志里查不到的编号比留空更坏）。另一个边界：
+   **错误信封不带 `request_id`** —— 从失败响应取编号请读**响应头** `X-Request-Id`。
+3. ⏳ **契约写死"message 面向用户"**（`SLOT_GONE`、`APPOINTMENT_NOT_CANCELLABLE` 的中文 message 直接展示）：
+   已在 `FRONTEND-INTEGRATION.md` §5.16/§14.2 有口径，本轮**未**新增文字（属文档口径，不改代码）。
+4. ✅ **未动 200/201 语义**：幂等回放仍是 200 + 同一 `appointment_id`（`p1-extra-check.ps1` 已把这条钉进断言）。
+
+> **验证**：`server/tests/p1-extra-check.ps1` 新增 9 条断言（挂号响应带 `request_id`/`server_time`、
+> 同 token 重提交 200 且 id 相同、by-token 命中同一 id、未知 token 404、65 字符 token 400、
+> 管理员 403、反查响应带两个溯源字段）。**实跑 PASS，失败 0**（`P1-EXTRA-EXIT=0`）。
 
 #### 前端任务（本项主战场）
 
@@ -449,8 +482,8 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 | 改动范围 | 必须跑的闸门 | 说明 |
 | --- | --- | --- |
 | 服务端任何改动 | `server/build.ps1`（框架 38 + 业务 37 = 75 文件） | 编译不过就别谈测试 |
-| 服务端业务逻辑 | 进程内四套件：`selftest` / `authtest` / `triagetest`（110 项）/ `accept <dsn>`（550 项） | `accept` 需要 DSN；`server/tests/doc-counts.ps1` 会顺带重跑并核对文档数字 |
-| HTTP 契约层 | `server/tests/final-verify.ps1`（现 11 项，全绿 exit 0） | ⚠ 本机端口必须 ≥15001；脚本前先 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`；含中文的 .ps1 必须带 **UTF-8 BOM** |
+| 服务端业务逻辑 | 进程内四套件：`selftest` / `authtest` / `triagetest`（110 项）/ `accept <dsn>`（575 项） | `accept` 需要 DSN；`server/tests/doc-counts.ps1` 会顺带重跑并核对文档数字 |
+| HTTP 契约层 | `server/tests/final-verify.ps1`（现 12 项，全绿 exit 0；含本项新增的 `previsit-bridge-check`） | ⚠ 本机端口必须 ≥15001；脚本前先 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`；含中文的 .ps1 必须带 **UTF-8 BOM** |
 | 契约变更 | 新增 `contract-check.ps1`（改进 5） | 未更新样例 ⇒ 红 |
 | 管理台（浏览器） | `server/tests/admin-web-smoke.mjs`（`SMOKE-EXIT=0`，写路径 + 模态框 + 逐页断言） | 需要 Edge；断言失败会写进退出码 |
 | 文档数字 | `server/tests/doc-counts.ps1` | 加表/加端点/加 AC 后**必然**失败，这是设计意图：改代码的人必须同步文档 |

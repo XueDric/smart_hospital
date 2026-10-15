@@ -1166,6 +1166,12 @@ public func runAcceptance(db: DbBackend): Int64 {
     acP4_3(runner, db)
     acP4_4(runner, db)
     /*
+     * ★ 2026-10-14（改进 1）：预问诊 → 病历的桥。
+     * ⚠ 排在 P4 这组最后面：它自己会 `hResetAll` 并造 **9505/9506/9507** 段
+     *   的患者，与前面用例的 88xx/95xx 段不重叠（本仓"每个用例独占 id 段"的约定）。
+     */
+    acP4_5(runner, db)
+    /*
      * 基础数据域（科室/医生）的管理端 CRUD（定义在 acceptance_base.cj）。
      *
      * ⚠ 排在**最后**，理由与上面那段一样：不改变既有用例的执行顺序

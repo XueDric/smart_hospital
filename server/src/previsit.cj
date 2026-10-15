@@ -156,12 +156,21 @@ public class IntakeSlot {
     public let question: String     // 给患者看的问题
     public let hint: String         // 可选的作答提示（示例）
     public let maxLen: Int64        // 该字段允许的最大**字符**数
+    /*
+     * ★ 给**医生**看的短名（2026-10-14 增，改进 1）。
+     * ⚠ 与 `question` 是两套文案、不是冗余：患者看的是"您这次主要哪里不舒服？"，
+     *   医生摘要里要的是"主诉"。拿 question 当标签会让摘要变成一串问句。
+     * ⚠ 取值与 `intakePrefill()` 拼现病史用的段名**逐字一致**（病程/程度/伴随）——
+     *   否则同一项信息在"摘要"和"病历正文"里会叫两个名字。
+     */
+    public let label: String
 
-    public init(key: String, question: String, hint: String, maxLen: Int64) {
+    public init(key: String, question: String, hint: String, maxLen: Int64, label: String) {
         this.key = key
         this.question = question
         this.hint = hint
         this.maxLen = maxLen
+        this.label = label
     }
 }
 
@@ -180,18 +189,18 @@ public class IntakeSlot {
  */
 public func intakeSlots(): Array<IntakeSlot> {
     return [
-        IntakeSlot("chief", "您这次主要哪里不舒服？", "例如：咳嗽、胃痛、头晕", 200),
-        IntakeSlot("duration", "这个情况持续多久了？", "例如：3 天、2 周、半年", 60),
-        IntakeSlot("severity", "对日常生活影响大吗？", "例如：轻微 / 影响睡眠 / 无法工作", 60),
+        IntakeSlot("chief", "您这次主要哪里不舒服？", "例如：咳嗽、胃痛、头晕", 200, "主诉"),
+        IntakeSlot("duration", "这个情况持续多久了？", "例如：3 天、2 周、半年", 60, "病程"),
+        IntakeSlot("severity", "对日常生活影响大吗？", "例如：轻微 / 影响睡眠 / 无法工作", 60, "程度"),
         /*
          * ⚠ 提示语里的"无"用 **CJK 直角引号**（「」）而不是 ASCII 双引号：
          *   ASCII `"` 在仓颉里是**字符串定界符** ⇒ 写在字符串中间会把字面量提前结束
          *   （实测报 `unclosed delimiter: '('`）。中文文案里嵌引用一律用「」，
          *   既避开这个问题，排版上也更规范。
          */
-        IntakeSlot("associated", "还有其它不舒服吗？（没有就写「无」）", "例如：发热、恶心、乏力", 200),
-        IntakeSlot("history", "以前有没有得过什么病、或长期吃药？", "例如：高血压 5 年，服降压药；或写「无」", 300),
-        IntakeSlot("allergy", "有没有药物或食物过敏？", "例如：青霉素过敏；或写「无」", 200)
+        IntakeSlot("associated", "还有其它不舒服吗？（没有就写「无」）", "例如：发热、恶心、乏力", 200, "伴随"),
+        IntakeSlot("history", "以前有没有得过什么病、或长期吃药？", "例如：高血压 5 年，服降压药；或写「无」", 300, "既往史"),
+        IntakeSlot("allergy", "有没有药物或食物过敏？", "例如：青霉素过敏；或写「无」", 200, "过敏史")
     ]
 }
 
@@ -231,6 +240,12 @@ public class PrevisitForm {
 public class PrevisitSession {
     public var id: String = ""
     public var patientId: Int64 = 0
+    /*
+     * ★ 绑定的挂号单（2026-10-14 增，改进 1）。`0` = 尚未绑定。
+     *   ⚠ 这是"患者答的这张问诊单属于哪一次就诊"的**服务端**事实 ——
+     *   此前它只存在于客户端本机的 `SessionStore` 里（换设备就断）。
+     */
+    public var appointmentId: Int64 = 0
     public var turn: Int64 = 0
     public var createdAt: Int64 = 0
     public var updatedAt: Int64 = 0
@@ -390,20 +405,112 @@ public class PrevisitRepo {
     /* 取会话。⚠ **必须带 patientId** —— 只按 id 取会让患者 A 读到 B 的问诊单。 */
     public func find(sid: String, patientId: Int64): ?PrevisitSession {
         let rs = db.query(
-            "SELECT id, patient_id, turn, form_json, created_at, updated_at " +
+            "SELECT id, patient_id, turn, form_json, created_at, updated_at, appointment_id " +
             "FROM previsit_session WHERE id = ? AND patient_id = ?",
             [DbStr(sid), DbInt(patientId)])
         if (rs.rowCount() < 1) {
             return None
         }
+        return Some(rowToSession(rs, 0))
+    }
+
+    /*
+     * 会话是否属于该患者（**不区分**"不存在"与"不是你的"）。
+     *
+     * ⚠ 调用方（挂号 handler）据此报 400 而不是 404/403：
+     *   `previsit_id` 是**请求体里的可选字段**，不是路径资源 ——
+     *   区分两种失败会让它变成一个"枚举别人会话 id"的 oracle。
+     */
+    public func ownedBy(sid: String, patientId: Int64): Bool {
+        if (sid.size == 0) {
+            return false
+        }
+        return find(sid, patientId).isSome()
+    }
+
+    /*
+     * ★ 把会话绑定到挂号单（2026-10-14，改进 1）。
+     *
+     * 语义与幂等：
+     *   · 只绑**属于该患者**的会话（`patient_id` 条件写进 UPDATE 里，
+     *     与 `answer` 同一条纪律：安全性不能依赖"上一步查过了"）；
+     *   · 允许"未绑定 → 绑定"与"已绑同一单 → 再绑一次"（幂等重放路径会重复执行）；
+     *   · **不允许改绑到另一张单**（`appointment_id = 0 OR appointment_id = ?`）——
+     *     否则一次误传就能把患者的自述挂到别人的就诊上（那是病历污染）。
+     * ⚠ **返回值的语义是"现在它是不是绑在这张单上"**，不是"本次是否写了行"：
+     *   MySQL 的 UPDATE 在"新值 = 旧值"时返回 **0 行受影响**（不是错误）。
+     *   而幂等重放（同一 token 再提一次 → AlreadyBooked → 再绑一次）走的正是这条路，
+     *   若把 0 行当失败，重放响应就会谎报 `previsit_bound = false` ——
+     *   **AC-P4-5 ① 抓到的就是这个**（第一版 `return n > 0` 被判 FAIL）。
+     *   ⇒ 0 行时回读一次确认后置条件（这次查询只在"没写任何行"时发生，非热路径）。
+     * false = 会话不存在 / 不属于该患者 / 已绑在**别的**单上。
+     */
+    public func bindAppointment(sid: String, patientId: Int64, appointmentId: Int64): Bool {
+        if (sid.size == 0 || appointmentId <= 0) {
+            return false
+        }
+        let n = db.exec(
+            "UPDATE previsit_session SET appointment_id = ? " +
+            "WHERE id = ? AND patient_id = ? AND (appointment_id = 0 OR appointment_id = ?)",
+            [DbInt(appointmentId), DbStr(sid), DbInt(patientId), DbInt(appointmentId)])
+        if (n > 0) {
+            return true
+        }
+        match (find(sid, patientId)) {
+            case Some(s) => return s.appointmentId == appointmentId
+            case None => return false
+        }
+    }
+
+    /*
+     * ★ 按挂号单取会话（医生读摘要用，2026-10-14 改进 1）。
+     *
+     * ⚠ 为什么带 `patientId` 参数：会话属于患者，而"这张单是谁的"由
+     *   调用方从**挂号单**读出（不是从请求里拿）。SQL 里带 patient_id 条件
+     *   ⇒ 即使路由层的归属校验将来被改错，这里也不会把别人的问诊单漏出去。
+     */
+    public func findByAppointment(appointmentId: Int64, patientId: Int64): ?PrevisitSession {
+        let rs = db.query(
+            "SELECT id, patient_id, turn, form_json, created_at, updated_at, appointment_id " +
+            "FROM previsit_session WHERE appointment_id = ? AND patient_id = ? " +
+            "ORDER BY updated_at DESC, id DESC LIMIT 1",
+            [DbInt(appointmentId), DbInt(patientId)])
+        if (rs.rowCount() < 1) {
+            return None
+        }
+        return Some(rowToSession(rs, 0))
+    }
+
+    /*
+     * 该患者**最近一次已完成**的会话（存量兼容的回退路径，改进 1）。
+     *
+     * ⚠ 只在"本单没有绑定会话"时用它：改进 1 之前挂号从不上报 `previsit_id`，
+     *   那些历史单永远绑不上，医生端若只认绑定就会对老单显示"没有预问诊"。
+     *   HTTP 层用响应里的 `bound` 区分这两种来源，前端文案不同。
+     */
+    public func latestCompleteForPatient(patientId: Int64): ?PrevisitSession {
+        let rs = db.query(
+            "SELECT id, patient_id, turn, form_json, created_at, updated_at, appointment_id " +
+            "FROM previsit_session WHERE patient_id = ? AND " + previsitCompleteSql() + " " +
+            "ORDER BY updated_at DESC, id DESC LIMIT 1",
+            [DbInt(patientId)])
+        if (rs.rowCount() < 1) {
+            return None
+        }
+        return Some(rowToSession(rs, 0))
+    }
+
+    /* 行 → 会话（列顺序只有这一处：上面三个 SELECT 的列必须逐字一致）。 */
+    private func rowToSession(rs: DbResultSet, row: Int64): PrevisitSession {
         let s = PrevisitSession()
-        s.id = rs.getString(0, 0)
-        s.patientId = rs.getInt(0, 1)
-        s.turn = rs.getInt(0, 2)
-        s.createdAt = rs.getInt(0, 4)
-        s.updatedAt = rs.getInt(0, 5)
-        s.form = previsitParseForm(rs.getString(0, 3))
-        return Some(s)
+        s.id = rs.getString(row, 0)
+        s.patientId = rs.getInt(row, 1)
+        s.turn = rs.getInt(row, 2)
+        s.createdAt = rs.getInt(row, 4)
+        s.updatedAt = rs.getInt(row, 5)
+        s.form = previsitParseForm(rs.getString(row, 3))
+        s.appointmentId = rs.getInt(row, 6)
+        return s
     }
 
     /*

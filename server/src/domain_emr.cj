@@ -41,6 +41,14 @@
 package qingzhou
 
 import std.collection.*
+/*
+ * ★ 2026-10-14（改进 1）：本文件第一次自己**构造** JSON —— `previsit_ref`
+ *   的序列化/解析放在这里（与 `MedicalRecord` 同一个文件，读写同一处）。
+ *   ⚠ 同包的其它文件各自 import 各自用（仓颉的 import 是**按文件**生效的，
+ *     不存在"另一个文件 import 过就够了" —— 漏了就是
+ *     `error: undeclared type name 'JsonValue'`，本轮真踩过）。
+ */
+import stdx.encoding.json.*
 
 /* ===================== 病历表与七段式 ===================== */
 
@@ -195,6 +203,79 @@ public func emrJoinParts(parts: Array<(String, String)>): String {
 
 /* ===================== 病历数据模型 ===================== */
 
+/*
+ * ★ 预问诊来源痕迹的 JSON（2026-10-14 增，改进 1）。
+ *
+ * `{"session_id":"…","sections":["chief_complaint",…],"at":<epoch 秒>}`
+ *
+ * ⚠ 它是**从"实际写进病历的那几段"直接构造**的（见 `saveDraft` 的 prefill 循环），
+ *   而不是"把 intakePrefill 的 key 再算一遍" —— 后者会造出第二处定义，
+ *   两个定义迟早会对不上（本项目反复踩的"同一语义两处实现"）。
+ * ⚠ 手工拼 JSON 是这个项目明令避免的事（忘转义引号会把整张单写坏）：
+ *   这里用框架的 `JsonObject`（与 `previsitFormJson` 同一手法）。
+ *
+ * ⚠ **语义边界（别把它读成"当前作者"）**：`sections` 记的是**建单那一刻的初值来源**，
+ *   它只在**首次建单**时写入、之后**永不更新**。所以医生后来改写某一段时，
+ *   这里仍标着"该段初值来自患者自述" —— 这是**有意的**（它答的是"这段话最初从哪来"），
+ *   而不是"这一段现在还是患者写的吗"（那是另一个问题，需要逐段作者字段才能答，
+ *   本项目暂不做）。**展示层必须照此措辞**（如"预填于 14:03"），
+ *   把它写成"本段为患者自述"就是对病历来源的失实陈述，而病历是法律文书。
+ *   `at` 字段就是为这个措辞准备的（配"预填于 <时间>"）。
+ */
+public func emrPrevisitRefJson(sessionId: String, sections: Array<String>, at: Int64): String {
+    let o = JsonObject()
+    o.put("session_id", JsonString(sessionId))
+    let arr = ArrayList<JsonValue>()
+    for (k in sections) {
+        arr.add(JsonString(k))
+    }
+    o.put("sections", JsonArray(arr.toArray()))
+    o.put("at", JsonInt(at))
+    return o.toString()
+}
+
+/*
+ * 解析 `previsit_ref`，返回"哪几段来自患者自述"（坏数据/空串 ⇒ 空数组）。
+ *
+ * ⚠ 解析失败**不抛异常**：与 `previsitParseForm` 同一条纪律 ——
+ *   库里一条坏 JSON 不该让"读病历"这个只读操作 500。
+ */
+public func emrPrevisitRefSections(ref: String): Array<String> {
+    let out = ArrayList<String>()
+    if (ref.size == 0) {
+        return out.toArray()
+    }
+    try {
+        let o = JsonValue.fromStr(ref).asObject()
+        match (o.get("sections")) {
+            case Some(v) =>
+                if (v is JsonArray) {
+                    /*
+                     * ⚠ 按下标遍历（`arr[i]`），**不要**写 `for (x in arr)`：
+                     *   stdx 的 `JsonArray` 没实现 `Iterator`，那样写编译期就报
+                     *   `the type Class-JsonArray of expression in for-in expression
+                     *    does not implement Iterator`（本轮真踩过）。
+                     *   同仓的 `domain_kb.cj` 解析向量时也是这个写法。
+                     */
+                    let arr = v.asArray()
+                    var i: Int64 = 0
+                    while (i < arr.size()) {
+                        let x = arr[i]
+                        /* 只接受字符串（别的类型是脏数据，不猜、不强制转换） */
+                        if (x is JsonString) {
+                            out.add(x.asString().getValue())
+                        }
+                        i = i + 1
+                    }
+                }
+            case None => ()
+        }
+    } catch (e: Exception) {
+        return ArrayList<String>().toArray()
+    }
+    return out.toArray()
+}
+
 public class MedicalRecord {
     public var id: Int64 = 0
     public var appointmentId: Int64 = 0
@@ -212,6 +293,14 @@ public class MedicalRecord {
     public var status: String = EMR_DRAFT
     /* 最后修改人（账号 id）。⚠ 用于审计：锁定后只有管理员 reopen 能改，那时也记新的人。 */
     public var updatedBy: Int64 = 0
+    /*
+     * ★ 预问诊来源痕迹（2026-10-14 增，改进 1）：JSON
+     *   `{"session_id":"…","sections":[…],"at":<epoch 秒>}`，空串 = 没有预填来源。
+     *   ⚠ 只在**建单时**由预填写入（那一次才是"这段来自患者自述"）。
+     *     已有病历不吃预填（见 saveDraft），所以也不会改这个字段 ——
+     *     否则"sections"会声称某些段是患者写的，而实际是医生后来改的。
+     */
+    public var previsitRef: String = ""
     public var createdAt: Int64 = 0
     public var updatedAt: Int64 = 0
 
@@ -328,13 +417,19 @@ public class MedicalRecordRepo {
         m.updatedBy = rs.getInt(row, 12)
         m.createdAt = rs.getInt(row, 13)
         m.updatedAt = rs.getInt(row, 14)
+        /*
+         * ⚠ 新列一律**追加在 selectCols 末尾**（这里是 15），不插在中间：
+         *   列顺序只在这两处（SELECT 与 rowToRecord）定义，插中间就得改所有下标，
+         *   而改错一个下标不会编译失败 —— 会把 diagnosis 读成 treatment 这种事故。
+         */
+        m.previsitRef = rs.getString(row, 15)
         return m
     }
 
     private let selectCols: String =
         "id, appointment_id, patient_id, doctor_id, chief_complaint, present_illness, " +
         "past_history, allergy_history, physical_exam, diagnosis, treatment, status, " +
-        "updated_by, created_at, updated_at"
+        "updated_by, created_at, updated_at, previsit_ref"
 
     /*
      * 完整内容快照作为乐观版本。MySQL 默认排序规则不区分大小写，必须二进制
@@ -413,7 +508,8 @@ public class MedicalRecordRepo {
     public func saveDraft(appointmentId: Int64, doctorId: Int64,
                           patch: HashMap<String, String>, now: Int64,
                           actorId: Int64,
-                          prefill!: HashMap<String, String> = HashMap<String, String>()): EmrWriteOutcome {
+                          prefill!: HashMap<String, String> = HashMap<String, String>(),
+                          previsitSessionId!: String = ""): EmrWriteOutcome {
         let out = EmrWriteOutcome()
         // ① 校验段名与长度（**写入前**校验，不留半成品）
         for ((k, v) in patch) {
@@ -447,6 +543,12 @@ public class MedicalRecordRepo {
         // 保存合并前的完整快照；rec 会在下方被修改。
         let before = snapshotParams(rec)
         // ③ 合并
+        /*
+         * ★ 这次**真的**由患者自述写进病历的段（2026-10-14，改进 1）。
+         *   用它构造 `previsit_ref`：只有"预填时既不在 patch 里、又通过校验被写入"
+         *   的段才算患者自述 —— 医生在同一次请求的 patch 里写过的段不算。
+         */
+        let prefilled = ArrayList<String>()
         if (!exists) {
             rec.appointmentId = appointmentId
             rec.doctorId = doctorId
@@ -468,8 +570,13 @@ public class MedicalRecordRepo {
                                 return out
                             }
                     }
-                    let _ = rec.set(k, v)
+                    if (rec.set(k, v)) {
+                        prefilled.add(k)
+                    }
                 }
+            }
+            if (prefilled.size > 0 && previsitSessionId.size > 0) {
+                rec.previsitRef = emrPrevisitRefJson(previsitSessionId, prefilled.toArray(), now)
             }
         }
         for ((k, v) in patch) {
@@ -539,13 +646,14 @@ public class MedicalRecordRepo {
         try {
             db.exec("INSERT INTO medical_record (appointment_id, patient_id, doctor_id, " +
                 "chief_complaint, present_illness, past_history, allergy_history, " +
-                "physical_exam, diagnosis, treatment, status, updated_by, created_at, updated_at) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "physical_exam, diagnosis, treatment, status, updated_by, created_at, updated_at, " +
+                "previsit_ref) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [DbInt(appointmentId), DbInt(derivedPatientId), DbInt(doctorId),
                  DbStr(rec.chiefComplaint), DbStr(rec.presentIllness), DbStr(rec.pastHistory),
                  DbStr(rec.allergyHistory), DbStr(rec.physicalExam), DbStr(rec.diagnosis),
                  DbStr(rec.treatment), DbStr(EMR_DRAFT), DbInt(rec.updatedBy),
-                 DbInt(rec.createdAt), DbInt(rec.updatedAt)])
+                 DbInt(rec.createdAt), DbInt(rec.updatedAt), DbStr(rec.previsitRef)])
         } catch (e: Exception) {
             // 同预约首次保存并发撞唯一键时明确冲突，不自动重放过时的预填内容。
             match (findByAppointment(appointmentId)) {
@@ -718,7 +826,8 @@ public class MedicalRecordRepo {
                                     patch: HashMap<String, String>, now: Int64,
                                     actorId: Int64): EmrWriteOutcome {
         return saveDraft(appointmentId, doctorId, patch, now, actorId,
-                         prefill: intakePrefill(sessionId, patientId))
+                         prefill: intakePrefill(sessionId, patientId),
+                         previsitSessionId: sessionId)
     }
 }
 

@@ -466,6 +466,8 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | 5.21 | `GET /api/v1/doctors` | 是 | **三端都可** | 医生字典（带 `department_name`） |
 | 5.22 | `GET /api/v1/notices` | 是 | **三端都可** | 公告列表（首页「医疗公告」） |
 | 5.23 | `GET/POST /api/v1/admin/notices`、`GET/PUT/DELETE /api/v1/admin/notices/:id` | 是 | **仅 admin** | 公告维护（§6.1） |
+| 5.27 | `GET /api/v1/appointments/by-token/:token` | 是 | **仅 patient** | **按幂等键反查挂号结果**（★ 2026-10-14 新增，见 §5.27） |
+| 5.28 | `GET /api/v1/doctor/visits/:id/previsit` | 是 | **仅医生** | **读这一单的预问诊摘要**（★ 2026-10-14 新增，见 §5.28） |
 
 > 权限判定收敛在**单一函数** `can(role, action)`（`http_app.cj:162-230`）。相关动作与角色：
 > `book` = 仅 patient；`view_schedule` = 三端；`query_own_medical_record` = patient | doctor；
@@ -718,6 +720,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | --- | --- | --- | --- |
 | `schedule_id` | Int64 | **是** | 缺 → 400「缺少必填数值字段 schedule_id」（`http_common.cj:359-363`） |
 | `client_token` | String | **是** | **幂等键**。同 token 重放不会重复占号，而是回放同一张挂号单（`AlreadyBooked`）。前端应为每次"点击确认挂号"生成一个稳定 UUID，**重试时复用同一个值** |
+| `previsit_id` | String | 否 | ★ **2026-10-14 新增**：要交给医生的预问诊 `session_id`（§5.9 的 `meta` 帧 / §5.11，64 hex）。服务端把它**绑到这张挂号单**上（`previsit_session.appointment_id`）⇒ 医生端才看得到「本次预问诊」。不带 = 本次不交预问诊 |
 
 > `patient_id` 取自令牌。若令牌里 `patientId <= 0`（例如管理员账号）⇒ **400 VALIDATION_FAILED**
 > 「缺少 X-Patient-Id（开发态联调头）」（`http_app.cj:1449-1451`）。
@@ -729,6 +732,14 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | --- | --- | --- |
 | **201** | 首次成功（`Booked`） | `bookingJson` |
 | **200** | **幂等回放**（同 `client_token`，`AlreadyBooked`） | **同一张** `bookingJson` |
+
+> ★ **2026-10-14 起 body 里多两个字段**（纯增量，老客户端忽略即可）：`request_id`（本次请求编号，
+> 与服务端日志、响应头 `X-Request-Id` 同值）与 `server_time`（服务端当前 epoch 秒）。
+> 用途：结果不确定时报障能对上日志；时间以服务端为准。详见 §5.27。
+>
+> ★ **2026-10-14 起再多一个字段**：`previsit_bound`（Bool）。仅当请求带了 `previsit_id`
+> **且**服务端确实绑上了才是 `true`。**幂等回放（200）与首次成功（201）都会带**。
+> ⇒ 前端应据此显示「预问诊摘要已交给医生」；**不要把"我提交了 session_id"当成"医生看到了"**（详见 §5.28）。
 
 **错误**
 
@@ -767,6 +778,9 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 > ⇒ **判断退号是否成功必须看 `data.status === 'cancelled'`**（HTTP 200 是恒定的），
 > 并在 `slot_restored === false` 时展示 `warning`（提示联系人工，不要让用户反复点退号）。
+>
+> ★ **2026-10-14 起退号响应也带** `request_id` + `server_time`（含上面那个 `slot_restored:false` 的特例），
+> 口径同 §5.15 / §5.27。退号是**写操作**，这两个字段对"结果未确认"同样重要。
 
 **错误**
 
@@ -829,6 +843,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | `complete` | Bool | 是否七段都填了 |
 | `updated_by` | Int64 | 最后修改者的 `auth_user.id` |
 | `created_at` / `updated_at` | Int64 | epoch 秒 |
+| `previsit_ref` | Object | ★ **2026-10-14 新增**，**只有单查（`includeSections=true`）且确实由预问诊预填过时才出现**（没有就不是字段，不是空对象）。`{session_id: String, sections: [段 key…], at: Int64}` —— 记录**哪几段是患者自述预填进来的**，供界面显示「患者自述」角标 |
 | `missing_required` | Array\<String\> | 提交锁定前仍缺的**必填**段（空数组 = 可锁定） |
 | `sections` | Array | 七段正文，**只有单查才有** |
 | `sections[].key` | String | 见 §14.3 |
@@ -836,6 +851,10 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | `sections[].value` | String | 正文 |
 | `sections[].max_len` | Int64 | 该段字符上限 |
 | `sections[].required_to_lock` | Bool | 是否"提交锁定"必填 |
+
+> ⚠ `previsit_ref` 的语义是**"初值来源快照"**，不是"这段现在是谁写的"：
+> 医生后续把预填内容改掉、或又补写了别的段，这个字段**都不会变**（`domain_emr.cj` 只在**新建病历**那一次写入）。
+> ⇒ 前端角标文案用「患者自述（已由医生编辑）」而不是「当前内容＝患者原话」；要拿患者原话请用 §5.28 的摘要端点。
 
 **七个病历段**（`domain_emr.cj:83-92`）
 
@@ -1052,6 +1071,143 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 ---
 
+### 5.27 2026-10-14 新增：按幂等键反查挂号结果 + 溯源字段（患者端）
+
+> 背景：`client_token` 是**客户端生成**的幂等键（§8.1）。网络中断时客户端**没拿到响应**，
+> 于是不知道"那次提交到底成没成"；此前唯一的补救是"用同一个 token 再提交一次"，
+> 那会把**查询**和**下单**混在一起（第一次若真没发出去，重提交会真的建一张单）。
+> 本节给出一条**只读**通道，让客户端能诚实地给出两个动作：「查询这次请求的结果」与「继续确认同一预约」。
+
+`GET /api/v1/appointments/by-token/:token`
+
+* **鉴权**：需要；`patientId` **一律取自令牌**，并与 token 组合查询
+  （`domain_booking.cj:310-322` 的 `WHERE patient_id = ? AND client_token = ?`）⇒ 猜别人的 token 只会得到 404。
+* **路径参数** `:token` = 幂等键（**≤ 64 字符**，与列定义一致）。
+
+**成功 `200`** —— §5.15 的 `bookingJson` + 名称 + `remain_num` + `request_id` + `server_time`。
+
+**错误**
+
+| HTTP | code | 触发 |
+| --- | --- | --- |
+| 400 | `VALIDATION_FAILED` | token 为空；或 **> 64 字符**（客户端生成时应自行截断——否则这个 token 永远查不到，真因会被埋掉） |
+| 404 | `APPOINTMENT_NOT_FOUND` | 该 token **没有对应的有效挂号单**；`message` 已写明两种可能 |
+| 403 | `FORBIDDEN_ROLE` | 非 patient 角色 |
+
+> ⚠ **404 有两种含义，且客户端**动作相同**：① 那次提交**没落库**；② 落库了但**单已被退号释放**
+> （退号会把 `client_token` 置 NULL，见 §8.3）——两种情况都可以放心用**同一个 token** 重新提交。
+> 所以契约**刻意不**再细分状态码：多一个码只会让三端多一处分支。
+> 拿到 200 时按 body 里的 `status` 展示即可。
+
+**两个溯源字段**（`request_id` / `server_time`，本节起挂/退号相关端点都有）
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `request_id` | String | 本次请求编号；与响应头 `X-Request-Id`、服务端访问日志**同值**（框架 `requestId()` 中间件；客户端传了就用客户端的）。⭐ 报障时让用户报这个编号 ⇒ 能直接在日志里定位 |
+| `server_time` | Int64 | **服务端当前时间（epoch 秒）**。客户端可据此发现"本机时钟错乱/离线过久"，不要把设备时间当权威 |
+
+> ⚠ `request_id` 只出现在**业务 body** 与**响应头**里：**错误信封**（`{ok:false,error:{...}}`，§3.2）
+> 不带它 —— 从错误响应取编号请读**响应头** `X-Request-Id`。中间件未装配时该字段为空串，
+> 服务端**不会**自己编一个（编一个日志里查不到的编号比留空更坏）。
+
+**"响应丢失"演练**（`server/tests/p1-extra-check.ps1` 已进门禁，含 9 条断言）：
+发出挂号后**丢弃响应**，再用 by-token 反查 ⇒ 必须拿到那张单。同时钉住：
+同 token 再提交得 **200** 且 `appointment_id` 与首次**相同**、未知 token **404**、
+65 字符 token **400**、管理员调它 **403**。
+
+---
+
+### 5.28 2026-10-14 新增：预问诊真正交给医生（绑定 + 医生读取 + 来源痕迹）
+
+> 背景：预问诊**早已**能写入 `previsit_session`，服务端**也早已**能把问诊单映射成病历四段
+> （`intakePrefill`：主诉；现病史＝病程+程度+伴随；既往史；过敏史）。缺的是三件事：
+> **① 把问诊单绑到具体那张挂号单**、**② 让医生看得见**（此前只有"医生端本机存 session_id 盲预填"）、
+> **③ 留下来源痕迹**（锁定之后再回答"这段是患者说的还是医生写的"）。
+> 本节是这三件事的契约；**`use_intake_session` 没有被删除**（`emr-check.ps1:280-291` 有用例），它只是从"唯一通道"变成"其中一条"。
+
+**一句话链路**
+
+```
+患者：跑完预问诊 → 拿到 session_id（§5.9 meta 帧）
+  ↓ 挂号时带 previsit_id（§5.15）
+服务端：previsit_session.appointment_id = 这张单  →  响应 previsit_bound=true
+  ↓
+医生：队列行带 previsit_ready=true（§5.28.2）→ 打开摘要（§5.28.1）→「采纳到本段/一键预填」→ 存草稿时带 use_intake_session
+  ↓
+服务端：新建病历那一次把"真正被预填的段"写进 medical_record.previsit_ref（§5.18）
+```
+
+**5.28.1 `GET /api/v1/doctor/visits/:id/previsit` —— 读该单的预问诊摘要（仅医生）**
+
+* **鉴权**：需要；`Action.QueryOwnMedicalRecord`（**doctor | patient**，但下一条把患者挡住）。
+* **归属**：`visit.findForDoctor(id, p.doctorId)`（`http_p4.cj:426`）—— **不是我的号一律 404 `APPOINTMENT_NOT_FOUND`**
+  （与 record 端点同一口径：不区分"不存在"与"不是你的"，避免枚举 oracle）。`id <= 0` ⇒ 400。
+* **成功 `200`**（`visitPrevisitJson`，`http_p4.cj:151-177`）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `session_id` | String | 64 hex。⚠ **不回 `patient_id`**（出站最小化：消费方是这位患者的接诊医生，不需要再多给一个 id） |
+| `bound` | Bool | `true` = **本次就诊绑定**的那张问诊单；`false` = 本单没绑定，服务端回退到"该患者**最近一次已完成**的会话"（存量兼容） |
+| `turn` | Int64 | 会话轮次 |
+| `completed` | Bool | 六项是否采完 |
+| `filled` / `total` | Int64 | 已作答 / 总槽位（`total` 恒 6）；半途会话医生能一眼看出缺几项 |
+| `captured_at` | Int64 | 会话最后更新时间（epoch 秒） |
+| `sections` | Array | **只列已作答的槽位**（不是六个都列——空槽位是噪音） |
+| `sections[].key` | String | `chief` / `duration` / `severity` / `associated` / `history` / `allergy`（与 §5.10 同一套 key） |
+| `sections[].label` | String | 中文短名：主诉 / 病程 / 程度 / 伴随 / 既往史 / 过敏史 |
+| `sections[].value` | String | 患者原话（**未加工**，不是病历段；合成规则见 `intakePrefill`） |
+| `sections[].max_len` | Int64 | 该槽位字符上限 |
+
+* **错误**
+
+| HTTP | code | 触发 |
+| --- | --- | --- |
+| 400 | `VALIDATION_FAILED` | `:id` 非正整数 |
+| 404 | `APPOINTMENT_NOT_FOUND` | 单不存在 / 不属于该医生（**同码**） |
+| 404 | `PREVISIT_NOT_FOUND` | 本单没绑定，且该患者**历史也没有已完成的会话**（`message` 已写明两种可能） |
+| 403 | `FORBIDDEN_ROLE` | 患者/管理员调它（**这是医生端路径**，见 §6.2） |
+| 401 | `AUTH_*` | 未登录 / 令牌过期 |
+
+> ★ `bound=false` 时前端**必须换文案**：「该患者最近一次预问诊单」而不是「本次就诊的预问诊单」——
+> 服务端回退是为了存量历史单不空着，但那**未必是这次就诊填的**。不区分就会把旧内容说成新的。
+
+**5.28.2 接诊队列多一个字段：`previsit_ready`（`GET /api/v1/doctor/visits`）**
+
+`visitQueueItemJson`（`http_p4.cj:97-113`）新增 `previsit_ready: Bool` —— **只有绑定了本单**的会话才算 `true`
+（用"该患者有历史会话"来点亮徽标会让所有历史行都亮，徽标随即失去意义）。
+医生端据此在队列行显示「预问诊」徽标；点进去再调 5.28.1 取正文。
+
+**5.28.3 挂号可带 `previsit_id`，响应多一个 `previsit_bound`**
+
+见 §5.15。两点**刻意的设计**，前端要照着写：
+
+* **绑定失败不挡挂号**：`previsit_id` 不存在／不属于该患者 ⇒ 仍**正常挂号**，只是 `previsit_bound=false`。
+  理由：网络重试时患者不该因为一张过期的问诊单而**挂不上号**；绑定是"附加交付物"，不是挂号的前置条件。
+  ⇒ 客户端文案是「本次未提交预问诊」（中性陈述），**不是**报错弹窗。
+* **幂等回放也执行一次绑定**：同 `client_token` 重放（200）时同样会尝试绑定 ⇒ 断网重试的场景也能把预问诊交上去。
+
+**5.28.4 存草稿时的 `use_intake_session` 与 `previsit_ref`（医生端）**
+
+* 仍走 `PUT /api/v1/doctor/visits/:id/record`（§6.2），body 里可选 `use_intake_session`：
+  **只在该单还没有病历时**生效（`!exists` 分支）——医生已经写过内容就不会被覆盖（`emr-check.ps1:280-291` 钉住了这条）。
+* 生效时服务端把「**这次真的被预填写入的段**」记进 `medical_record.previsit_ref`（§5.18）——
+  **医生在同一次请求里显式给出的段不算预填**（比如医生自己填了诊断，诊断不会被记成"患者自述"）。
+* 医生端的「一键预填」按钮**保留**：它是 `use_intake_session` 的界面落点；而 5.28.1 的摘要卡片是"看得见"的落点，两者互补。
+
+**客户端要做什么**
+
+| 端 | 落点 | 做什么 |
+| --- | --- | --- |
+| 鸿蒙患者端 | `BookingPage.ets` / `PrevisitPage.ets` | 挂号请求带 `previsit_id`；读 `previsit_bound` 决定文案；**不要把"本机存了 session_id"当成"医生看到了"** |
+| 鸿蒙医生端 | `VisitQueuePage.ets` | 用 `previsit_ready` 出行内徽标 |
+| | `EmrEditPage.ets` | 顶部「患者自述（预问诊）」卡片（数据来自 5.28.1，**不再依赖本机 `SessionStore`**）；按段「采纳到本段」（**追加**，不覆盖）；有 `previsit_ref` 的段显示角标 |
+
+**"响应丢失"与越权演练**（`server/tests/previsit-bridge-check.ps1` 已进门禁，51 条断言）：
+跨患者 `previsit_id` ⇒ 仍 201 且 `previsit_bound=false`；别的医生的单 ⇒ 404；未绑定但有历史会话 ⇒ `bound=false`；
+医生自己填的段**不**进 `previsit_ref`；同 token 重放 ⇒ 绑定同样生效。
+
+---
+
 ## 6. 不能调的端点（前端不应出现这些路径）
 
 以下端点**确实存在**，但权限矩阵把它们挡在患者之外（`http_app.cj:162-230`）。
@@ -1081,6 +1237,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | `GET /api/v1/doctor/visits` | `manage_visit` | `http_p4.cj:181` |
 | `POST /api/v1/doctor/visits/:id/start` \| `/finish` \| `/no-show` | `manage_visit` | `http_p4.cj:204/224/245` |
 | `GET` / `PUT /api/v1/doctor/visits/:id/record` | `query_own_medical_record` / `write_own_medical_record` | `http_p4.cj:265/291` |
+| `GET /api/v1/doctor/visits/:id/previsit` | `query_own_medical_record`（**且必须是我的号**，否则 404） | `http_p4.cj:419`（★ 2026-10-14 新增，见 §5.28） |
 | `POST /api/v1/doctor/visits/:id/record/lock` | `write_own_medical_record` | `http_p4.cj:339` |
 | `POST /api/v1/doctor/visits/:id/record/reopen` | **`manage_schedule`（管理员）** —— 医生端也不能解锁 | `http_p4.cj:363` |
 
@@ -1262,7 +1419,7 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 | 1 | ~~**没有患者可读的科室列表**~~ ✅ **已补齐 2026-10-12** | 「选科室挂号」现在可以独立构建 | 补了 `GET /api/v1/departments`（三端可读，见 §5.20）。管理端仍走 `/api/v1/admin/departments` |
 | 2 | ~~**没有患者可读的医生列表 / 详情**~~ ✅ **已补齐 2026-10-12** | 号源列表可以显示「P4测试医生900003 主任医师」 | 补了 `GET /api/v1/doctors`（三端可读、带 `department_name`，见 §5.21） |
 | 3 | ~~**排班无科室名/医生名联表**~~ ✅ **已补齐 2026-10-12** | 同上 | `GET /api/v1/schedules` 现在回 `department_name` / `doctor_name` / `doctor_title` / `version`；`GET /appointments`、`/medical-records`、挂号与退号响应同样补齐（§5.24） |
-| 4 | **没有 `GET /api/v1/appointments/:id` 单查** | 无法深链到单张挂号单；从推送直接打开详情做不到 | 只有列表 `GET /api/v1/appointments`。⇒ 详情页要么从列表点入带上完整对象，要么本地缓存 |
+| 4 | **没有 `GET /api/v1/appointments/:id` 单查**（★ 2026-10-14 起有**按幂等键**的反查 `GET /api/v1/appointments/by-token/:token`，见 §5.27） | 无法深链到单张挂号单；从推送直接打开详情做不到 | 列表是 `GET /api/v1/appointments`，单查只有 token 键。⇒ 详情页要么从列表点入带上完整对象、要么本地缓存；"结果未确认"场景用 §5.27 反查 |
 | 5 | **没有患者自助注册** | 无法做注册页 | 只有 `POST /api/v1/admin/users`（`http_base.cj` 文件头明确记录 patient CRUD 被刻意排除，PII / 个保法）。⇒ 患者账号必须由院内前台建 |
 | 6 | **没有患者改密 / 忘记密码** | 无法做"安全设置"页 | 只能找管理员走 `POST /api/v1/admin/users/:id/password`（会踢下线） |
 | 7 | **没有令牌刷新接口**（且不需要） | —— | 30 天 TTL + 服务端滑动续期（`auth_repo.cj:754-792`）。**不要去实现 `/auth/refresh`** |

@@ -608,15 +608,60 @@ func bookingJson(r: BookingResult): JsonObject {
  *   客户端按"字段不存在 = 未知，请看错误/重新查询"处理。
  *
  * ⚠ 名称取自 `names`（请求内的一次性快照），与响应里其它字段同源。
+ *
+ * ★ 2026-10-14（改进 1）：`previsitBound` 用 **`?Bool`** 而不是 `Bool = false`。
+ *   同一条预约在三个端点回出（挂号 / 按幂等键反查 / 退号），但"是否绑定了
+ *   预问诊单"只在**前两个**上是有意义的事实，退号响应里它既不相关也已过期。
+ *   写成 `false` 会让"没查"与"确实没绑"长得一样 —— 那是**用同一个值表达两种
+ *   语义**（本项目已有教训：`PrevisitAnswerOutcome` 复用字段漏判过一次）。
+ *   传 `None` ⇒ 这个字段根本不出现；客户端对"字段不存在"的既有处理是"未知"。
  */
-func bookingJsonFull(repo: BookingRepo, r: BookingResult, names: NameIndex): JsonObject {
+func bookingJsonFull(repo: BookingRepo, r: BookingResult, names: NameIndex,
+                     ctx: Context, previsitBound!: ?Bool = None): JsonObject {
     let o = bookingJson(r)
     names.putInto(o, r.departmentId, r.doctorId)
     match (repo.findSchedule(r.scheduleId)) {
         case Some(s) => o.put("remain_num", JsonInt(s.remainNum))
         case None => ()
     }
+    match (previsitBound) {
+        case Some(b) => o.put("previsit_bound", JsonBool(b))
+        case None => ()
+    }
+    putTrace(ctx, o)
     return o
+}
+
+/*
+ * ★ 2026-10-14（改进 4「让患者看懂操作结果」的服务端半步）：把"这一次请求"的两个
+ *   **溯源字段**写进业务响应。
+ *
+ * 为什么要写在 **body 里**而不是只靠响应头 `X-Request-Id`：
+ *   头在**成功的**响应里一直都在（框架 `requestId()` 中间件，见
+ *   third_party/qingzhou/src/requestid.cj），但"挂号结果未确认"这个场景恰恰是
+ *   **客户端压根没拿到响应**（断网/超时/进程被杀）——此时它唯一的线索是自己
+ *   手里的幂等键。所以真正解决问题的不是这个字段，而是
+ *   `GET /api/v1/appointments/by-token/:token`（见下面的路由）。
+ *   带 `request_id` 的价值在**另一半场景**：客户端**拿到了**响应却看不懂
+ *   （比如被中间设备改写、或前端解析失败），用户把编号报给客服，服务端日志里
+ *   能一一对上（`requestId()` 会把它写进每条访问日志）。
+ *
+ * `server_time` 是服务端当前时间（**epoch 秒**，与全项目时间口径一致，见
+ * `hNowEpoch()`）。客户端拿它与本机时间相减即可判断"我是不是离线太久/
+ * 本机时钟错乱"，从而把"结果未确认"提示得更准确——本项目已有一次教训：
+ * 设备时间跳变让"预约是否过期"算错，所以时间**一律以服务端为准**上报。
+ *
+ * ⚠ 两个字段都在 `data` 里（信封内），与业务字段平级，客户端可忽略。
+ *   它们**不改变**任何既有字段的含义，所以对老客户端是纯增量。
+ */
+func putTrace(ctx: Context, o: JsonObject): Unit {
+    /*
+     * `ctx._id` 由 `requestId()` 中间件填充（信任客户端传入的 `X-Request-Id`，
+     * 否则自己铸一个 32 位十六进制）。中间件未装配时它是空串 —— 这里照原样回，
+     * 不自己造一个：**编造一个日志里查不到的编号比留空更坏**。
+     */
+    o.put("request_id", JsonString(ctx._id))
+    o.put("server_time", JsonInt(hNowEpoch()))
 }
 
 /* ===================== 路由 ===================== */
@@ -2131,6 +2176,81 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         sendOk(ctx, o)
     })
 
+    /* ---------- GET /api/v1/appointments/by-token/:token —— 按幂等键反查（改进 4）---------- */
+    /*
+     * ★ 2026-10-14（改进 4「让患者看懂操作结果」的服务端主件）：
+     *   为什么需要它：挂号的幂等键 `client_token` 是**客户端生成**的。网络中断时
+     *   客户端根本不知道"那一次提交到底成没成"——它手里只有 token。此前它唯一的
+     *   补救手段是**再提交一次**（靠幂等键回放），但那把"查询"和"下单"混在了一起：
+     *     · 若上一次其实没发出去，重提交会**真的建一张单**（用户以为只是"再确认一次"）；
+     *     · 若上一次发出去了，重提交拿到回放的单，界面显示"预约成功"，
+     *       但客户端**无法区分**"这是我刚才那次"还是"这是上一次的结果"。
+     *   ⇒ 给一条**只读**通道：拿 token 问服务端"这个 token 现在对应哪张单"。
+     *     客户端于是可以给出诚实的两个动作：「查询结果」（本端点）与
+     *     「继续确认同一预约」（继续用**同一个** token 提交）。
+     *
+     * ⚠ 归属：`patientId` 一律取自**令牌**，并且与 token 组合查询
+     *   （`findAppointmentByToken` 的 WHERE 就是 `(patient_id, client_token)`）——
+     *   别人即使猜到 token，也只会得到"没有这张单"，不会泄露他人挂号。
+     *   与 `/api/v1/appointments` 同源的越权口径（见其注释）。
+     *
+     * ⚠ 语义边界（必须说清，否则客户端会误以为它"永远不会 404"）：
+     *   `findAppointmentByToken` **只认 `status <> 'cancelled'`**，因为退号会把
+     *   `client_token` 置 NULL（`domain_booking.cj` 的 cancel 注释：退号即释放
+     *   幂等键，好让同一个 token 能重挂）。所以本端点返回 404 有两种含义：
+     *   ① 那次提交**没有落库**；② 那次落库了，但单已被退号释放。
+     *   这两种情况对客户端的**动作是一样的**（可以放心用同一个 token 重新提交），
+     *   所以不额外区分——多一个状态码只会让三端多一处分支。
+     *   响应体里带 `status`，客户端拿到 200 时按订单状态展示即可。
+     */
+    r.get("/api/v1/appointments/by-token/:token", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        let isPatient = match (p.role) {
+            case Patient => true
+            case _ => false
+        }
+        if (!isPatient || p.patientId <= 0) {
+            throw apiErrorMsg("FORBIDDEN_ROLE", "该接口只对患者开放（它查的是\"我的挂号\"）")
+        }
+        let token = ctx.paramOr("token", "").trimAscii()
+        /*
+         * 形状校验放在查库之前：空串必然查不到（`findAppointmentByToken` 直接
+         * 返回 None），而 **> 64 字符**是列定义的上限（`client_token VARCHAR(64)`）——
+         * 显式 400 比让客户端拿着一个"永远 404"的 token 反复重试要诚实得多，
+         * 后者会表现成"我的预约一直查不到"，而真因是客户端自己生成时没截断。
+         */
+        if (token.size == 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "缺少幂等键 token（路径形如 /api/v1/appointments/by-token/<token>）")
+        }
+        if (token.size > 64) {
+            throw apiErrorMsg("VALIDATION_FAILED",
+                              "幂等键最长 64 个字符（收到 " + token.size.toString() + " 个）——客户端生成时应自行截断")
+        }
+        match (repo.findAppointmentByToken(p.patientId, token)) {
+            case Some(id) => match (repo.findAppointment(id)) {
+                case Some(found) =>
+                    /*
+                     * ★ 与挂号响应对齐（改进 1）：同一条预约经不同端点回出时，
+                     *   "这次就诊有没有绑上患者的自述"这个字段必须同样存在，
+                     *   否则客户端"提交未确认 → 反查"这条路径上会突然少一个字段
+                     *   （而它恰恰是用来跟原响应比对的）。
+                     */
+                    sendOk(ctx, bookingJsonFull(repo, found, nameIndexOf(dept, doc), ctx,
+                        previsitBound: previsit.findByAppointment(found.appointmentId,
+                                                                  found.patientId).isSome()))
+                /*
+                 * 查得到 id 却读不出明细：**并发下的真实窗口**（另一个请求刚把它退号/
+                 * 删掉了）。对外仍按"这张单不存在"回答——客户端据此走"重新提交"，
+                 * 这比返回 500 让它卡在"未知状态"要好。
+                 */
+                case None => throw apiErrorMsg("APPOINTMENT_NOT_FOUND",
+                                               "该幂等键对应的挂号单已不存在（可能刚刚被退号）")
+            }
+            case None => throw apiErrorMsg("APPOINTMENT_NOT_FOUND",
+                                           "该幂等键没有对应的有效挂号单（那次提交未成功，或已被退号释放）")
+        }
+    })
+
     /* ---------- GET /api/v1/schedules/:id —— 查排班（三端可读）---------- */
     r.get("/api/v1/schedules/:id", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
@@ -2182,11 +2302,37 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         // HTTP_BOOKING_RETRY 注释：默认 3 在 20 并发抢 8 号时会少卖）。
         let result = repo.book(p.patientId, scheduleId, clientToken, now,
                                maxRetry: HTTP_BOOKING_RETRY)
+        /*
+         * ★ 可选：把这张单和患者的预问诊单**在服务端**绑上（2026-10-14 改进 1）。
+         *
+         * 为什么要它：此前"这次预问诊属于哪次挂号"只存在于客户端本机的
+         * SessionStore 里（换设备就断、医生端也无从知道）。绑定之后，
+         * 医生端可以从挂号单反查出患者自述（`GET /doctor/visits/:id/previsit`）。
+         *
+         * ⚠ 绑定**失败不影响挂号**：号已经挂上了，为了一个"自述挂不上"的
+         *   记账问题去回滚挂号，等于让患者白跑一趟。失败只体现在响应字段里
+         *   （`previsit_bound: false`），由客户端提示"预问诊未关联本次预约"。
+         *   失败的真实场景：会话不属于该患者、或已绑到**另一张**单
+         *   （`bindAppointment` 里 `appointment_id = 0 OR = ?` 那条纪律，
+         *   防止一次误传把自述挂到别人的就诊上）。
+         * ⚠ 幂等重放（`AlreadyBooked`）也会走到这里：重复绑定同一张单是幂等的
+         *   （返回 true），所以重试不会把 true 变成 false。
+         */
+        let pvId = match (bodyStr(ctx, "previsit_id")) {
+            case Some(v) => v
+            case None => ""
+        }
+        var pvBound = false
+        if (pvId.size > 0 && result.appointmentId > 0) {
+            pvBound = previsit.bindAppointment(pvId, p.patientId, result.appointmentId)
+        }
         // 幂等命中按 200 返回（不是 201）：没有新建资源
         let names = nameIndexOf(dept, doc)
         match (result.outcome) {
-            case Booked(_) => sendCreated(ctx, bookingJsonFull(repo, result, names))
-            case AlreadyBooked(_) => sendOk(ctx, bookingJsonFull(repo, result, names))
+            case Booked(_) => sendCreated(ctx, bookingJsonFull(repo, result, names, ctx,
+                                                              previsitBound: pvBound))
+            case AlreadyBooked(_) => sendOk(ctx, bookingJsonFull(repo, result, names, ctx,
+                                                                previsitBound: pvBound))
             case SlotGone => throw apiError("SLOT_GONE")
             case ScheduleNotFound => throw apiError("SCHEDULE_NOT_FOUND")
         }
@@ -2230,7 +2376,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
                  *   自相矛盾的响应比不返回还糟。
                  */
                 match (repo.findAppointment(id)) {
-                    case Some(after) => sendOk(ctx, bookingJsonFull(repo, after, nameIndexOf(dept, doc)))
+                    case Some(after) => sendOk(ctx, bookingJsonFull(repo, after, nameIndexOf(dept, doc), ctx))
                     case None => throw apiError("APPOINTMENT_NOT_FOUND")
                 }
             case SlotNotRestored =>
@@ -2238,7 +2384,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
                 //   但带一个显式标记让客户端提示"需人工处理"，绝不谎报失败。
                 match (repo.findAppointment(id)) {
                     case Some(after) =>
-                        let o = bookingJsonFull(repo, after, nameIndexOf(dept, doc))
+                        let o = bookingJsonFull(repo, after, nameIndexOf(dept, doc), ctx)
                         o.put("status", JsonString("cancelled"))
                         o.put("slot_restored", JsonBool(false))
                         o.put("warning", JsonString("号源归还异常，请联系人工处理"))
@@ -2386,7 +2532,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      *   接诊状态机、"看板只出聚合"）。这里只**注册** ——
      *   于是"有哪些端点"仍然只有一处可数（便于 doc-counts 对账）。
      */
-    registerP4Routes(r, auth, gate, repo, emr, visit, dash, aiSettings, dept, doc)
+    registerP4Routes(r, auth, gate, repo, previsit, emr, visit, dash, aiSettings, dept, doc)
 
     /*
      * ★ 2026-10-09：基础数据域（科室/医生）的管理端 CRUD。

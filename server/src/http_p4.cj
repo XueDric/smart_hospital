@@ -73,12 +73,28 @@ func medicalRecordJson(m: MedicalRecord, includeSections: Bool): JsonObject {
             arr.add(e)
         }
         o.put("sections", JsonArray(arr.toArray()))
+        /*
+         * ★ 来源痕迹（2026-10-14 改进 1）：`{"session_id","sections":[…],"at"}`，
+         *   告诉医生端"这几段是患者自述预填进来的"，前端据此在段标题旁显示角标。
+         * ⚠ 只在**给正文时**给（`includeSections`）：列表接口不需要它，
+         *   而"出站最小化"是本仓的既有纪律。
+         * ⚠ 以**嵌套对象**形式返回（而不是再套一层字符串）：客户端不必二次解析
+         *   JSON-in-string（那正是两端解析不一致的高发地）。
+         *   坏数据（历史/手工改坏）解析失败 ⇒ 不给这个字段（不猜、不 500）。
+         */
+        if (m.previsitRef.size > 0) {
+            try {
+                o.put("previsit_ref", JsonValue.fromStr(m.previsitRef))
+            } catch (e: Exception) {
+                ()
+            }
+        }
     }
     return o
 }
 
 /* 接诊队列里的一条（挂号单 + 该单的病历进度）。 */
-func visitQueueItemJson(a: BookingResult, rec: ?MedicalRecord): JsonObject {
+func visitQueueItemJson(a: BookingResult, rec: ?MedicalRecord, previsitReady: Bool): JsonObject {
     let o = JsonObject()
     o.put("appointment_id", JsonInt(a.appointmentId))
     o.put("patient_id", JsonInt(a.patientId))
@@ -88,6 +104,13 @@ func visitQueueItemJson(a: BookingResult, rec: ?MedicalRecord): JsonObject {
     o.put("period", JsonString(a.period))
     o.put("seq_no", JsonInt(a.seqNo))
     o.put("status", JsonString(a.status))
+    /*
+     * ★ 本单是否有患者自述（2026-10-14 改进 1）：队列页据此标「预问诊」徽标，
+     *   让医生在进病历页**之前**就知道有没有可看的摘要。
+     * ⚠ 只要**绑定了本单**的会话才算（"该患者最近有一次问诊单"不算 ——
+     *   那会让队列对每张历史单都亮徽标，徽标就失去意义）。
+     */
+    o.put("previsit_ready", JsonBool(previsitReady))
     /* 该单的病历状态：让医生一眼看出"哪些还没写/没提交"。 */
     match (rec) {
         case Some(r) =>
@@ -101,6 +124,55 @@ func visitQueueItemJson(a: BookingResult, rec: ?MedicalRecord): JsonObject {
             o.put("record_filled", JsonInt(0))
             o.put("record_total", JsonInt(emrSections().size))
     }
+    return o
+}
+
+/*
+ * ★ 预问诊摘要（2026-10-14 增，改进 1）—— 给**医生**看的患者自述。
+ *
+ * ⚠ 为什么不直接把 `GET /api/v1/previsit/:sid` 复用过来：那条端点的归属键是
+ *   **患者**（会话属于谁），而医生手里只有挂号单。让医生端拿 patient_id 去反查
+ *   等于把"这次会话属于哪位患者"这个判断从服务端挪到了客户端 —— 客户端一旦
+ *   传错就是**串病历**。这里改成由服务端从**挂号单**派生患者（见路由）。
+ *
+ * ⚠ 出站字段刻意**不含 patient_id**：
+ *   · 医生端已经有这张单的患者信息（队列/病历接口里就有）；
+ *   · 摘要接口是"给我这一单的自述"，多给一个 id 只增加泄露面，不增加能力。
+ *
+ * ⚠ `sections` 只列**已作答**的槽位（不是六个都列）：
+ *   医生看的是"患者说了什么"，空槽位是噪音；`filled`/`total` 负责表达完整度。
+ *   已完成的会话两者相等，半途的会话医生也能一眼看出缺几项。
+ *
+ * ⚠ `bound`（是否**绑定了本单**）必须回给出站：
+ *   服务端在"本单没绑定"时会回退到该患者最近一次已完成的会话（存量兼容），
+ *   但那**未必是这次就诊**填的。前端据此换文案（"本次就诊的预问诊单" vs
+ *   "该患者最近一次预问诊单"）—— 不给出站，前端就只能把两者都说成"本次"。
+ */
+func visitPrevisitJson(s: PrevisitSession, bound: Bool): JsonObject {
+    let o = JsonObject()
+    o.put("session_id", JsonString(s.id))
+    o.put("bound", JsonBool(bound))
+    o.put("turn", JsonInt(s.turn))
+    o.put("completed", JsonBool(s.form.complete()))
+    o.put("filled", JsonInt(s.form.filled()))
+    o.put("total", JsonInt(intakeSlots().size))
+    o.put("captured_at", JsonInt(s.updatedAt))
+    let arr = ArrayList<JsonValue>()
+    for (slot in intakeSlots()) {
+        match (s.form.answers.get(slot.key)) {
+            case Some(v) =>
+                if (v.size > 0) {
+                    let e = JsonObject()
+                    e.put("key", JsonString(slot.key))
+                    e.put("label", JsonString(slot.label))
+                    e.put("value", JsonString(v))
+                    e.put("max_len", JsonInt(slot.maxLen))
+                    arr.add(e)
+                }
+            case None => ()
+        }
+    }
+    o.put("sections", JsonArray(arr.toArray()))
     return o
 }
 
@@ -210,7 +282,8 @@ func putVisitContext(o: JsonObject, m: MedicalRecord, booking: BookingRepo, name
  *   "role == Doctor" 这类手写判断（除"取自己的 id"之外）。
  */
 public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
-                             booking: BookingRepo, emr: MedicalRecordRepo,
+                             booking: BookingRepo, previsit: PrevisitRepo,
+                             emr: MedicalRecordRepo,
                              visit: VisitRepo, dash: DashboardRepo,
                              aiSettings: AiSettingsRepo,
                              dept: DepartmentRepo, doc: DoctorRepo): Unit {
@@ -233,7 +306,8 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
         let rows = visit.queueForDoctor(p.doctorId, if (limit > 0 && limit <= 500) { limit } else { 100 })
         let arr = ArrayList<JsonValue>()
         for (a in rows) {
-            arr.add(visitQueueItemJson(a, emr.findByAppointment(a.appointmentId)))
+            arr.add(visitQueueItemJson(a, emr.findByAppointment(a.appointmentId),
+                                       previsit.findByAppointment(a.appointmentId, a.patientId).isSome()))
         }
         let o = JsonObject()
         o.put("items", JsonArray(arr.toArray()))
@@ -324,6 +398,45 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
                 let empty = MedicalRecord()
                 empty.appointmentId = id
                 sendOk(ctx, medicalRecordJson(empty, true))
+        }
+    })
+
+    /*
+     * GET /api/v1/doctor/visits/:id/previsit —— 读该单的预问诊摘要（医生）。
+     *
+     * 归属：先按挂号单确认"这张单是我的"（不匹配 ⇒ 404，与"不存在"不可区分），
+     * 再由**服务端**从挂号单取 `patient_id` 去查会话 —— 患者 id 不接受客户端输入
+     * （那等于把"这次会话属于哪位患者"交给客户端判断，传错就是串病历）。
+     *
+     * 两级来源（响应里的 `bound` 区分）：
+     *   ① 绑定了本单的会话 ⇒ `bound = true`（改进 1 之后的新单走这条）；
+     *   ② 本单没绑定 ⇒ 该患者最近一次**已完成**的会话 ⇒ `bound = false`（存量兼容：
+     *      改进 1 之前挂号从不上报 `previsit_id`，那些历史单永远绑不上）。
+     * 两级都没有 ⇒ 404 `PREVISIT_NOT_FOUND`。
+     *   ⚠ "这次没填预问诊"是**正常状态**，不是错误，所以错误码必须可判别
+     *     （只给一个笼统 404，前端就没法区分"没有摘要"与"单号写错了"）。
+     */
+    r.get("/api/v1/doctor/visits/:id/previsit", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.QueryOwnMedicalRecord)
+        let id = parseInt64Or(ctx.paramOr("id", "0"), 0)
+        if (id <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "挂号单 id 必须是正整数")
+        }
+        let found = visit.findForDoctor(id, p.doctorId)
+        if (found.isNone()) {
+            throw apiErrorMsg("APPOINTMENT_NOT_FOUND", "挂号单不存在或不属于你")
+        }
+        let appt = found.getOrThrow()
+        match (previsit.findByAppointment(id, appt.patientId)) {
+            case Some(s) => sendOk(ctx, visitPrevisitJson(s, true))
+            case None =>
+                match (previsit.latestCompleteForPatient(appt.patientId)) {
+                    case Some(s) => sendOk(ctx, visitPrevisitJson(s, false))
+                    case None =>
+                        throw apiErrorMsg("PREVISIT_NOT_FOUND",
+                                          "该患者没有可用的预问诊摘要（本次未提交，历史也没有已完成的问诊单）")
+                }
         }
     })
 

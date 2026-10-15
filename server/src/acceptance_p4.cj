@@ -435,3 +435,112 @@ public func acP4_4(runner: TestRunner, db: DbBackend): Unit {
                      cols.getInt(0, 0) == 0)
     })
 }
+
+/* ============ AC-P4-5：预问诊 → 病历的桥（2026-10-14 改进 1）============ */
+
+/*
+ * 本用例守护的四条不变式：
+ *
+ *   ① ★★ **一次问诊单只能绑一张挂号单**（`appointment_id = 0 OR = ?`）：
+ *      允许多绑就等于"一次误传能把患者的自述挂到别人的就诊上"——
+ *      那是**病历污染**，比读到不该读的更坏（写坏的东西会被当成诊疗依据）。
+ *
+ *   ② ★★ **会话归属由 SQL 里的 patient_id 保证**，不靠调用方"上一步查过了"：
+ *      别的患者既绑不走、也读不到、也预填不进自己名下那张单。
+ *
+ *   ③ ★★ **来源痕迹只记"患者答的段"**：医生在同一次请求的 patch 里写过的段
+ *      不算患者自述。否则病历上会挂着一个名不副实的"患者自述"角标 ——
+ *      而病历是**法律文书**，来源标注错了比没有标注更坏。
+ *
+ *   ④ ★ **预填只在建单那一次发生**：已有病历不吃预填（医生判断优先），
+ *      因此来源痕迹也不会被后续保存改掉（它是"初值来源"的快照，不是"当前作者"）。
+ */
+public func acP4_5(runner: TestRunner, db: DbBackend): Unit {
+    println("=== AC-P4-5 ★★ 预问诊 → 病历：绑定唯一、归属严格、来源如实 ===")
+    runner.section("AC-P4-5", { =>
+        hResetAll(db)
+        db.exec("DELETE FROM previsit_session", Array<DbValue>())
+        db.exec("DELETE FROM medical_record", Array<DbValue>())
+        let now = hNowEpoch()
+        let pv = PrevisitRepo(db)
+        let emr = MedicalRecordRepo(db)
+
+        /* 患者 9505 完成一次预问诊（六项齐备） */
+        let sid = pv.create(9505, now)
+        for (sl in intakeSlots()) {
+            let _x = pv.answer(sid, 9505, sl.key, "答-" + sl.key, now)
+        }
+        runner.check("准备：问诊单六项齐备", pv.find(sid, 9505).getOrThrow().form.complete())
+
+        /* ① 绑定 + 幂等 */
+        let a1 = hSeedAppointmentForDoctor(db, 5, 9505, VISIT_BOOKED)
+        runner.check("① 把会话绑到本次挂号单 ⇒ 成功", pv.bindAppointment(sid, 9505, a1))
+        runner.check("① 绑定后可按挂号单反查", pv.findByAppointment(a1, 9505).isSome())
+        runner.check("★ ① 重复绑定同一张单是幂等的（幂等重放会再调一次）",
+                     pv.bindAppointment(sid, 9505, a1))
+
+        /* ② ★★ 不许改绑到另一张单 */
+        let a2 = hSeedAppointmentForDoctor(db, 6, 9505, VISIT_BOOKED)
+        runner.check("★★ ② 已绑定的会话**不许改绑**到另一张单（防串病历）",
+                     !pv.bindAppointment(sid, 9505, a2))
+        runner.check("② 且另一张单反查不到它", pv.findByAppointment(a2, 9505).isNone())
+
+        /* ③ ★★ 归属：别的患者绑不走 */
+        runner.check("★★ ③ 别的患者绑不走这张问诊单（SQL 里带 patient_id）",
+                     !pv.bindAppointment(sid, 9599, a2))
+        runner.check("★★ ③ 别的患者也读不到这个会话", pv.find(sid, 9599).isNone())
+
+        /* ④ 预填映射 + 来源痕迹 */
+        let out = emr.saveDraftWithIntake(a1, 900005, sid, 9505,
+                                          HashMap<String, String>(), now, 9901)
+        runner.check("④ 首次保存（use_intake_session）建单成功", out.ok)
+        let rec = emr.findByAppointment(a1).getOrThrow()
+        runner.check("④ 主诉预填进 chief_complaint（实得「${rec.chiefComplaint}」）",
+                     rec.chiefComplaint == "答-chief")
+        runner.check("④ 过敏史预填进 allergy_history", rec.allergyHistory == "答-allergy")
+        runner.check("④ 既往史预填进 past_history", rec.pastHistory == "答-history")
+        runner.check("★ ④ 病程/程度/伴随三问拼进 present_illness（不各占一段）",
+                     rec.presentIllness.contains("病程") && rec.presentIllness.contains("程度")
+                     && rec.presentIllness.contains("伴随"))
+        runner.check("★★ ④ 来源痕迹记下本次会话 id", rec.previsitRef.contains(sid))
+        let sections = emrPrevisitRefSections(rec.previsitRef)
+        runner.check("★ ④ 来源痕迹列出被患者自述写入的段（实得 ${sections.size} 段：${joinStrings(sections, ",")}）",
+                     sections.size == 4)
+        runner.check("★★ ④ 医生要写的段**不在**来源痕迹里（诊断/体格检查不是患者说的）",
+                     !sections.contains("diagnosis") && !sections.contains("physical_exam"))
+        /* 坏数据不影响读病历：乱写的 previsit_ref 解析成空数组，不抛 */
+        runner.check("★ ④ 损坏的 previsit_ref 解析失败 ⇒ 空数组（读病历不会 500）",
+                     emrPrevisitRefSections("{不是 JSON").size == 0)
+
+        /* ⑤ 已有病历不吃预填，来源痕迹不变 */
+        let patch = HashMap<String, String>()
+        patch["chief_complaint"] = "医生改过的主诉"
+        let out2 = emr.saveDraftWithIntake(a1, 900005, sid, 9505, patch, now, 9901)
+        runner.check("⑤ 二次保存成功", out2.ok)
+        let rec2 = emr.findByAppointment(a1).getOrThrow()
+        runner.check("★★ ⑤ 已有病历**不吃预填**：医生这次写的值生效（实得「${rec2.chiefComplaint}」）",
+                     rec2.chiefComplaint == "医生改过的主诉")
+        runner.check("★ ⑤ 未被 patch 的段仍是首次预填的值（不是空）",
+                     rec2.allergyHistory == "答-allergy")
+        runner.check("★★ ⑤ 来源痕迹是**初值来源快照**，不随医生改段而变（同一段仍标着预填来源）",
+                     rec2.previsitRef == rec.previsitRef)
+
+        /* ⑥ 该患者的历史单反查（两级回退的②级） */
+        let latest = pv.latestCompleteForPatient(9505)
+        runner.check("★ ⑥ 该患者最近一次已完成的会话可查（存量兼容的回退路径）",
+                     latest.isSome() && latest.getOrThrow().id == sid)
+        let sid2 = pv.create(9506, now)
+        let _one = pv.answer(sid2, 9506, "chief", "只答了一项", now)
+        runner.check("★★ ⑥ **未完成**的会话不会出现在回退路径里（半张单不足以当摘要）",
+                     pv.latestCompleteForPatient(9506).isNone())
+
+        /* ⑦ 预填的来源靠 patient_id 兜：给错患者 ⇒ 什么都不预填 */
+        let a3 = hSeedAppointmentForDoctor(db, 7, 9507, VISIT_BOOKED)
+        let out3 = emr.saveDraftWithIntake(a3, 900007, sid, 9599,   // session 属于 9505
+                                           HashMap<String, String>(), now, 9901)
+        runner.check("★★ ⑦ 把**别人的**会话拿来预填 ⇒ 一段也进不去（数据落空）",
+                     out3.ok && emr.findByAppointment(a3).getOrThrow().chiefComplaint.size == 0)
+        runner.check("★★ ⑦ 且这张单的来源痕迹为空（不会凭空宣称有患者自述）",
+                     emr.findByAppointment(a3).getOrThrow().previsitRef.size == 0)
+    })
+}

@@ -69,6 +69,7 @@ try {
         @{ n = 'triage-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'emr-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'previsit-check'; p = @{ Base = $dev; AdminPw = $pw } },
+        @{ n = 'previsit-bridge-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'ai-model-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'rate-limit-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'p1-extra-check'; p = @{ Base = $dev; AdminPw = $pw } }

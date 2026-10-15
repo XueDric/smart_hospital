@@ -216,6 +216,41 @@ if ($pl.Http -ne 200) {
          ('{"schedule_id":' + $sid + ',"client_token":"my-appt-1"}')
     Check "患者挂号成功" ($b.Http -eq 201) ("HTTP $($b.Http)")
 
+    # ===================== ③-b 改进 4（2026-10-14）：按幂等键反查 + 溯源字段 =====================
+    # 要解决的问题：网络中断后客户端**只知道 token**（响应丢了），它必须能确定性地
+    # 回答"我那次到底成没成"。此前唯一手段是"用同一 token 再提交一次"，那会把
+    # "查询"和"下单"混在一起。下面这组断言把新通道钉住。
+    $justId = $b.Json.data.appointment_id
+    Check "★ 挂号响应带 request_id（非空，与服务端日志同值）" `
+          (([string]::IsNullOrWhiteSpace([string]$b.Json.data.request_id)) -eq $false) `
+          ("request_id='" + $b.Json.data.request_id + "'")
+    Check "★ 挂号响应带 server_time（epoch 秒 > 0）" ([int64]$b.Json.data.server_time -gt 0) `
+          ("server_time=" + $b.Json.data.server_time)
+    # 幂等回放：同一 token 再提交 ⇒ 200（不是 201）且必须是**同一张单**
+    $b2 = DoReq 'bk2' 'POST' '/api/v1/appointments' @("Authorization: Bearer $pTok") `
+          ('{"schedule_id":' + $sid + ',"client_token":"my-appt-1"}')
+    Check "同 token 再提交 → 200 回放（不是 201）" ($b2.Http -eq 200) ("HTTP $($b2.Http)")
+    Check "★ 回放拿到的 appointment_id 与首次相同（$justId）" `
+          ("$($b2.Json.data.appointment_id)" -eq "$justId") ("实得 $($b2.Json.data.appointment_id)")
+    # ★ 本项主角：只读反查（客户端"查询这次请求的结果"用的就是它）
+    $bt = DoReq 'bytok' 'GET' '/api/v1/appointments/by-token/my-appt-1' @("Authorization: Bearer $pTok") $null
+    Check "★ by-token 反查命中 200" ($bt.Http -eq 200) ("HTTP $($bt.Http)")
+    Check "★ 反查到的就是那一张单（id=$justId）" ("$($bt.Json.data.appointment_id)" -eq "$justId") `
+          ("实得 $($bt.Json.data.appointment_id)")
+    Check "★ 反查响应也带 request_id / server_time" `
+          ((([string]::IsNullOrWhiteSpace([string]$bt.Json.data.request_id)) -eq $false) -and ([int64]$bt.Json.data.server_time -gt 0)) `
+          ("request_id='" + $bt.Json.data.request_id + "' server_time=" + $bt.Json.data.server_time)
+    # 未知 token ⇒ 404：这就是"那次提交没成功"的确定性答案
+    $bt2 = DoReq 'bytok404' 'GET' '/api/v1/appointments/by-token/no-such-token-xyz' @("Authorization: Bearer $pTok") $null
+    Check "★ 未知 token → 404（确定性回答：那次没成 / 已被退号释放）" ($bt2.Http -eq 404) ("HTTP $($bt2.Http)")
+    # 超长 token（> 64，列定义上限）⇒ 400，而不是让它永远 404（那样真因会被埋掉）
+    $longTok = 'x' * 65
+    $bt3 = DoReq 'bytoklong' 'GET' ("/api/v1/appointments/by-token/" + $longTok) @("Authorization: Bearer $pTok") $null
+    Check "★ 超长（65 字符）token → 400（不是永远 404）" ($bt3.Http -eq 400) ("HTTP $($bt3.Http)")
+    # 归属口径与 /api/v1/appointments 一致：非患者角色一律 403
+    $bt4 = DoReq 'bytokadm' 'GET' '/api/v1/appointments/by-token/my-appt-1' @("Authorization: Bearer $admTok") $null
+    Check "管理员调 by-token → 403（只对患者开放）" ($bt4.Http -eq 403) ("HTTP $($bt4.Http)")
+
     $r = DoReq 'mine' 'GET' '/api/v1/appointments' @("Authorization: Bearer $pTok") $null
     $list = @()
     if ($r.Json -and $r.Json.data) { $list = @($r.Json.data.appointments) }

@@ -378,6 +378,19 @@ public let SCHEMA_DDL: Array<String> = [
      *     那属后续，已写进 P4-HANDOFF 的未做清单。
      */
     "updated_by BIGINT NOT NULL DEFAULT 0, " +
+    /*
+     * ★ 预问诊**来源痕迹**（2026-10-14 增，改进 1）。
+     *
+     * 为什么不能只靠前端在输入框里拼一个「患者自述：」前缀：
+     *   锁定/解锁之后就再也分不清哪一段是患者说的、哪一段是医生写的 ——
+     *   而"这段谁写的"是病历的可追溯性要求（同一份病历可能先被自述预填、再被医生改写）。
+     *   存 JSON：`{"session_id":"…","sections":["chief_complaint",…],"at":<epoch 秒>}`；
+     *   `sections` 由 `saveDraft` 里**实际写入的那些段**（同一个 map）推导，不另算一遍。
+     * ⚠ 类型选 VARCHAR(1024) 而不是 TEXT：本列需要默认值（老库 ALTER 时也要能补列），
+     *   而 MySQL **不允许** TEXT 带 DEFAULT（MariaDB 允许，但本项目 DSN 写的是 mysql://，
+     *   不值得为一个约 260 字符的 JSON 引入"只在某个引擎上才建得出表"的差异）。
+     */
+    "previsit_ref VARCHAR(1024) NOT NULL DEFAULT '', " +
     "created_at BIGINT NOT NULL DEFAULT 0, " +
     "updated_at BIGINT NOT NULL DEFAULT 0, " +
     "PRIMARY KEY (id), " +
@@ -500,12 +513,22 @@ public let SCHEMA_DDL: Array<String> = [
     "CREATE TABLE IF NOT EXISTS previsit_session (" +
     "id VARCHAR(64) NOT NULL, " +
     "patient_id BIGINT NOT NULL, " +
+    /*
+     * ★ 绑定的挂号单（2026-10-14 增，改进 1）。`0` = 尚未绑定
+     *   （患者开流作答时还没有挂号，或挂号请求没带 `previsit_id`）。
+     *   ⚠ 为什么必须由**服务端**存这一段关系：此前"患者答的问诊单"与
+     *   "医生看的这次就诊"之间只有客户端本机 `SessionStore` 里一个 id ——
+     *   换台设备、或医生端在另一台机器上打开，这条链路就断了
+     *   （而且"提交过会话 id"≠"医生看得到"）。绑定后医生可按**挂号单**取摘要。
+     */
+    "appointment_id BIGINT NOT NULL DEFAULT 0, " +
     "turn BIGINT NOT NULL DEFAULT 0, " +
     "form_json TEXT NOT NULL, " +
     "created_at BIGINT NOT NULL DEFAULT 0, " +
     "updated_at BIGINT NOT NULL DEFAULT 0, " +
     "PRIMARY KEY (id), " +
-    "KEY idx_previsit_patient (patient_id, updated_at)" +
+    "KEY idx_previsit_patient (patient_id, updated_at), " +
+    "KEY idx_previsit_appointment (appointment_id)" +
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
 ]
 
@@ -974,6 +997,55 @@ public func migrateSchema(db: DbBackend): Int64 {
         Array<DbValue>())
     if (staleIdem.rowCount() > 0 && staleIdem.getInt(0, 0) > 0) {
         db.exec("DROP TABLE booking_idem", Array<DbValue>())
+        done = done + 1
+    }
+
+    /*
+     * ⑧ ★ 2026-10-14（改进 1）：`previsit_session.appointment_id` + 索引（存量库）。
+     *
+     * 同 ⑥/⑦ 的理由：`CREATE TABLE IF NOT EXISTS` 对**已有表**完全不生效 ——
+     * 老库上 `previsit_session` 早建好了，DDL 里加列不会生效，而代码一旦
+     * 按 `appointment_id` 查/写就会报 `Unknown column`（整个预问诊域挂掉）。
+     * ⚠ 列与索引**分两步判断**：老库可能已经有人手工加了列却没加索引
+     *   （而"按挂号单取摘要"是走索引的查询），所以两个条件各自独立。
+     */
+    let hasPvAppt = db.query(
+        "SELECT COUNT(*) FROM information_schema.columns " +
+        "WHERE table_schema = DATABASE() AND table_name = 'previsit_session' " +
+        "AND column_name = 'appointment_id'",
+        Array<DbValue>())
+    if (hasPvAppt.rowCount() > 0 && hasPvAppt.getInt(0, 0) == 0) {
+        db.exec("ALTER TABLE previsit_session " +
+                "ADD COLUMN appointment_id BIGINT NOT NULL DEFAULT 0",
+                Array<DbValue>())
+        done = done + 1
+    }
+    let pvApptIdx = db.query(
+        "SELECT COUNT(*) FROM information_schema.statistics " +
+        "WHERE table_schema = DATABASE() AND table_name = 'previsit_session' " +
+        "AND index_name = 'idx_previsit_appointment'",
+        Array<DbValue>())
+    if (pvApptIdx.rowCount() > 0 && pvApptIdx.getInt(0, 0) == 0) {
+        db.exec("ALTER TABLE previsit_session " +
+                "ADD KEY idx_previsit_appointment (appointment_id)",
+                Array<DbValue>())
+        done = done + 1
+    }
+
+    /*
+     * ⑨ ★ 2026-10-14（改进 1）：`medical_record.previsit_ref`（存量库）。
+     *    存的是"哪几段来自患者自述"的来源痕迹，见 DDL 处的长注释。
+     *    老行补空串（= 没有来源痕迹，这是**诚实的**：那批病历确实没记过）。
+     */
+    let hasPvRef = db.query(
+        "SELECT COUNT(*) FROM information_schema.columns " +
+        "WHERE table_schema = DATABASE() AND table_name = 'medical_record' " +
+        "AND column_name = 'previsit_ref'",
+        Array<DbValue>())
+    if (hasPvRef.rowCount() > 0 && hasPvRef.getInt(0, 0) == 0) {
+        db.exec("ALTER TABLE medical_record " +
+                "ADD COLUMN previsit_ref VARCHAR(1024) NOT NULL DEFAULT ''",
+                Array<DbValue>())
         done = done + 1
     }
 
