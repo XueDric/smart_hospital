@@ -165,7 +165,7 @@ export struct DoctorsPage {
         Flex({ wrap: FlexWrap.Wrap }) {
           ForEach(this.departments, (department: Department) => {
             Button(department.name)
-              .height(36)
+              .height(AppSize.TOUCH_MIN)
               .fontSize(AppText.CAPTION)
               .fontColor(this.departmentId === department.id ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
               .backgroundColor(this.departmentId === department.id ? AppColor.PRIMARY_SOFT : AppColor.SURFACE_ALT)
@@ -240,14 +240,14 @@ export struct DoctorsPage {
 
                 Row() {
                   Button('编辑')
-                    .height(36)
+                    .height(AppSize.TOUCH_MIN)
                     .fontSize(AppText.CAPTION)
                     .fontColor(AppColor.PRIMARY)
                     .backgroundColor(AppColor.PRIMARY_SOFT)
                     .borderRadius(AppSize.CONTROL_RADIUS)
                     .onClick(() => this.edit(item))
                   Button('删除')
-                    .height(36)
+                    .height(AppSize.TOUCH_MIN)
                     .fontSize(AppText.CAPTION)
                     .fontColor(AppColor.DANGER)
                     .backgroundColor(AppColor.DANGER_SOFT)

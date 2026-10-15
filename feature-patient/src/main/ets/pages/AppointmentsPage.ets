@@ -9,7 +9,7 @@ import {
   PageHeader,
   SectionTitle,
   StatusChip
-} from '../ui/CommonComponents';
+} from 'common-core';
 import {
   AppColor,
   AppSize,
@@ -17,7 +17,7 @@ import {
   appointmentStatusColor,
   appointmentStatusText,
   periodText
-} from '../ui/Theme';
+} from 'common-core';
 
 @ComponentV2
 export struct AppointmentsPage {

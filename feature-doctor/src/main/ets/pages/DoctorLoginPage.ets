@@ -69,7 +69,7 @@ export struct DoctorLoginPage {
       Column() {
         Column() {
           Text('智慧医院')
-            .fontSize(30)
+            .fontSize(AppText.DISPLAY)
             .fontWeight(FontWeight.Bold)
             .fontColor(AppColor.TEXT)
           Text('医生端')
@@ -89,14 +89,14 @@ export struct DoctorLoginPage {
           Row() {
             Button('在线服务')
               .layoutWeight(1)
-              .height(40)
+              .height(AppSize.TOUCH_MIN)
               .fontSize(AppText.CAPTION)
               .fontColor(this.mockMode ? AppColor.TEXT_SECONDARY : AppColor.PRIMARY_DARK)
               .backgroundColor(this.mockMode ? Color.Transparent : AppColor.PRIMARY_SOFT)
               .onClick(() => this.changeMode(false))
             Button('演示数据')
               .layoutWeight(1)
-              .height(40)
+              .height(AppSize.TOUCH_MIN)
               .fontSize(AppText.CAPTION)
               .fontColor(this.mockMode ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
               .backgroundColor(this.mockMode ? AppColor.PRIMARY_SOFT : Color.Transparent)

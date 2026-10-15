@@ -103,7 +103,7 @@ export struct SchedulesPage {
         Flex({ wrap: FlexWrap.Wrap }) {
           ForEach(this.doctors, (doctor: Doctor) => {
             Button(`${doctor.name} · ${doctor.title}`)
-              .height(36)
+              .height(AppSize.TOUCH_MIN)
               .fontSize(AppText.CAPTION)
               .fontColor(this.doctorId === doctor.id ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
               .backgroundColor(this.doctorId === doctor.id ? AppColor.PRIMARY_SOFT : AppColor.SURFACE_ALT)
@@ -124,7 +124,7 @@ export struct SchedulesPage {
         Flex({ wrap: FlexWrap.Wrap }) {
           ForEach(this.departments, (department: Department) => {
             Button(department.name)
-              .height(36)
+              .height(AppSize.TOUCH_MIN)
               .fontSize(AppText.CAPTION)
               .fontColor(this.departmentId === department.id ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
               .backgroundColor(this.departmentId === department.id ? AppColor.PRIMARY_SOFT : AppColor.SURFACE_ALT)
@@ -165,7 +165,7 @@ export struct SchedulesPage {
         Row() {
           Button('上午')
             .layoutWeight(1)
-            .height(40)
+            .height(AppSize.TOUCH_MIN)
             .fontSize(AppText.CAPTION)
             .fontColor(this.period === 'AM' ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
             .backgroundColor(this.period === 'AM' ? AppColor.PRIMARY_SOFT : AppColor.SURFACE_ALT)
@@ -175,7 +175,7 @@ export struct SchedulesPage {
             })
           Button('下午')
             .layoutWeight(1)
-            .height(40)
+            .height(AppSize.TOUCH_MIN)
             .fontSize(AppText.CAPTION)
             .fontColor(this.period === 'PM' ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
             .backgroundColor(this.period === 'PM' ? AppColor.PRIMARY_SOFT : AppColor.SURFACE_ALT)
@@ -186,7 +186,7 @@ export struct SchedulesPage {
             })
           Button('新增号源')
             .layoutWeight(1)
-            .height(40)
+            .height(AppSize.TOUCH_MIN)
             .fontSize(AppText.CAPTION)
             .fontColor(AppColor.SURFACE)
             .backgroundColor(AppColor.PRIMARY)

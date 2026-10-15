@@ -175,7 +175,7 @@ export struct AiCenterPage {
   tabButton(value: string, label: string) {
     Button(label)
       .layoutWeight(1)
-      .height(40)
+      .height(AppSize.TOUCH_MIN)
       .fontSize(AppText.CAPTION)
       .fontColor(this.aiTab === value ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
       .backgroundColor(this.aiTab === value ? AppColor.PRIMARY_SOFT : Color.Transparent)
@@ -216,7 +216,7 @@ export struct AiCenterPage {
 
               if (this.editingSettingKey === item.key) {
                 Button('保存')
-                  .height(36)
+                  .height(AppSize.TOUCH_MIN)
                   .fontSize(AppText.CAPTION)
                   .fontColor(AppColor.SURFACE)
                   .backgroundColor(AppColor.PRIMARY)
@@ -224,7 +224,7 @@ export struct AiCenterPage {
                   .onClick(() => this.saveSetting(item))
               } else {
                 Button('编辑')
-                  .height(36)
+                  .height(AppSize.TOUCH_MIN)
                   .fontSize(AppText.CAPTION)
                   .fontColor(AppColor.PRIMARY)
                   .backgroundColor(AppColor.PRIMARY_SOFT)
@@ -307,14 +307,14 @@ export struct AiCenterPage {
 
             Row() {
               Button('编辑')
-                .height(36)
+                .height(AppSize.TOUCH_MIN)
                 .fontSize(AppText.CAPTION)
                 .fontColor(AppColor.PRIMARY)
                 .backgroundColor(AppColor.PRIMARY_SOFT)
                 .borderRadius(AppSize.CONTROL_RADIUS)
                 .onClick(() => this.beginEditPrompt(item))
               Button('重置为默认')
-                .height(36)
+                .height(AppSize.TOUCH_MIN)
                 .fontSize(AppText.CAPTION)
                 .fontColor(AppColor.DANGER)
                 .backgroundColor(AppColor.DANGER_SOFT)
@@ -382,7 +382,7 @@ export struct AiCenterPage {
               .alignItems(HorizontalAlign.Start)
 
               Button(item.enabled ? '已开启' : '已关闭')
-                .height(36)
+                .height(AppSize.TOUCH_MIN)
                 .fontSize(AppText.CAPTION)
                 .fontColor(item.enabled ? AppColor.SURFACE : AppColor.TEXT_SECONDARY)
                 .backgroundColor(item.enabled ? AppColor.PRIMARY : AppColor.SURFACE_ALT)

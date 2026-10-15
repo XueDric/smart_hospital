@@ -7,7 +7,7 @@ import {
   LoadingBlock,
   SectionTitle,
   StatusChip
-} from '../ui/CommonComponents';
+} from 'common-core';
 import {
   AppColor,
   AppSize,
@@ -15,7 +15,7 @@ import {
   appointmentStatusColor,
   appointmentStatusText,
   periodText
-} from '../ui/Theme';
+} from 'common-core';
 
 class QuickAction {
   title: string = '';
@@ -154,11 +154,11 @@ export struct HomePage {
             ForEach(this.actions, (action: QuickAction) => {
               Column() {
                 Text(action.glyph)
-                  .fontSize(20)
+                  .fontSize(AppText.LEAD)
                   .fontWeight(FontWeight.Bold)
                   .fontColor(AppColor.PRIMARY_DARK)
-                  .width(40)
-                  .height(40)
+                  .width(AppSize.TOUCH_MIN)
+                  .height(AppSize.TOUCH_MIN)
                   .textAlign(TextAlign.Center)
                   .backgroundColor(AppColor.PRIMARY_SOFT)
                   .borderRadius(20)

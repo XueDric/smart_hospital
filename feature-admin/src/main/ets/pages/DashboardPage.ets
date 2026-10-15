@@ -116,7 +116,7 @@ export struct DashboardPage {
   statCard(value: string, label: string) {
     Column() {
       Text(value)
-        .fontSize(30)
+        .fontSize(AppText.DISPLAY)
         .fontWeight(FontWeight.Bold)
         .fontColor(AppColor.PRIMARY_DARK)
       Text(label)
@@ -146,7 +146,7 @@ export struct DashboardPage {
               .backgroundColor(AppColor.PRIMARY)
               .borderRadius(4)
             Text(point.label)
-              .fontSize(11)
+              .fontSize(AppText.MICRO)
               .fontColor(AppColor.TEXT_SECONDARY)
               .margin({ top: 6 })
           }

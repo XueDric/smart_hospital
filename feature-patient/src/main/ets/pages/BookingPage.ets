@@ -1,7 +1,7 @@
 import { ApiError, AppRouter, ErrorCode, RouteName } from 'common-core';
 import { PatientRepository } from '../data/PatientRepository';
 import { Appointment, Schedule } from '../model/PatientModels';
-import { AppButton, EmptyState, InfoBanner, LoadingBlock, PageHeader, StatusChip } from '../ui/CommonComponents';
+import { AppButton, EmptyState, InfoBanner, LoadingBlock, PageHeader, StatusChip } from 'common-core';
 import {
   AppColor,
   AppSize,
@@ -9,7 +9,7 @@ import {
   nowToken,
   periodText,
   todayString
-} from '../ui/Theme';
+} from 'common-core';
 
 @ComponentV2
 export struct BookingPage {
@@ -164,7 +164,7 @@ export struct BookingPage {
               .fontColor(AppColor.TEXT_SECONDARY)
               .width('100%')
             TextInput({ placeholder: '全部科室', text: this.departmentIdText })
-              .height(40)
+              .height(AppSize.TOUCH_MIN)
               .fontSize(AppText.BODY)
               .backgroundColor(AppColor.SURFACE)
               .borderRadius(AppSize.CONTROL_RADIUS)
@@ -181,7 +181,7 @@ export struct BookingPage {
               .fontColor(AppColor.TEXT_SECONDARY)
               .width('100%')
             TextInput({ placeholder: '全部医生', text: this.doctorIdText })
-              .height(40)
+              .height(AppSize.TOUCH_MIN)
               .fontSize(AppText.BODY)
               .backgroundColor(AppColor.SURFACE)
               .borderRadius(AppSize.CONTROL_RADIUS)
@@ -203,7 +203,7 @@ export struct BookingPage {
               .fontColor(AppColor.TEXT_SECONDARY)
               .width('100%')
             TextInput({ placeholder: 'YYYY-MM-DD', text: this.workDate })
-              .height(40)
+              .height(AppSize.TOUCH_MIN)
               .fontSize(AppText.BODY)
               .backgroundColor(AppColor.SURFACE)
               .borderRadius(AppSize.CONTROL_RADIUS)
@@ -214,7 +214,7 @@ export struct BookingPage {
           }
           .layoutWeight(1)
           Button('查询号源')
-            .height(40)
+            .height(AppSize.TOUCH_MIN)
             .fontSize(AppText.CAPTION)
             .fontColor(AppColor.SURFACE)
             .backgroundColor(AppColor.PRIMARY)
@@ -227,21 +227,21 @@ export struct BookingPage {
         Row() {
           Button('全部')
             .layoutWeight(1)
-            .height(36)
+            .height(AppSize.TOUCH_MIN)
             .fontSize(AppText.CAPTION)
             .fontColor(this.period.length === 0 ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
             .backgroundColor(this.period.length === 0 ? AppColor.PRIMARY_SOFT : Color.Transparent)
             .onClick(() => this.setPeriod(''))
           Button('上午')
             .layoutWeight(1)
-            .height(36)
+            .height(AppSize.TOUCH_MIN)
             .fontSize(AppText.CAPTION)
             .fontColor(this.period === 'AM' ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
             .backgroundColor(this.period === 'AM' ? AppColor.PRIMARY_SOFT : Color.Transparent)
             .onClick(() => this.setPeriod('AM'))
           Button('下午')
             .layoutWeight(1)
-            .height(36)
+            .height(AppSize.TOUCH_MIN)
             .fontSize(AppText.CAPTION)
             .fontColor(this.period === 'PM' ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
             .backgroundColor(this.period === 'PM' ? AppColor.PRIMARY_SOFT : Color.Transparent)

@@ -4,7 +4,9 @@ import {
   ApiMode,
   AppRouter,
   RouteName,
-  SessionStore
+  SessionStore,
+  ThemeManager,
+  ThemeMode
 } from 'common-core';
 import { PatientRepository } from '../data/PatientRepository';
 import { CurrentUser } from '../model/PatientModels';
@@ -14,8 +16,8 @@ import {
   InfoBanner,
   PageHeader,
   SectionTitle
-} from '../ui/CommonComponents';
-import { AppColor, AppSize, AppText, formatEpoch } from '../ui/Theme';
+} from 'common-core';
+import { AppColor, AppSize, AppText, formatEpoch } from 'common-core';
 
 @ComponentV2
 export struct ProfilePage {
@@ -27,6 +29,7 @@ export struct ProfilePage {
   @Local expiresAt: number = 0;
   @Local mockMode: boolean = false;
   @Local baseUrl: string = '';
+  @Local themeMode: ThemeMode = ThemeMode.AUTO;
   @Local loading: boolean = false;
   @Local errorMessage: string = '';
   @Local bannerMessage: string = '';
@@ -39,6 +42,7 @@ export struct ProfilePage {
     this.userId = SessionStore.getUserId();
     this.expiresAt = SessionStore.getExpiresAt();
     this.mockMode = ApiConfig.isMock();
+    this.themeMode = ThemeManager.getInstance().getMode();
     this.baseUrl = ApiConfig.baseUrl;
   }
 
@@ -69,6 +73,11 @@ export struct ProfilePage {
     SessionStore.setApiConfig(mode, ApiConfig.baseUrl);
     this.bannerTone = 'info';
     this.bannerMessage = mock ? '已切换到演示数据模式' : '已切换到在线服务模式';
+  }
+
+  private setTheme(mode: ThemeMode): void {
+    this.themeMode = mode;
+    ThemeManager.getInstance().setMode(mode);
   }
 
   private saveBaseUrl(): void {
@@ -144,18 +153,61 @@ export struct ProfilePage {
           }
 
           Column() {
+            SectionTitle({ title: '外观' })
+            Row() {
+              Button('跟随系统')
+                .layoutWeight(1)
+                .height(AppSize.TOUCH_MIN)
+                .fontSize(AppText.CAPTION)
+                .fontColor(this.themeMode === ThemeMode.AUTO ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
+                .backgroundColor(this.themeMode === ThemeMode.AUTO ? AppColor.PRIMARY_SOFT : Color.Transparent)
+                .onClick(() => this.setTheme(ThemeMode.AUTO))
+              Button('浅色')
+                .layoutWeight(1)
+                .height(AppSize.TOUCH_MIN)
+                .fontSize(AppText.CAPTION)
+                .fontColor(this.themeMode === ThemeMode.LIGHT ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
+                .backgroundColor(this.themeMode === ThemeMode.LIGHT ? AppColor.PRIMARY_SOFT : Color.Transparent)
+                .onClick(() => this.setTheme(ThemeMode.LIGHT))
+              Button('深色')
+                .layoutWeight(1)
+                .height(AppSize.TOUCH_MIN)
+                .fontSize(AppText.CAPTION)
+                .fontColor(this.themeMode === ThemeMode.DARK ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
+                .backgroundColor(this.themeMode === ThemeMode.DARK ? AppColor.PRIMARY_SOFT : Color.Transparent)
+                .onClick(() => this.setTheme(ThemeMode.DARK))
+            }
+            .width('100%')
+            .padding(3)
+            .backgroundColor(AppColor.SURFACE_ALT)
+            .borderRadius(AppSize.CONTROL_RADIUS)
+
+            Text('跟随系统时自动匹配浅色或深色；手动选择后重启仍保持。')
+              .fontSize(AppText.CAPTION)
+              .fontColor(AppColor.TEXT_SECONDARY)
+              .width('100%')
+              .margin({ top: 10 })
+          }
+          .width('100%')
+          .padding(16)
+          .backgroundColor(AppColor.SURFACE)
+          .borderRadius(AppSize.CARD_RADIUS)
+          .margin({ top: AppSize.SECTION_GAP })
+          .alignItems(HorizontalAlign.Start)
+
+          Column() {
             SectionTitle({ title: '数据来源' })
             Row() {
               Button('在线服务')
                 .layoutWeight(1)
-                .height(40)
+                .height(AppSize.TOUCH_MIN)
                 .fontSize(AppText.CAPTION)
                 .fontColor(this.mockMode ? AppColor.TEXT_SECONDARY : AppColor.PRIMARY_DARK)
                 .backgroundColor(this.mockMode ? Color.Transparent : AppColor.PRIMARY_SOFT)
                 .onClick(() => this.changeMode(false))
               Button('演示数据')
                 .layoutWeight(1)
-                .height(40)
+                .height(AppSize.TOUCH_MIN)
                 .fontSize(AppText.CAPTION)
                 .fontColor(this.mockMode ? AppColor.PRIMARY_DARK : AppColor.TEXT_SECONDARY)
                 .backgroundColor(this.mockMode ? AppColor.PRIMARY_SOFT : Color.Transparent)

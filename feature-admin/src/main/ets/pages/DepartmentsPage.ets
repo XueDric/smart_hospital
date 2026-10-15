@@ -211,14 +211,14 @@ export struct DepartmentsPage {
 
                 Row() {
                   Button('编辑')
-                    .height(36)
+                    .height(AppSize.TOUCH_MIN)
                     .fontSize(AppText.CAPTION)
                     .fontColor(AppColor.PRIMARY)
                     .backgroundColor(AppColor.PRIMARY_SOFT)
                     .borderRadius(AppSize.CONTROL_RADIUS)
                     .onClick(() => this.edit(item))
                   Button('删除')
-                    .height(36)
+                    .height(AppSize.TOUCH_MIN)
                     .fontSize(AppText.CAPTION)
                     .fontColor(AppColor.DANGER)
                     .backgroundColor(AppColor.DANGER_SOFT)

@@ -268,14 +268,14 @@ export struct KnowledgeBasePage {
 
                   Row() {
                     Button('保存')
-                      .height(36)
+                      .height(AppSize.TOUCH_MIN)
                       .fontSize(AppText.CAPTION)
                       .fontColor(AppColor.SURFACE)
                       .backgroundColor(AppColor.PRIMARY)
                       .borderRadius(AppSize.CONTROL_RADIUS)
                       .onClick(() => this.saveEdit(item))
                     Button('取消')
-                      .height(36)
+                      .height(AppSize.TOUCH_MIN)
                       .fontSize(AppText.CAPTION)
                       .fontColor(AppColor.TEXT_SECONDARY)
                       .backgroundColor(AppColor.SURFACE_ALT)
@@ -291,14 +291,14 @@ export struct KnowledgeBasePage {
                 } else {
                   Row() {
                     Button('编辑')
-                      .height(36)
+                      .height(AppSize.TOUCH_MIN)
                       .fontSize(AppText.CAPTION)
                       .fontColor(AppColor.PRIMARY)
                       .backgroundColor(AppColor.PRIMARY_SOFT)
                       .borderRadius(AppSize.CONTROL_RADIUS)
                       .onClick(() => this.edit(item))
                     Button('删除')
-                      .height(36)
+                      .height(AppSize.TOUCH_MIN)
                       .fontSize(AppText.CAPTION)
                       .fontColor(AppColor.DANGER)
                       .backgroundColor(AppColor.DANGER_SOFT)
