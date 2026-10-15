@@ -1,0 +1,98 @@
+{
+  "name": "record-patient-after-lock-200",
+  "group": "record",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/medical-records/{id}",
+    "auth": "patient"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": true,
+      "data": {
+        "id": 0,
+        "appointment_id": 0,
+        "patient_id": 0,
+        "doctor_id": 0,
+        "status": "locked",
+        "locked": true,
+        "filled": 7,
+        "total_sections": 7,
+        "complete": true,
+        "updated_by": 0,
+        "created_at": 0,
+        "updated_at": 0,
+        "missing_required": [],
+        "sections": [
+          {
+            "key": "chief_complaint",
+            "label": "主诉",
+            "value": "上腹隐痛 3 天",
+            "max_len": 2000,
+            "required_to_lock": false
+          },
+          {
+            "key": "present_illness",
+            "label": "现病史",
+            "value": "病程：3 天；程度：影响睡眠；伴随：反酸",
+            "max_len": 4000,
+            "required_to_lock": false
+          },
+          {
+            "key": "past_history",
+            "label": "既往史",
+            "value": "高血压 5 年，服降压药",
+            "max_len": 2000,
+            "required_to_lock": false
+          },
+          {
+            "key": "allergy_history",
+            "label": "过敏史",
+            "value": "青霉素过敏",
+            "max_len": 2000,
+            "required_to_lock": false
+          },
+          {
+            "key": "physical_exam",
+            "label": "体格检查",
+            "value": "咽部充血，扁桃体 I 度肿大",
+            "max_len": 2000,
+            "required_to_lock": false
+          },
+          {
+            "key": "diagnosis",
+            "label": "诊断",
+            "value": "急性上呼吸道感染",
+            "max_len": 2000,
+            "required_to_lock": true
+          },
+          {
+            "key": "treatment",
+            "label": "处理意见",
+            "value": "多饮水，必要时对症退热；三天无好转复诊",
+            "max_len": 4000,
+            "required_to_lock": true
+          }
+        ],
+        "previsit_ref": {
+          "session_id": "<session_id>",
+          "sections": [
+            "chief_complaint",
+            "present_illness",
+            "past_history",
+            "allergy_history"
+          ],
+          "at": 0
+        },
+        "department_id": 0,
+        "visit_date": "<date>",
+        "period": "AM",
+        "department_name": "<dept>",
+        "doctor_name": "<doctor>",
+        "doctor_title": "主任医师"
+      }
+    }
+  }
+}

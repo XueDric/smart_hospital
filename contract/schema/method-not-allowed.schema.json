@@ -1,0 +1,11 @@
+{
+  "title": "方法不允许 405（平铺）",
+  "description": "路由存在但 HTTP 方法不匹配时由框架路由层写出：{error,allow}，同时**响应头**也带 allow（样例文件里 response.allow 就是它）。⚠ 这不是业务信封，也没有 code —— 客户端不该拿它当业务错误码解析。",
+  "type": "object",
+  "required": ["error", "allow"],
+  "additionalProperties": false,
+  "properties": {
+    "error": { "type": "string", "minLength": 1 },
+    "allow": { "type": "string", "minLength": 1 }
+  }
+}

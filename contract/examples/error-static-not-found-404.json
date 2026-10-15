@@ -1,0 +1,16 @@
+{
+  "name": "error-static-not-found-404",
+  "group": "envelope",
+  "request": {
+    "method": "GET",
+    "path": "/admin/no-such-file.js",
+    "auth": "none"
+  },
+  "response": {
+    "status": 404,
+    "content_type": "application/json",
+    "body": {
+      "error": "Not Found"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "title": "退号成功 data",
+  "description": "应用于 response.body.data。与挂号响应的差别：status=cancelled，且**不带** previsit_bound（退号跟预问诊绑定无关）。slot_restored=false 表示号源归还失败（跨表写只成功了一半）—— 客户端必须把它当成「要提示用户看状态」的信号，而不是当成功静默掉。",
+  "type": "object",
+  "required": ["appointment_id", "schedule_id", "patient_id", "doctor_id", "department_id", "visit_date", "period", "seq_no", "status", "slot_restored", "department_name", "doctor_name", "doctor_title", "remain_num", "request_id", "server_time"],
+  "additionalProperties": false,
+  "properties": {
+    "appointment_id": { "type": "integer" },
+    "schedule_id": { "type": "integer" },
+    "patient_id": { "type": "integer" },
+    "doctor_id": { "type": "integer" },
+    "department_id": { "type": "integer" },
+    "visit_date": { "type": "string", "minLength": 6 },
+    "period": { "type": "string", "enum": ["AM", "PM"] },
+    "seq_no": { "type": "integer" },
+    "status": { "type": "string", "enum": ["cancelled"] },
+    "slot_restored": { "type": "boolean" },
+    "department_name": { "type": "string" },
+    "doctor_name": { "type": "string" },
+    "doctor_title": { "type": "string" },
+    "remain_num": { "type": "integer" },
+    "request_id": { "type": "string" },
+    "server_time": { "type": "integer" }
+  }
+}

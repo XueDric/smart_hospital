@@ -1,0 +1,52 @@
+{
+  "name": "visits-queue-200",
+  "group": "record",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/doctor/visits",
+    "auth": "doctor"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": true,
+      "data": {
+        "items": [
+          {
+            "appointment_id": 0,
+            "patient_id": 0,
+            "doctor_id": 0,
+            "department_id": 0,
+            "visit_date": "<date>",
+            "period": "AM",
+            "seq_no": 0,
+            "status": "booked",
+            "previsit_ready": true,
+            "record_id": 0,
+            "record_status": "none",
+            "record_filled": 0,
+            "record_total": 7
+          },
+          {
+            "appointment_id": 0,
+            "patient_id": 0,
+            "doctor_id": 0,
+            "department_id": 0,
+            "visit_date": "<date>",
+            "period": "AM",
+            "seq_no": 0,
+            "status": "booked",
+            "previsit_ready": false,
+            "record_id": 0,
+            "record_status": "none",
+            "record_filled": 0,
+            "record_total": 7
+          }
+        ],
+        "count": 2,
+        "doctor_id": 0
+      }
+    }
+  }
+}

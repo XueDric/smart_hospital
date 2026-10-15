@@ -1,0 +1,20 @@
+{
+  "name": "booking-schedule-not-found-404",
+  "group": "booking",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/appointments",
+    "auth": "patient"
+  },
+  "response": {
+    "status": 404,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "SCHEDULE_NOT_FOUND",
+        "message": "排班不存在或已停诊"
+      }
+    }
+  }
+}

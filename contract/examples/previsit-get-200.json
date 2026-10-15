@@ -1,0 +1,33 @@
+{
+  "name": "previsit-get-200",
+  "group": "previsit",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/previsit/contract-706001-A",
+    "auth": "patient"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": true,
+      "data": {
+        "session_id": "<session_id>",
+        "turn": 6,
+        "filled": 6,
+        "total_slots": 6,
+        "complete": true,
+        "next_slot": "",
+        "next_question": "",
+        "form": {
+          "chief": "上腹隐痛 3 天",
+          "duration": "3 天",
+          "severity": "影响睡眠",
+          "associated": "反酸",
+          "history": "高血压 5 年，服降压药",
+          "allergy": "青霉素过敏"
+        }
+      }
+    }
+  }
+}

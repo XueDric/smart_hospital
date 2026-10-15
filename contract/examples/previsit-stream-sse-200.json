@@ -1,0 +1,14 @@
+{
+  "name": "previsit-stream-sse-200",
+  "group": "previsit",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/previsit/stream?chief_complaint=%E4%B8%8A%E8%85%B9%E9%9A%90%E7%97%9B3%E5%A4%A9",
+    "auth": "patient"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "text/event-stream; charset=utf-8",
+    "body_text": "data: {\"event\":\"meta\",\"data\":{\"session_id\":\"<session_id>\",\"turn\":1,\"total_slots\":6}}\n\ndata: {\"event\":\"delta\",\"data\":{\"text\":\"第 2/6 项：这个情况持续多久了？\"}}\n\ndata: {\"event\":\"delta\",\"data\":{\"text\":\"（例如：3 天、2 周、半年）\"}}\n\ndata: {\"event\":\"done\",\"data\":{\"session_id\":\"<session_id>\",\"next_slot\":\"duration\"}}\n\n"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "error-method-not-allowed-405",
+  "group": "envelope",
+  "request": {
+    "method": "PUT",
+    "path": "/health",
+    "auth": "none"
+  },
+  "response": {
+    "status": 405,
+    "content_type": "application/json",
+    "body": {
+      "error": "Method Not Allowed",
+      "allow": "GET"
+    },
+    "allow": "GET"
+  }
+}

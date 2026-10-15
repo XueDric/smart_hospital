@@ -1,0 +1,19 @@
+{
+  "title": "业务错误信封 {ok:false,error:{code,message}}",
+  "description": "HTTP 4xx/5xx 的业务错误信封。⚠ 它**不含** data、不含 request_id/server_time —— 排查时要靠响应头与本端日志。配套的库侧登记表见 server/src/http_common.cj 的 apiErrorSpec。",
+  "type": "object",
+  "required": ["ok", "error"],
+  "additionalProperties": false,
+  "properties": {
+    "ok": { "const": false },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

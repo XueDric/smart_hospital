@@ -1,0 +1,49 @@
+{
+  "description": "契约样例 → Schema 的映射表，由 server/tests/contract-check.ps1 读取。规则：`file` 里的 Schema 对**每个**样例文件整体生效（钉住样例文件本身的结构）；`map` 里每个样例名对应 {body, data, body_text, error_code} 四样——body 校验 response.body，data 校验 response.body.data，body_text 校验 response.body_text（SSE 等非 JSON 主体，例如 previsit-stream-sse-200），error_code 断言 response.body.error.code 就是这个业务码。⚠ 新增样例必须同时在这里登记：门禁会把「有样例但没登记」当失败（否则新端点可以偷偷绕过契约）。",
+  "file": ["artifact"],
+  "map": {
+    "health-200": { "body": ["health"] },
+    "error-invalid-json-400": { "body": ["flat-error"] },
+    "error-route-not-found-404": { "body": ["envelope-error"], "error_code": "ROUTE_NOT_FOUND" },
+    "error-method-not-allowed-405": { "body": ["method-not-allowed"] },
+    "error-static-not-found-404": { "body": ["static-not-found"] },
+
+    "auth-login-200": { "body": ["envelope-ok"], "data": ["data-auth-login"] },
+    "auth-login-bad-password-401": { "body": ["envelope-error"], "error_code": "AUTH_BAD_CREDENTIALS" },
+    "auth-token-missing-401": { "body": ["envelope-error"], "error_code": "AUTH_REQUIRED" },
+    "auth-role-forbidden-403": { "body": ["envelope-error"], "error_code": "FORBIDDEN_ROLE" },
+
+    "booking-create-201": { "body": ["envelope-ok"], "data": ["data-booking-created"] },
+    "booking-replay-200": { "body": ["envelope-ok"], "data": ["data-booking-created"] },
+    "booking-by-token-200": { "body": ["envelope-ok"], "data": ["data-booking-created"] },
+    "booking-create-with-previsit-201": { "body": ["envelope-ok"], "data": ["data-booking-created"] },
+    "booking-cancel-200": { "body": ["envelope-ok"], "data": ["data-booking-cancelled"] },
+    "booking-by-token-unknown-404": { "body": ["envelope-error"], "error_code": "APPOINTMENT_NOT_FOUND" },
+    "booking-validation-missing-schedule-400": { "body": ["envelope-error"], "error_code": "VALIDATION_FAILED" },
+    "booking-schedule-not-found-404": { "body": ["envelope-error"], "error_code": "SCHEDULE_NOT_FOUND" },
+    "booking-slot-gone-409": { "body": ["envelope-error"], "error_code": "SLOT_GONE" },
+
+    "previsit-stream-sse-200": { "body_text": ["previsit-stream"] },
+    "previsit-answer-200": { "body": ["envelope-ok"], "data": ["data-previsit-answer"] },
+    "previsit-answer-complete-200": { "body": ["envelope-ok"], "data": ["data-previsit-session"] },
+    "previsit-get-200": { "body": ["envelope-ok"], "data": ["data-previsit-session"] },
+    "previsit-answer-unknown-slot-400": { "body": ["envelope-error"], "error_code": "VALIDATION_FAILED" },
+    "previsit-get-unknown-404": { "body": ["envelope-error"], "error_code": "PREVISIT_NOT_FOUND" },
+    "previsit-cross-patient-404": { "body": ["envelope-error"], "error_code": "PREVISIT_NOT_FOUND" },
+
+    "visits-queue-200": { "body": ["envelope-ok"], "data": ["data-queue"] },
+    "visits-previsit-200": { "body": ["envelope-ok"], "data": ["data-visits-previsit"] },
+    "visits-previsit-other-doctor-404": { "body": ["envelope-error"], "error_code": "APPOINTMENT_NOT_FOUND" },
+    "record-put-with-intake-200": { "body": ["envelope-ok"], "data": ["data-record"] },
+    "record-get-200": { "body": ["envelope-ok"], "data": ["data-record"] },
+    "record-lock-200": { "body": ["envelope-ok"], "data": ["data-record"] },
+    "record-reopen-admin-200": { "body": ["envelope-ok"], "data": ["data-record"] },
+    "record-put-locked-409": { "body": ["envelope-error"], "error_code": "EMR_LOCKED" },
+    "record-reopen-doctor-403": { "body": ["envelope-error"], "error_code": "FORBIDDEN_ROLE" },
+    "record-patient-before-lock-404": { "body": ["envelope-error"], "error_code": "EMR_NOT_FOUND" },
+    "record-patient-after-lock-200": { "body": ["envelope-ok"], "data": ["data-record-patient"] },
+    "records-list-200": { "body": ["envelope-ok"], "data": ["data-record-list"] },
+
+    "admin-users-page-clamped-200": { "body": ["envelope-ok"], "data": ["data-admin-users-page"] }
+  }
+}

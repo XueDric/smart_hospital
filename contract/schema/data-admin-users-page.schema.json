@@ -1,0 +1,14 @@
+{
+  "title": "分页列表 data（管理员用户列表：回显夹取后的 limit/offset）",
+  "description": "应用于 response.body.data。这是本项目**少数会回显分页参数**的端点：`limit=9999&offset=-5` 被夹取成 limit=50/offset=0，客户端据此知道服务端真正用了什么（上限 200，见 server/src/http_app.cj 的夹取逻辑）。样例把 items/count/total 声明为 volatile（成员集合依赖全院数据），用 \"<volatile>\" 占位 —— 逐字节契约只钉信封与夹取后的数字，不钉具体用户行。",
+  "type": "object",
+  "required": ["items", "count", "total", "limit", "offset"],
+  "additionalProperties": false,
+  "properties": {
+    "items": {},
+    "count": {},
+    "total": {},
+    "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+    "offset": { "type": "integer", "minimum": 0 }
+  }
+}

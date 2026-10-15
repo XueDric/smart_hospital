@@ -1,0 +1,34 @@
+{
+  "title": "契约样例文件本身的结构",
+  "description": "所有 contract/examples/*.json 都必须满足。它保证样例文件是机器可读的、字段齐全的，并且没有多余字段（防止有人手工往样例里塞笔记）。",
+  "type": "object",
+  "required": ["name", "group", "request", "response"],
+  "additionalProperties": false,
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "group": { "type": "string", "enum": ["envelope", "auth", "booking", "previsit", "record", "admin"] },
+    "request": {
+      "type": "object",
+      "required": ["method", "path", "auth"],
+      "additionalProperties": false,
+      "properties": {
+        "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+        "path": { "type": "string", "minLength": 1 },
+        "auth": { "type": "string", "enum": ["none", "patient", "doctor", "admin"] }
+      }
+    },
+    "response": {
+      "type": "object",
+      "required": ["status", "content_type"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+        "content_type": { "type": "string", "minLength": 1 },
+        "body": {},
+        "body_text": { "type": "string" },
+        "allow": { "type": "string" }
+      }
+    },
+    "volatile": { "type": "array", "items": { "type": "string" } }
+  }
+}

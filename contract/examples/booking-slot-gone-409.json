@@ -1,0 +1,20 @@
+{
+  "name": "booking-slot-gone-409",
+  "group": "booking",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/appointments",
+    "auth": "patient"
+  },
+  "response": {
+    "status": 409,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "SLOT_GONE",
+        "message": "号源已被抢完，请选择其它排班"
+      }
+    }
+  }
+}

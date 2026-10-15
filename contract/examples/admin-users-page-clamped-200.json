@@ -1,0 +1,205 @@
+{
+  "name": "admin-users-page-clamped-200",
+  "group": "admin",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/admin/users?limit=9999&offset=-5&role=patient",
+    "auth": "admin"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": true,
+      "data": {
+        "items": [
+          {
+            "user_id": 0,
+            "login_name": "<phone>",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "测试患者",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "pat1",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "患者1",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "pat2",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "患者2",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "<phone>",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "p2",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "pwtest-user",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "pwtest-user",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "weakprobe1",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "weakprobe1",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "gooduser9",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "gooduser9",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "qb1abc",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "qb1abc",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "qc1abc",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "qc1abc",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "qc2abc",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "qc2abc",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "weaktest<N>",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "weaktest<N>",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "weaktest<N>",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "weaktest<N>",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "wl<N>",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "wl<N>",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "<phone>",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "<phone>",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "p4patient",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "P4患者",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "livepat",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "livepat",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "e2e_patient",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "端到端测试患者",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "p8verify",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "端到端验证患者",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "basepatient",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "Base患者",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "pvbridge-pat",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "改进1患者甲",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "contract-pat",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "<patient>",
+            "status": "active"
+          },
+          {
+            "user_id": 0,
+            "login_name": "contract-pat2",
+            "role": "patient",
+            "ref_id": 0,
+            "display_name": "<patient>",
+            "status": "active"
+          }
+        ],
+        "count": 22,
+        "total": 22,
+        "limit": 50,
+        "offset": 0
+      }
+    }
+  },
+  "volatile": [
+    "data.items",
+    "data.count",
+    "data.total"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "title": "框架层平铺错误 {code,message,data}",
+  "description": "请求体不是合法 JSON 时由框架的 bodyparser 直接写出：**不是**业务信封，没有 ok 字段。前端的第一层解析必须能同时吃下这种形状。",
+  "type": "object",
+  "required": ["code", "message", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "code": { "type": "integer", "minimum": 400, "maximum": 499 },
+    "message": { "type": "string", "minLength": 1 },
+    "data": { "type": "null" }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "title": "预问诊作答 data（未采集完，无 form）",
+  "description": "应用于 response.body.data。与「已完成」那一版的唯一结构差别就是**没有 form** —— 这也正是客户端要按 complete 分支处理的原因。",
+  "type": "object",
+  "required": ["session_id", "turn", "filled", "total_slots", "complete", "next_slot", "next_question"],
+  "additionalProperties": false,
+  "properties": {
+    "session_id": { "type": "string", "minLength": 1 },
+    "turn": { "type": "integer" },
+    "filled": { "type": "integer", "minimum": 0 },
+    "total_slots": { "type": "integer", "minimum": 1 },
+    "complete": { "type": "boolean" },
+    "next_slot": { "type": "string" },
+    "next_question": { "type": "string" }
+  }
+}

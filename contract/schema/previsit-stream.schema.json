@@ -1,0 +1,7 @@
+{
+  "title": "SSE 预问诊流（text/event-stream 的 body_text）",
+  "description": "校验 response.body_text（**不是** body，也不是 body.data）：SSE 是逐帧文本，不是 JSON 文档，所以契约只能钉「它确实是 SSE、且帧序列是 meta→delta…→done」这种粗粒度事实 —— 真正的帧语义断言在 server/tests/previsit-check.ps1 里（用事件解析器逐帧查）。⚠ body_text 里的 session_id 已归一化成 <session_id>，delta 文案是规则引擎的稳定输出；若哪天接了模型，这里会变，必须显式重新导出并说明原因。",
+  "type": "string",
+  "minLength": 1,
+  "pattern": "(?s)^data: \\{\"event\":\"meta\".*data: \\{\"event\":\"delta\".*data: \\{\"event\":\"done\""
+}

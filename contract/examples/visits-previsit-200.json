@@ -1,0 +1,63 @@
+{
+  "name": "visits-previsit-200",
+  "group": "record",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/doctor/visits/{id}/previsit",
+    "auth": "doctor"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": true,
+      "data": {
+        "session_id": "<session_id>",
+        "bound": true,
+        "turn": 6,
+        "completed": true,
+        "filled": 6,
+        "total": 6,
+        "captured_at": 0,
+        "sections": [
+          {
+            "key": "chief",
+            "label": "主诉",
+            "value": "上腹隐痛 3 天",
+            "max_len": 200
+          },
+          {
+            "key": "duration",
+            "label": "病程",
+            "value": "3 天",
+            "max_len": 60
+          },
+          {
+            "key": "severity",
+            "label": "程度",
+            "value": "影响睡眠",
+            "max_len": 60
+          },
+          {
+            "key": "associated",
+            "label": "伴随",
+            "value": "反酸",
+            "max_len": 200
+          },
+          {
+            "key": "history",
+            "label": "既往史",
+            "value": "高血压 5 年，服降压药",
+            "max_len": 300
+          },
+          {
+            "key": "allergy",
+            "label": "过敏史",
+            "value": "青霉素过敏",
+            "max_len": 200
+          }
+        ]
+      }
+    }
+  }
+}

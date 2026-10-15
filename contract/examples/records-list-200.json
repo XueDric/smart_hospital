@@ -1,0 +1,42 @@
+{
+  "name": "records-list-200",
+  "group": "record",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/medical-records",
+    "auth": "patient"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": true,
+      "data": {
+        "items": [
+          {
+            "id": 0,
+            "appointment_id": 0,
+            "patient_id": 0,
+            "doctor_id": 0,
+            "status": "locked",
+            "locked": true,
+            "filled": 7,
+            "total_sections": 7,
+            "complete": true,
+            "updated_by": 0,
+            "created_at": 0,
+            "updated_at": 0,
+            "missing_required": [],
+            "department_id": 0,
+            "visit_date": "<date>",
+            "period": "AM",
+            "department_name": "<dept>",
+            "doctor_name": "<doctor>",
+            "doctor_title": "主任医师"
+          }
+        ],
+        "count": 1
+      }
+    }
+  }
+}

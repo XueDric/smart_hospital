@@ -1,0 +1,30 @@
+{
+  "title": "医生看预问诊单 data（改进 1）",
+  "description": "应用于 response.body.data。`bound` 是**核心信息**：true=这张单绑定了当前挂号单（就是这次就诊的自述），false=当前单没绑定，服务端回退给了这位患者**最近一次已完成**的会话。`sections` 只列**已作答**的槽位，label 由服务端给（前端别自己写中文名）。⚠ **不含 patient_id** —— 医生的队列本来就有患者身份，端点再吐一遍只会扩大泄露面；归属靠服务端从挂号单取。",
+  "type": "object",
+  "required": ["session_id", "bound", "turn", "completed", "filled", "total", "captured_at", "sections"],
+  "additionalProperties": false,
+  "properties": {
+    "session_id": { "type": "string", "minLength": 1 },
+    "bound": { "type": "boolean" },
+    "turn": { "type": "integer" },
+    "completed": { "type": "boolean" },
+    "filled": { "type": "integer", "minimum": 0 },
+    "total": { "type": "integer", "minimum": 1 },
+    "captured_at": { "type": "integer" },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["key", "label", "value", "max_len"],
+        "additionalProperties": false,
+        "properties": {
+          "key": { "type": "string", "minLength": 1 },
+          "label": { "type": "string", "minLength": 1 },
+          "value": { "type": "string" },
+          "max_len": { "type": "integer", "minimum": 1 }
+        }
+      }
+    }
+  }
+}

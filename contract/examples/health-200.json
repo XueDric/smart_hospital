@@ -1,0 +1,22 @@
+{
+  "name": "health-200",
+  "group": "envelope",
+  "request": {
+    "method": "GET",
+    "path": "/health",
+    "auth": "none"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": true,
+      "service": "hospital-server",
+      "version": "0.2.0-p1",
+      "data_backend": "mysql",
+      "dev_auth": true,
+      "today": "<date>",
+      "timezone": "Asia/Shanghai"
+    }
+  }
+}

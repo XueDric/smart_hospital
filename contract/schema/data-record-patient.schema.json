@@ -1,0 +1,53 @@
+{
+  "title": "病历 data（患者可见：锁定后多带就诊信息）",
+  "description": "应用于 response.body.data。患者看到的是**锁定后**的病历，比医生视角多科室/就诊日期/医生姓名（列表页要显示的就诊信息）。⚠ sections 与 previsit_ref **照给** —— 患者侧的门槛是「锁定后才可见」，不是「按字段裁剪」；而 `records-list-200` 的 item 才是**不带 sections** 的精简形状。两处字段集合不同是有意的，别在客户端把它们当同一个模型。",
+  "type": "object",
+  "required": ["id", "appointment_id", "patient_id", "doctor_id", "status", "locked", "filled", "total_sections", "complete", "updated_by", "created_at", "updated_at", "missing_required", "sections", "previsit_ref", "department_id", "visit_date", "period", "department_name", "doctor_name", "doctor_title"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "integer" },
+    "appointment_id": { "type": "integer" },
+    "patient_id": { "type": "integer" },
+    "doctor_id": { "type": "integer" },
+    "status": { "type": "string", "enum": ["draft", "locked"] },
+    "locked": { "type": "boolean" },
+    "filled": { "type": "integer", "minimum": 0 },
+    "total_sections": { "type": "integer", "minimum": 1 },
+    "complete": { "type": "boolean" },
+    "updated_by": { "type": "integer" },
+    "created_at": { "type": "integer" },
+    "updated_at": { "type": "integer" },
+    "missing_required": { "type": "array", "items": { "type": "string" } },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["key", "label", "value", "max_len", "required_to_lock"],
+        "additionalProperties": false,
+        "properties": {
+          "key": { "type": "string", "minLength": 1 },
+          "label": { "type": "string", "minLength": 1 },
+          "value": { "type": "string" },
+          "max_len": { "type": "integer", "minimum": 1 },
+          "required_to_lock": { "type": "boolean" }
+        }
+      }
+    },
+    "previsit_ref": {
+      "type": "object",
+      "required": ["session_id", "sections", "at"],
+      "additionalProperties": false,
+      "properties": {
+        "session_id": { "type": "string", "minLength": 1 },
+        "sections": { "type": "array", "items": { "type": "string" } },
+        "at": { "type": "integer" }
+      }
+    },
+    "department_id": { "type": "integer" },
+    "visit_date": { "type": "string", "minLength": 6, "description": "日期；样例里归一化成占位符 <date>（6 字符），真实值是 YYYY-MM-DD" },
+    "period": { "type": "string", "enum": ["AM", "PM"] },
+    "department_name": { "type": "string" },
+    "doctor_name": { "type": "string" },
+    "doctor_title": { "type": "string" }
+  }
+}

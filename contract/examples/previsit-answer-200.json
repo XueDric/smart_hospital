@@ -1,0 +1,25 @@
+{
+  "name": "previsit-answer-200",
+  "group": "previsit",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/previsit/answer",
+    "auth": "patient"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": true,
+      "data": {
+        "session_id": "<session_id>",
+        "turn": 1,
+        "filled": 1,
+        "total_slots": 6,
+        "complete": false,
+        "next_slot": "duration",
+        "next_question": "这个情况持续多久了？"
+      }
+    }
+  }
+}

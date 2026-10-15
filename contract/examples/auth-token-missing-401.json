@@ -1,0 +1,20 @@
+{
+  "name": "auth-token-missing-401",
+  "group": "auth",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/appointments",
+    "auth": "none"
+  },
+  "response": {
+    "status": 401,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "AUTH_REQUIRED",
+        "message": "缺少 Authorization: Bearer <token>"
+      }
+    }
+  }
+}

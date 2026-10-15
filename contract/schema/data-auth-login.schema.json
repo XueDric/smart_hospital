@@ -1,0 +1,16 @@
+{
+  "title": "登录成功 data（令牌与角色）",
+  "description": "应用于 response.body.data。字段：token（易变，样例里是 <token>）、expires_at（epoch 秒）、role/ref_id/display_name、patient_id（仅患者角色有；样例是患者登录，故列为必需）。医生/管理员登录样例待有真实请求时再补，别凭想象写。",
+  "type": "object",
+  "required": ["token", "expires_at", "user_id", "role", "ref_id", "display_name", "patient_id"],
+  "additionalProperties": false,
+  "properties": {
+    "token": { "type": "string", "minLength": 1 },
+    "expires_at": { "type": "integer" },
+    "user_id": { "type": "integer" },
+    "role": { "type": "string", "enum": ["patient", "doctor", "admin"] },
+    "ref_id": { "type": "integer" },
+    "display_name": { "type": "string" },
+    "patient_id": { "type": "integer" }
+  }
+}

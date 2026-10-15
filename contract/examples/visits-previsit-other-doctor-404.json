@@ -1,0 +1,20 @@
+{
+  "name": "visits-previsit-other-doctor-404",
+  "group": "record",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/doctor/visits/{id}/previsit",
+    "auth": "doctor"
+  },
+  "response": {
+    "status": 404,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "APPOINTMENT_NOT_FOUND",
+        "message": "挂号单不存在或不属于你"
+      }
+    }
+  }
+}

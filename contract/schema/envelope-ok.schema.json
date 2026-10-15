@@ -1,0 +1,11 @@
+{
+  "title": "成功信封 {ok:true,data:{…}}",
+  "description": "本项目所有业务成功响应（/health 除外）都是这个信封：ok=true + data 对象。",
+  "type": "object",
+  "required": ["ok", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "ok": { "const": true },
+    "data": { "type": "object" }
+  }
+}

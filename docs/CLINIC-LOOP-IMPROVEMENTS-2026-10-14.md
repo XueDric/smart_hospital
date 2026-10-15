@@ -30,7 +30,7 @@
 | **预问诊 → 病历的预填桥**（⭐ 容易被当成"不存在"） | `PUT /doctor/visits/:id/record` 支持可选 `use_intake_session`；服务端按 **`WHERE id=? AND patient_id=?`** 校验"是你这个患者的单"，再把六槽位映射到病历四段（主诉；现病史＝病程+程度+伴随；既往史；过敏史），**仅在"该单还没有病历"时**写一次，已有病历一律不覆盖 | `server/src/http_p4.cj:355-372`（路由）、`server/src/domain_emr.cj:655-708`（`intakePrefill`）、`domain_emr.cj:710-722`（`saveDraftWithIntake`）、用例 `server/tests/emr-check.ps1:280-291` |
 | 请求编号 | 框架 `requestId` 中间件**已装**，响应头回传 `X-Request-Id`，也接受客户端传入 | `server/third_party/qingzhou/src/requestid.cj:39-53`、`server/src/http_app.cj:2447` |
 | 时间口径 | 服务端业务时间戳 = **epoch 秒**；`elapsed_ms` 是**毫秒** | `server/src/acceptance.cj:37-39`（`hNowEpoch`）、`server/src/ai_call.cj:158` |
-| 服务端门禁 | 进程内 4 套件（`selftest` / `authtest` / `triagetest` / `accept`）+ 11 项 live 检查脚本汇总入口 | `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1` |
+| 服务端门禁 | 进程内 4 套件（`selftest` / `authtest` / `triagetest` / `accept`）+ **13 项** live 检查脚本汇总入口（含 `contract-check`） | `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1` |
 
 ### 1.2 真正的缺口（7 条各自指向的地方）
 
@@ -313,6 +313,24 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 
 **做法一句话**：**样例由服务端真实响应导出**（不是手抄），鸿蒙与安卓**吃同一批样例**跑解析测试；契约一变，三端同时红。
 
+#### ✅ 实施状态：**服务端已实现（2026-10-15）**，与本文计划的差异如下
+
+| # | 计划 | 实际落地 | 为什么 |
+| --- | --- | --- | --- |
+| 1 | `contract/schema/*.json` 一层 Schema 管到底 | **19 个 Schema 分两层**：8 个 **body 级**（含 `artifact` —— 钉住样例文件**自身**的结构）+ 11 个 **data 级**（`data-*.schema.json`，只校 `response.body.data`），映射表 `contract/schema-map.json` | `data` 才是客户端真正吃的东西；分层后新增端点常能复用 body 级 Schema，只补一个 data 级 |
+| 2 | 门禁"要求显式 `-Fix` 更新契约" | 更新契约 = **不带 `-Check`** 跑导出机（写盘）；门禁只有"比对"、**没有** `-Fix` | 一个开关同时表示"检查"和"顺手改掉"极易误提交；写盘必须显式、单独一步 |
+| 3 | "三种失败形状"（§3.2） | 实测 **5 种**：业务信封 / 非法 JSON 平铺 **400** / 静态平铺 **404** / **405 + `Allow` 头** / `/health`（第四种**成功**形状）；且 **API 未匹配路由现在是信封 404 `ROUTE_NOT_FOUND`**，**不再**是平铺 | 实测（`PUT /health`、故意打错路径）暴露旧文档漏了 405、且 404 形状**已过期** —— 契约机制第一次运行就纠正了文档（详见 `contract/README.md` §8） |
+| 4 | 分页与上限"有样例" | `admin-users-page-clamped-200` 的 `data.items/count/total` 声明为 **volatile**（值写 `"<volatile>"`），只钉形状与夹取后的 `limit/offset` | 这三项内容依赖整库状态，钉死会让 golden 每次都变 —— 用**显式登记的逃生口**，而不是掩盖不稳定（`contract/README.md` §3） |
+| 5 | 并入 `final-verify.ps1`（11 → 12+ 项） | 实际 **12 → 13 项**，且 `contract-check` **必须排在 `p1-extra-check` 之前** | `p1-extra-check` 会重设管理员口令，而导出机要用 final-verify 现场生成的那个口令登录 |
+| 6 | —— | 额外加**登记完整性双向校验**：有样例没登记 ⇒ 失败；登记了不存在的 Schema ⇒ 失败 | 否则新端点可以只加样例、不登记 Schema，悄悄绕过契约 |
+| 7 | —— | Schema 校验器自研（`server/tests/json-schema-lite.ps1`），**遇到不认识的关键字直接 throw** | PS 5.1 没有 `Test-Json`；且写错的 Schema 必须报错，不能静默"通过" |
+
+**验收（反证）已做**（这是本文 §验收 要求的"必须做"那条，只是用服务端门禁先做了一遍）：
+故意改样例里的一句错误文案 ⇒ 门禁红（`[DIFF] error-route-not-found-404.json 行 16`，exit 1）；
+删掉 `health-200` 的必填 `timezone` ⇒ Schema 红（`缺必填字段 'timezone'`，exit 1）；还原 ⇒ **38 条全绿**。
+
+**鸿蒙端/安卓端任务不变**（见下）。服务端侧**已完成**：客户端接入时 `contract/examples/` 是可直接吃的样例源。
+
 #### 后端任务
 
 1. **目录约定**（仓库根，跨端共享）：
@@ -483,8 +501,8 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 | --- | --- | --- |
 | 服务端任何改动 | `server/build.ps1`（框架 38 + 业务 37 = 75 文件） | 编译不过就别谈测试 |
 | 服务端业务逻辑 | 进程内四套件：`selftest` / `authtest` / `triagetest`（110 项）/ `accept <dsn>`（575 项） | `accept` 需要 DSN；`server/tests/doc-counts.ps1` 会顺带重跑并核对文档数字 |
-| HTTP 契约层 | `server/tests/final-verify.ps1`（现 12 项，全绿 exit 0；含本项新增的 `previsit-bridge-check`） | ⚠ 本机端口必须 ≥15001；脚本前先 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`；含中文的 .ps1 必须带 **UTF-8 BOM** |
-| 契约变更 | 新增 `contract-check.ps1`（改进 5） | 未更新样例 ⇒ 红 |
+| HTTP 契约层 | `server/tests/final-verify.ps1`（现 **13 项**，全绿 exit 0；含 `previsit-bridge-check` 与 `contract-check`） | ⚠ 本机端口必须 ≥15001；脚本前先 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`；含中文的 .ps1 必须带 **UTF-8 BOM** |
+| 契约变更 | `server/tests/contract-check.ps1`（改进 5，已并入 final-verify 第 13 项）：改动**响应形状** ⇒ 逐字节比对红 / Schema 红 / 登记缺失红 | 更新样例 = 不带 `-Check` 跑 `export-contract.ps1`（写盘），再 review diff + 登记 `schema-map.json` + 写 `contract/CHANGELOG.md` |
 | 管理台（浏览器） | `server/tests/admin-web-smoke.mjs`（`SMOKE-EXIT=0`，写路径 + 模态框 + 逐页断言） | 需要 Edge；断言失败会写进退出码 |
 | 文档数字 | `server/tests/doc-counts.ps1` | 加表/加端点/加 AC 后**必然**失败，这是设计意图：改代码的人必须同步文档 |
 | 鸿蒙客户端 | 新增契约解析测试（改进 5） | 现在**没有**任何客户端测试 ⇒ 这条要先建 |

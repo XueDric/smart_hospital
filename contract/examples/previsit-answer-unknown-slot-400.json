@@ -1,0 +1,20 @@
+{
+  "name": "previsit-answer-unknown-slot-400",
+  "group": "previsit",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/previsit/answer",
+    "auth": "patient"
+  },
+  "response": {
+    "status": 400,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "未知的问诊项：no_such_slot"
+      }
+    }
+  }
+}

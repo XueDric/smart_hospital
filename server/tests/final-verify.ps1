@@ -1,4 +1,4 @@
-﻿# 收官全量验证（2026-10-14，SERVER-REVIEW 修复后）
+# 收官全量验证（2026-10-14，SERVER-REVIEW 修复后）
 #
 # 目的：一次跑完**所有** HTTP 层门禁脚本 + 三种部署形态的 health-check，
 #       并给出统一的 EXIT 汇总表（供修复文档引用）。
@@ -70,6 +70,9 @@ try {
         @{ n = 'emr-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'previsit-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'previsit-bridge-check'; p = @{ Base = $dev; AdminPw = $pw } },
+        # ⚠ contract-check 必须排在 p1-extra-check **之前**：后者会重设管理员口令，
+        #   而契约导出机要用 final-verify 现场生成的那个口令登录。
+        @{ n = 'contract-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'ai-model-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'rate-limit-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'p1-extra-check'; p = @{ Base = $dev; AdminPw = $pw } }

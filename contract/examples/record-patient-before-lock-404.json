@@ -1,0 +1,20 @@
+{
+  "name": "record-patient-before-lock-404",
+  "group": "record",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/medical-records/{id}",
+    "auth": "patient"
+  },
+  "response": {
+    "status": 404,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "EMR_NOT_FOUND",
+        "message": "病历不存在或尚未提交"
+      }
+    }
+  }
+}

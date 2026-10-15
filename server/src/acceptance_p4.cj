@@ -500,8 +500,7 @@ public func acP4_5(runner: TestRunner, db: DbBackend): Unit {
         runner.check("④ 过敏史预填进 allergy_history", rec.allergyHistory == "答-allergy")
         runner.check("④ 既往史预填进 past_history", rec.pastHistory == "答-history")
         runner.check("★ ④ 病程/程度/伴随三问拼进 present_illness（不各占一段）",
-                     rec.presentIllness.contains("病程") && rec.presentIllness.contains("程度")
-                     && rec.presentIllness.contains("伴随"))
+                     (rec.presentIllness.contains("病程") && rec.presentIllness.contains("程度") && rec.presentIllness.contains("伴随")))
         runner.check("★★ ④ 来源痕迹记下本次会话 id", rec.previsitRef.contains(sid))
         let sections = emrPrevisitRefSections(rec.previsitRef)
         runner.check("★ ④ 来源痕迹列出被患者自述写入的段（实得 ${sections.size} 段：${joinStrings(sections, ",")}）",

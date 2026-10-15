@@ -1,0 +1,20 @@
+{
+  "name": "booking-by-token-unknown-404",
+  "group": "booking",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/appointments/by-token/no-such-token",
+    "auth": "patient"
+  },
+  "response": {
+    "status": 404,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "APPOINTMENT_NOT_FOUND",
+        "message": "该幂等键没有对应的有效挂号单（那次提交未成功，或已被退号释放）"
+      }
+    }
+  }
+}

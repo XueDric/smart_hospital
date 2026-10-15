@@ -1,0 +1,35 @@
+{
+  "name": "booking-create-201",
+  "group": "booking",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/appointments",
+    "auth": "patient"
+  },
+  "response": {
+    "status": 201,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": true,
+      "data": {
+        "appointment_id": 0,
+        "schedule_id": 0,
+        "patient_id": 0,
+        "doctor_id": 0,
+        "department_id": 0,
+        "visit_date": "<date>",
+        "period": "AM",
+        "seq_no": 0,
+        "status": "booked",
+        "slot_restored": true,
+        "department_name": "<dept>",
+        "doctor_name": "<doctor>",
+        "doctor_title": "主任医师",
+        "remain_num": 19,
+        "previsit_bound": false,
+        "request_id": "<request_id>",
+        "server_time": 0
+      }
+    }
+  }
+}

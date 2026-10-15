@@ -1,0 +1,20 @@
+{
+  "name": "record-put-locked-409",
+  "group": "record",
+  "request": {
+    "method": "PUT",
+    "path": "/api/v1/doctor/visits/{id}/record",
+    "auth": "doctor"
+  },
+  "response": {
+    "status": 409,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "EMR_LOCKED",
+        "message": "保存草稿：病历已提交锁定，不可再改（需管理员解锁）"
+      }
+    }
+  }
+}

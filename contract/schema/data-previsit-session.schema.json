@@ -1,0 +1,29 @@
+{
+  "title": "预问诊会话 data（含 form）",
+  "description": "应用于 response.body.data。采集完成时才有 form，且 form 恰好是六个槽位（多一个键都算契约变化）。next_slot/next_question 在完成时是空串 —— 客户端用 filled/total_slots 与 next_slot 判「还能不能继续问」，不要自己数 form 的键。",
+  "type": "object",
+  "required": ["session_id", "turn", "filled", "total_slots", "complete", "next_slot", "next_question", "form"],
+  "additionalProperties": false,
+  "properties": {
+    "session_id": { "type": "string", "minLength": 1 },
+    "turn": { "type": "integer" },
+    "filled": { "type": "integer", "minimum": 0 },
+    "total_slots": { "type": "integer", "minimum": 1 },
+    "complete": { "type": "boolean" },
+    "next_slot": { "type": "string" },
+    "next_question": { "type": "string" },
+    "form": {
+      "type": "object",
+      "required": ["chief", "duration", "severity", "associated", "history", "allergy"],
+      "additionalProperties": false,
+      "properties": {
+        "chief": { "type": "string" },
+        "duration": { "type": "string" },
+        "severity": { "type": "string" },
+        "associated": { "type": "string" },
+        "history": { "type": "string" },
+        "allergy": { "type": "string" }
+      }
+    }
+  }
+}
