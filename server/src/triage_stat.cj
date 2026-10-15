@@ -59,6 +59,26 @@ public let TRIAGE_STAT_SAMPLE_MAX: Int64 = 20000
 public let TRIAGE_STAT_GROUP_DEFAULT: Int64 = 20
 public let TRIAGE_STAT_GROUP_MAX: Int64 = 100
 
+/*
+ * `request_id` 的长度上限（= 列宽 VARCHAR(64)）。
+ *
+ * ★ 2026-10-16（复核 D2）：这个常量存在的唯一目的，是让**写侧与读侧用同一个数**。
+ *   写侧截断、读侧不截断，就会出现"请求号超过 64 字符 ⇒ 按请求号反查 count = 0，
+ *   而那一行其实在库里"—— 排障闭环刚好在最需要它的时候断
+ *   （`X-Request-Id` 是客户端可控的，超长请求头迟早会遇到）。
+ *   ⇒ 截断只写在**仓储内部**（`record()` 与 `callsByRequest()` 各一次），调用点不必记得。
+ */
+public let TRIAGE_REQUEST_ID_MAX: Int64 = 64
+
+/*
+ * 排障统计窗口的**最大跨度**（秒）= 366 天。
+ *
+ * ★ 2026-10-16（复核提示项）：`to` 允许填未来（无害），但跨度不设上限时
+ *   "一次请求扫全表"只是少打几个字的事（采样上限限制了返回行数，
+ *   限制不了扫描本身）。366 天是"再宽就该做预聚合表"的界，不是技术极限。
+ */
+public let TRIAGE_STAT_WINDOW_MAX_SECS: Int64 = 366 * 86400
+
 public class TriageStatRepo {
     private let db: DbBackend
 
@@ -105,13 +125,19 @@ public class TriageStatRepo {
                      DbInt(if (truncated) { 1 } else { 0 }),
                      /*
                       * ⚠ `request_id` 是**唯一由客户端决定长度**的入参（`X-Request-Id` 请求头），
-                      *   列宽只有 64：不截断的话，一个超长请求头就能让这行的 INSERT 报 1406、
-                      *   被下面的 catch 吞掉 —— 而"整条不记"恰好是想隐藏自己痕迹的人要的结果。
+                      *   列宽只有 64（`TRIAGE_REQUEST_ID_MAX`）：不截断的话，一个超长请求头
+                      *   就能让这行的 INSERT 报 1406、被下面的 catch 吞掉 ——
+                      *   而"整条不记"恰好是想隐藏自己痕迹的人要的结果。
                       *   截断后最坏情况是"按请求号反查时对不上号"，但**记录还在**。
                       *   其余各列都由服务端常量或库内数据决定（source/reason_code 是常量、
                       *   department 来自 departments.name 本身 ≤64），不需要再截。
-                      */
-                     DbStr(previsitTruncateChars(requestId, 64)), DbInt(modelId),
+                      *
+                      * ⚠⚠ **写侧截断了，读侧就必须用同一个常量截断**（2026-10-16 复核 D2）：
+                      *   否则 `X-Request-Id` 超过 64 字符时，读侧拿完整值去等值匹配
+                      *   必然 `count = 0`，而那一行其实在库里 —— 排障闭环刚好在最需要它的时候断。
+                      *   `callsByRequest()` 内部已经按同一常量截断，调用点不必自己记得。
+                     */
+                     DbStr(previsitTruncateChars(requestId, TRIAGE_REQUEST_ID_MAX)), DbInt(modelId),
                      /*
                       * ⚠ 列宽是 VARCHAR(64)：模型名/降级原因都可能更长
                       *   （中文降级原因动辄 30+ 字）。**在这里按字符截断**，
@@ -232,12 +258,20 @@ public func count(): Int64 {
      */
     public func callsByRequest(requestId: String, limit: Int64): Array<TriageCallRow> {
         let out = ArrayList<TriageCallRow>()
+        /*
+         * ★ 2026-10-16（复核 D2）：**读侧用与写侧同一个常量截断**。
+         *   `record()` 写库前会把 `X-Request-Id` 截到 `TRIAGE_REQUEST_ID_MAX`，
+         *   读侧若拿完整值去等值匹配，超过 64 字符的请求号永远查不到 ——
+         *   而那一行明明在库里，排障的人只会看到"没有记录"。
+         *   放在仓储内部做，调用点（`http_app.cj` 的 triage-calls 路由）不必记得。
+         */
+        let key = previsitTruncateChars(requestId, TRIAGE_REQUEST_ID_MAX)
         let rs = db.query(
             "SELECT id, created_at, source, reason_code, red_flag, department, truncated, " +
             "request_id, model_id, model_name, prompt_revision, elapsed_ms, degrade_reason, " +
             "used_kb, kb_doc_ids FROM triage_stat WHERE request_id = ? " +
             "ORDER BY id DESC LIMIT ?",
-            [DbStr(requestId), DbInt(limit)])
+            [DbStr(key), DbInt(limit)])
         var i: Int64 = 0
         while (i < rs.rowCount()) {
             out.add(triageCallRowOf(rs, i))
@@ -274,13 +308,37 @@ public class TriageStatWindow {
     public var truncated: Bool = false
 }
 
-/* 一组聚合（`bucket` 是分组键的取值；看板按它排序展示）。 */
+/*
+ * 一组聚合（`bucket` 是分组键的取值；看板按它排序展示）。
+ *
+ * ★ 2026-10-16（复核提示项）：`degraded` 与 `redFlag` **分开计**。
+ *   前者是"想调模型但没成功"（失败），后者是"规则层的**故意**短路"
+ *   （命中危急征象就不该调模型）。混在一起会让看板上的"AI 降级率"虚高 ——
+ *   把临床上有意跳过模型的安全旁路算成 AI 故障，指标就指向错误的方向。
+ */
 public class TriageStatGroup {
     public var bucket: String = ""
     public var total: Int64 = 0
     public var degraded: Int64 = 0
+    public var redFlag: Int64 = 0
     public var p50Ms: Int64 = 0
     public var p95Ms: Int64 = 0
+}
+
+/*
+ * 降级原因 → 是否算一次 **AI 失败**。
+ *
+ * ⚠ 唯一判据，`triageStatAggregate()`、行级 JSON、看板口径全部走这里 ——
+ *   不要在别处再写一遍（"同一个统计量两份实现"是本仓反复踩过的病）。
+ *   空串 = 真的用上了模型（成功）；`RED_FLAG` = 规则层有意短路（不是失败）。
+ */
+public func triageDegradeIsFailure(reason: String): Bool {
+    return reason.size > 0 && reason != TR_RED_FLAG
+}
+
+/* 是否属于"命中危急征象、故意不调模型"的安全旁路。 */
+public func triageDegradeIsRedFlagBypass(reason: String): Bool {
+    return reason == TR_RED_FLAG
 }
 
 /* 一行结果集 → `TriageCallRow`（列顺序与上面两句 SELECT 严格一致）。 */
@@ -307,10 +365,19 @@ private func triageCallRowOf(rs: DbResultSet, i: Int64): TriageCallRow {
 /*
  * `group_by` 的白名单。
  *
- * ⚠⚠ 这是**安全边界**而不是"参数校验的礼貌"：分组列名要拼进 SQL
- *   （`GROUP BY` 的位置**不能**用占位符），所以只允许这三个**代码里写死**的名字。
- *   非法值一律由调用方回 400 —— 绝不能"回退到默认值继续查"：
- *   那会让 `?group_by=;DROP TABLE` 变成"一次看起来成功的默认查询"。
+ * ⚠⚠ 这是**安全边界**，不是"参数校验的礼貌"。
+ *
+ * ★ 2026-10-16（复核纠错）：这里原先写着"分组列名要拼进 SQL（`GROUP BY` 不能用占位符）"
+ *   —— **那是错的**，与实际实现不符：分组其实是在**内存里**做的
+ *   （`triageStatBucketOf()` 取每行的键、`triageStatAggregate()` 用 `HashMap` 分桶，
+ *   没有任何 `GROUP BY` 被拼进 SQL）。所以非法值在这里**不会**造成注入。
+ *
+ *   那白名单为什么还留着？两条：
+ *   ① 非法值直接 400 而不是"回退默认值继续查" —— 后者会让拼错的看板请求
+ *      看起来"成功"，数字却是别的维度的（静默错误比报错更难发现）；
+ *   ② 万一将来有人把分桶下推到 SQL（`GROUP BY <列名>` 确实不能用占位符），
+ *      这道闸门就是唯一挡在中间的墙 —— **注释不能替代码许下一个它没兑现的安全承诺**，
+ *      否则下一个人会照着注释改代码，那时注入面才真的出现。
  */
 public func triageStatGroupByOk(name: String): Bool {
     return name == "source" || name == "reason_code" || name == "model_name"
@@ -384,13 +451,17 @@ public func triageStatAggregate(rows: Array<TriageCallRow>, groupBy: String,
     for (r in rows) {
         allMs.add(r.elapsedMs)
         /*
-         * ⚠ "降级"的判据**只有一条**：`degrade_reason` 非空。
+         * ⚠ "降级"的判据**只有一条**，且走 `triageDegradeIsFailure()`：
          *   不要写成 `source != "model"` —— 那样同一个统计量就有了两份实现
-         *   （单次排障里的 `degraded` 布尔按 degrade_reason 算），
+         *   （单次排障里的 `degraded` 布尔按降级原因算），
          *   将来 source 多一个取值时，看板上的行之和会与分组的小计对不上。
+         * ★ 2026-10-16：红线安全旁路（`RED_FLAG`）**不计入** degraded，另计 `redFlag`。
          */
-        if (r.degradeReason.size > 0) {
+        if (triageDegradeIsFailure(r.degradeReason)) {
             all.degraded = all.degraded + 1
+        }
+        if (triageDegradeIsRedFlagBypass(r.degradeReason)) {
+            all.redFlag = all.redFlag + 1
         }
         let key = triageStatBucketOf(r, groupBy)
         if (buckets.contains(key)) {
@@ -420,9 +491,12 @@ public func triageStatAggregate(rows: Array<TriageCallRow>, groupBy: String,
         let ms = ArrayList<Int64>()
         for (r in list) {
             ms.add(r.elapsedMs)
-            /* 与总体行同一判据（见上面 `all.degraded` 处的注释）：只认 degrade_reason。 */
-            if (r.degradeReason.size > 0) {
+            /* 与总体行同一判据（见上面 `all.degraded` 处的注释）。 */
+            if (triageDegradeIsFailure(r.degradeReason)) {
                 g.degraded = g.degraded + 1
+            }
+            if (triageDegradeIsRedFlagBypass(r.degradeReason)) {
+                g.redFlag = g.redFlag + 1
             }
         }
         let msArr = ms.toArray()
@@ -475,18 +549,32 @@ public func triageStatAggregate(rows: Array<TriageCallRow>, groupBy: String,
  *        （正文片段才是"知识库泄给非管理员"的真实风险面）。
  */
 
-/* 一个分组（或总体）→ JSON。`degrade_rate` 四舍五入到 4 位小数。 */
+/*
+ * 一个分组（或总体）→ JSON。`degrade_rate` 四舍五入到 4 位小数。
+ *
+ * ★ 2026-10-16（复核提示项）：`degraded` 只数 **AI 失败**（想调模型没成功），
+ *   红线安全旁路另计 `red_flag` / `red_flag_rate` —— 三者关系是
+ *   `total = 用上模型 + degraded + red_flag`（没有降级原因的其它 source 取值
+ *   理论上不存在，但即使出现也只是落进"用上模型"那一列，不会算成失败）。
+ */
 public func triageStatGroupJson(g: TriageStatGroup): JsonObject {
     let o = JsonObject()
     o.put("bucket", JsonString(g.bucket))
     o.put("total", JsonInt(g.total))
     o.put("degraded", JsonInt(g.degraded))
+    o.put("red_flag", JsonInt(g.redFlag))
     let rate = if (g.total > 0) {
         Float64(g.degraded) / Float64(g.total)
     } else {
         0.0
     }
     o.put("degrade_rate", JsonFloat(Float64(Int64(rate * 10000.0 + 0.5)) / 10000.0))
+    let rfRate = if (g.total > 0) {
+        Float64(g.redFlag) / Float64(g.total)
+    } else {
+        0.0
+    }
+    o.put("red_flag_rate", JsonFloat(Float64(Int64(rfRate * 10000.0 + 0.5)) / 10000.0))
     o.put("p50_ms", JsonInt(g.p50Ms))
     o.put("p95_ms", JsonInt(g.p95Ms))
     return o
@@ -535,9 +623,12 @@ public func triageCallJson(r: TriageCallRow): JsonObject {
     o.put("prompt_revision", JsonInt(r.promptRevision))
     o.put("elapsed_ms", JsonInt(r.elapsedMs))
     o.put("degrade_reason", JsonString(r.degradeReason))
-    /* `degraded` 是 `degrade_reason` 非空的**冗余布尔**：看板上按它过滤，
-       免得前端去记"空串 = 真用上了模型"这条口径。 */
-    o.put("degraded", JsonBool(r.degradeReason.size > 0))
+    /* `degraded` 是"这一步**失败了**"的冗余布尔（走同一判据，见 triageDegradeIsFailure）：
+       看板按它过滤，免得前端去记"空串 = 真用上了模型"这条口径。
+       ★ 2026-10-16：`RED_FLAG`（命中危急征象、故意不调模型）**不再算降级**，
+       它有自己的布尔 `red_flag_bypass` —— 否则"AI 失败率"会把安全旁路算进去。 */
+    o.put("degraded", JsonBool(triageDegradeIsFailure(r.degradeReason)))
+    o.put("red_flag_bypass", JsonBool(triageDegradeIsRedFlagBypass(r.degradeReason)))
     o.put("used_kb", JsonBool(r.usedKb))
     o.put("kb_doc_ids", JsonString(r.kbDocIds))
     return o

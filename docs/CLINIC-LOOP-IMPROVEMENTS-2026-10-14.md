@@ -1,4 +1,4 @@
-﻿# 门诊闭环与工程质量改进方案（2026-10-14）
+# 门诊闭环与工程质量改进方案（2026-10-14）
 
 > **来源**：第三方复查给出的 7 条改进方向（高 5 / 中 2）。
 > **本文做什么**：把每条方向拆成**后端要改什么**、**前端要改什么**（鸿蒙患者端 / 鸿蒙医生端 / 管理台 / 安卓患者端），
@@ -461,14 +461,14 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 | 1 | `arrived → cancelled` 放行（流转表第 2 行） | **不允许**：`cancelled` 只能从 `booked` 来 | 写入侧 `domain_booking.cj` 的退号 `UPDATE … WHERE status = 'booked'` 是硬编码的（`http_app.cj` 的 `POST /appointments/:id/cancel` 是唯一退号端点）。矩阵放行而写入拒绝 = 两个真相，正是本仓反复踩的病；且到院后号源已消耗，退号本就该走人工/管理员 |
 | 2 | 流转矩阵写成显式表 + 逐格单测 | `visitTransitionAllowed(from, to)` 用四条 `if` 把 `booked`/`arrived`/`waiting`/`visiting` 的出边**逐个列全**（`done`/`cancelled`/`no_show`/未知一律 false）；矩阵逐格断言落在 **AC-P4-2 ⑨（13 条）**，非法流转另由 **AC-P4-8 ⑤（7 条）** 覆盖 | 同计划；`from` 是运行期字符串，用 `if` 链比建 28 格的表更直白，逐格断言才是防漏的那一半 |
 | 3 | 三个时间戳列 `BIGINT DEFAULT 0` | `arrived_at`/`started_at`/`finished_at` 落在 `appointment` 表，迁移是 `migrateSchema` 的 **⑬**（`addVisitTimelineColumns`，沿用 ⑪ 的逐列 `information_schema` 判断写法） | 与既有迁移风格一致（`CREATE TABLE IF NOT EXISTS` 改不动老库） |
-| 4 | 队列排序 `arrived/waiting` 优先 + `seq_no` 升序 | 排序在 **SQL 里**做（`ORDER BY (CASE status …) , seq_no ASC`），CASE 的分支数字与 `domain_emr.cj` 的 `visitQueueRank` **必须一致**；AC-P4-8 ① 用 `visitQueueRank` 预测顺序、再与 SQL 实际返回逐项比对（两处表述分歧会立刻红）；队列 item 另带 `status_label` 与三个时间戳 | 让"待处理优先"与"同一状态内按序号"只在一个地方定义；客户端重排会把待处理项排到后面 |
+| 4 | 队列排序 `arrived/waiting` 优先 + `seq_no` 升序 | 排序在 **SQL 里**做（`ORDER BY (CASE status …) , seq_no ASC`），CASE 的分支数字与 `domain_emr.cj` 的 `visitQueueRank` **必须一致**；AC-P4-8 ① 用 `visitQueueRank` 预测顺序、再与 SQL 实际返回逐项比对（两处表述分歧会立刻红）；队列 item 另带 `status_label` 与三个时间戳。**2026-10-16 复核 D5 补**：排序键末尾加 `id ASC`（`listAppointmentsByDoctor`）—— 排序键并列时 MySQL 不保证顺序，同一个请求可能返回不同集合（表现为"刷新一次就少了一个号"） | 让"待处理优先"与"同一状态内按序号"只在一个地方定义；客户端重排会把待处理项排到后面；**确定性排序必须有一个唯一列兜底** |
 | 5 | 患者自助签到 | **不做**（与计划一致），到院确认只有医生端 `POST /visits/:id/arrive` | 同计划 §六 |
 | 6 | 新状态要进契约样例 | 新增 8 条样例（5 个 200 + 3 个 409）与 1 份 Schema（`data-visit-state`），改动 3 份既有 Schema（挂号类 + 队列）⇒ 样例 **59 → 67 条**、Schema **26 → 27 个** | 新状态/新字段是响应形状变更 |
 | 7 | `data-queue` 的 `status` 枚举 | 顺手修了一个**既有错误**：枚举里写的是 `finished`，而服务端常量一直是 `done`（此前样例里只有 `booked`，所以门禁没抓到） | 契约要把枚举钉住才有人发现这类漂移 |
-| 8 | live 新脚本 `visit-check.ps1` | 落地为 `server/tests/visit-timeline-check.ps1`（**42 项断言**，已并入 `final-verify.ps1`） | 名字点明它钉的是"时间线"（哪一步写哪个戳、被拒的流转一个都不写） |
+| 8 | live 新脚本 `visit-check.ps1` | 落地为 `server/tests/visit-timeline-check.ps1`（**42 项断言**，已并入 `final-verify.ps1`）；**2026-10-16 复核 D6/D7/D8 后为 47 项**（补混合态排序、退号错误码、夹具清理收窄） | 名字点明它钉的是"时间线"（哪一步写哪个戳、被拒的流转一个都不写） |
 | 9 | 三个时间戳进契约样例 | 样例里**归一化为 0**（与 `created_at` 同类的"跑一次就变"字段） | 语义改由 `hospital-server.exe accept` 的 AC-P4-8 与 AC-P4-2 ⑨ 逐格矩阵（本次 accept 692 → **743**，共 +51 条断言）以及 live 脚本逐字段钉住 —— 契约层钉形状、用例层钉语义 |
 
-**客户端仍需做**：医生端 `VisitQueuePage` 把动作拆成「确认到院 → 进入候诊 → 开始接诊 → 完成就诊」，`status` 分支新增 `arrived`/`waiting` 且中文一律用 `status_label`（不要自抄映射表），**不要再按 `seq_no` 重排队列**（排序由服务端给），候诊/就诊时长用 `started_at - arrived_at` / `finished_at - started_at`（`0` = 还没发生，不是缺字段）；患者端可按三个时间戳画状态时间线；管理台看板（今日到院率 / 当前候诊人数）仍未做。前端落点见本文 §改进 6 前端任务表与 `docs/FRONTEND-INTEGRATION.md` §5.32。
+**客户端仍需做（2026-10-16 更新：医生端与患者端已落地，仅差编译验证）**：医生端 `VisitQueuePage` 已把动作拆成「确认到院 → 进入候诊 → 开始接诊 → 完成就诊」（`DoctorRepository.arriveVisit` / `waitingVisit` 补上了缺失的前两步 —— 此前只有 `startVisit`，对着 `booked` 的单按下去必然 409，**主流程整个走不通**），`status` 分支已含 `arrived`/`waiting` 且中文优先用 `status_label`（兜底映射在 `feature-patient/.../Theme.ets` 与 `common-core` 同名字符串逐字一致），候诊/就诊时长按 `started_at - arrived_at` / `finished_at - started_at` 算（`0` = 还没发生）。管理台看板已拆出「已到院 / 候诊」（此前全藏进"已约"里）。⚠ 客户端这批改动只做了**静态核对**，无 DevEco/真机编译环境，`BuildArkTS` 需在有 SDK 的机器上补做。前端落点见本文 §改进 6 前端任务表与 `docs/FRONTEND-INTEGRATION.md` §5.32。
 
 ---
 
@@ -547,6 +547,9 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 | 8 | 排障端点"查不到"未说 | 未知 `requestId` ⇒ **200 + `count = 0`**（空 `items`） | 没有遥测行 ≠ 这个 id 不存在：请求可能在限流/校验/鉴权阶段就被拦下，那些路径本来就不写统计；回 404 会把排障的人引向不存在的错误 |
 | 9 | `X-Request-Id` "已经在跑"（未说响应体） | 分诊响应**补回 `request_id`**（复用 `putTrace`，与挂号一致） | 否则患者说"这条分诊不对"时，运营**无从取号**——`triage-calls/:requestId` 的入口在响应体里，闭环第一步就断 |
 | 10 | 未说 `request_id` 长度 | 落库前 `previsitTruncateChars(requestId, 64)` | 它是唯一**由客户端决定长度**的入参（HTTP 头）；超长会让 INSERT 报 1406 并被 `record()` 的 catch 吞成"整条不记"，而"整条不记"正好是想藏痕迹的人要的结果 |
+| 11 | "降级率"= 非 model 的占比 | **2026-10-16 复核改正**：降级率只数**模型侧失败**（`degrade_reason` 非空**且非** `RED_FLAG`）；`RED_FLAG` 另立 `red_flag` 计数与 `red_flag_rate`，行级 JSON 新增冗余布尔 `red_flag_bypass`（与 `degraded` 互斥）。判据只在 `triageDegradeIsFailure` / `triageDegradeIsRedFlagBypass` 里写一次 | 规则层**有意短路**去拦红标不是 AI 失败；混在一起会让看板在正常拦截时报告"AI 总在挂"，而且旧写法正是本仓反复踩的"同一指标两份实现"（旧的评测脚本另写了一遍 `source != model`） |
+| 12 | 版本号读法与并发无关 | **2026-10-16 复核 D1**：`AiSettingsRepo.revision()` 自己 try/catch，读表失败**回 0 而不是抛** | 它在分诊路由里是**具名实参**求值（`promptRevision: aiSettings.revision(...)`），抛异常会让整次分诊失败；`record()` 里那个"统计失败不影响分诊"的 catch 护不住它（求值在调用之前）。降级统计的可用性不该反向决定分诊能不能出结果 |
+| 13 | 写侧截断即够 | **2026-10-16 复核 D2**：读侧同样截断（`callsByRequest` 用同一个 `TRIAGE_REQUEST_ID_MAX`），并抽出常量 | 只在写侧截断会造出"写进去 64 字符、按完整 id 查不到"的错位：排障的人拿着响应里的原始编号查，得到 `count=0`，看上去就像"这次调用没记" |
 
 **客户端仍需做**：管理台 AI 看板（两个新端点）与 `request_id` 展示（患者端/医生端错误页，与改进 4 同一处实现）；评测的**标注**仍需业务人员（当前 20 条是我按规则引擎现状标注的种子，指标口径见 `docs/ai-eval/README.md`）。本机未配置 AI key ⇒ 首份报告的科室命中率为 `0/0`（诚实标注"本环境可判定 = 0"），接上真模型后重跑即可。
 
@@ -637,6 +640,58 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 
 ---
 
+## 八、2026-10-16 第三方复核：缺陷与整改（D1–D8 + 提示项）
+
+复核对象是改进 1–7 的服务端实现。**结论先说**：七条改进的架构与验收骨架都成立，但复核抓到
+两类真问题 ——（a）**一处必修的健壮性缺口**（D1）与**一处读/写口径不一致**（D2）；
+（b）**D3 是发布级阻塞**：服务端在改进 6 里把 `start` 收窄到 `waiting → visiting`，
+而医生端**只有 `startVisit`**，于是"开始接诊"对着 `booked` 的单按下去必然 409，**医生主流程整个走不通**
+（此前文档把它记成"客户端仍需做"的功能项，复核指出它实际上是回归）。
+
+### 8.1 逐条整改
+
+| # | 复核问题 | 整改落点 | 为什么这么改 |
+| --- | --- | --- | --- |
+| **D1**（必修） | `http_app.cj:2138` 分诊路由把 `promptRevision: aiSettings.revision(hNowEpoch())` 写成**具名实参**：该表达式在**调用点**求值，`record()` 里那个"统计失败不影响分诊"的 catch **护不住它**，读表一抖整次分诊就 500 | `server/src/ai_settings.cj:870-890`：`revision()` 内部 try/catch，读表失败**回 0** | 统计是**旁路**：患者要的是分诊结论，不是遥测能写成功。0 的语义是"这套部署还没读到配置版本"，与"读失败"在前端表现一致（都是 `prompt_revision = 0`），好过整次分诊失败 |
+| **D2** | 写侧 `previsitTruncateChars(requestId, 64)` 截断，读侧 `callsByRequest` 用**完整**参数等值查 ⇒ 超长 `X-Request-Id` 写进去 64 字符、按原样查 `count=0`（"这次调用没记"） | `server/src/triage_stat.cj`：抽出常量 `TRIAGE_REQUEST_ID_MAX = 64`（`:71`），写入侧（`:140`）与**读侧**（`:268`）都用它 | 凡经过截断归一化的列，读侧必须**同口径**匹配，否则排障闭环恰好在需要它的时候断掉；常量抽出来是为了让"两处同口径"这件事**看得见** |
+| **D3**（发布阻塞） | 医生端 `VisitQueuePage.ets:204` 只在 `status === 'booked'` 时渲染「开始接诊」，全仓**没有** arrive/waiting 调用；患者端 `Theme.ets` 只认四个旧状态（新状态显示英文机器码）；管理台看板只显示 `booked`/`visiting` | `feature-doctor/.../DoctorRepository.ets`（新增 `arriveVisit` / `waitingVisit`）、`VisitQueuePage.ets`（按钮随状态给**下一步唯一动作** + 爽约 + 时长）、`feature-patient/.../Theme.ets` 与 `common-core/.../Theme.ets`（补齐七态中文、优先 `status_label`）、`server/admin-web/js/pages.js`（看板拆出「已到院 / 候诊」） | 服务端已经是对的，缺的是**客户端跟上**；共享 `status_label` 而不是各端自抄映射表，是因为文案漂移在医疗场景会变成"患者看不懂自己在哪一步" |
+| **D4** | `ai-eval/run-ai-eval.ps1:243` 用 `source -ne 'model'` 自己判降级 —— 与 `triage_stat.cj` 的"非空即降级"是**同一指标的两份实现**（且当时两份判据不一致） | 评测脚本改为**只读服务端算好的** `degrade_reason`（非空且非 `RED_FLAG`），并把口径写进报告（`degrade_criterion` / `redflag_bypass` 两个指标） | 同一统计量两份实现，两份数字迟早对不上（评测说 0.9、看板说 0.5，且没人知道该信哪个）；判据只在服务端定义一次 |
+| **D5** | `domain_booking.cj` 队列查询 `ORDER BY (CASE status …), visit_date, period, seq_no LIMIT ?` **没有唯一列兜底**：排序键并列时 MySQL 不保证顺序 ⇒ 同一请求可能返回不同集合（"刷新一次少一个号"），且本文件其它带 LIMIT 的查询早有兜底 | 排序键末尾加 `id ASC`（`listAppointmentsByDoctor`） | 确定性排序必须有一个唯一列；少了它，`LIMIT` 就从"取前 N 个"变成"取某 N 个" |
+| **D6** | `visit-timeline-check.ps1` 的用例标题写"退掉**已到院**的单 ⇒ 200"，而夹具 707004 实际一直是 `booked`（用例在说一件它没验证的事） | 拆成两条：先 `arrive` 707004（造真前置）→ 退号 ⇒ **409 `APPOINTMENT_NOT_CANCELLABLE`** + 核库仍是 `arrived`；再用 707007（`booked`）验证 ⇒ 200 且落 `cancelled` | 断言写错码/写错前置会让脚本在"服务端其实是对的"时报红或假绿 —— 假绿比不写还坏。⚠ 退号走患者端点，它的业务码是 `APPOINTMENT_NOT_CANCELLABLE`，`VISIT_BAD_STATE` 只属医生侧流转端点 |
+| **D7** | 脚本头注释宣称"验证 arrived/waiting 优先排序"，但 **HTTP 层从未断言**这件事（只断言了队列里"有谁/没谁"） | 新增混合态排序断言：让 707005 处于 `waiting`（`seq_no=2`）、707004 仍 `booked`（`seq_no=1`），断言返回顺序里 707005 在前 | 排序是改进 6 的核心行为之一；"注释里说验了"不算验证 |
+| **D8** | `visit-timeline-check.ps1:105` 夹具清理是 `DELETE FROM medical_record`（**全表**），而同一脚本的收尾自检只查 `appointment_id >= 707000` | 清理收窄到夹具范围（`appointment_id >= 707000`） | 测试脚本不许扫掉别人的数据：一次误跑会毁掉本机其它验证的现场，而自检还照绿 |
+
+### 8.2 提示项（低风险清理）
+
+| 提示 | 整改 |
+| --- | --- |
+| `triage_stat.cj:310-313` 注释宣称"列名拼进 `GROUP BY`"，实际在**内存里分组** —— 后人照注释改会重新引入注入面 | 注释改成事实（白名单是**语义白名单**，`GROUP BY` 用的是参数化查询），并说明"这里没有拼 SQL" |
+| `ai_triage.cj` 的 `RED_FLAG` 早退把 `aiDegradeReason = "RED_FLAG"` 计入降级，抬高了看板降级率 | 判据拆成两个谓词（`triageDegradeIsFailure` / `triageDegradeIsRedFlagBypass`，`triage_stat.cj:335-342`），统计拆成 `degraded`/`red_flag` 与 `degrade_rate`/`red_flag_rate`，行级 JSON 加 `red_flag_bypass`；稳定码常量 `TR_RED_FLAG`（`ai_triage.cj:176`） |
+| `p4VisitStateJson` 的 `None` 分支**漏掉**三个时间戳（当前不可达，但契约会漂） | `None` 分支也发全 `status_label`/`arrived_at`/`started_at`/`finished_at`（+ `visit_date`/`period`/`seq_no`）：**"查不到"和"字段缺席"要能区分**，前端不该为不可达分支写两种解析 |
+| `?from=abc` / `?from=-1` 静默回落 24h；`to` 无上界 | `hIsAllDigits` 校验（非负整数，否则 400）+ 跨度上限 `TRIAGE_STAT_WINDOW_MAX_SECS = 366 * 86400`（超限 400，提示"要更长请做预聚合"） |
+| `ai-telemetry-check.ps1:116` 的分诊调用不带 `X-Request-Id` ⇒ 每跑一次留一行；`:317` 的"残留为 0"自检照绿 | 夹具调用统一带 `${tag}-boot` 之类的请求号，并把"本次夹具残留为 0"做成**真的会红**的自检（同时新增 D2 的端到端用例：超长 id 仍能查到、库里落 64 字符） |
+| `acceptance_ai.cj` ⑭ 只断言 `TriageVerdict()` 的**结构默认值**（把 `triageDegradeIsFailure` 写成 `return true` 也照样绿） | 改成**真值表**逐格断言（空串/RED_FLAG/四个失败码/未知码），并补**红标旁路与降级互斥**的断言；⑮ 用两行刻意不一致的样本（`source=rules` 但 `RED_FLAG`、`source=model` 但 `CALL_FAILED`）钉死"两个统计量、一条判据" |
+| `admin-web/js/pages.js:635` 的 `clear_key_ref` 服务端从不读取（清空靠显式发 `key_ref: ""`） | 勾选框改为**优先于**输入框（勾了就是清空，绝不被输入框里的残留值悄悄覆盖），并注明它是**纯客户端**标志、服务端只认 `key_ref` 的值 |
+
+### 8.3 整改后的闸门实测（2026-10-16）
+
+| 闸门 | 结果 |
+| --- | --- |
+| `build.ps1` | `EXITCODE=0`，零 error / 零 warning（38 个业务 `.cj`） |
+| `accept` | **750 项通过 / 0 失败**（整改前 743；+7 来自 ⑧b/⑭/⑮ 等新增断言） |
+| `visit-timeline-check.ps1` | **47/47**（原 42，+5 来自 D6/D7 与退号正/反例） |
+| `ai-telemetry-check.ps1` | **53/53**（原 44，+9 来自 D2 端到端、红标旁路互补、夹具自清） |
+| `emr-check.ps1` | 61/61 |
+| `contract-check.ps1` | **PASS 69 / FAIL 0**；样例 67 条 / 27 个 Schema 不变（**重新导出 2 条**：`admin-ai-triage-calls-200`、`admin-ai-triage-stats-window-200`） |
+| `doc-counts.ps1` | 3 处 accept 数字漂移已 `-Fix`（743 → 750） |
+| `ai-eval` 回放 | 同一批 `cases.jsonl` 连跑两次指纹一致（证明可重复）；降级口径已改读服务端 |
+
+⚠ **未完成的验证**：客户端（鸿蒙 `.ets`）与 `admin-web` 的改动只做了**静态核对**（逐字段对照服务端返回与
+`contract/schema`），本机没有 DevEco/真机环境，`BuildArkTS` 需在有 SDK 的机器上补做；
+管理台 UI 的改动由 `admin-web-smoke.mjs`（11 页）覆盖到"页面能加载"，未覆盖交互细节。
+
+---
+
 ## 附：本篇引用的关键位置索引
 
 **服务端**
@@ -646,7 +701,7 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 - `server/src/domain_emr.cj:655-722`（**预问诊→病历预填桥**：`intakePrefill` / `saveDraftWithIntake`）、`:738-742`（就诊状态常量）
 - `server/src/domain_emr.cj`（**改进 3**：`lock`/`reopen` 签名与落版、`writeRevision`/`ensureLockRevision`/`revisions`/`revisionAt`/`backfillRevisions`）、`server/src/schema.cj`（`medical_record_revision` DDL + 迁移第 ⑩ 步）、`server/src/http_p4.cj:688-775`（修订历史三条端点）
 - `server/src/ai_call.cj:125-158`（`source`/`reason`/`elapsedMs`）、`server/src/triage_stat.cj:57`（落库写入点）
-- `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1`、`server/tests/admin-web-smoke.mjs`、`server/tests/emr-check.ps1:280-291`（`use_intake_session` 用例）、`server/tests/revision-check.ps1`（改进 3 的 46 条 live 断言）、`server/tests/workbench-check.ps1`（改进 2 的 29 条 live 断言）、`server/tests/visit-timeline-check.ps1`（改进 6 的 42 条 live 断言）、`server/tests/ai-telemetry-check.ps1`（改进 7 的 44 条 live 断言）、`server/tests/ai-eval/`（改进 7 评测：`cases.jsonl` + `run-ai-eval.ps1` + `recorded/`）、`server/tests/export-contract.ps1` / `contract-check.ps1`（改进 5 契约门禁）
+- `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1`、`server/tests/admin-web-smoke.mjs`、`server/tests/emr-check.ps1:280-291`（`use_intake_session` 用例）、`server/tests/revision-check.ps1`（改进 3 的 46 条 live 断言）、`server/tests/workbench-check.ps1`（改进 2 的 29 条 live 断言）、`server/tests/visit-timeline-check.ps1`（改进 6 的 **47** 条 live 断言）、`server/tests/ai-telemetry-check.ps1`（改进 7 的 **53** 条 live 断言）、`server/tests/ai-eval/`（改进 7 评测：`cases.jsonl` + `run-ai-eval.ps1` + `recorded/`）、`server/tests/export-contract.ps1` / `contract-check.ps1`（改进 5 契约门禁）
 
 **客户端**
 - `common-core/src/main/ets/config/ApiConfig.ets:6-51`（LIVE/MOCK 与 baseUrl）、`.../network/ApiError.ets:1-16`（`ErrorCode` 清单）

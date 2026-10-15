@@ -1091,7 +1091,22 @@ func p4VisitStateJson(appointmentId: Int64, doctorId: Int64,
             o.put("period", JsonString(a.period))
             o.put("seq_no", JsonInt(a.seqNo))
         case None =>
+            /*
+             * ⚠ **不存在也要把字段补齐**（2026-10-16 复核提示项）：
+             *   分支少吐字段时，响应形状会随"这单在不在"变化，
+             *   而契约 Schema 是按"字段总是存在"钉的 —— 那是**潜在漂移**：
+             *   只要哪天有个入口能走到这里，契约就会红，而红的理由看起来像
+             *   "客户端多读了字段"，实际是服务端形状不稳定。
+             *   缺单时的语义：状态空串 + 三个时间戳 0（"没有这单"而非"还没发生"）。
+             */
             o.put("status", JsonString(""))
+            o.put("status_label", JsonString(""))
+            o.put("arrived_at", JsonInt(0))
+            o.put("started_at", JsonInt(0))
+            o.put("finished_at", JsonInt(0))
+            o.put("visit_date", JsonString(""))
+            o.put("period", JsonString(""))
+            o.put("seq_no", JsonInt(0))
     }
     match (emr.findByAppointment(appointmentId)) {
         case Some(m) =>

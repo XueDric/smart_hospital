@@ -868,11 +868,29 @@ public class AiSettingsRepo {
      *   配置"用的，不是事务隔离级别。
      */
     public func revision(now: Int64): Int64 {
-        let rs = db.query("SELECT IFNULL(MAX(revision), 0) FROM ai_setting", Array<DbValue>())
-        if (rs.rowCount() > 0) {
-            return rs.getInt(0, 0)
+        /*
+         * ⚠⚠ **必须自己 try/catch**（2026-10-16 复核 D1）：
+         *   本函数的调用点之一是 `http_app.cj` 的分诊路由 ——
+         *   `triageStat.record(..., promptRevision: aiSettings.revision(hNowEpoch()))`
+         *   是**具名实参**，它在**调用点**求值、早于 `record()` 的函数体，
+         *   所以 `record()` 里那个"统计失败不影响分诊"的 catch **护不住它**。
+         *   库一抖（同一个 `DbBackend`，分诊本身也要读库）就会冒到 `http_common.cj`
+         *   的兜底分支，患者拿到 500 而不是分诊结论 —— 恰好违反
+         *   `triage_stat.cj` 文件头写的纪律：**统计是旁路**。
+         *
+         * 回 0 是**语义安全**的兜底：0 在 `prompt_revision` 里的含义本来就是
+         * "这套部署还没写过配置 / 读不到"，排障时不会把它误读成某个真实版本。
+         */
+        try {
+            let rs = db.query("SELECT IFNULL(MAX(revision), 0) FROM ai_setting", Array<DbValue>())
+            if (rs.rowCount() > 0) {
+                return rs.getInt(0, 0)
+            }
+            return 0
+        } catch (e: Exception) {
+            println("[WARN] 读配置版本号失败（不影响分诊结论）：${e.message}")
+            return 0
         }
-        return 0
     }
 
     /*

@@ -20,12 +20,29 @@ class MockDoctorState {
     MockDoctorState.initialized = true;
     const today = new Date();
     const date = `${today.getFullYear()}-${pad2(today.getMonth() + 1)}-${pad2(today.getDate())}`;
+    const nowSec = Math.floor(Date.now() / 1000);
     MockDoctorState.visits = [
       MockDoctorState.visit(601, 101, date, 'AM', 1, 'visiting', 'draft', 2),
-      MockDoctorState.visit(602, 102, date, 'AM', 2, 'booked', 'none', 0),
+      MockDoctorState.visit(602, 102, date, 'AM', 2, 'waiting', 'none', 0),
       MockDoctorState.visit(603, 103, date, 'PM', 1, 'booked', 'none', 0),
       MockDoctorState.visit(604, 104, date, 'AM', 3, 'done', 'locked', 7)
     ];
+    /*
+     * ⚠ 2026-10-16（复核 D3）：夹具必须覆盖中间两态，否则"按钮渲染对不对"根本看不出来。
+     *   601 接诊中（有到院/接诊时刻 ⇒ 队列页能算出等待时长）
+     *   602 候诊中（该给「开始接诊」）
+     *   603 已挂号（该给「到院登记」）
+     *   604 已完成（无按钮，只有时间线）
+     */
+    MockDoctorState.visits[0].statusLabel = '接诊中';
+    MockDoctorState.visits[0].arrivedAt = nowSec - 1500;
+    MockDoctorState.visits[0].startedAt = nowSec - 600;
+    MockDoctorState.visits[1].statusLabel = '候诊中';
+    MockDoctorState.visits[1].arrivedAt = nowSec - 480;
+    MockDoctorState.visits[3].statusLabel = '已完成';
+    MockDoctorState.visits[3].arrivedAt = nowSec - 5400;
+    MockDoctorState.visits[3].startedAt = nowSec - 4800;
+    MockDoctorState.visits[3].finishedAt = nowSec - 3000;
     MockDoctorState.records[601] = MockDoctorState.draft(601, 101);
     // 601 这单演示「患者已交预问诊」：队列徽标 + 病历页「患者自述」卡片/角标。
     MockDoctorState.visits[0].previsitReady = true;
@@ -120,13 +137,43 @@ export class MockDoctorRepository {
     return MockDoctorState.visits;
   }
 
-  static async startVisit(appointmentId: number): Promise<void> {
+  /*
+   * ⚠ 2026-10-16（复核 D3）：Mock 必须和服务端同一套状态机，否则"演示能跑、
+   *   真机 409"（上一版就是这样：startVisit 从 booked 直接跳 visiting）。
+   *   服务端约束：booked → arrived → waiting → visiting → done。
+   */
+  static async arriveVisit(appointmentId: number): Promise<void> {
     MockDoctorState.initialize();
     const item = MockDoctorRepository.find(appointmentId);
     if (item.status !== 'booked') {
-      throw new ApiError('VISIT_BAD_STATE', '当前状态不允许开始接诊', 409);
+      throw new ApiError('VISIT_BAD_STATE', `当前状态 ${item.status} 不允许流转到 arrived`, 409);
+    }
+    item.status = 'arrived';
+    item.statusLabel = '已到院';
+    item.arrivedAt = Math.floor(Date.now() / 1000);
+  }
+
+  static async waitingVisit(appointmentId: number): Promise<void> {
+    MockDoctorState.initialize();
+    const item = MockDoctorRepository.find(appointmentId);
+    if (item.status !== 'arrived') {
+      throw new ApiError('VISIT_BAD_STATE', `当前状态 ${item.status} 不允许流转到 waiting`, 409);
+    }
+    item.status = 'waiting';
+    item.statusLabel = '候诊中';
+  }
+
+  static async startVisit(appointmentId: number): Promise<void> {
+    MockDoctorState.initialize();
+    const item = MockDoctorRepository.find(appointmentId);
+    if (item.status !== 'waiting') {
+      // 与服务端一致：只有"候诊中"才能开始接诊（booked 要先到院、再候诊）。
+      throw new ApiError('VISIT_BAD_STATE',
+        `当前状态 ${item.status} 不允许流转到 visiting（需先到院、候诊）`, 409);
     }
     item.status = 'visiting';
+    item.statusLabel = '接诊中';
+    item.startedAt = Math.floor(Date.now() / 1000);
   }
 
   static async finishVisit(appointmentId: number): Promise<void> {
@@ -137,12 +184,15 @@ export class MockDoctorRepository {
       throw new ApiError('EMR_NOT_LOCKED', '完成就诊前必须先提交锁定病历', 409);
     }
     item.status = 'done';
+    item.statusLabel = '已完成';
+    item.finishedAt = Math.floor(Date.now() / 1000);
   }
 
   static async noShow(appointmentId: number): Promise<void> {
     MockDoctorState.initialize();
     const item = MockDoctorRepository.find(appointmentId);
     item.status = 'no_show';
+    item.statusLabel = '已爽约';
   }
 
   static async logout(): Promise<void> {

@@ -22,8 +22,10 @@
         "overall": {
           "bucket": "all",
           "total": 3,
-          "degraded": 2,
-          "degrade_rate": 0.6667,
+          "degraded": 1,
+          "red_flag": 1,
+          "degrade_rate": 0.3333,
+          "red_flag_rate": 0.3333,
           "p50_ms": 412,
           "p95_ms": 900
         },
@@ -32,7 +34,9 @@
             "bucket": "model",
             "total": 1,
             "degraded": 0,
+            "red_flag": 0,
             "degrade_rate": 0,
+            "red_flag_rate": 0,
             "p50_ms": 900,
             "p95_ms": 900
           },
@@ -40,15 +44,19 @@
             "bucket": "model:invalid",
             "total": 1,
             "degraded": 1,
+            "red_flag": 0,
             "degrade_rate": 1,
+            "red_flag_rate": 0,
             "p50_ms": 412,
             "p95_ms": 412
           },
           {
             "bucket": "rules",
             "total": 1,
-            "degraded": 1,
-            "degrade_rate": 1,
+            "degraded": 0,
+            "red_flag": 1,
+            "degrade_rate": 0,
+            "red_flag_rate": 1,
             "p50_ms": 0,
             "p95_ms": 0
           }

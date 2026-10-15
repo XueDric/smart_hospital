@@ -1,4 +1,4 @@
-﻿# 智慧医院服务端（仓颉 + 轻舟）
+# 智慧医院服务端（仓颉 + 轻舟）
 
 > **当前进度**：P0（号源/挂号域独立 MySQL 路径）→ **P1**（令牌鉴权 + HTTPS + 安全加固 + 内存 Store）
 > → **P2**（AI 分诊 + 预问诊 SSE）**均已完成**。P3 / P4 见 [../README.md](../README.md) 的里程碑表。
@@ -74,7 +74,7 @@ cd server     # ⚠ cwd 必须是 server/，见下
 | `triagetest` | P2 分诊 + 预问诊**纯逻辑**自检（**110 项**断言），不碰库不调模型 | ❌ |
 | `authtest` | **口令/令牌原语自检**（含 3 个公开测试向量，**17 项**） | ❌ |
 | `check-db <dsn>` | 连库 + 幂等建表 + 打印表清单（★ 标记号源域） | ✅ |
-| `accept <dsn>` | 验收测试 AC-1…AC-17（**743 项断言**：AC-1…AC-13 + **AC-14/AC-15**（令牌续期回值、`/health` 日期口径）+ **AC-16/AC-17**（`ai_model` 模型配置、账号列表/排班可改）+ AC-P2-1…6 / AC-P3-1…6 / **AC-P4-1…7** / AC-BASE-1…3 / AC-AICALL-1…3 / AC-NOTICE-1…3；⚠ 只允许库名含 `test` 的测试库） | ✅ |
+| `accept <dsn>` | 验收测试 AC-1…AC-17（**750 项断言**：AC-1…AC-13 + **AC-14/AC-15**（令牌续期回值、`/health` 日期口径）+ **AC-16/AC-17**（`ai_model` 模型配置、账号列表/排班可改）+ AC-P2-1…6 / AC-P3-1…6 / **AC-P4-1…7** / AC-BASE-1…3 / AC-AICALL-1…3 / AC-NOTICE-1…3；⚠ 只允许库名含 `test` 的测试库） | ✅ |
 | `create-db <dsn>` | 幂等建库（utf8mb4）—— 测试库靠它 | ✅ |
 | `create-admin <dsn>` | 建/重置管理员并打印口令（**引导入口**） | ✅ |
 | `serve <dsn>` | **P1**：启动 HTTP / HTTPS 服务（默认只绑 `127.0.0.1`） | ✅ |
@@ -295,8 +295,8 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 | `tests/tls-check.ps1` | TLS 验证（SslStream 真校验、反向验证、HTTPS 业务链路） |
 | `tests/health-check.ps1` | 探活接口（`/health` + `/api/v1/health`）：无需认证、响应形状、**医院日期口径 `today`/`timezone`**、两路径同实现 |
 | `tests/ai-model-check.ps1` | **AI 模型配置端到端**（45 项，2026-10-14）：鉴权 / 播种 / 密钥不回显 / 校验闸门 / PATCH 语义 / 默认位唯一与 `in_use` / 连通性测试 / 缓存失效 / `settings` 登记表闸门 |
-| `tests/visit-timeline-check.ps1` | **就诊时间线端到端**（42 项，2026-10-15，改进 6）：到院/候诊鉴权与归属 / 全链路 `booked→arrived→waiting→visiting→done` / **三个时间戳逐字段**（只写自己那一个、被拒的流转一个都不写、`waiting` 不写戳）/ 非法流转（重复到院、跳步、终态回退）⇒ 409 `VISIT_BAD_STATE` / 未锁病历完成 ⇒ 409 `EMR_NOT_LOCKED` / 队列排序（待处理优先）与 `status_label` 同源 / 夹具自清 |
-| `tests/ai-telemetry-check.ps1` | **分诊遥测与排障端到端**（44 项，2026-10-15）：鉴权 / 参数闸门（`group_by` 白名单、`from>to`、上限夹取）/ 一次真调用后按 `request_id` 捞全链路（16 字段齐 + `degraded` 自洽）/ **隐私否定断言**（聚合与单次体里都搜不到主诉指纹）/ 聚合分位数与降级率 / 版本号严格前进 / 夹具自清 |
+| `tests/visit-timeline-check.ps1` | **就诊时间线端到端**（47 项，2026-10-15，改进 6；2026-10-16 复核补 D6/D7）：到院/候诊鉴权与归属 / 全链路 `booked→arrived→waiting→visiting→done` / **三个时间戳逐字段**（只写自己那一个、被拒的流转一个都不写、`waiting` 不写戳）/ 非法流转（重复到院、跳步、终态回退）⇒ 409 `VISIT_BAD_STATE` / 未锁病历完成 ⇒ 409 `EMR_NOT_LOCKED` / 队列排序（待处理优先）与 `status_label` 同源 / **到院后退号 ⇒ 409 `APPOINTMENT_NOT_CANCELLABLE`，未到院退号 ⇒ 200**（D6：原先标题写"200"却拿 `booked` 夹具去撞）/ **混合态排序真断言**（D7：`waiting` 排在 `booked` 前，此前只在注释里声称验过）/ 夹具自清**只扫本夹具范围**（D8：不再全表 `DELETE FROM medical_record`） |
+| `tests/ai-telemetry-check.ps1` | **分诊遥测与排障端到端**（53 项，2026-10-15，改进 7；2026-10-16 复核补 D2/红标口径）：鉴权 / 参数闸门（`group_by` 白名单、`from>to`、**非数字与 >366 天跨度 ⇒ 400**、上限夹取）/ 一次真调用后按 `request_id` 捞全链路（**17 字段**齐 + `degraded` 与 `red_flag_bypass` **互补**）/ **超长 `X-Request-Id` 端到端**（D2：写侧截 64、读侧同口径仍查得到）/ **隐私否定断言**（聚合与单次体里都搜不到主诉指纹）/ 聚合分位数与降级率**（`RED_FLAG` 不计入降级，另立 `red_flag`/`red_flag_rate`）**/ 版本号严格前进 / 夹具自清（残留为 0 会真的红） |
 | `tests/ai-eval/run-ai-eval.ps1` | **AI 分诊评测**（改进 7，2026-10-15）：默认**回放**（读 `recorded/`，离线可重复，连跑两次指纹须一致）；`-Mode live [-Record]` 打真实服务端并录制样本；报告落 `../docs/ai-eval/<date>.md` + `.metrics.json`。**不进 `final-verify`**（依赖真实模型，见 [../docs/ai-eval/README.md](../docs/ai-eval/README.md)） |
 | `tests/admin-web-smoke.mjs` | **管理台前端冒烟**（2026-10-14）：无头 Edge + CDP，11 个页面逐个真实渲染 + 控制台/异常/`>=400` 全收集 + 逐页截图；任一项失败 `exit 1` |
 | `admin-web/` | **后台管理台的静态资源**（零构建：`index.html` + `css/` + `js/` 四个脚本），由服务端按 `/admin` 前缀托管；页面本身不鉴权，数据全走 `/api/v1/admin/*`（详见 [../docs/ADMIN-WEB.md](../docs/ADMIN-WEB.md)） |

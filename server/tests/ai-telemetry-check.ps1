@@ -113,7 +113,12 @@ $r = Req 'p1' 'POST' '/api/v1/auth/login' @() ('{"login_name":"' + $patLogin + '
 if ($r.Code -ne 200) { throw "患者账号登录失败（HTTP $($r.Code)）：$($r.Body)（口令强度校验可能没通过 ⇒ 建号静默失败）" }
 $patTok = (Json $r).data.token
 $PH = @("Authorization: Bearer $patTok")
-$r = Req 'p2' 'POST' '/api/v1/triage' $PH ('{"chief_complaint":"' + $secret + '"}')
+# ⚠ 每一次分诊调用都必须自带 X-Request-Id（2026-10-16 复核提示项）：
+#   不带的话服务端会**代铸**一个 id，于是这一行遥测既不在本脚本的清理范围
+#   （按 request_id LIKE '$tag%' 清），也不会出现在残留自检里 ⇒ 每跑一次就往
+#   triage_stat 漏一行，而 [7] 还照样打印"残留 0"（违反本仓 README 的门禁规则 AO：
+#   自检必须能真的发现自己的残留）。
+$r = Req 'p2' 'POST' '/api/v1/triage' ($PH + "X-Request-Id: ${tag}-boot") ('{"chief_complaint":"' + $secret + '"}')
 CheckD "夹具：患者能正常分诊（HTTP $($r.Code)）" ($r.Code -eq 200) ("body=$($r.Body.Substring(0, [Math]::Min(200, $r.Body.Length)))")
 
 # ── 1) 鉴权 ────────────────────────────────────────────────────────────────
@@ -179,12 +184,14 @@ if ([int]$cj.data.count -ge 1) {
     $it = @($cj.data.items)[0]
     $keys = @('id', 'created_at', 'source', 'reason_code', 'red_flag', 'department',
               'truncated', 'request_id', 'model_id', 'model_name', 'prompt_revision',
-              'elapsed_ms', 'degrade_reason', 'degraded', 'used_kb', 'kb_doc_ids')
+              'elapsed_ms', 'degrade_reason', 'degraded', 'red_flag_bypass', 'used_kb', 'kb_doc_ids')
     $missing = @($keys | Where-Object { -not ($it.PSObject.Properties.Name -contains $_) })
-    CheckD "★★ 16 个排障字段一个不少（缺：$($missing -join ',')）" ($missing.Count -eq 0) `
+    CheckD "★★ 17 个排障字段一个不少（缺：$($missing -join ',')）" ($missing.Count -eq 0) `
            ("keys=$($it.PSObject.Properties.Name -join ',')")
-    CheckD "★★ degraded 是 degrade_reason 的冗余布尔且与它自洽（看板按它过滤，不必记「空串 = 真用上模型」这条口径）" `
-           ($it.degraded -eq ($it.degrade_reason -ne '')) ("degraded=$($it.degraded) reason='$($it.degrade_reason)'")
+    CheckD "★★ degraded 与 red_flag_bypass 是同一口径的**互补**布尔：RED_FLAG 旁路不算降级（看板按 degraded 过滤时不该把规则拦下来的红标算成 AI 失败）" `
+           ($it.degraded -eq ($it.degrade_reason -ne '' -and $it.degrade_reason -ne 'RED_FLAG') `
+            -and $it.red_flag_bypass -eq ($it.degrade_reason -eq 'RED_FLAG')) `
+           ("degraded=$($it.degraded) bypass=$($it.red_flag_bypass) reason='$($it.degrade_reason)'")
     CheckD "★ source 是三种如实标注之一（实得 '$($it.source)'）" `
            (@('rules', 'model', 'model:invalid') -contains $it.source)
     $codes = @('', 'RED_FLAG', 'CONFIG_READ_FAILED', 'AI_DISABLED', 'INVALID_OUTPUT', 'CALL_FAILED')
@@ -208,6 +215,28 @@ $r = Req 'c3' 'GET' ("/api/v1/admin/ai/triage-calls/$rid1`?limit=0") $AH $null
 $cj3 = Json $r
 CheckD "★ limit=0 ⇒ 夹到 1 且只回 1 行" ($r.Code -eq 200 -and [int]$cj3.data.count -eq 1) `
        ("count=$($cj3.data.count)")
+
+# ── 3b) ★★ 超长 request_id：写侧截断 + 读侧同口径截断（复核 D2 的端到端证明）──
+<#
+  为什么单独立一组：Web 应用防火墙 / 网关能塞进任意长度的 X-Request-Id。
+  写侧截到 64（列宽）而读侧不截，就会出现最坏的排障形态 ——
+  **调用当时对得上号，事后怎么查都查不到**（"排障闭环刚好好在最需要它的时候断了"）。
+  server/src/triage_stat.cj 的注释早就预言过这个坑，但只有写侧做了截断（复核 D2）。
+  这一组把两半都钉住：① 超长 id 不导致 400/500；② 用完整 id 也查得到那一行；
+  ③ 库里落的确实是前 64 字符（不是整串、也不是空串）。
+#>
+$longId = 'AI-TEL-LONG-' + ('x' * 80)      # 89 字符 > 64
+$r = Req 't4' 'POST' '/api/v1/triage' ($PH + "X-Request-Id: $longId") ('{"chief_complaint":"' + $secret + '"}')
+CheckD "★ 超长 X-Request-Id 仍能正常分诊（遥测写入没因列宽超限被 catch 静默吞掉）" `
+       ($r.Code -eq 200) ("HTTP $($r.Code)")
+$r = Req 'c4a' 'GET' ("/api/v1/admin/ai/triage-calls/$longId") $AH $null
+$cj4 = Json $r
+CheckD "★★ 用**完整**超长 id 查得到那一行（读侧与写侧同口径截断；读侧不截时这里是 count=0）" `
+       ($r.Code -eq 200 -and [int]$cj4.data.count -ge 1) ("HTTP $($r.Code) count=$($cj4.data.count)")
+$stored = Invoke-MySqlScalar -My $My -Sql "SELECT request_id FROM triage_stat WHERE request_id LIKE 'AI-TEL-LONG-%' ORDER BY id DESC LIMIT 1" -Label "查截断后的 request_id"
+CheckD "★★ 库里落的是前 64 字符（实得 $("$stored".Length) 字符）" `
+       ("$stored".Length -eq 64 -and "$stored" -eq $longId.Substring(0, 64)) ("stored='$stored'")
+$null = Invoke-MySqlScalar -My $My -Sql "DELETE FROM triage_stat WHERE request_id LIKE 'AI-TEL-LONG-%'" -Label "清超长用例痕迹"
 
 # ── 4) ★★★ 隐私否定断言：拿刚发出去的主诉原文当指纹 ───────────────────────
 Write-Host ""
@@ -314,6 +343,9 @@ $null = Invoke-MySqlScalar -My $My -Sql "DELETE FROM auth_user WHERE login_name 
 $null = Invoke-MySqlScalar -My $My -Sql "DELETE FROM triage_stat WHERE request_id LIKE '$tag%'" -Label "清遥测夹具"
 $leftUsers = Invoke-MySqlScalar -My $My -Sql "SELECT COUNT(*) FROM auth_user WHERE login_name LIKE '$tag%'" -Label "查账号残留"
 $leftStats = Invoke-MySqlScalar -My $My -Sql "SELECT COUNT(*) FROM triage_stat WHERE request_id LIKE '$tag%'" -Label "查遥测残留"
+# ⚠ 这条自检之所以**可信**：本脚本每一次 POST /api/v1/triage 都自带 X-Request-Id 且都带 $tag 前缀
+#   （含夹具那一次 —— 它原来不带，于是每跑一次就往 triage_stat 漏一行而自检照样打印"残留 0"）。
+#   超长 id 那一组用的是另一个前缀（AI-TEL-LONG-），已在 [3b] 末尾显式删除。
 CheckD "★★ 结尾自检：本次夹具残留为 0（账号 $leftUsers / 遥测 $leftStats）" `
        ("$leftUsers" -eq '0' -and "$leftStats" -eq '0')
 

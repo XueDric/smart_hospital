@@ -171,7 +171,9 @@ public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
      */
     if (v.redFlag) {
         v.aiReason = "危急征象：优先让患者立刻看到处置建议，不进模型"
-        v.aiDegradeReason = "RED_FLAG"
+        /* ⚠ 用常量而不是字面量：`triageDegradeIsRedFlagBypass()` 按同一个值判定
+           "这是安全旁路而不是 AI 失败"，两处写字面量迟早会分叉。 */
+        v.aiDegradeReason = TR_RED_FLAG
         return
     }
     /*

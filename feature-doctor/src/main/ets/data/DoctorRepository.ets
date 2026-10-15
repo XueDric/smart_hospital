@@ -55,6 +55,28 @@ export class DoctorRepository {
     return result;
   }
 
+  /*
+   * ⚠ 2026-10-16（复核 D3）：服务端在改进 6 里把状态机收窄成
+   *   `booked → arrived → waiting → visiting → done`，`start` 只接受 waiting。
+   *   此前客户端只有 startVisit，于是"开始接诊"按钮对着 booked 的单按下去必然 409
+   *   VISIT_BAD_STATE —— 医生端主流程整个走不通。这两个方法就是缺失的前两步。
+   */
+  async arriveVisit(appointmentId: number): Promise<void> {
+    if (ApiConfig.isMock()) {
+      return MockDoctorRepository.arriveVisit(appointmentId);
+    }
+    const body: Record<string, Object> = {};
+    await HttpClient.getInstance().post(`/api/v1/doctor/visits/${appointmentId}/arrive`, body);
+  }
+
+  async waitingVisit(appointmentId: number): Promise<void> {
+    if (ApiConfig.isMock()) {
+      return MockDoctorRepository.waitingVisit(appointmentId);
+    }
+    const body: Record<string, Object> = {};
+    await HttpClient.getInstance().post(`/api/v1/doctor/visits/${appointmentId}/waiting`, body);
+  }
+
   async startVisit(appointmentId: number): Promise<void> {
     if (ApiConfig.isMock()) {
       return MockDoctorRepository.startVisit(appointmentId);
@@ -165,6 +187,12 @@ export class DoctorRepository {
     result.seqNo = asNumber(response['seq_no']);
     result.status = asString(response['status']);
     result.visitStatus = asString(response['visit_status'], result.status);
+    // 服务端从改进 6 起同时下发人话标签与三个时间戳（0 = 这一步还没发生）。
+    // 解析它们而不是在客户端再写一份映射：中文名只该有一份权威实现（服务端）。
+    result.statusLabel = asString(response['status_label'], '');
+    result.arrivedAt = asNumber(response['arrived_at']);
+    result.startedAt = asNumber(response['started_at']);
+    result.finishedAt = asNumber(response['finished_at']);
     result.previsitReady = asBool(response['previsit_ready']);
     result.recordId = asNumber(response['record_id']);
     result.recordStatus = asString(response['record_status'], 'none');

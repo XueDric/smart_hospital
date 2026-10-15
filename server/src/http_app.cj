@@ -806,6 +806,28 @@ func hIsCalendarDate(s: String): Bool {
     return day <= maxDay
 }
 
+/*
+ * `s` 是否全为 ASCII 数字（非空）。
+ *
+ * 用途：管理端查询参数的**显式**校验 —— 见 triage-stats 路由里对 `from`/`to` 的处理。
+ * 为什么不用 `parseInt64Or` 直接判：它的语义是"解析不了就回兜底值"，
+ * 于是 `?from=abc` 会被静默当成"没给参数"，调用者拿到的是另一个窗口的数据。
+ */
+func hIsAllDigits(s: String): Bool {
+    if (s.size == 0) {
+        return false
+    }
+    let a = s.toArray()
+    var i: Int64 = 0
+    while (i < a.size) {
+        if (a[i] < 0x30 || a[i] > 0x39) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
 /* 两个已校验的固定宽度日期按 ASCII 比较，医院日期不依赖宿主机时区。 */
 func hScheduleDateIsPast(s: String): Bool {
     let date = s.toArray()
@@ -1946,8 +1968,25 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
                               "group_by 只支持 source、reason_code、model_name")
         }
         let now = hNowEpoch()
-        var to = parseInt64Or(ctx.queryParamOr("to", "0"), 0)
-        var from = parseInt64Or(ctx.queryParamOr("from", "0"), 0)
+        /*
+         * ★ 2026-10-16（复核提示项）：`from`/`to` **先判"给的到底是不是整数"**。
+         *
+         * 原来直接 `parseInt64Or(..., 0)` 再"`<= 0` 就用默认值"：
+         * `?from=abc` 与 `?from=-1` 于是**静默变成**"最近 24 小时"，
+         * 看板会把一个拼错的参数当成一次成功的查询 —— 数字是另一个窗口的，
+         * 而调用者以为自己查的是他指定的区间（静默错误比 400 难发现得多）。
+         * ⇒ 给了值就必须是合法的非负整数；没给（空串）才用默认窗口。
+         */
+        let fromRaw = ctx.queryParamOr("from", "").trimAscii()
+        let toRaw = ctx.queryParamOr("to", "").trimAscii()
+        if (fromRaw.size > 0 && !hIsAllDigits(fromRaw)) {
+            throw apiErrorMsg("VALIDATION_FAILED", "from 必须是 epoch 秒（非负整数）")
+        }
+        if (toRaw.size > 0 && !hIsAllDigits(toRaw)) {
+            throw apiErrorMsg("VALIDATION_FAILED", "to 必须是 epoch 秒（非负整数）")
+        }
+        var to = parseInt64Or(toRaw, 0)
+        var from = parseInt64Or(fromRaw, 0)
         if (to <= 0) {
             to = now
         }
@@ -1956,6 +1995,15 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         }
         if (from > to) {
             throw apiErrorMsg("VALIDATION_FAILED", "from 不能大于 to")
+        }
+        /*
+         * ⚠ 窗口跨度上限：`to` 可以填到未来（无妨），但跨度不设上限时
+         *   "一次请求扫全表"就只是少打几个字的事（采样上限虽在，扫表本身就够贵）。
+         *   366 天是一个"再宽就该做预聚合表"的界，不是技术极限。
+         */
+        if (to - from > TRIAGE_STAT_WINDOW_MAX_SECS) {
+            throw apiErrorMsg("VALIDATION_FAILED",
+                              "from 与 to 的跨度不能超过 366 天（要更长请做预聚合）")
         }
         var sampleLimit = parseInt64Or(ctx.queryParamOr("limit",
                                                         "${TRIAGE_STAT_SAMPLE_DEFAULT}"),

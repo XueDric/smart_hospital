@@ -240,7 +240,25 @@ $redHit = @($expRed | Where-Object { $_.triage.red_flag -eq $true })
 $redMiss = @($expRed | Where-Object { $_.triage.red_flag -ne $true })
 $redFp = @($samples | Where-Object { $_.case.expected_red_flag -ne $true -and $_.triage.red_flag -eq $true })
 
-$degraded = @($samples | Where-Object { $_.triage.source -ne 'model' })
+# ★ 降级判据必须与 /api/v1/admin/ai/triage-stats **同源**（2026-10-16 复核 D4）：
+#   权威口径 = "模型侧失败" = degrade_reason 非空 **且不是 RED_FLAG**。
+#   RED_FLAG 是"规则直接判红标、压根没调模型"的**良性旁路**，混进降级率会让
+#   降级率虚高（临床上看起来像"AI 总在失败"，实际是分诊规则正常拦截）。
+#   旧写法 `$_.triage.source -ne 'model'` 是**第二份实现**，与服务端注释里明写的
+#   "不要写 source != model" 直接冲突 —— 两份口径迟早对不上（评测说 0.9、看板说 0.5，
+#   而且没人知道该信哪个）。所以这里只读服务端已经算好的降级码，不再自己判 source。
+$hasTelemetry = @($samples | Where-Object { $_.telemetry -and $null -ne $_.telemetry.degrade_reason }).Count -gt 0
+$degraded = @($samples | Where-Object {
+    if ($_.telemetry -and $null -ne $_.telemetry.degrade_reason) {
+        $_.telemetry.degrade_reason -ne '' -and $_.telemetry.degrade_reason -ne 'RED_FLAG'
+    } else {
+        # 老录制样本没有 degrade_reason 字段：退回 source 口径，并在指标里显式标出来，
+        # 免得读者以为它和新样本同源。
+        $_.triage.source -ne 'model'
+    }
+})
+$bypass = @($samples | Where-Object { $_.telemetry -and $_.telemetry.degrade_reason -eq 'RED_FLAG' })
+$degradeCriterion = if ($hasTelemetry) { 'model_side_failure（degrade_reason 非空且非 RED_FLAG）' } else { 'source != model（无遥测，回退口径）' }
 $elapsed = @($samples | Where-Object { $_.telemetry -and $null -ne $_.telemetry.elapsed_ms } | ForEach-Object { [int64]$_.telemetry.elapsed_ms })
 $modelIds = @($samples | Where-Object { $_.telemetry } | ForEach-Object { [string]$_.telemetry.model_id } | Sort-Object -Unique)
 $modelNames = @($samples | Where-Object { $_.telemetry } | ForEach-Object { [string]$_.telemetry.model_name } | Sort-Object -Unique)
@@ -268,6 +286,8 @@ $metrics = [ordered]@{
     redflag_false_pos   = $redFp.Count
     degrade_rate        = (Rate $degraded.Count $samples.Count)
     degrade_reasons     = @($degradeReasons)
+    degrade_criterion   = $degradeCriterion
+    redflag_bypass      = $bypass.Count
     p50_ms              = (Percentile $elapsed 50)
     p95_ms              = (Percentile $elapsed 95)
     model_ids           = @($modelIds)
@@ -285,7 +305,7 @@ Write-Host ("  样本 {0}/{1}（未录制 {2}）" -f $samples.Count, $caseList.C
 Write-Host ("  科室 Top1  {0}/{1} = {2}（全量口径 {3}）" -f $top1, $eligible.Count, $metrics.top1_rate, $metrics.top1_rate_all)
 Write-Host ("  科室 Top3  {0}/{1} = {2}" -f $top3, $eligible.Count, $metrics.top3_rate)
 Write-Host ("  红标召回   {0}/{1} = {2}；误报 {3} 例" -f $redHit.Count, $expRed.Count, $metrics.redflag_recall, $redFp.Count)
-Write-Host ("  降级率     {0}/{1} = {2}  {3}" -f $degraded.Count, $samples.Count, $metrics.degrade_rate, ($degradeReasons -join ' '))
+Write-Host ("  降级率     {0}/{1} = {2}  口径：{3}  红标旁路 {4} 例  {5}" -f $degraded.Count, $samples.Count, $metrics.degrade_rate, $degradeCriterion, $bypass.Count, ($degradeReasons -join ' '))
 Write-Host ("  耗时 p50/p95 = {0} / {1} ms（样本 {2}）" -f $metrics.p50_ms, $metrics.p95_ms, $elapsed.Count)
 Write-Host ("  模型 id    {0}；模型名 {1}；模板 revision {2}" -f (($modelIds -join ',')), (($modelNames -join ',')), (($revs -join ',')))
 Write-Host ("  ★ 指标指纹 {0}（回放模式连跑两次必须相同 ⇒ 可重复）" -f $fingerprint)
@@ -308,7 +328,7 @@ Get-ChildItem (Join-Path $OutDir '*.metrics.json') -ErrorAction SilentlyContinue
 
 $delta = @()
 if ($prev) {
-    foreach ($k in @('top1_rate', 'top3_rate', 'redflag_recall', 'redflag_false_pos', 'degrade_rate', 'p50_ms', 'p95_ms')) {
+    foreach ($k in @('top1_rate', 'top3_rate', 'redflag_recall', 'redflag_false_pos', 'degrade_rate', 'redflag_bypass', 'p50_ms', 'p95_ms')) {
         $delta += ('| {0} | {1} | {2} | {3} |' -f $k, $prev.$k, $metrics.$k, $(if ("$($prev.$k)" -eq "$($metrics.$k)") { '不变' } else { '**变化**' }))
     }
 }
@@ -360,7 +380,8 @@ $md += "| 科室 Top1 命中 | $top1 / $($eligible.Count) = $($metrics.top1_rate
 $md += "| 科室 Top3 命中 | $top3 / $($eligible.Count) = $($metrics.top3_rate) | 期望科室出现在前 3 个号源里 |"
 $md += "| 红标召回 | $($redHit.Count) / $($expRed.Count) = $($metrics.redflag_recall) | ``expected_red_flag=true`` 的用例里真的被判红标 |"
 $md += "| 红标误报 | $($redFp.Count) | 非急症被判红标（会让患者白跑急诊） |"
-$md += "| 降级率 | $($degraded.Count) / $($samples.Count) = $($metrics.degrade_rate) | ``source != 'model'``（规则 / 模型输出不合规 / 未启用） |"
+$md += "| 降级率 | $($degraded.Count) / $($samples.Count) = $($metrics.degrade_rate) | **模型侧失败**：``degrade_reason`` 非空且非 ``RED_FLAG``（与 ``/admin/ai/triage-stats`` 同一判据）；本次口径：$($degradeCriterion) |"
+$md += "| 红标旁路 | $($bypass.Count) | ``degrade_reason='RED_FLAG'``：规则直接判红标、没调模型，属良性旁路，**不计入降级率** |"
 $md += "| 降级原因分布 | $(if ($degradeReasons.Count) { $degradeReasons -join '、' } else { '—' }) | 稳定码见 ``docs/FRONTEND-INTEGRATION.md`` §5.31 |"
 $md += "| 耗时 p50 / p95 | $($metrics.p50_ms) / $($metrics.p95_ms) ms（样本 $($elapsed.Count)） | 最近秩法，与 ``triage-stats`` 同一口径 |"
 $md += ""

@@ -491,6 +491,13 @@ public class BookingRepo {
      *   医生需要回头核"今天这个号最后怎么了"。
      * ⚠ 这个 CASE 与 `domain_emr.cj` 的 `visitQueueRank` **必须一致**
      *   （SQL 里排序才能配合 LIMIT；AC-P4-8 用那个函数预测顺序并逐项比对）。
+     *
+     * ⚠⚠ 最后一级 `id ASC` 是**必需的兜底**（2026-10-16 复核 D5）：
+     *   `visit_date`/`period`/`seq_no` 三列在库上都没有唯一约束
+     *   （测试夹具与并发补号都可能造出并列行），而这条 SQL 带 `LIMIT` ——
+     *   排序键并列时 MySQL 不保证返回顺序，于是**同一个请求可能返回不同集合**，
+     *   表现为"页面刷新一次就少了一个号"。加一个唯一的自增列做兜底，
+     *   顺序才是确定的（本文件其它带 LIMIT 的查询同样都有兜底）。
      */
     public func listAppointmentsByDoctor(doctorId: Int64, limit: Int64): Array<BookingResult> {
         let out = ArrayList<BookingResult>()
@@ -500,7 +507,7 @@ public class BookingRepo {
             "ORDER BY (CASE status " +
             "WHEN 'arrived' THEN 0 WHEN 'waiting' THEN 1 WHEN 'visiting' THEN 2 " +
             "WHEN 'booked' THEN 3 WHEN 'done' THEN 4 WHEN 'no_show' THEN 5 ELSE 6 END) ASC, " +
-            "visit_date ASC, period ASC, seq_no ASC LIMIT ?",
+            "visit_date ASC, period ASC, seq_no ASC, id ASC LIMIT ?",
             [DbInt(doctorId), DbStr("cancelled"), DbInt(limit)])
         var i: Int64 = 0
         while (i < rs.rowCount()) {

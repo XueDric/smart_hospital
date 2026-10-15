@@ -102,7 +102,7 @@ Write-Host "  库  : $($My.Db)@$($My.DbHost):$($My.Port)"
 # ── [0] 夹具（直接写库，精确控制前置状态）────────────────────────────────
 Write-Host ""
 Write-Host "[0] 准备夹具"
-$null = Invoke-MySqlScalar -My $My -Label "清病历" -Sql "DELETE FROM medical_record"
+$null = Invoke-MySqlScalar -My $My -Label "清病历" -Sql "DELETE FROM medical_record WHERE appointment_id >= 707000"
 $null = Invoke-MySqlScalar -My $My -Label "清挂号" -Sql "DELETE FROM appointment WHERE id >= 707000"
 $null = Invoke-MySqlScalar -My $My -Label "清排班" -Sql "DELETE FROM schedule WHERE id >= 707000"
 $null = Invoke-MySqlScalar -My $My -Label "清医生" -Sql "DELETE FROM doctor WHERE id >= 707000"
@@ -190,6 +190,17 @@ $r = Req "t2" 'POST' '/api/v1/doctor/visits/707005/waiting' $DH $null
 Check "★★ ③ 进入候诊 ⇒ 200 + status=waiting（没有独立时间戳列：等待区间用 arrived_at→started_at 表达）" `
       ($r.Http -eq 200 -and $r.Json.data.status -eq 'waiting' -and $r.Json.data.status_label -eq '候诊中') `
       "HTTP $($r.Http) status=$($r.Json.data.status)"
+<#
+  ★★ 本改进的**带头特性**必须在 HTTP 层被断言（2026-10-16 复核 D7）：
+    此前两次取队列分别是"全 booked"与"done + no_show" —— 那时按 seq_no 排
+    与按状态优先级排**结果相同**，于是"到院/候诊优先"这条从未真正被验证过
+    （把排序改回纯 seq_no 也照样绿）。
+    这里刻意造成"混合状态且序号逆序"的局面：707005（waiting，seq_no=2）必须
+    排在 707004（booked，seq_no=1）**前面** —— 只有状态优先级的实现才会这样。
+#>
+$r = Req "t2q" 'GET' '/api/v1/doctor/visits' $DH $null
+Check "★★ ③ 混合状态下候诊的 707005（seq_no=2）排在 booked 的 707004（seq_no=1）之前（到院/候诊优先）" `
+      ((QueueIds $r) -eq '707005,707004,707006,707009') "ids=$(QueueIds $r)"
 $r = Req "t3" 'POST' '/api/v1/doctor/visits/707005/start' $DH $null
 $startedAt = [int]$r.Json.data.started_at
 Check "★★ ③ 开始接诊 ⇒ 200 + status=visiting + started_at 落库" `
@@ -255,13 +266,41 @@ Check "★★ ⑤ 已退号的单，医生到院登记 ⇒ 409（退号不是「
       ($r.Http -eq 409 -and $r.Json.error.code -eq 'VISIT_BAD_STATE') "HTTP $($r.Http) code=$($r.Json.error.code)"
 Check "★ ⑤ 且退号单的时间戳全为 0（退号不写就诊时间线）" `
       ((ApptCol 707008 'arrived_at') -eq '0' -and (ApptCol 707008 'started_at') -eq '0' -and (ApptCol 707008 'finished_at') -eq '0')
-$r = Req "n5" 'POST' '/api/v1/appointments/707004/cancel' $PH $null
-Check "★ ⑤ 患者退掉只到院的单 707004 ⇒ 200（患者仍可退未接诊的单）" ($r.Http -eq 200) "HTTP $($r.Http) $($r.Body.Substring(0, [Math]::Min(120, $r.Body.Length)))"
+
+<#
+  ★★ 退号闸门的两半都要测（2026-10-16 复核 D6）：
+    原用例名叫「患者退掉**只到院**的单 707004 ⇒ 200」，可夹具里的 707004 全程是
+    booked —— 它测的其实是**未到院**的单可退，而"已到院的单能不能退"这条
+    （改进 6 的刻意设计：到院后号源已消耗 ⇒ 不许退）**一次都没被验证**，
+    用例名却宣称验过了。措辞与被测行为不符，是"假绿"最容易藏身的地方。
+    ⇒ 拆成两条：① 已到院 ⇒ 409（并核库状态没变）；② 未到院 ⇒ 200。
+#>
+$r = Req "n5" 'POST' '/api/v1/doctor/visits/707004/arrive' $DH $null
+Check "★ ⑤ 先把 707004 登记到院（为验证「已到院的单不能退」造前置状态）" ($r.Http -eq 200) "HTTP $($r.Http)"
+$r = Req "n6" 'POST' '/api/v1/appointments/707004/cancel' $PH $null
+<#
+  ⚠ 期望的是 **APPOINTMENT_NOT_CANCELLABLE**，不是 `VISIT_BAD_STATE`（2026-10-16 实测改正）：
+    退号走的是患者端点 `POST /api/v1/appointments/:id/cancel`，它把"单存在但不能退"
+    映射成这个**既有**业务码；`VISIT_BAD_STATE` 专属于医生侧流转端点
+    （arrive / waiting / start / finish / no-show）。两个码分工不同、不能互换 ——
+    断言写错码会让脚本在"服务端其实是对的"时报红，比不写还坏。
+    另外：PowerShell 没有 C 风格的斜杠星号注释（写成那样会被当成命令执行、
+    脚本静默中断）；块注释用小于号井号开头、井号大于号结尾，而且**不能嵌套** ——
+    所以注释正文里也不要写出这两个标记，否则注释会提前结束、后面的中文被当成命令。
+#>
+Check "★★ ⑤ 患者退掉**已到院**的 707004 ⇒ 409 APPOINTMENT_NOT_CANCELLABLE（退号仍只允许 booked；到院后号源已消耗，走人工/管理员）" `
+      ($r.Http -eq 409 -and $r.Json.error.code -eq 'APPOINTMENT_NOT_CANCELLABLE') "HTTP $($r.Http) code=$($r.Json.error.code)"
+Check "★★ ⑤ 且被拒后库里状态**仍是 arrived**（不是「拒了但写进去了」）" ((ApptCol 707004 'status') -eq 'arrived') `
+      "status=$(ApptCol 707004 'status')"
+$r = Req "n7" 'POST' '/api/v1/appointments/707007/cancel' $PH $null
+Check "★★ ⑤ 患者退掉**未到院**的 707007 ⇒ 200（退号仍只允许 booked）" ($r.Http -eq 200) `
+      "HTTP $($r.Http) $($r.Body.Substring(0, [Math]::Min(120, $r.Body.Length)))"
+Check "★ ⑤ 且库里状态变成 cancelled" ((ApptCol 707007 'status') -eq 'cancelled') "status=$(ApptCol 707007 'status')"
 $r = Req "cq" 'GET' '/api/v1/doctor/visits' $DH $null
-Check "★★ ⑤ 队列顺序按**状态优先级**（已完成 707005 → 两个已爽约按 seq_no：707006 → 707009），已退号一律不在" `
-      ((QueueIds $r) -eq '707005,707006,707009') "ids=$(QueueIds $r)"
-Check "★ ⑤ 且刚被患者退掉的 707004 立刻不在队列里（退号是终态，不是「到院前」）" `
-      ((QueueIds $r) -notmatch '707004') "ids=$(QueueIds $r)"
+Check "★★ ⑤ 最终队列顺序：arrived 707004 最前 → done 707005 → 两个 no_show 按 seq_no（707006 → 707009），已退号一律不在" `
+      ((QueueIds $r) -eq '707004,707005,707006,707009') "ids=$(QueueIds $r)"
+Check "★ ⑤ 已退号的 707008 与别人的单 707007 都不在队列里" `
+      (((QueueIds $r) -notmatch '707008') -and ((QueueIds $r) -notmatch '707007')) "ids=$(QueueIds $r)"
 
 # ── [6] 夹具自清 ────────────────────────────────────────────────────────
 Write-Host ""

@@ -46,9 +46,21 @@ export function periodText(period: string): string {
   return period.length > 0 ? period : '时段未知';
 }
 
+/*
+ * 就诊状态 → 中文。⚠ 2026-10-16（复核 D3）：服务端在改进 6 里把状态机扩到 7 个值
+ * （新增 arrived/waiting），患者端必须同步 —— 否则"我已到院"在患者自己的列表里
+ * 会显示成英文机器码 `arrived`，患者根本不知道那是"已到院"还是报错。
+ * 与 `common-core` 的同名函数、与服务端 `visitStatusLabel` 逐字一致。
+ */
 export function appointmentStatusText(status: string): string {
   if (status === 'booked') {
     return '待就诊';
+  }
+  if (status === 'arrived') {
+    return '已到院';
+  }
+  if (status === 'waiting') {
+    return '候诊中';
   }
   if (status === 'visiting') {
     return '就诊中';
@@ -67,6 +79,9 @@ export function appointmentStatusText(status: string): string {
 
 export function appointmentStatusColor(status: string): string {
   if (status === 'booked') {
+    return AppColor.INFO;
+  }
+  if (status === 'arrived' || status === 'waiting') {
     return AppColor.INFO;
   }
   if (status === 'visiting') {

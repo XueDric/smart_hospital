@@ -117,7 +117,10 @@ page({
     el.appendChild(h('div', { class: 'stat-row', style: 'margin-top:14px' },
       stat('科室 / 医生', `${fmtNum(s.departments)} / ${fmtNum(s.doctors)}`, '数据来源：' + (s.source || '—')),
       stat('挂号总数', fmtNum(a.total),
-        `已约 ${fmtNum(a.booked)} · 就诊中 ${fmtNum(a.visiting)} · 完成 ${fmtNum(a.done)}`),
+        // 2026-10-16：改进 6 加了 arrived/waiting 两个阶段，看板必须跟着拆开显示 ——
+        // 否则"候诊 12 人"会全部藏进"已约"里，看板看不出诊室门口积压了多少人。
+        `已约 ${fmtNum(a.booked)} · 已到院 ${fmtNum(a.arrived)} · 候诊 ${fmtNum(a.waiting)}`
+        + ` · 就诊中 ${fmtNum(a.visiting)} · 完成 ${fmtNum(a.done)}`),
       stat('取消率', fmtPermille(a.cancel_permille), '爽约率 ' + fmtPermille(a.no_show_permille)),
       stat('号源余量', `${fmtNum(slots.remain_slots)} / ${fmtNum(slots.total_slots)}`,
         `排班 ${fmtNum(slots.schedule_count)} 条（启用 ${fmtNum(slots.enabled_schedule_count)}）`)));
@@ -735,7 +738,16 @@ page({
            */
           if (v.temperature !== '' && v.temperature !== null) { body.temperature = Number(v.temperature); }
           if (v.max_tokens !== '' && v.max_tokens !== null) { body.max_tokens = Number(v.max_tokens); }
-          if (!isEdit || v.clear_key_ref || (v.key_ref || '').length > 0) { body.key_ref = v.key_ref || ''; }
+          /*
+           * ⚠ `clear_key_ref` 只活在**这一页**：服务端从没读过这个键（它是 PUT 的 PATCH 语义
+           *   下"想清空"与"想保持不变"的唯一区分手段）。清空靠的是**显式发 `key_ref: ""`**
+           *   —— `bodyStr()` 只在键**缺席**时回 None（保持原值），键在、值为空串就是清空。
+           *   所以这里让勾选框**优先于**输入框：勾了就是清空，绝不因为输入框里还留着
+           *   上一次的草稿而悄悄把旧密钥保留下来（那是"我以为清掉了"的事故）。
+           */
+          if (!isEdit) { body.key_ref = v.key_ref || ''; }
+          else if (v.clear_key_ref) { body.key_ref = ''; }
+          else if ((v.key_ref || '').length > 0) { body.key_ref = v.key_ref; }
           if (isEdit) { await API.put(`/admin/ai/models/${row.id}`, body); toast(`已保存：${v.name}`, 'ok'); }
           else { const res = await API.post('/admin/ai/models', body); toast(`已创建：id=${res.id}`, 'ok'); }
           reload();

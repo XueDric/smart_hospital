@@ -1,4 +1,4 @@
-﻿# 智慧医院 · 前端对接说明书（服务端 HTTP 契约）
+# 智慧医院 · 前端对接说明书（服务端 HTTP 契约）
 
 > **这份文档是干什么的**：把本仓库 `server/` 里**当前真实存在**的服务端 HTTP 契约，逐字段写清楚，
 > 让前端开发者**看完这一份就能开始接**。所有路径、字段名、错误码、默认值都逐字照抄实现，
@@ -1439,17 +1439,25 @@ POST /api/v1/doctor/visits/:id/record/reopen
 
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
-| `from` / `to` | `to = 现在`、`from = to - 86400`（最近 24h） | epoch **秒**；`from > to` ⇒ **400 `VALIDATION_FAILED`**（**不自动交换** —— 交换会把参数写错掩盖成"查到了但是空"） |
+| `from` / `to` | `to = 现在`、`from = to - 86400`（最近 24h） | epoch **秒**；给值就必须是**非负整数**（`?from=abc` / `?from=-1` ⇒ **400**，不再静默回落默认窗口）；`from > to` ⇒ **400 `VALIDATION_FAILED`**（**不自动交换** —— 交换会把参数写错掩盖成"查到了但是空"）；`to - from > 366 天` ⇒ **400**（无上限时"一次请求扫全表"只是少打几个字的事） |
 | `group_by` | `source` | **只认 `source` / `reason_code` / `model_name`**。它是**要拼进 SQL 的列名**，所以非白名单值（含空串、`id`、注入串）一律 400，**绝不回退默认值继续查** |
 | `limit` | `5000` | 抽样行数上限，夹到 `1..20000`（分位数在内存里算，不设上限等于一次请求把整表拉进内存） |
 | `group_limit` | `20` | 返回的分组数上限，夹到 `1..100` |
 
 响应 `data`：`from` / `to` / `group_by` / `sample_limit` / `group_limit`（**回显实际用的值**，客户端不必猜）/
 `sampled`（实际取到的行数）/ `truncated`（是否被 `limit` 截断）/ `overall` / `groups`。
-`overall` 与 `groups[]` 是**同一个形状**：`bucket` / `total` / `degraded` / `degrade_rate` / `p50_ms` / `p95_ms`
+`overall` 与 `groups[]` 是**同一个形状**：`bucket` / `total` / `degraded` / `degrade_rate` /
+`red_flag` / `red_flag_rate` / `p50_ms` / `p95_ms`
 （`overall.bucket` 恒为 `"all"`；`groups[]` 按 `total` 降序，并列按 `bucket` 升序）。
 
-- **`degrade_rate`** = `degraded / total`，带 **4 位小数**（如 `0.6667`）；`total = 0` 时为 `0`。
+- **`degraded` 只数"模型侧失败"**：`degrade_reason` 非空**且不是** `RED_FLAG`。
+  `RED_FLAG` 是"规则层直接判危急、压根没调模型"的**安全旁路**，把它算成 AI 失败会让看板
+  在正常拦截时报告"AI 总在挂" ⇒ 二者分成两个量：`degraded` / `red_flag`。
+  ⚠ **口径只在服务端定义一次**（`triageDegradeIsFailure` / `triageDegradeIsRedFlagBypass`），
+  客户端**不要**自己写 `source != "model"` 之类的第二份判据（2026-10-16 复核发现评测脚本
+  就是这么写的 —— 同一指标两处实现，两份数字迟早对不上）。
+- **`degrade_rate`** = `degraded / total`，**`red_flag_rate`** = `red_flag / total`，都带 **4 位小数**（如 `0.6667`）；
+  `total = 0` 时为 `0`。两者**相加不是 1**：还有"真的用上了模型"的那部分。
 - **`p50_ms` / `p95_ms` 用最近秩法（nearest-rank），整数毫秒**：取排序后第 `ceil(p/100 × n)` 个**真实样本**，
   不做插值 —— 插值会造出一个从未发生过的耗时，排障时去日志里根本找不到这个数。
 - 样本为空时一切计数为 `0`、`groups` 为 `[]`。
@@ -1462,7 +1470,7 @@ POST /api/v1/doctor/visits/:id/record/reopen
 | `limit` | `20` | 夹到 `1..100` |
 
 响应 `data`：`request_id` / `items[]` / `count` / `order`（恒 `"id_desc"`）。
-`items[]` 每项 16 个字段：
+`items[]` 每项 **17** 个字段：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -1476,7 +1484,8 @@ POST /api/v1/doctor/visits/:id/record/reopen
 | `prompt_revision` | **调用当时**的配置版本号（见下） |
 | `elapsed_ms` | 出站耗时（未走到拿响应时为 `0`） |
 | `degrade_reason` | 降级**稳定码**：`""`（真用上了模型）/ `RED_FLAG` / `CONFIG_READ_FAILED` / `AI_DISABLED` / `INVALID_OUTPUT` / `CALL_FAILED` |
-| `degraded` | 冗余布尔 = `degrade_reason != ""`（省得前端记"空串 = 正常"） |
+| `degraded` | 冗余布尔 = 「模型侧失败」= `degrade_reason != "" && degrade_reason != "RED_FLAG"`（**不是**简单的"非空"） |
+| `red_flag_bypass` | 冗余布尔 = `degrade_reason == "RED_FLAG"`（规则直接判红标、没调模型）。与 `degraded` **互斥**；看板按 `degraded` 过滤即可，别把红标旁路算成 AI 失败 |
 | `used_kb` / `kb_doc_ids` | 是否用了知识库 / 命中的**文档 id 列表**（逗号分隔，**不含正文片段**） |
 
 - **未知 `requestId` ⇒ 200 + `count: 0`，不是 404**：没有遥测行 ≠ 这个编号不存在
@@ -1608,6 +1617,22 @@ POST /api/v1/doctor/visits/:id/record/reopen
 | 非法流转（跳步 / 重复 / 终态回退） | 409 | `VISIT_BAD_STATE`（`message` 里带当前状态与目标状态） |
 | 完成就诊但病历未锁定 | 409 | `EMR_NOT_LOCKED` |
 | 不是自己的单 / 单不存在 | 404 | `APPOINTMENT_NOT_FOUND` |
+| **退号**时状态不允许（如已到院/已完成） | 409 | `APPOINTMENT_NOT_CANCELLABLE`（**不是** `VISIT_BAD_STATE`：退号走患者端点 `POST /api/v1/appointments/:id/cancel`，它有自己的业务码，`message` 带中文状态名 —— 两个码分工不同，客户端按码分支时别混用） |
+
+#### 5.32.7 2026-10-16 复核修正（客户端已落地，服务端行为补充）
+
+第三方复核在**客户端侧**发现改到院/候诊后"主流程整个走不通"，根因是前端只实现了 `start`：
+
+| # | 问题 | 修正 | 落点 |
+| --- | --- | --- | --- |
+| 1 | 医生端只有 `startVisit`，「开始接诊」对着 `booked` 的单按下去必然 409 ⇒ 医生主流程断死 | 补 `arriveVisit` / `waitingVisit`，队列页按钮随 `status` 给"下一步唯一动作"，并给"爽约" | `feature-doctor/.../DoctorRepository.ets`（`arriveVisit`/`waitingVisit`）、`VisitQueuePage.ets` |
+| 2 | 患者端状态文案只有 `booked`/`visiting`/`cancelled`/`no_show` ⇒ 新状态在患者自己列表里显示英文机器码 | 补齐七态中文（与 `common-core` 同名字符串逐字一致），**优先用服务端 `status_label`**、本地映射只作兜底 | `feature-patient/.../Theme.ets`（`appointmentStatusText`）、`common-core/.../Theme.ets` |
+| 3 | 管理台看板仍只显示 `booked`/`visiting` ⇒ "候诊 12 人"全藏进"已约"里 | 看板拆出 `已到院` / `候诊`（`dashboard` 端点早就算好了这两个数） | `server/admin-web/js/pages.js` |
+| 4 | 模型配置表单的「清空密钥引用」勾选框：清空靠**显式发 `key_ref: ""`**，而原实现让输入框残留值优先 ⇒ 勾了也可能没清掉 | 勾选框**优先于**输入框（勾了就是 `key_ref: ""`）；并注明服务端从不读 `clear_key_ref` 这个键 | `server/admin-web/js/pages.js` |
+
+⚠ 本次客户端改动只做了**静态核对（逐字段对照服务端返回与 Schema）**，没有 DevEco/真机编译环境；
+`BuildArkTS` 之类的编译验证要在有 SDK 的机器上补做。服务端侧复核修正（D1/D2/D4/D5…）见
+`docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md` §八。
 | 患者或管理员令牌 | 403 | `FORBIDDEN_ROLE` |
 | 无令牌 | 401 | `AUTH_REQUIRED` |
 

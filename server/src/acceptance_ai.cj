@@ -754,14 +754,24 @@ public func acP3_7(runner: TestRunner, db: DbBackend): Unit {
         runner.check("② 模型行标识往返一致（实得 id=${kbRow.modelId} name='${kbRow.modelName}'）",
                      kbRow.modelId > 0 && kbRow.modelName.size > 0 &&
                      kbRow.promptRevision == 3)
-        runner.check("② 未降级行的 degrade_reason 是**空串**（= 真用上了模型）",
-                     !kbRow.degradeReason.contains("降级") && kbRow.degradeReason.size == 0)
+        runner.check("② 未降级行的 degrade_reason 是**空串**（= 真用上了模型；实得 " +
+                     "'${kbRow.degradeReason}'，长度 ${kbRow.degradeReason.size}）",
+                     kbRow.degradeReason.size == 0)
 
         // ③ 统计量：**手算值**逐一对账（见函数头"为什么可手算"）
         let agg = triageStatAggregate(w.rows, "source", 20)
         let all = agg[0]
         runner.check("③ 总体样本数 = 5（实得 ${all.total}）", all.total == 5)
-        runner.check("③ 降级数 = 2（rules + model:invalid；实得 ${all.degraded}）", all.degraded == 2)
+        /*
+         * ⚠ 2026-10-16（复核提示项）后，"降级"只算**模型侧失败**：
+         *   RED_FLAG 是"规则直接判红标、压根没调模型"的良性安全旁路，单独计入
+         *   `redFlag`。少算/多算都会让看板上的 AI 失败率失真：把红标算进去 ⇒
+         *   临床看到"AI 总在失败"（实际是规则在正常拦截）；把真失败漏掉 ⇒
+         *   模型坏了也没人知道。样本里 rules 那行正是 RED_FLAG 旁路。
+         */
+        runner.check("★ ③ 降级数 = 1（只有 model:invalid 那行是真降级；rules 那行是 RED_FLAG 安全旁路，" +
+                     "实得 degraded=${all.degraded} redFlag=${all.redFlag}）",
+                     all.degraded == 1 && all.redFlag == 1)
         runner.check("★ ③ p50 = 200（最近秩第 3 个；实得 ${all.p50Ms}）", all.p50Ms == 200)
         runner.check("★ ③ p95 = 450（最近秩第 5 个；实得 ${all.p95Ms}）", all.p95Ms == 450)
 
@@ -775,8 +785,9 @@ public func acP3_7(runner: TestRunner, db: DbBackend): Unit {
                          groups[0].degraded == 0)
             runner.check("④ 第 2 组 = model:invalid（并列时按名字升序 ⇒ 顺序确定）",
                          groups[1].bucket == "model:invalid")
-            runner.check("④ 第 3 组 = rules（且降级数 = 1）",
-                         groups[2].bucket == "rules" && groups[2].degraded == 1)
+            runner.check("④ 第 3 组 = rules（降级 0 —— RED_FLAG 不算降级；红标旁路 = 1）",
+                         groups[2].bucket == "rules" && groups[2].degraded == 0 &&
+                         groups[2].redFlag == 1)
         } else {
             runner.check("④ 分组数应为 3", false)
         }
@@ -801,11 +812,16 @@ public func acP3_7(runner: TestRunner, db: DbBackend): Unit {
         runner.check("⑥ sampled = 5、truncated = false（**没被截断就不许报截断**）",
                      hT7JsonInt(jo, "sampled") == 5 && !hT7JsonBool(jo, "truncated"))
         let overall = hT7Sub(jo, "overall")
-        runner.check("⑥ overall 的 total/degraded/p50/p95 与聚合一致",
-                     hT7JsonInt(overall, "total") == 5 && hT7JsonInt(overall, "degraded") == 2 &&
+        runner.check("⑥ overall 的 total/degraded/red_flag/p50/p95 与聚合一致",
+                     hT7JsonInt(overall, "total") == 5 && hT7JsonInt(overall, "degraded") == 1 &&
+                     hT7JsonInt(overall, "red_flag") == 1 &&
                      hT7JsonInt(overall, "p50_ms") == 200 && hT7JsonInt(overall, "p95_ms") == 450)
+        // 两个比率是**分开的**：degrade_rate 回答"模型坏没坏"，red_flag_rate 回答"多少单被安全旁路拦下"。
         let rate = hT7JsonFloat(overall, "degrade_rate")
-        runner.check("⑥ 降级率 = 2/5 = 0.4（实得 ${rate}）", rate > 0.3999 && rate < 0.4001)
+        runner.check("⑥ 降级率 = 1/5 = 0.2（实得 ${rate}）", rate > 0.1999 && rate < 0.2001)
+        let rfRate = hT7JsonFloat(overall, "red_flag_rate")
+        runner.check("★★ ⑥ 红标旁路率 = 1/5 = 0.2（实得 ${rfRate}）—— 把 RED_FLAG 混进降级率会得 0.4，" +
+                     "看板就会把「规则正常拦截」报成「AI 失败」", rfRate > 0.1999 && rfRate < 0.2001)
         let g0 = hT7GroupAt(jo, 0)
         runner.check("⑥ groups[0] 是 model 组（bucket/total 都对）",
                      hT7JsonStr(g0, "bucket") == "model" && hT7JsonInt(g0, "total") == 3)
@@ -853,6 +869,29 @@ public func acP3_7(runner: TestRunner, db: DbBackend): Unit {
         runner.check("★★ ⑧ 未知 requestId 回**空数组**（不抛异常、也不假装 404）",
                      ts.callsByRequest("ac7-nope", 20).size == 0)
         runner.check("⑧ limit 生效（limit=1 ⇒ 只回 1 行）", ts.callsByRequest("ac7-req-a", 1).size == 1)
+
+        /*
+         * ⑧b ★★ 超长请求号的**读写同口径**（2026-10-16 复核 D2）。
+         *   为什么值得单独一个用例：`X-Request-Id` 是客户端可控、长度不限的头，
+         *   写侧截到 64（列宽）而读侧不截 ⇒ 排障闭环出现最坏的形态 ——
+         *   **调用当场对得上号，事后怎么查都查不到**（triage_stat.cj 的注释
+         *   早就预言过这个坑，但当时只有写侧做了截断）。
+         *   这里不依赖 HTTP 层：直接写一行 64 字符的记录，再用**更长的** id 去查。
+         */
+        // 60 个 x 写字面量（不用 String.repeat —— 本仓没有先例，不值得为测试引入未验证的 API）
+        let longKey = "ac7-long-" +
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        let storedKey = previsitTruncateChars(longKey, TRIAGE_REQUEST_ID_MAX)
+        runner.check("⑧b 夹具本身确实超长（${longKey.size} 字符）、截断后正好是上限 ${TRIAGE_REQUEST_ID_MAX}",
+                     longKey.size > TRIAGE_REQUEST_ID_MAX && storedKey.size == TRIAGE_REQUEST_ID_MAX)
+        ts.record("OK", false, "急诊科", false, "model", now, requestId: longKey,
+                  modelId: 7, modelName: "通义千问-正式", promptRevision: 3, elapsedMs: 88)
+        let byLong = ts.callsByRequest(longKey, 20)
+        runner.check("★★ ⑧b 用**完整超长** id 反查得到那一行（读侧不截时这里是 0 行）",
+                     byLong.size == 1 && byLong[0].requestId == storedKey)
+        runner.check("⑧b 落库的是截断后的 id（库里没有超长行）",
+                     ts.callsByRequest(storedKey, 20).size == 1)
+        db.exec("DELETE FROM triage_stat WHERE request_id = ?", [DbStr(storedKey)])
 
         // ⑨ 截断信号：抽样上限真的取到 limit+1 时，必须如实标记 truncated
         let w2 = ts.windowRows(from, to, 2)
@@ -938,24 +977,51 @@ public func acP3_7(runner: TestRunner, db: DbBackend): Unit {
                      "，但 model_name 仍是**当时真的发出去的**模型名（'${o2.modelName}'）",
                      o2.modelId == 0 && o2.modelName == "kv-model-x")
 
-        // ⑭ 降级原因用**稳定码**：空串 = 真用上了模型（给人看的 aiReason 与它分开）
+        /*
+         * ⑭ 降级码是**稳定码**（空串 = 真用上了模型），且"是不是降级"只由**两个谓词**回答。
+         *   ⚠ 2026-10-16（复核提示项）：原来这一组只断言 `TriageVerdict()` 的结构默认值
+         *   （字段是空串/0）—— 那只能说明"结构没变"，说明不了"判据对不对"：
+         *   把 `triageDegradeIsFailure` 写成 `return true` 也照样绿。
+         *   这里改成**真值表**逐格断言，因为它是整个看板口径的唯一入口。
+         */
         let v = TriageVerdict()
-        runner.check("★★ ⑭ 默认 degrade_reason 是空串（= 真用上模型），" +
+        runner.check("★ ⑭ TriageVerdict 默认 degrade_reason 是空串（= 真用上模型），" +
                      "且与给人看的 aiReason 是两个字段",
                      v.aiDegradeReason.size == 0 && v.aiReason.size == 0 && v.aiElapsedMs == 0 &&
                      !v.aiUsedKb && v.aiModelId == 0)
+        runner.check("★★ ⑭ 降级谓词真值表：空串不算降级；RED_FLAG 是安全旁路也不算；其余非空码都算失败",
+                     !triageDegradeIsFailure("") && !triageDegradeIsFailure("RED_FLAG") &&
+                     triageDegradeIsFailure("INVALID_OUTPUT") &&
+                     triageDegradeIsFailure("CALL_FAILED") &&
+                     triageDegradeIsFailure("AI_DISABLED") &&
+                     triageDegradeIsFailure("CONFIG_READ_FAILED") &&
+                     /*
+                      * ★ 未知码**算失败**（而不是忽略）：将来新增一个降级码时，
+                      *   它一定意味着"这次没拿到模型答案"；把它当成功会让
+                      *   看板上的 AI 失败率在加字段的那天悄悄变低 —— 静默失真比误报难查得多。
+                      *   反过来，唯一被排除的只有 RED_FLAG（规则有意短路，有独立指标）。
+                      */
+                     triageDegradeIsFailure("SOMETHING_NEW"))
+        runner.check("★★ ⑭ 红标旁路谓词真值表：只有 RED_FLAG 为真，且与降级谓词**互斥**",
+                     triageDegradeIsRedFlagBypass("RED_FLAG") &&
+                     !triageDegradeIsRedFlagBypass("") &&
+                     !triageDegradeIsRedFlagBypass("CALL_FAILED") &&
+                     !triageDegradeIsRedFlagBypass("AI_DISABLED") &&
+                     !(triageDegradeIsFailure("RED_FLAG") &&
+                       triageDegradeIsRedFlagBypass("RED_FLAG")))
 
         /*
-         * ⑮ ★★ "降级"的判据**只有一条**：`degrade_reason` 非空。
-         *   用两行**刻意不一致**的样本把它钉死（不写库，纯内存聚合）：
-         *     · source = "rules" 但 degrade_reason = ""（结论来自规则，却没记降级原因）
+         * ⑮ ★★ "降级"与"红标旁路"是**两个**统计量，判据只有一条（走上面的谓词）。
+         *   用两行**刻意不一致**的样本钉死（不写库，纯内存聚合）：
+         *     · source = "rules" 但 degrade_reason = "RED_FLAG"（规则直接拦红标、没调模型）
          *     · source = "model" 但 degrade_reason = "CALL_FAILED"（模型那次调用失败了）
-         *   若判据写成 `source != "model"`，总体 degraded 会得 2 —— 本断言立刻变红。
+         *   若判据写成 `source != "model"`，总体 degraded 会得 2 —— 本断言立刻变红；
+         *   若把 RED_FLAG 混进 degraded（旧口径），也会得 2 —— 同样变红。
          *   口径分叉的代价：看板上"单行 degraded 之和"与"分组小计"对不上，排障时谁也说不清哪个对。
          */
         let r15a = TriageCallRow()
         r15a.source = "rules"
-        r15a.degradeReason = ""
+        r15a.degradeReason = "RED_FLAG"
         r15a.elapsedMs = 10
         let r15b = TriageCallRow()
         r15b.source = "model"
@@ -965,12 +1031,17 @@ public func acP3_7(runner: TestRunner, db: DbBackend): Unit {
         let agg15 = triageStatAggregate(rows15, "source", 20)
         let all15 = agg15[0]
         var sum15: Int64 = 0
+        var sum15rf: Int64 = 0
         for (g in agg15[1]) {
             sum15 = sum15 + g.degraded
+            sum15rf = sum15rf + g.redFlag
         }
-        runner.check("★★ ⑮ degraded 只按 degrade_reason 非空算（写成 source != model 会得 2），" +
-                     "且分组小计 = 总体（实得 ${all15.degraded} / 小计 ${sum15}）",
+        runner.check("★★ ⑮ degraded 只算模型侧失败（写成 source != model 或把 RED_FLAG 算进去都会得 2），" +
+                     "且分组小计 = 总体（实得 degraded=${all15.degraded} 小计 ${sum15}）",
                      all15.total == 2 && all15.degraded == 1 && sum15 == all15.degraded)
+        runner.check("★★ ⑮ 红标旁路单独计（实得 redFlag=${all15.redFlag} 小计 ${sum15rf}）—— " +
+                     "「AI 失败率」不该把规则正常拦截算进去",
+                     all15.redFlag == 1 && sum15rf == all15.redFlag)
         runner.check("★★ ⑮ 总体行的 bucket 是 'all'（空串在 JSON 里与「没算出来」长得一样）",
                      all15.bucket == "all")
 

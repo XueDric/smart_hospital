@@ -19,6 +19,17 @@ export class VisitItem {
   // 真实就诊阶段（arrived/waiting/visiting/…）；服务端在兼容字段 `status` 之外
   // 单独下发，缺失时客户端回退到 `status`（见 DoctorRepository.parseVisit）。
   visitStatus: string = '';
+  /*
+   * ⚠ 2026-10-16（复核 D3）：服务端从改进 6 起额外下发
+   *   ① `status_label` —— 人话状态名（与 `status` 同源，改文案不影响机器判据）；
+   *   ② `arrived_at` / `started_at` / `finished_at` —— epoch 秒，**0 = 这一步还没发生**
+   *      （不是"时间是 1970"）。队列页要显示"已到院 09:12 / 候诊 18 分钟"就必须读它们；
+   *      此前客户端完全不解析，于是医生看不出患者等了多久。
+   */
+  statusLabel: string = '';
+  arrivedAt: number = 0;
+  startedAt: number = 0;
+  finishedAt: number = 0;
   // 本单是否绑定了患者预问诊单（服务端 2026-10-14 新增）——队列页据此显示「预问诊」徽标。
   previsitReady: boolean = false;
   recordId: number = 0;

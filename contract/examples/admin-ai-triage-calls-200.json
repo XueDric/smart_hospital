@@ -29,6 +29,7 @@
             "elapsed_ms": 900,
             "degrade_reason": "",
             "degraded": false,
+            "red_flag_bypass": false,
             "used_kb": true,
             "kb_doc_ids": "11,22"
           }

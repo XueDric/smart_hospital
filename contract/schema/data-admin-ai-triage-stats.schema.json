@@ -1,6 +1,6 @@
 {
   "title": "data：AI 分诊质量聚合（改进 7）",
-  "description": "GET /api/v1/admin/ai/triage-stats 的 data。⚠ 三件事故由这张 Schema 钉住：① 分位数只能是**整数毫秒**（p50_ms/p95_ms 是 integer）—— 本项目用最近秩法，不做插值，插值会造出日志里根本不存在的耗时；② 被截断必须**如实**（truncated 是必填布尔）—— 分组指标是在样本上算的，悄悄地少算会让“命中率下降了”这种结论失去依据；③ 响应里**没有**主诉原文、patient_id、doctor_id、手机号（additionalProperties: false 让它们加不进来；表里也根本没这些列）。degrade_rate 是 0..1 的小数（四舍五入到 4 位），degraded/total 同时给出，便于前端自行核对。",
+  "description": "GET /api/v1/admin/ai/triage-stats 的 data。⚠ 四件事故由这张 Schema 钉住：① 分位数只能是**整数毫秒**（p50_ms/p95_ms 是 integer）—— 本项目用最近秩法，不做插值，插值会造出日志里根本不存在的耗时；② 被截断必须**如实**（truncated 是必填布尔）—— 分组指标是在样本上算的，悄悄地少算会让“命中率下降了”这种结论失去依据；③ 响应里**没有**主诉原文、patient_id、doctor_id、手机号（additionalProperties: false 让它们加不进来；表里也根本没这些列）；④ **降级率与红标旁路率是两个字段**（degrade_rate / red_flag_rate 都必填）—— RED_FLAG 是规则直接判红标、压根没调模型的良性安全旁路，混进降级率会让看板把“规则正常拦截”报成“AI 总在失败”。degrade_rate 是 0..1 的小数（四舍五入到 4 位），degraded/total 同时给出，便于前端自行核对。",
   "type": "object",
   "required": ["from", "to", "group_by", "sample_limit", "group_limit", "sampled", "truncated", "overall", "groups"],
   "additionalProperties": false,
@@ -18,12 +18,14 @@
     "truncated": { "type": "boolean", "description": "true = 窗口内还有更多行没被采样 ⇒ 调用方必须在界面上说出来" },
     "overall": {
       "type": "object",
-      "required": ["bucket", "total", "degraded", "degrade_rate", "p50_ms", "p95_ms"],
+      "required": ["bucket", "total", "degraded", "red_flag", "red_flag_rate", "degrade_rate", "p50_ms", "p95_ms"],
       "additionalProperties": false,
       "properties": {
         "bucket": { "type": "string", "const": "all", "description": "总体的 bucket 恒为 \"all\"，不会与任何真实分组键撞名" },
         "total": { "type": "integer", "minimum": 0 },
-        "degraded": { "type": "integer", "minimum": 0, "description": "degrade_reason 非空的行数（空样本时为 0）" },
+        "degraded": { "type": "integer", "minimum": 0, "description": "**模型侧失败**的行数（degrade_reason 非空且非 RED_FLAG；空样本时为 0）" },
+        "red_flag": { "type": "integer", "minimum": 0, "description": "RED_FLAG 安全旁路的行数（规则直接判红标、没调模型；**不算**降级）" },
+        "red_flag_rate": { "type": "number", "minimum": 0, "maximum": 1, "description": "red_flag / total，与 degrade_rate 分开；两者相加加上“真用上模型”才是全部样本" },
         "degrade_rate": { "type": "number", "minimum": 0, "maximum": 1 },
         "p50_ms": { "type": "integer", "minimum": 0 },
         "p95_ms": { "type": "integer", "minimum": 0 }
@@ -34,12 +36,14 @@
       "description": "按 group_by 分桶，按样本量降序、并列按 bucket 升序（顺序确定，避免测试假红）",
       "items": {
         "type": "object",
-        "required": ["bucket", "total", "degraded", "degrade_rate", "p50_ms", "p95_ms"],
+        "required": ["bucket", "total", "degraded", "red_flag", "red_flag_rate", "degrade_rate", "p50_ms", "p95_ms"],
         "additionalProperties": false,
         "properties": {
           "bucket": { "type": "string", "description": "分组键：source 是 rules/model/model:invalid；reason_code 是分诊理由码；model_name 是当时真正发出去的模型名（走 KV 配置时就是 KV 里的串）" },
           "total": { "type": "integer", "minimum": 0 },
           "degraded": { "type": "integer", "minimum": 0 },
+          "red_flag": { "type": "integer", "minimum": 0 },
+          "red_flag_rate": { "type": "number", "minimum": 0, "maximum": 1 },
           "degrade_rate": { "type": "number", "minimum": 0, "maximum": 1 },
           "p50_ms": { "type": "integer", "minimum": 0 },
           "p95_ms": { "type": "integer", "minimum": 0 }

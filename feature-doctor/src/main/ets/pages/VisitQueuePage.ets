@@ -44,6 +44,28 @@ export struct VisitQueuePage {
     }
   }
 
+  /*
+   * 到院登记 / 转入候诊（2026-10-16 复核 D3 新增）。
+   * 为什么必须有：服务端从改进 6 起把 `start` 收窄为只接受 waiting，
+   * 而「谁确认到院」的答案是**医护侧确认**（患者自助签到本轮不做）。
+   * 没有这两个动作，队列页上的单就永远停在 booked/arrived，接诊流程断在原地。
+   */
+  async arrive(item: VisitItem): Promise<void> {
+    await this.act(async () => {
+      await this.repository.arriveVisit(item.appointmentId);
+      this.notice = '已登记到院';
+      this.noticeTone = 'success';
+    });
+  }
+
+  async waiting(item: VisitItem): Promise<void> {
+    await this.act(async () => {
+      await this.repository.waitingVisit(item.appointmentId);
+      this.notice = '已转入候诊';
+      this.noticeTone = 'success';
+    });
+  }
+
   async start(item: VisitItem): Promise<void> {
     await this.act(async () => {
       await this.repository.startVisit(item.appointmentId);
@@ -95,6 +117,70 @@ export struct VisitQueuePage {
       return `已填 ${item.recordFilled}/7 · 草稿`;
     }
     return '无病历（record_status: none）';
+  }
+
+  /*
+   * ⚠ 2026-10-16（复核 D3）：状态中文名**优先用服务端下发的 status_label**。
+   *   本地 appointmentStatusText 只是兜底：中文名只该有一份权威实现（服务端
+   *   `visitStatusLabel`），两边各写一份迟早会出现"服务端说已到院、客户端说候诊中"。
+   */
+  private statusTextOf(item: VisitItem): string {
+    if (item.statusLabel.length > 0) {
+      return item.statusLabel;
+    }
+    return appointmentStatusText(item.status);
+  }
+
+  private clockText(epoch: number): string {
+    if (epoch <= 0) {
+      return '';
+    }
+    const at = new Date(epoch * 1000);
+    const hh = at.getHours() < 10 ? `0${at.getHours()}` : `${at.getHours()}`;
+    const mm = at.getMinutes() < 10 ? `0${at.getMinutes()}` : `${at.getMinutes()}`;
+    return `${hh}:${mm}`;
+  }
+
+  private waitText(item: VisitItem): string {
+    // 候诊时长 = arrived_at → started_at（还没接诊就用"现在"算，让医生知道等了多久）
+    if (item.arrivedAt <= 0) {
+      return '';
+    }
+    const nowSec = Math.floor(Date.now() / 1000);
+    const to = item.startedAt > 0 ? item.startedAt : nowSec;
+    const mins = Math.floor((to - item.arrivedAt) / 60);
+    if (mins < 0) {
+      return '';
+    }
+    if (mins < 60) {
+      return `候诊 ${mins} 分钟`;
+    }
+    return `候诊 ${Math.floor(mins / 60)} 小时 ${mins % 60} 分钟`;
+  }
+
+  /*
+   * 时间线文本：把服务端给的三时间戳读出来（0 = 这一步还没发生）。
+   * 为什么值得显示：`arrived_at` 是"患者到了但没人管"的唯一证据，
+   * 队列页看不到它时，"等了 40 分钟"这种事只能靠患者投诉才知道。
+   */
+  private timelineText(item: VisitItem): string {
+    const parts: string[] = [];
+    if (item.arrivedAt > 0) {
+      parts.push(`到院 ${this.clockText(item.arrivedAt)}`);
+    }
+    if (item.startedAt > 0) {
+      parts.push(`接诊 ${this.clockText(item.startedAt)}`);
+    }
+    if (item.finishedAt > 0) {
+      parts.push(`完成 ${this.clockText(item.finishedAt)}`);
+    }
+    if (item.arrivedAt > 0 && item.finishedAt <= 0) {
+      const wait = this.waitText(item);
+      if (wait.length > 0) {
+        parts.push(wait);
+      }
+    }
+    return parts.join(' · ');
   }
 
   private filtered(): VisitItem[] {
@@ -187,7 +273,7 @@ export struct VisitQueuePage {
                   }
 
                   StatusChip({
-                    text: appointmentStatusText(item.status),
+                    text: this.statusTextOf(item),
                     color: appointmentStatusColor(item.status),
                     chipBackground: this.chipBackground(item.status)
                   })
@@ -195,13 +281,62 @@ export struct VisitQueuePage {
                 .width('100%')
                 .alignItems(VerticalAlign.Center)
 
+                if (this.timelineText(item).length > 0) {
+                  Text(this.timelineText(item))
+                    .fontSize(AppText.CAPTION)
+                    .fontColor(AppColor.TEXT_SECONDARY)
+                    .margin({ top: 6 })
+                }
+
                 Row() {
                   Text(`${item.visitDate} ${item.period}`)
                     .fontSize(AppText.CAPTION)
                     .fontColor(AppColor.TEXT_SECONDARY)
                     .layoutWeight(1)
 
+                  /*
+                   * ⚠ 2026-10-16（复核 D3）：服务端的流转矩阵是
+                   *   booked → arrived → waiting → visiting → done（+ 各阶段可 no_show）。
+                   *   上一版这里只在 `booked` 时渲染「开始接诊」—— 按下去必然 409
+                   *   VISIT_BAD_STATE；而 arrived/waiting 的单**一个可点的按钮都没有**，
+                   *   医生既接不了诊、也完不成就诊。医生端主流程整个不可用。
+                   *   现在按状态给该状态的下一步（按钮名与服务端动作同名，避免二次翻译）。
+                   */
                   if (item.status === 'booked') {
+                    Button('爽约')
+                      .height(36)
+                      .fontSize(AppText.CAPTION)
+                      .fontColor(AppColor.DANGER)
+                      .backgroundColor(Color.Transparent)
+                      .border({ width: 1, color: AppColor.DANGER })
+                      .borderRadius(AppSize.CONTROL_RADIUS)
+                      .onClick(() => this.noShow(item))
+                    Button('到院登记')
+                      .height(36)
+                      .fontSize(AppText.CAPTION)
+                      .fontColor(AppColor.SURFACE)
+                      .backgroundColor(AppColor.PRIMARY)
+                      .borderRadius(AppSize.CONTROL_RADIUS)
+                      .margin({ left: AppSize.GAP })
+                      .onClick(() => this.arrive(item))
+                  } else if (item.status === 'arrived') {
+                    Button('爽约')
+                      .height(36)
+                      .fontSize(AppText.CAPTION)
+                      .fontColor(AppColor.DANGER)
+                      .backgroundColor(Color.Transparent)
+                      .border({ width: 1, color: AppColor.DANGER })
+                      .borderRadius(AppSize.CONTROL_RADIUS)
+                      .onClick(() => this.noShow(item))
+                    Button('转入候诊')
+                      .height(36)
+                      .fontSize(AppText.CAPTION)
+                      .fontColor(AppColor.PRIMARY)
+                      .backgroundColor(AppColor.PRIMARY_SOFT)
+                      .borderRadius(AppSize.CONTROL_RADIUS)
+                      .margin({ left: AppSize.GAP })
+                      .onClick(() => this.waiting(item))
+                  } else if (item.status === 'waiting') {
                     Button('爽约')
                       .height(36)
                       .fontSize(AppText.CAPTION)

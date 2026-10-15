@@ -56,7 +56,8 @@
 | 科室 Top3 | 期望科室出现在前 3 个候选里的比例 |
 | 红标召回 | `expected_red_flag = true` 且真的红标的比例 |
 | 红标误报 | `expected_red_flag = false` 却被判红标的条数 |
-| 降级率 | `source != "model"` 的比例 + 各 `degrade_reason` 计数 |
+| 降级率 | **模型侧失败**：`degrade_reason` 非空**且不是** `RED_FLAG` 的比例 + 各 `degrade_reason` 计数（与 `/admin/ai/triage-stats` 同一判据；2026-10-16 复核改正，此前是 `source != "model"` —— 那个口径把"规则直接判红标"算成了 AI 失败） |
+| 红标旁路 | `degrade_reason = "RED_FLAG"` 的条数（规则判红标、没调模型，属**良性**旁路，**不计入降级率**） |
 | 耗时 p50/p95 | **最近秩法**（`rank = (p*n + 99) / 100`，夹到 1..n），整数毫秒**不插值** |
 | 模型/模板 | 本次响应里出现的 `model_id` / `model_name` / `prompt_revision` 集合 |
 
@@ -70,7 +71,7 @@
 
 **评测不进 `final-verify.ps1`**：它依赖真实模型与 key、耗时以分钟计、且结果随环境变化，
 放进发布门禁会让"门禁红"与"模型质量差"混成一件事。发布前**手动**跑一次并归档报告即可。
-（排障端点与遥测贯通本身**在**门禁里：`server/tests/ai-telemetry-check.ps1`，44 条 live 断言。）
+（排障端点与遥测贯通本身**在**门禁里：`server/tests/ai-telemetry-check.ps1`，53 条 live 断言。）
 
 ## 6. 接上真实模型后怎么用
 

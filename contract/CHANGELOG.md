@@ -1,4 +1,4 @@
-﻿# 接口契约变更日志
+# 接口契约变更日志
 
 > 读法：先看**日期**，再看**客户端要不要动**。
 > 形状变更的权威是 `contract/examples/`；本文只解释「为什么变、谁受影响」。
@@ -253,6 +253,56 @@
 - **患者端（建议改）**：可以按 `status` 显示"已到院 / 候诊中 / 接诊中 / 已完成"的时间线；
   `GET /appointments/by-token/:token`、挂号响应里已经带了 `status_label` 与三个时间戳。
 - **管理端**：不用动（可选：把 `arrived_at`/`started_at`/`finished_at` 放进就诊看板）。
+
+---
+
+## 2026-10-16 —— 复核整改：降级率与红标旁路分家、分诊统计的入参不再静默回落（仍是 67 条样例 / 27 个 Schema）
+
+**样例条数不变**，但**重导 2 条**（`admin-ai-triage-stats-window-200`、`admin-ai-triage-calls-200`），
+并**收紧 2 个 Schema 的必填**。触发：`docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md` §八（第三方复核 D1–D8 + 提示项）。
+
+### 变更
+
+- `GET /api/v1/admin/ai/triage-stats` 的 `data.overall` 与 `data.groups[]`：
+  **新增必填** `red_flag`（integer ≥ 0，RED_FLAG 安全旁路的行数）与 `red_flag_rate`（0..1）。
+- **`degrade_rate` 的口径变了**（同一个字段名，不同的分母含义）：现在是
+  "`degrade_reason` 非空**且不是** `RED_FLAG`" 的占比，也就是**只数模型侧失败**。
+  旧口径把 `RED_FLAG`（规则直接判红标、压根没调模型）也算作降级，看板会在规则正常拦截时报"AI 总在挂"。
+  ⚠ `admin-ai-triage-stats-window-200.json` 里 `degrade_rate` 因此**变小**（旧口径含红标行）——
+  这不是回归，是口径修正；`red_flag_rate` 就是被拿出去的那部分。
+- `GET /api/v1/admin/ai/triage-calls` 的 `data.items[]`：**新增必填** `red_flag_bypass`（boolean），
+  与既有 `degraded` **互补**（同一判据的两个方向，不会同时为真），便于前端不解析 `degrade_reason` 字符串也能分类。
+  `degrade_reason` 的枚举不变（`""` / `RED_FLAG` / `CONFIG_READ_FAILED` / `AI_DISABLED` / `INVALID_OUTPUT` / `CALL_FAILED`）。
+- `GET /api/v1/admin/ai/triage-stats` 的入参校验**从静默回落改成 400 `VALIDATION_FAILED`**：
+  `?from=abc`、`?from=-1`（非非负整数）、`from > to`、`to - from > 366 天` 现在都报错并给出原因；
+  只有**完全不传**（空串）才用默认的"最近 24 小时"。⚠ 这四类**没有新增样例**（样例只覆盖形状，
+  参数校验由 `hospital-server.exe accept` 的 AC-P3-7 与 `server/tests/ai-telemetry-check.ps1` 钉住）。
+- `GET /api/v1/doctor/visits`（`data-visit-state`）**形状不变**，但"查不到就诊"分支的 JSON
+  补齐了 `status_label`/`arrived_at`/`started_at`/`finished_at`（此前该分支少这三个戳）。
+  当前没有样例落在那个分支，所以本条**不影响任何既有样例**，写在这里是为了让"字段缺席 vs 查不到"这一区分有出处。
+- `GET /api/v1/admin/ai/triage-stats` 的排序：`?group_by=doctor` 等分组的**分组发生在内存**（语义白名单 + 参数化查询），
+  文档里"列名拼进 `GROUP BY`"的注释是错的，已改（无形状影响）。
+
+### 为什么
+
+- **两个统计量必须分开**：混在一起时，一条"红标拦截率上升"的好消息会以"AI 降级率上升"的坏消息出现在看板上，
+  运维据此去查模型 —— 查错了方向。分家之后 `degraded + red_flag + 真用上模型 = total`，是个能自洽核对的口径。
+- **入参静默回落是静默错误**：`?from=abc` 回落到 24h，调用者以为拿到了自己指定的区间，数字却是另一个窗口的；
+  这种错误比 400 难发现得多（400 至少吵）。跨度上限 366 天不是技术极限，而是"再宽就该做预聚合表"的界，
+  否则"一次请求扫全表"只是少打几个字的事。
+- 判据/统计都**只在服务端定义一次**（`triageDegradeIsFailure` / `triageDegradeIsRedFlagBypass`）：
+  评测脚本此前自己写了一遍 `source != model`，两份实现迟早对不上（评测说 0.9、看板说 0.5，没人知道该信哪个）。
+
+### 客户端要不要动
+
+- **管理台（必须改）**：① 分诊看板的"降级率"旁边补一列"红标旁路率"（`red_flag_rate`），
+  否则用户会把"降级率下降"误读成"模型变好了"；② 调用明细里用 `red_flag_bypass` 而不是解析
+  `degrade_reason === 'RED_FLAG'` 来标红标行（同样的信息，少一次字符串比较）；
+  ③ 分诊统计请求里 `from`/`to` 现在**可能返回 400**（非数字、倒序、超 366 天），
+  按 `docs/FRONTEND-INTEGRATION.md` §3.2 的错误信封显示 `error.message` 即可 —— **不要再把它当成"空窗口"**。
+- **医生端 / 患者端**：不用动（本次没有改挂号、医生工作台、就诊时间线的既有形状）。
+- 兼容性：`red_flag` / `red_flag_rate` / `red_flag_bypass` 都是**纯增量字段**，
+  旧客户端忽略它们即可；唯一需要重新理解的是 `degrade_rate` 的**分母含义**。
 
 ---
 

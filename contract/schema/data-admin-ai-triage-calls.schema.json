@@ -15,7 +15,7 @@
         "required": [
           "id", "created_at", "source", "reason_code", "red_flag", "department",
           "truncated", "request_id", "model_id", "model_name", "prompt_revision",
-          "elapsed_ms", "degrade_reason", "degraded", "used_kb", "kb_doc_ids"
+          "elapsed_ms", "degrade_reason", "degraded", "red_flag_bypass", "used_kb", "kb_doc_ids"
         ],
         "additionalProperties": false,
         "properties": {
@@ -40,7 +40,8 @@
             "enum": ["", "RED_FLAG", "CONFIG_READ_FAILED", "AI_DISABLED", "INVALID_OUTPUT", "CALL_FAILED"],
             "description": "**稳定码**（不是给人看的文案，改文案不会让历史聚合断成两段）：空串 = 这次真的用上了模型"
           },
-          "degraded": { "type": "boolean", "description": "degrade_reason 非空的冗余布尔（省得前端记“空串=用上模型”这条口径）" },
+          "degraded": { "type": "boolean", "description": "**模型侧失败**的冗余布尔（degrade_reason 非空且非 RED_FLAG）；看板按它算“AI 失败率”" },
+          "red_flag_bypass": { "type": "boolean", "description": "RED_FLAG 安全旁路（规则判红标、没调模型）。与 degraded **互补**：两者不会同时为真，因为把规则正常拦截算成“AI 失败”会让失败率虚高" },
           "used_kb": { "type": "boolean", "description": "这次是否把知识库检索结果喂进了提示词" },
           "kb_doc_ids": { "type": "string", "description": "命中的知识库文档 id，逗号分隔（只有 id，没有正文片段；写入时按 255 字符截断）" }
         }
