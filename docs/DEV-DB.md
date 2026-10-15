@@ -95,6 +95,23 @@ $pw = "<上一步打印的管理员口令>"
 .\tests\stress-booking.ps1 -Base http://127.0.0.1:8091 -Tokens 50 -ScheduleTotal 50 -Dsn $dsn -AdminPw $pw
 ```
 
+### ⚠ 前提：这些脚本必须跑在**独占的测试库**上
+
+多条门禁在 `[0] 准备夹具` 里直接写库，其中几条是**不带 WHERE 的全表删**
+（`emr-check.ps1:115-117` 删 `medical_record`/`appointment`/`schedule`、`:121-122` 删
+`previsit_session`/`triage_stat`；`workbench-check.ps1:103`、`revision-check.ps1:103-104`
+删 `medical_record(_revision)`；`previsit-bridge-check.ps1:121-122`、
+`previsit-check.ps1:35/242/397-399`；`stress-booking.ps1:104-111` 连
+`doctor`/`department`/`patient` 一起删）。同一个脚本里更细的夹具反倒都带 WHERE
+（`id >= 703000`/`704000`/`707000`），所以全表删看着不整齐 —— 但它的前提一直是同一句话，
+只是此前没人写下来：
+
+> **跑这些脚本的库必须是可以随时清空的测试库**（本文一直用的 `hospital_test`），
+> **不要**指向 `hospital`（开发库），更不要指向任何有真实数据的库。
+
+`accept` 只认显式测试库是同一口径的另一半（见 §一）；`final-verify.ps1` 之所以自己起
+临时实例、自己 `create-admin`、跑完即停，也是为了不把"环境"变成对人肉操作的依赖。
+
 ### ⚠ 新建**第三个**库时，`create-db` 必须带 `--admin-dsn`
 
 `hospital` 账号的实际授权是**按库逐个授**的（本机实测）：

@@ -56,7 +56,13 @@ function Req($tag, $method, $path, $headers, $jsonBody) {
 }
 function Tok($login, $pw) {
     $r = Req ("lg" + $login) 'POST' '/api/v1/auth/login' @() ('{"login_name":"' + $login + '","password":"' + $pw + '"}')
-    if ($r.Http -ne 200) { throw "登录失败 $login ($($r.Http)): $($r.Body)" }
+    if ($r.Http -ne 200) {
+        # 限流是服务端的正常保护：能清就清掉计数再重试一次，然后才谈失败
+        if (Test-HospLoginRateLimited -Login $login -Resp $r -My $My) {
+            $r = Req ("lg2" + $login) 'POST' '/api/v1/auth/login' @() ('{"login_name":"' + $login + '","password":"' + $pw + '"}')
+        }
+        if ($r.Http -ne 200) { Stop-HospLogin -Login $login -Resp $r -My $My -Base $Base }
+    }
     return ($r.Body | ConvertFrom-Json).data.token
 }
 function SqlFile($name, $sql) {

@@ -246,7 +246,7 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 | 10 | （未提，改进 5 的缺陷） | 契约 `volatile` 路径统一为**相对信封体**，导出机解析不到**直接失败**，门禁断言"声明的路径确实被替换成 `<volatile>`" | 旧实现在解析不到时静默跳过 ⇒ `admin-users-page-clamped-200` 里存的是全量 items，别的脚本一改库就逐字节红（`final-verify` 里实测踩到：单独跑绿、汇总跑红） |
 
 > 验收：`accept` 新增 **AC-P4-6**（612 项断言全过；AC-P4-1 里也补了一句"重复定稿不新增版本"）+
-> 新增 live 脚本 **`server/tests/revision-check.ps1`（46 条）**，已并入 `final-verify.ps1`（13 → **14 项**）；
+> 新增 live 脚本 **`server/tests/revision-check.ps1`（46 条，2026-10-16 补了 ⑪ 自清后为 47 条）**，已并入 `final-verify.ps1`（13 → **14 项**）；
 > 契约新增 **11 条样例 / 3 个 Schema**（`contract/examples/record-revision-*`），见 `contract/CHANGELOG.md` 2026-10-15 条。
 
 #### 后端任务
@@ -720,6 +720,24 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 | 工具坑（新增） | 模拟器会**自己息屏 + 上锁**（黑屏截图 ≠ 应用崩了，`power-shell timeout -o` 挡不住锁屏）；**IME 弹出后注入文本被输入法吞掉**（第二个输入框尤其明显）；静态响应只有 `ETag`/`Last-Modified`、**没有 `Cache-Control`** ⇒ 改完 CSS 看到旧样式时先换 origin，别急着回滚 |
 | 未做 | 表格「操作」列在窄屏需横滑才可见；2 字复选框标签会竖排折行；端内 `feature-admin` 看板没有 arrived/waiting 计数（网页看板有） |
 
+### 8.6 测试基建的 3 条整改（2026-10-16 夜，第三方复查 S1/S2/S3）
+
+| 项 | 结论 |
+| --- | --- |
+| **S1（应修）**：`revision-check.ps1` 漏清自己建的 3 个账号 | 真库实测 `SELECT login_name FROM auth_user WHERE login_name LIKE 'rev3-%'` 里有 `rev3-doc` / `rev3-doc2` / `rev3-pat`（在 `hospital_test`）。因为 `uk_auth_user_login`，第三次跑会走 409 → 反查分支**静默复用旧账号**，版本号/口令一旦与种子不一致就会出现假红/假绿。修法：`[0]` 加 `DELETE FROM auth_user WHERE login_name LIKE 'rev3-%'`，并新增 **`[11] 夹具自清`** 段做**真的会红**的残留自检（业务行与账号一起数，`★★ ⑪ 结尾自检：本次夹具残留为 0`） |
+| **S2（提示）**：全表 DELETE 的隐含前提从没写下来 | 复查者的判断对，但这不是两个脚本的问题而是**全仓惯例**（`emr-check` / `workbench-check` / `revision-check` / `previsit-check` / `previsit-bridge-check` / `stress-booking`）。结论是**补文档**而不是改脚本：`docs/DEV-DB.md` §四 新增「前提：必须跑在独占的测试库上」，`server/README.md` 新增「跑这些脚本的三条前提」（含脚本:行清单） |
+| **S3（提示）**：登录失败/被限流时整轮无交代地中断 | `auth_repo.cj:90-92` 的 `5 次 / 900s` 是**正常保护**，但 21 个脚本原先裸 `throw` ⇒ 停在 PowerShell 堆栈上，看着像脚本坏了。修法：`common.ps1` 新增 `Test-HospLoginRateLimited`（命中 429/`AUTH_RATE_LIMITED` 时清 `auth_login_attempt` 并让调用方**重试一次**）与 `Stop-HospLogin`（重试仍失败则打印诊断后 **`exit 2`**，与断言的 `exit 1` 区分）；12 个脚本的 15 处登录点（含 `stress-booking.ps1` 的两处）改为该口径。`auth_login_attempt` 的主键是 `login_hash`（HMAC-SHA256(密钥, 归一化登录名)，`auth_repo.cj:164`、服务端自己也按它删 `:430`）⇒ 脚本**只能整表清**，这正是既有 5 处「清限流计数」的写法 |
+| S3 附带核查：复查者的一条判断不成立 | 「`visit-timeline-check.ps1` 重置 admin 口令后不还原」——实测该脚本**只登录、不改**口令。真正轮换口令的是 `p1-extra-check.ps1` 第 [5] 节（40 次 `create-admin` 回归口令强度），它 `:438-454` 已用当时的令牌把口令设回 `-AdminPw` 并断言「还原后 `-AdminPw` 仍能登录」；`final-verify.ps1:83-85` 的注释也早就钉住「`contract-check` 必须排在它之前」、`:92` 把它排最后 ⇒ **无需改代码**，只需把这层顺序耦合写进文档（已写进上述两处） |
+
+**实测（2026-10-16 夜，`hospital_test` + 临时实例 18098）**：先**故意把 admin 锁死**
+（连发 5 次错口令，第 5 次起 HTTP 429 `AUTH_RATE_LIMITED`，此后**正确口令也** 429），
+再跑 `revision-check.ps1`：
+
+- 脚本如实打印限流诊断并**自动清 `auth_login_attempt` 后重试一次**（`[ok] 已清空 auth_login_attempt（含 admin 的失败计数），重试一次登录。`），随后「四个角色都能登录」通过；
+- **47 项通过 / 0 失败**，`REVISION-CHECK-EXIT=0`；新增的 `★★ ⑪ 结尾自检：本次夹具残留为 0（含 rev3-* 账号）` 通过（`left=0`）；
+- 库里三张老残留（`rev3-doc` / `rev3-doc2` / `rev3-pat`）被清掉，业务表全 0；
+- **连跑第二次同样 47/0、`left=0`** ⇒ 不再出现"第三次跑静默复用旧账号"。
+
 ---
 
 ## 附：本篇引用的关键位置索引
@@ -731,7 +749,7 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 - `server/src/domain_emr.cj:655-722`（**预问诊→病历预填桥**：`intakePrefill` / `saveDraftWithIntake`）、`:738-742`（就诊状态常量）
 - `server/src/domain_emr.cj`（**改进 3**：`lock`/`reopen` 签名与落版、`writeRevision`/`ensureLockRevision`/`revisions`/`revisionAt`/`backfillRevisions`）、`server/src/schema.cj`（`medical_record_revision` DDL + 迁移第 ⑩ 步）、`server/src/http_p4.cj:688-775`（修订历史三条端点）
 - `server/src/ai_call.cj:125-158`（`source`/`reason`/`elapsedMs`）、`server/src/triage_stat.cj:57`（落库写入点）
-- `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1`、`server/tests/admin-web-smoke.mjs`、`server/tests/emr-check.ps1:280-291`（`use_intake_session` 用例）、`server/tests/revision-check.ps1`（改进 3 的 46 条 live 断言）、`server/tests/workbench-check.ps1`（改进 2 的 29 条 live 断言）、`server/tests/visit-timeline-check.ps1`（改进 6 的 **47** 条 live 断言）、`server/tests/ai-telemetry-check.ps1`（改进 7 的 **53** 条 live 断言）、`server/tests/ai-eval/`（改进 7 评测：`cases.jsonl` + `run-ai-eval.ps1` + `recorded/`）、`server/tests/export-contract.ps1` / `contract-check.ps1`（改进 5 契约门禁）
+- `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1`、`server/tests/admin-web-smoke.mjs`、`server/tests/emr-check.ps1:280-291`（`use_intake_session` 用例）、`server/tests/revision-check.ps1`（改进 3 的 46 条 live 断言，2026-10-16 补 ⑪ 自清后 **47** 条）、`server/tests/workbench-check.ps1`（改进 2 的 29 条 live 断言）、`server/tests/visit-timeline-check.ps1`（改进 6 的 **47** 条 live 断言）、`server/tests/ai-telemetry-check.ps1`（改进 7 的 **53** 条 live 断言）、`server/tests/ai-eval/`（改进 7 评测：`cases.jsonl` + `run-ai-eval.ps1` + `recorded/`）、`server/tests/export-contract.ps1` / `contract-check.ps1`（改进 5 契约门禁）
 
 **客户端**
 - `common-core/src/main/ets/config/ApiConfig.ets:6-51`（LIVE/MOCK 与 baseUrl）、`.../network/ApiError.ets:1-16`（`ErrorCode` 清单）

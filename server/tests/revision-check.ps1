@@ -49,7 +49,13 @@ function Req($tag, $method, $path, $headers, $jsonBody) {
 }
 function Tok($login, $pw) {
     $r = Req ("lg" + $login) 'POST' '/api/v1/auth/login' @() ('{"login_name":"' + $login + '","password":"' + $pw + '"}')
-    if ($r.Http -ne 200) { throw "登录失败 $login ($($r.Http)): $($r.Body)" }
+    if ($r.Http -ne 200) {
+        # 限流是服务端的正常保护：能清就清掉计数再重试一次，然后才谈失败
+        if (Test-HospLoginRateLimited -Login $login -Resp $r -My $My) {
+            $r = Req ("lg2" + $login) 'POST' '/api/v1/auth/login' @() ('{"login_name":"' + $login + '","password":"' + $pw + '"}')
+        }
+        if ($r.Http -ne 200) { Stop-HospLogin -Login $login -Resp $r -My $My -Base $Base }
+    }
     return ($r.Body | ConvertFrom-Json).data.token
 }
 function SqlFile($name, $sql) {
@@ -107,6 +113,10 @@ $null = Invoke-MySqlScalar -My $My -Label "清排班" -Sql "DELETE FROM schedule
 $null = Invoke-MySqlScalar -My $My -Label "清医生" -Sql "DELETE FROM doctor WHERE id >= 704000"
 $null = Invoke-MySqlScalar -My $My -Label "清科室" -Sql "DELETE FROM department WHERE id >= 704000"
 $null = Invoke-MySqlScalar -My $My -Label "清患者" -Sql "DELETE FROM patient WHERE id >= 704000"
+# ⚠ 上一轮没跑完（或此前的版本**没有**清账号这一步）时，rev3-* 会留在真库里；
+#   建号走 409 分支虽然会重设口令，但「库里带着上一轮账号」本身就不是干净起点，
+#   而 uk_auth_user_login 唯一键让这条路径**静默复用旧账号**（2026-10-16 第三方复查 S1）。
+$null = Invoke-MySqlScalar -My $My -Label "清账号" -Sql "DELETE FROM auth_user WHERE login_name LIKE 'rev3-%'"
 
 $seedSql = @"
 INSERT INTO department (id, name, code, created_at) VALUES (704001, '改进3验证科', 'REV3', 0);
@@ -323,6 +333,26 @@ $r = Req 'patrec2' 'GET' "/api/v1/medical-records/$apptOther" $patHdr $null
 Check "⑩ 患者的另一张单没有病历 ⇒ 404" ($r.Http -eq 404) ("HTTP $($r.Http)")
 $r = Req 'patrev' 'GET' "/api/v1/doctor/visits/$appt/record/revisions/1" $patHdr $null
 Check "★★ ⑩ 患者读**单版详情**同样 404（两条读取路径口径一致）" ($r.Http -eq 404) ("HTTP $($r.Http)")
+
+# ── [11] 夹具自清（2026-10-16 第三方复查 S1）──────────────────────────────
+# 此前的版本只清 704000 段业务行，**没清自己建的三个账号** —— 真库实测跑完后
+# 仍留着 rev3-doc / rev3-doc2 / rev3-pat。这里补齐，并像 visit-timeline-check 那样
+# 末尾自检「本次夹具残留为 0」，否则"漏清"这种问题只能靠人肉 SQL 发现。
+Write-Host ""
+Write-Host "[11] 夹具自清"
+$null = Invoke-MySqlScalar -My $My -Label "清修订" -Sql "DELETE FROM medical_record_revision"
+$null = Invoke-MySqlScalar -My $My -Label "清病历" -Sql "DELETE FROM medical_record"
+$null = Invoke-MySqlScalar -My $My -Label "清挂号" -Sql "DELETE FROM appointment WHERE id >= 704000"
+$null = Invoke-MySqlScalar -My $My -Label "清排班" -Sql "DELETE FROM schedule WHERE id >= 704000"
+$null = Invoke-MySqlScalar -My $My -Label "清医生" -Sql "DELETE FROM doctor WHERE id >= 704000"
+$null = Invoke-MySqlScalar -My $My -Label "清科室" -Sql "DELETE FROM department WHERE id >= 704000"
+$null = Invoke-MySqlScalar -My $My -Label "清患者" -Sql "DELETE FROM patient WHERE id >= 704000"
+$null = Invoke-MySqlScalar -My $My -Label "清账号" -Sql "DELETE FROM auth_user WHERE login_name LIKE 'rev3-%'"
+$left = RowCount "查残留" ("SELECT (SELECT COUNT(*) FROM department WHERE id >= 704000)" +
+    " + (SELECT COUNT(*) FROM doctor WHERE id >= 704000) + (SELECT COUNT(*) FROM schedule WHERE id >= 704000)" +
+    " + (SELECT COUNT(*) FROM patient WHERE id >= 704000) + (SELECT COUNT(*) FROM appointment WHERE id >= 704000)" +
+    " + (SELECT COUNT(*) FROM medical_record_revision) + (SELECT COUNT(*) FROM auth_user WHERE login_name LIKE 'rev3-%')")
+Check "★★ ⑪ 结尾自检：本次夹具残留为 0（含 rev3-* 账号）" ($left -eq '0') "left=$left"
 
 Write-Host ""
 if ($failed -eq 0) {

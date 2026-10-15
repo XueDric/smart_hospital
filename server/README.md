@@ -226,6 +226,32 @@ $env:HOSP_ADMIN_PW = "<管理员口令>"
 > `--cacert` 支持不完整（实测 `schannel: error 0x00000010`，而同刻 `curl -k` 是 200），
 > 所以它走 .NET `SslStream` + 显式链校验 + 自解析 SAN。理由与两个坑写在脚本头注释里。
 
+#### ⚠ 跑这些脚本的三条前提（2026-10-16 第三方复查 S2/S3 后补）
+
+1. **库必须独占**：多条脚本在准备夹具时**不带 WHERE 全表 DELETE** ——
+   `emr-check.ps1:115-117` 删 `medical_record`/`appointment`/`schedule`、`:121-122` 删
+   `previsit_session`/`triage_stat`；`workbench-check.ps1:103`、`revision-check.ps1:103-104`
+   删 `medical_record(_revision)`；`previsit-bridge-check.ps1:121-122`、
+   `previsit-check.ps1:35/242/397-399`；`stress-booking.ps1:104-111` 连
+   `doctor`/`department`/`patient` 一起删。同一脚本里更细的夹具反倒都带
+   `id >= 703000`/`704000`/`707000`，所以全表删看着不整齐，但前提一直是同一句话：
+   **跑这些脚本的库必须是可以随时清空的测试库（`hospital_test`）**，
+   不要指向 `hospital`（开发库）。细则见 [../docs/DEV-DB.md](../docs/DEV-DB.md) §四。
+2. **登录被限流不再"无交代地中断"**：5 次失败锁 15 分钟是服务端的正常保护
+   （`auth_repo.cj:90-92`：`LOGIN_FAIL_LIMIT=5` / `LOGIN_FAIL_WINDOW=900s` /
+   `LOGIN_LOCK_SECONDS=900s`），但脚本原先裸 `throw` ⇒ 整轮停在 PowerShell 堆栈上，
+   看着像"脚本坏了"。现在 `common.ps1` 的 `Test-HospLoginRateLimited` 命中
+   429 / `AUTH_RATE_LIMITED` 时**清 `auth_login_attempt`（整表，理由见函数内注释）
+   并让调用方重试一次**；仍失败由 `Stop-HospLogin` 打印诊断（登录名 / HTTP / body /
+   库 / 目标 / 已跑断言数）后 **`exit 2`**。
+   ⇒ **`exit 2` = 没跑完（前置条件不满足），`exit 1` = 跑完有红（断言失败）**。
+3. **admin 口令只有一处会改，且它自己还原**：`p1-extra-check.ps1` 第 [5] 节为回归
+   口令强度会轮换 40 次 `create-admin`，收尾用当时的令牌把口令设回 `-AdminPw`
+   （`p1-extra-check.ps1:438-454`，并断言"还原后 `-AdminPw` 仍能登录"）；
+   `final-verify.ps1:48-57` 现场生成口令并传给每个门禁，`:83-85` 的注释钉住
+   "`contract-check` 必须排在 `p1-extra-check` **之前**"，`:92` 把 `p1-extra-check`
+   排在最后。其它脚本（含 `visit-timeline-check.ps1`）只登录、**不改**口令。
+
 ### 管理台（`/admin/`，2026-10-14 增）
 
 服务端**自带一个浏览器管理台**：`server/admin-web/` 是**零构建纯静态**页面（无 npm / 无打包产物），

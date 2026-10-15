@@ -82,7 +82,13 @@ Write-Host ""
 
 # ── 登录 ───────────────────────────────────────────────────────────────────
 $r = Req 'login' 'POST' '/api/v1/auth/login' @() ('{"login_name":"' + $AdminLogin + '","password":"' + $AdminPw + '"}')
-if ($r.Code -ne 200) { throw "管理员登录失败（HTTP $($r.Code)）：$($r.Body)" }
+if ($r.Code -ne 200) {
+    # 限流是服务端的正常保护：能清就清掉计数再重试一次，然后才谈失败
+    if (Test-HospLoginRateLimited -Login $AdminLogin -Resp $r -My $My) {
+        $r = Req 'login2' 'POST' '/api/v1/auth/login' @() ('{"login_name":"' + $AdminLogin + '","password":"' + $AdminPw + '"}')
+    }
+    if ($r.Code -ne 200) { Stop-HospLogin -Login $AdminLogin -Resp $r -My $My -Base $Base -Hint '[提示] 管理员口令由 create-admin 生成；确认 -Dsn 指向的库与服务端是同一个。' }
+}
 $admTok = (Json $r).data.token
 $AH = @("Authorization: Bearer $admTok")
 

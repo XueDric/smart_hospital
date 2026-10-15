@@ -76,8 +76,15 @@ function Login($cfgPath, $login, $pw) {
         ('{"login_name":"' + $login + '","password":"' + $pw + '"}'),
         (New-Object System.Text.UTF8Encoding($false)))
     WriteCfg $cfgPath 'POST' @() $bf
-    $out = & curl.exe -s -K $cfgPath "$Base/api/v1/auth/login"
-    try { return ($out | ConvertFrom-Json).data.token } catch { return "" }
+    # ⚠ 记下原始响应与 HTTP 码：失败时要把「被限流 / 口令错 / 服务没起」分开讲清楚，
+    #   而不是只回一个空串让调用方猜（2026-10-16 第三方复查 S3）。
+    $out = & curl.exe -s -w "`n__M__%{http_code}" -K $cfgPath "$Base/api/v1/auth/login"
+    $raw = ($out | Out-String)
+    $code = 0
+    if ($raw -match '__M__(\d+)') { $code = [int]$Matches[1] }
+    $body = (($raw -replace '(?s)\n?__M__\d+\s*$', '')).Trim()
+    $script:lastLogin = [pscustomobject]@{ Http = $code; Body = $body }
+    try { return ($body | ConvertFrom-Json).data.token } catch { return "" }
 }
 
 $adminCfg = Join-Path $tmpDir 'admin.cfg'
@@ -89,9 +96,19 @@ if ($UseDevAuth) {
 } else {
     Write-Host "[0/4] 鉴权：**Bearer 令牌**"
     $adminTok = Login (Join-Path $tmpDir 'login-admin.cfg') $AdminLogin $AdminPw
-    if ([string]::IsNullOrEmpty($adminTok)) { throw "管理员登录失败（检查 -AdminPw）" }
+    if ([string]::IsNullOrEmpty($adminTok)) {
+        if (Test-HospLoginRateLimited -Login $AdminLogin -Resp $script:lastLogin -My $My) {
+            $adminTok = Login (Join-Path $tmpDir 'login-admin.cfg') $AdminLogin $AdminPw
+        }
+        if ([string]::IsNullOrEmpty($adminTok)) { Stop-HospLogin -Login $AdminLogin -Resp $script:lastLogin -My $My -Base $Base -Hint '[提示] 检查 -AdminPw；口令由 create-admin 生成。' }
+    }
     $patTok = Login (Join-Path $tmpDir 'login-patient.cfg') $PatientLogin $PatientPw
-    if ([string]::IsNullOrEmpty($patTok)) { throw "患者登录失败（检查 -PatientPw；可先跑 auth-check.ps1 修夹具）" }
+    if ([string]::IsNullOrEmpty($patTok)) {
+        if (Test-HospLoginRateLimited -Login $PatientLogin -Resp $script:lastLogin -My $My) {
+            $patTok = Login (Join-Path $tmpDir 'login-patient.cfg') $PatientLogin $PatientPw
+        }
+        if ([string]::IsNullOrEmpty($patTok)) { Stop-HospLogin -Login $PatientLogin -Resp $script:lastLogin -My $My -Base $Base -Hint '[提示] 口令由 auth-check.ps1 的夹具维护（可先跑它修夹具）。' }
+    }
     Write-Host "  管理员令牌 $($adminTok.Length) 字符 ｜ 患者令牌 $($patTok.Length) 字符"
     WriteCfg $adminCfg 'POST' @("Authorization: Bearer $adminTok") $null
     WriteCfg $patCfg 'POST' @("Authorization: Bearer $patTok") $null

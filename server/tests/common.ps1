@@ -351,3 +351,84 @@ function Invoke-MySqlFile {
                "  输出  :`n$($text -join "`n")")
     }
 }
+# ── 登录拿不到令牌时的统一出口（2026-10-16，第三方复查 S3）─────────────────
+# 复查现场：门禁脚本登录失败时是**裸 throw** ——
+#   · 打出来的是 PowerShell 堆栈，看起来像“脚本坏了”，而不是“前置条件没满足”；
+#   · 被 AUTH_RATE_LIMITED 挡住时更冤：那是 auth_repo.cj 的**正常保护**
+#     （LOGIN_FAIL_LIMIT=5 次 / LOGIN_FAIL_WINDOW=900s / LOGIN_LOCK_SECONDS=900s），
+#     却让整轮门禁**无交代地中断**（复查者就被挡过一次）。
+# 现在的口径：
+#   1) Test-HospLoginRateLimited：命中限流（HTTP 429 或 body 含 AUTH_RATE_LIMITED）时
+#      **清 auth_login_attempt 的失败计数**并返回 $true，
+#      调用方据此**重试一次登录** —— 不静默、也不让人干等 15 分钟；
+#   2) Stop-HospLogin：重试后仍失败 ⇒ 打印诊断（登录名 / HTTP / body / 库 / 目标 +
+#      已跑断言计数）然后 `exit 2`：**与断言失败的 exit 1 区分**，
+#      一眼看出是“没跑完（前置条件）”而不是“跑完有红（断言）”。
+function Test-HospLoginRateLimited {
+    param(
+        [Parameter(Mandatory=$true)][string]$Login,
+        [Parameter(Mandatory=$true)]$Resp,
+        $My = $null
+    )
+    $http = 0
+    if ($null -ne $Resp.PSObject.Properties['Http']) { $http = [int]$Resp.Http }
+    elseif ($null -ne $Resp.PSObject.Properties['Code']) { $http = [int]$Resp.Code }
+    $body = "$($Resp.Body)"
+    if (-not (($http -eq 429) -or ($body -match 'AUTH_RATE_LIMITED'))) { return $false }
+
+    Write-Host ""
+    Write-Host "  ⚠ 登录被限流（HTTP $http）：这是服务端的正常保护，不是缺陷。" -ForegroundColor Yellow
+    Write-Host "     auth_repo.cj: LOGIN_FAIL_LIMIT=5 次 / LOGIN_FAIL_WINDOW=900s / LOGIN_LOCK_SECONDS=900s" -ForegroundColor DarkGray
+    if ($null -eq $My) {
+        Write-Host "     （本脚本没拿到库连接，无法自动清计数：可等 900s，或手工 DELETE FROM auth_login_attempt）" -ForegroundColor DarkGray
+        return $false
+    }
+    try {
+        # ⚠ 只能**整表清**：`auth_login_attempt` 的主键是 `login_hash`
+        #   （= HMAC-SHA256(LOGIN_HASH_KEY, 归一化登录名)，见 auth_repo.cj:164；
+        #   服务端自己也是按 login_hash 删的，auth_repo.cj:430）——
+        #   脚本拿不到那个密钥、也不该复刻它，所以「按登录名过滤」做不到。
+        #   整表清正是本仓既有口径（auth-check.ps1:57 / previsit-check.ps1:34 /
+        #   triage-check.ps1:34 / rate-limit-check.ps1:58 / p1-extra-check.ps1:72
+        #   的「清限流计数」都是全表删）；它安全的前提是**测试库独占**（见 DEV-DB.md §四）。
+        $null = Invoke-MySqlScalar -My $My -Label "清限流计数" -Sql "DELETE FROM auth_login_attempt"
+        Write-Host "     [ok] 已清空 auth_login_attempt（含 $Login 的失败计数），重试一次登录。" -ForegroundColor DarkGray
+        return $true
+    } catch {
+        Write-Host "     [!] 清限流计数失败：$($_.Exception.Message)" -ForegroundColor DarkGray
+        return $false
+    }
+}
+
+function Stop-HospLogin {
+    param(
+        [Parameter(Mandatory=$true)][string]$Login,
+        [Parameter(Mandatory=$true)]$Resp,
+        $My = $null,
+        [string]$Base = '',
+        [string]$Hint = ''
+    )
+    $http = 0
+    if ($null -ne $Resp.PSObject.Properties['Http']) { $http = [int]$Resp.Http }
+    elseif ($null -ne $Resp.PSObject.Properties['Code']) { $http = [int]$Resp.Code }
+    $body = "$($Resp.Body)"
+
+    Write-Host ""
+    Write-Host "❌ 登录失败，脚本无法继续：$Login（HTTP $http）" -ForegroundColor Red
+    if (-not [string]::IsNullOrEmpty($body)) { Write-Host "   body : $body" -ForegroundColor DarkGray }
+    if ($null -ne $My) {
+        Write-Host "   库   : $($My.Db)@$($My.DbHost):$($My.Port)（客户端 $($My.Client)）" -ForegroundColor DarkGray
+    }
+    if (-not [string]::IsNullOrEmpty($Base)) { Write-Host "   目标 : $Base" -ForegroundColor DarkGray }
+    $pv = Get-Variable -Name passed -Scope 1 -ErrorAction SilentlyContinue
+    $fv = Get-Variable -Name failed -Scope 1 -ErrorAction SilentlyContinue
+    if ($null -ne $pv -and $null -ne $fv) {
+        Write-Host "   已跑断言：通过 $($pv.Value) 项 / 失败 $($fv.Value) 项" -ForegroundColor DarkGray
+    }
+    Write-Host "   提示：管理员口令由 `hospital-server.exe create-admin <dsn>` 生成；" -ForegroundColor DarkGray
+    Write-Host "         HTTP 429/AUTH_RATE_LIMITED = 被限流（等 900s 或清 auth_login_attempt）；" -ForegroundColor DarkGray
+    Write-Host "         连接被拒 = 服务端没起或端口写错；401 但口令没错 = 连错库（-Dsn 指向的库才是事实来源）。" -ForegroundColor DarkGray
+    if (-not [string]::IsNullOrEmpty($Hint)) { Write-Host "   $Hint" -ForegroundColor DarkGray }
+    Write-Host "   → 以 exit 2 结束：这是**前置条件**失败，不是断言失败（断言失败是 exit 1）。" -ForegroundColor DarkGray
+    exit 2
+}

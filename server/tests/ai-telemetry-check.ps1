@@ -100,7 +100,13 @@ Write-Host ""
 
 # ── 登录 ───────────────────────────────────────────────────────────────────
 $r = Req 'login' 'POST' '/api/v1/auth/login' @() ('{"login_name":"' + $AdminLogin + '","password":"' + $AdminPw + '"}')
-if ($r.Code -ne 200) { throw "管理员登录失败（HTTP $($r.Code)）：$($r.Body)" }
+if ($r.Code -ne 200) {
+    # 限流是服务端的正常保护：能清就清掉计数再重试一次，然后才谈失败
+    if (Test-HospLoginRateLimited -Login $AdminLogin -Resp $r -My $My) {
+        $r = Req 'login2' 'POST' '/api/v1/auth/login' @() ('{"login_name":"' + $AdminLogin + '","password":"' + $AdminPw + '"}')
+    }
+    if ($r.Code -ne 200) { Stop-HospLogin -Login $AdminLogin -Resp $r -My $My -Base $Base -Hint '[提示] 管理员口令由 create-admin 生成；确认 -Dsn 指向的库与服务端是同一个。' }
+}
 $admTok = (Json $r).data.token
 $AH = @("Authorization: Bearer $admTok")
 
@@ -110,7 +116,12 @@ $patPw = "Ai-Tele-Chk-Pw-1!"
 $r = Req 'p0' 'POST' '/api/v1/admin/users' $AH ('{"login_name":"' + $patLogin + '","role":"patient","ref_id":1,"display_name":"' + $tag + '","password":"' + $patPw + '"}')
 CheckD "夹具：建患者账号（201 新建 / 409 已存在都算成功）" ($r.Code -eq 201 -or $r.Code -eq 409) ("HTTP $($r.Code) $($r.Body)")
 $r = Req 'p1' 'POST' '/api/v1/auth/login' @() ('{"login_name":"' + $patLogin + '","password":"' + $patPw + '"}')
-if ($r.Code -ne 200) { throw "患者账号登录失败（HTTP $($r.Code)）：$($r.Body)（口令强度校验可能没通过 ⇒ 建号静默失败）" }
+if ($r.Code -ne 200) {
+    if (Test-HospLoginRateLimited -Login $patLogin -Resp $r -My $My) {
+        $r = Req 'p1b' 'POST' '/api/v1/auth/login' @() ('{"login_name":"' + $patLogin + '","password":"' + $patPw + '"}')
+    }
+    if ($r.Code -ne 200) { Stop-HospLogin -Login $patLogin -Resp $r -My $My -Base $Base -Hint '[提示] 口令强度校验可能没通过 ⇒ 建号静默失败；先看上面那条建号断言。' }
+}
 $patTok = (Json $r).data.token
 $PH = @("Authorization: Bearer $patTok")
 # ⚠ 每一次分诊调用都必须自带 X-Request-Id（2026-10-16 复核提示项）：

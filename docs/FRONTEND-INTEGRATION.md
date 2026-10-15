@@ -1252,7 +1252,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 > 改进 3。**病历锁定后**的每一次「解锁 → 重写 → 再锁定」都留一版快照 + 一条理由，
 > 对应纸质病历的"划改并签名"。契约样例与 Schema 见 `contract/examples/record-revision-*.json`、
-> `contract/schema/data-record-revision*.schema.json`；端到端演练见 `server/tests/revision-check.ps1`（46 条断言，已进门禁）。
+> `contract/schema/data-record-revision*.schema.json`；端到端演练见 `server/tests/revision-check.ps1`（46 条断言，2026-10-16 补 ⑪ 自清后 **47** 条，已进门禁）。
 
 #### 5.29.1 什么时候会落一版（**只有两个时机**）
 
