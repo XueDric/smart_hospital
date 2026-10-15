@@ -1,0 +1,25 @@
+{
+  "name": "record-put-expected-stale-409",
+  "group": "record",
+  "request": {
+    "method": "PUT",
+    "path": "/api/v1/doctor/visits/{id}/record",
+    "auth": "doctor"
+  },
+  "response": {
+    "status": 409,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "EMR_CHANGED",
+        "message": "保存草稿：病历已被其他操作修改（服务端当前版本见 fields），请保留输入并重新读取后确认",
+        "fields": {
+          "updated_at": 0,
+          "updated_by": 0,
+          "record_id": 0
+        }
+      }
+    }
+  }
+}

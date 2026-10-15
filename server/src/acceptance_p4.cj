@@ -683,3 +683,134 @@ public func acP4_6(runner: TestRunner, db: DbBackend): Unit {
                      emrBackfillRevisions(db) == 0)
     })
 }
+
+/*
+ * AC-P4-7（★ 2026-10-15 改进 2）：医生工作台 —— 既往病历的隐私边界 + 草稿保存的乐观锁。
+ *
+ * 独占 id 段：seed 10 / 11 / 12（患者 9610，医生 900010 / 900011）、seed 13（患者 9613，医生 900013）。
+ *
+ * ⚠ 这一组测的是**隐私边界与并发**，不是"接口通不通"：
+ *   ① 医生读既往病历是本系统**唯一**一处"跨患者读取"，所以每条断言都在反问
+ *      "有没有一条路能让医生读到不该读的病历"（别人的患者 / 别人的号 / 草稿）；
+ *   ② 乐观锁的价值全在"两个人同时改时**后提交的那个**必须被挡住"，
+ *      所以断言必须覆盖"陈旧版本 ⇒ 冲突"**以及**"冲突之后库里的内容没被改动"——
+ *      只断言返回了 conflict 而不查库，等于相信一个可能撒谎的返回值。
+ */
+public func acP4_7(runner: TestRunner, db: DbBackend): Unit {
+    println("=== AC-P4-7 ★★ 医生工作台（改进 2：既往病历 / 乐观锁）===")
+    runner.section("AC-P4-7", { =>
+        hResetAll(db)
+        let now = hNowEpoch()
+        let emr = MedicalRecordRepo(db)
+        /* ① 同一个患者、两位医生各一次就诊（用来测"只看得到自己的那些次"）。 */
+        let a10 = hSeedAppointmentForDoctor(db, 10, 9610, VISIT_VISITING)
+        let a11 = hSeedAppointmentForDoctor(db, 11, 9610, VISIT_VISITING)
+        runner.check("① 医生 900010 定稿 a10",
+                     hFillAllSections(emr, a10, 900010, now, 9901).ok &&
+                     emr.lock(a10, now + 5, 9901, "doctor").ok)
+        runner.check("① 医生 900011 定稿 a11",
+                     hFillAllSections(emr, a11, 900011, now, 9902).ok &&
+                     emr.lock(a11, now + 6, 9902, "doctor").ok)
+
+        /* ② 隐私闸门：只有"在我这儿挂过号"的患者才算我的患者 */
+        /*
+         * ⚠ 必须用一个**真实存在但没接诊过这位患者**的医生来测第三条：
+         *   我第一版这里传的是 900012（那个医生**根本没被造出来**），
+         *   于是"不放行"可能只是因为"医生不存在" —— 断言看起来绿了，
+         *   实际没测到"存在但没挂号"这条路径（假绿）。
+         */
+        hSeedIdleDoctor(db, 900012)
+        runner.check("★★ ② 该患者在我这儿挂过号 ⇒ 放行（实得 ${emr.patientTreatedByDoctor(900010, 9610)}）",
+                     emr.patientTreatedByDoctor(900010, 9610))
+        runner.check("★★ ② 一个**不存在**的患者 ⇒ 不放行（不给枚举 oracle）",
+                     !emr.patientTreatedByDoctor(900010, 999998))
+        runner.check("★★ ② 医生存在、患者也存在，但**没在我这儿挂过号** ⇒ 同样不放行",
+                     !emr.patientTreatedByDoctor(900012, 9610))
+
+        /* ③ 只给"我的那些次"（另一位医生看同一患者，看到的是他自己那份） */
+        let mine = emr.listLockedForDoctorPatient(900010, 9610, 5)
+        runner.check("★★ ③ 医生 900010 只看到自己的那 1 份（实得 ${mine.size}）", mine.size == 1)
+        runner.check("★★ ③ 而且正是 a10，不是同一位患者的 a11",
+                     mine.size == 1 && mine[0].appointmentId == a10)
+        let other = emr.listLockedForDoctorPatient(900011, 9610, 5)
+        runner.check("★★ ③ 医生 900011 看到的是 a11（实得 ${other.size} 份）",
+                     other.size == 1 && other[0].appointmentId == a11)
+
+        /* ④ 草稿**永不外泄**：另一位医生看不到我没定稿的工作稿 */
+        let a12 = hSeedAppointmentForDoctor(db, 12, 9610, VISIT_VISITING, asDoctorId: 900010)
+        runner.check("④ 医生 900010 在 a12 上只写了草稿",
+                     hFillAllSections(emr, a12, 900010, now + 10, 9901).ok)
+        runner.check("★★ ④ 草稿不进「既往病历」（列表仍是 1 份，实得 ${emr.listLockedForDoctorPatient(900010, 9610, 5).size}）",
+                     emr.listLockedForDoctorPatient(900010, 9610, 5).size == 1)
+        runner.check("④ 定稿之后才出现（实得 ${emr.listLockedForDoctorPatient(900010, 9610, 5).size}）",
+                     emr.lock(a12, now + 12, 9901, "doctor").ok &&
+                     emr.listLockedForDoctorPatient(900010, 9610, 5).size == 2)
+
+        /* ⑤ exclude：正在写的这一份不能算"既往" */
+        let excl = emr.listLockedForDoctorPatient(900010, 9610, 5, excludeAppointmentId: a10)
+        /*
+         * ⚠ 这里**先算好**再拼提示语，不在插值里写 `if`：
+         *   仓颉的字符串插值里嵌表达式块（`${if (…) { … } else { … }}`）会与
+         *   外围的大括号、内层字符串定界符互相干扰（本仓"文案里嵌引用一律用「」"同理）。
+         */
+        var exclFirst = "无"
+        if (excl.size > 0) {
+            exclFirst = excl[0].appointmentId.toString()
+        }
+        runner.check("★ ⑤ 排除 a10 后只剩 a12（实得 ${excl.size}，首条 ${exclFirst}）",
+                     excl.size == 1 && excl[0].appointmentId == a12)
+        runner.check("★ ⑤ exclude 传 0 = 不排除（向后兼容）",
+                     emr.listLockedForDoctorPatient(900010, 9610, 5, excludeAppointmentId: 0).size == 2)
+
+        /* ⑥ 排序与上限：最近改过的在前（同秒时用 id 兜底，避免列表抖动） */
+        let limited = emr.listLockedForDoctorPatient(900010, 9610, 1)
+        runner.check("★ ⑥ limit=1 只回 1 份（实得 ${limited.size}）", limited.size == 1)
+        runner.check("★ ⑥ 最近定稿的（a12）排在前面",
+                     limited.size == 1 && limited[0].appointmentId == a12)
+
+        /* ========== ⑦ 乐观锁（本项的核心） ========== */
+        let a13 = hSeedAppointmentForDoctor(db, 13, 9613, VISIT_VISITING)
+        let p1 = HashMap<String, String>()
+        p1["chief_complaint"] = "首诊主诉"
+        /*
+         * ⚠ 建单时**不需要**乐观锁：此刻还没有"别人改过的版本"可言。
+         *   所以这里故意传一个离谱的 expectedUpdatedAt，行为必须是"照常建单"
+         *   （如果这里回 conflict，说明服务端把"记录不存在"错当成了"版本冲突"，
+         *     那会让**每一位新患者**都存不了草稿 —— 最坏的一种错）。
+         */
+        let w1 = emr.saveDraft(a13, 900013, p1, now + 20, 9901, expectedUpdatedAt: 12345)
+        runner.check("★★ ⑦ 建单不受乐观锁影响（新病历没有「上一版」可冲突）", w1.ok)
+        let ver1 = emr.findByAppointment(a13).getOrThrow().updatedAt
+        let p2 = HashMap<String, String>()
+        p2["diagnosis"] = "第一次诊断"
+        let w2 = emr.saveDraft(a13, 900013, p2, now + 30, 9901, expectedUpdatedAt: ver1)
+        runner.check("★ ⑦ 带上**当前**版本号提交 ⇒ 成功", w2.ok)
+        let ver2 = emr.findByAppointment(a13).getOrThrow().updatedAt
+        runner.check("⑦ 版本号确实前进了（${ver1} → ${ver2}）", ver2 > ver1)
+
+        let p3 = HashMap<String, String>()
+        p3["treatment"] = "基于旧版本写的处理意见"
+        let w3 = emr.saveDraft(a13, 900013, p3, now + 40, 9902, expectedUpdatedAt: ver1)
+        runner.check("★★ ⑦ 拿**陈旧**版本号提交 ⇒ 冲突（不许静默覆盖）", w3.conflict && !w3.ok)
+        runner.check("★★ ⑦ 冲突时回带服务端的当前版本（updated_at=${w3.currentUpdatedAt} / by ${w3.currentUpdatedBy}）",
+                     w3.currentUpdatedAt == ver2 && w3.currentUpdatedBy == 9901)
+        let after = emr.findByAppointment(a13).getOrThrow()
+        runner.check("★★ ⑦ 而且**这次写入一个字都没进库**（处理意见仍为空，实得「${after.treatment}」）",
+                     after.treatment.size == 0)
+        runner.check("★★ ⑦ 诊断也没被改（仍是「${after.diagnosis}」）", after.diagnosis == "第一次诊断")
+        let w4 = emr.saveDraft(a13, 900013, p3, now + 50, 9901, expectedUpdatedAt: ver2)
+        runner.check("⑦ 用**最新**版本号重试 ⇒ 成功", w4.ok)
+        runner.check("⑦ 内容确实落库了（实得「${emr.findByAppointment(a13).getOrThrow().treatment}」）",
+                     emr.findByAppointment(a13).getOrThrow().treatment == "基于旧版本写的处理意见")
+        /* 老客户端不带这个字段 ⇒ 行为与从前完全一致（不能用新保护把旧版本打死） */
+        let p4 = HashMap<String, String>()
+        p4["past_history"] = "老客户端不带 expected_updated_at"
+        runner.check("★ ⑦ 不带 expected_updated_at ⇒ 不校验（向后兼容）",
+                     emr.saveDraft(a13, 900013, p4, now + 60, 9901).ok)
+
+        /* ⑧ 已锁定 ⇒ 报 locked（不是 conflict）：两者的客户端处置完全不同 */
+        let lockedWrite = emr.saveDraft(a10, 900010, p1, now + 70, 9901, expectedUpdatedAt: 1)
+        runner.check("★ ⑧ 已定稿的病历：即使版本号对不上也报 locked（不可改 ≠ 有人抢先改了）",
+                     lockedWrite.locked && !lockedWrite.conflict)
+    })
+}

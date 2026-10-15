@@ -294,6 +294,28 @@ func emrThrowOnFailure(out: EmrWriteOutcome, what: String): Unit {
         throw apiErrorMsg("EMR_LOCKED", "${what}：病历已提交锁定，不可再改（需管理员解锁）")
     }
     if (out.conflict) {
+        /*
+         * ★ 改进 2：冲突时**回带服务端当前那一版**（`error.fields`）。
+         *
+         * 为什么不能只给一句"已被修改"：医生端的冲突处理是"保留本地输入 + 展示
+         * 服务端最新版、人工确认后再提交"（方案 §改进 2）。只给一句话，客户端
+         * 就只能二选一：丢掉本地输入，或者盲目覆盖 —— 前者丢医生的字，后者更坏。
+         *
+         * ⚠ `fields` 只在**真的读到了**那一版时才带（`currentUpdatedAt > 0`）：
+         *   冲突也可能来自"病历不存在/被删"，这时编一个 0 时间戳会让界面显示
+         *   1970 年。缺字段比假字段好（同 putVisitContext 的取字段纪律）。
+         */
+        if (out.currentUpdatedAt > 0) {
+            let f = JsonObject()
+            f.put("updated_at", JsonInt(out.currentUpdatedAt))
+            f.put("updated_by", JsonInt(out.currentUpdatedBy))
+            if (out.recordId > 0) {
+                f.put("record_id", JsonInt(out.recordId))
+            }
+            throw apiErrorFields("EMR_CHANGED",
+                                 "${what}：病历已被其他操作修改（服务端当前版本见 fields），请保留输入并重新读取后确认",
+                                 f)
+        }
         throw apiErrorMsg("EMR_CHANGED", "${what}：病历已被其他操作修改，请保留输入并重新读取后确认")
     }
     if (out.unknownSection) {
@@ -307,6 +329,32 @@ func emrThrowOnFailure(out: EmrWriteOutcome, what: String): Unit {
                           "${what}：提交前必须填写 ${out.detail}（其余段可留空）")
     }
     throw apiErrorMsg("VALIDATION_FAILED", "${what}：写入未成功（原因未分类）")
+}
+
+/*
+ * ★ 从请求体取可选的 `expected_updated_at`（改进 2 的乐观锁）。
+ *
+ * 语义：客户端把"我读到的那一版"的 epoch 秒发回来；服务端只在**当前还是这一版**时
+ *   才写入（见 `MedicalRecordRepo.saveDraft` 的 `expectedUpdatedAt`）。
+ *
+ * ⚠ 缺字段/0/负数 ⇒ 0 = **不校验**（向后兼容：老客户端不带这个字段，行为与从前完全一致）。
+ * ⚠ 字段存在但不是整数 ⇒ **400**，不是静默当 0：
+ *   静默忽略会让客户端以为"乐观锁生效了"，而实际上两个医生可以互相覆盖 ——
+ *   一个**无声失效的保护**比没有保护更危险（同"未知 Schema 关键字直接 throw"的纪律）。
+ */
+func emrExpectedUpdatedAt(ctx: Context): Int64 {
+    match (bodyObj(ctx).get("expected_updated_at")) {
+        case None => return 0
+        case Some(v) =>
+            if (v is JsonInt) {
+                let n = v.asInt().getValue()
+                if (n > 0) {
+                    return n
+                }
+                return 0
+            }
+            throw apiErrorMsg("VALIDATION_FAILED", "expected_updated_at 必须是整数（epoch 秒）")
+    }
 }
 
 /* 从请求体里取"段名 → 正文"的补丁（只取**登记过的**段）。 */
@@ -571,13 +619,20 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
             case Some(v) => v
             case None => ""
         }
+        /*
+         * ★ 改进 2：可选的乐观锁。0 = 老客户端/不校验（行为与从前完全一致）。
+         *   ⚠ 必须在**任何写之前**解析：类型错要 400，不能等到写完才发现。
+         */
+        let expected = emrExpectedUpdatedAt(ctx)
         var out: EmrWriteOutcome
         if (useIntake.size > 0) {
             let appt = visit.findForDoctor(id, p.doctorId).getOrThrow()
             out = emr.saveDraftWithIntake(id, p.doctorId, useIntake, appt.patientId,
-                                         patch, hNowEpoch(), p.userId)
+                                         patch, hNowEpoch(), p.userId,
+                                         expectedUpdatedAt: expected)
         } else {
-            out = emr.saveDraft(id, p.doctorId, patch, hNowEpoch(), p.userId)
+            out = emr.saveDraft(id, p.doctorId, patch, hNowEpoch(), p.userId,
+                                expectedUpdatedAt: expected)
         }
         emrThrowOnFailure(out, "保存草稿")
         let saved = emr.findByAppointment(id).getOrThrow()
@@ -766,6 +821,71 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
                 }
             case None => throw apiErrorMsg("REVISION_NOT_FOUND", "该病历没有这一版修订")
         }
+    })
+
+    /* ========== 二·补、医生工作台：既往病历（改进 2，2026-10-15） ========== */
+
+    /*
+     * GET /api/v1/doctor/patients/:patientId/records?limit=5&exclude_appointment_id=
+     *
+     * 医生在自己的工作台上看**这位患者**的既往已定稿病历（同屏问诊 + 历史）。
+     *
+     * 为什么必须新增（而不是复用患者侧的 `/medical-records`）：
+     *   患者侧那条用**令牌里的 patient_id**，医生拿不到"别人的 patient_id"这条路；
+     *   而工作台要的正是"我面前这位患者的既往记录"。
+     *
+     * ⚠ 三道闸门，缺一不可：
+     *   ① `QueryOwnMedicalRecord` —— 只有医生（与患者读自己）有；
+     *   ② `patientTreatedByDoctor` —— 该患者必须在**这位医生名下**有过挂号，
+     *      否则 404。没有这道闸，任何医生猜到 patient_id（自增整数）就能翻全院病历；
+     *      ⚠ 判断在 SQL 里（`WHERE doctor_id = ? AND patient_id = ?`），
+     *      **不是**"先读出来再在仓颉里比" —— 那种写法一旦被重构漏掉就是数据泄露。
+     *   ③ 仓储再按 `doctor_id` + `status='locked'` 过滤（纵深防御 + 草稿不外泄）。
+     *
+     * ⚠ 为什么"不是我的患者"回 **404 而不是 403**：
+     *   403 会回答"这位患者是否存在"——那就是一个枚举 oracle
+     *   （拿到 403 说明此人真实存在，拿到 404 说明不存在）。
+     *   一律 404 之后，攻击者分不清"没这个人"与"不是我的患者"。
+     *
+     * ⚠ `exclude_appointment_id`：工作台显示"既往"时不能把**正在写的这一份**
+     *   也算进去（否则医生会看到两份"本次就诊"，一份还是空的）。
+     */
+    r.get("/api/v1/doctor/patients/:patientId/records", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        requireCan(p.role, Action.QueryOwnMedicalRecord)
+        if (p.doctorId <= 0) {
+            throw apiErrorMsg("FORBIDDEN_ROLE", "该账号没有绑定医生档案，无法查看既往病历")
+        }
+        let patientId = parseInt64Or(ctx.paramOr("patientId", "0"), 0)
+        if (patientId <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "患者 id 必须是正整数")
+        }
+        if (!emr.patientTreatedByDoctor(p.doctorId, patientId)) {
+            throw apiErrorMsg("APPOINTMENT_NOT_FOUND", "该患者在你的接诊记录里不存在")
+        }
+        /*
+         * 上限 20（方案 §改进 2 定的）。⚠ 非法/越界一律**回落默认 5**而不是报错：
+         *   与患者侧 `/medical-records` 的 limit 处理保持一致（同一类参数两种脾气
+         *   会让客户端在两处各写一套边界逻辑）。
+         */
+        let limit = parseInt64Or(ctx.queryParamOr("limit", "5"), 5)
+        let capped = if (limit > 0 && limit <= 20) { limit } else { 5 }
+        let exclude = parseInt64Or(ctx.queryParamOr("exclude_appointment_id", "0"), 0)
+        let rows = emr.listLockedForDoctorPatient(p.doctorId, patientId, capped,
+                                                 excludeAppointmentId: exclude)
+        /* 名称/就诊上下文：与患者侧同一条纪律 —— 一次读全科室+医生，不在循环里查。 */
+        let names = nameIndexOf(dept, doc)
+        let arr = ArrayList<JsonValue>()
+        for (m in rows) {
+            let item = medicalRecordJson(m, true)
+            putVisitContext(item, m, booking, names)
+            arr.add(item)
+        }
+        let o = JsonObject()
+        o.put("items", JsonArray(arr.toArray()))
+        o.put("count", JsonInt(rows.size))
+        o.put("patient_id", JsonInt(patientId))
+        sendOk(ctx, o)
     })
 
     /* ========== 三、电子病历（患者侧：只读自己的） ========== */

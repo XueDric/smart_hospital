@@ -55,6 +55,12 @@
     "record-put-after-unlock-200": { "body": ["envelope-ok"], "data": ["data-record"] },
     "record-lock-again-200": { "body": ["envelope-ok"], "data": ["data-record"] },
 
-    "admin-users-page-clamped-200": { "body": ["envelope-ok"], "data": ["data-admin-users-page"] }
+    "admin-users-page-clamped-200": { "body": ["envelope-ok"], "data": ["data-admin-users-page"] },
+
+    "doctor-patient-records-200": { "body": ["envelope-ok"], "data": ["data-doctor-patient-records"] },
+    "doctor-patient-records-exclude-200": { "body": ["envelope-ok"], "data": ["data-doctor-patient-records"] },
+    "doctor-patient-records-other-doctor-404": { "body": ["envelope-error"], "error_code": "APPOINTMENT_NOT_FOUND" },
+    "doctor-patient-records-patient-403": { "body": ["envelope-error"], "error_code": "FORBIDDEN_ROLE" },
+    "record-put-expected-stale-409": { "body": ["envelope-error-fields"], "error_code": "EMR_CHANGED" }
   }
 }

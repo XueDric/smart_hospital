@@ -71,6 +71,9 @@ try {
         # revision-check（改进 3）自建 704xxx 段夹具（科室/医生/患者/挂号单 + 直写病历），
         # 不依赖 emr-check 的状态；放在这里只是让它和其它 HTTP 脚本一样**串行**跑。
         @{ n = 'revision-check'; p = @{ Base = $dev; AdminPw = $pw } },
+        # workbench-check（改进 2）自建 703xxx 段夹具（含"只有草稿的单"），验证既往病历端点
+        # 的三道闸门与乐观锁 expected_updated_at；同样只借这里串行执行。
+        @{ n = 'workbench-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'previsit-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'previsit-bridge-check'; p = @{ Base = $dev; AdminPw = $pw } },
         # ⚠ contract-check 必须排在 p1-extra-check **之前**：后者会重设管理员口令，

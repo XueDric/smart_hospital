@@ -1,0 +1,20 @@
+{
+  "name": "doctor-patient-records-other-doctor-404",
+  "group": "record",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/doctor/patients/{id}/records",
+    "auth": "doctor"
+  },
+  "response": {
+    "status": 404,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "APPOINTMENT_NOT_FOUND",
+        "message": "该患者在你的接诊记录里不存在"
+      }
+    }
+  }
+}

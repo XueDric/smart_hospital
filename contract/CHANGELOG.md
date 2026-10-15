@@ -100,6 +100,54 @@
 
 ---
 
+## 2026-10-15 —— 改进 2：医生工作台（既往病历 + 乐观锁）（53 条样例 / 24 个 Schema）
+
+**新增 5 条、更新 0 条**（原 48 条全部保留）。覆盖 `docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md` §改进 2 的服务端部分。
+
+### 变更
+
+- **新增端点 `GET /api/v1/doctor/patients/:patientId/records`**（样例 `doctor-patient-records-200`、
+  `doctor-patient-records-exclude-200`）—— 医生在自己的工作台上取**这位患者**的既往已定稿病历。
+  三条闸门同时生效，且都由本契约钉住：
+  | 闸门 | 不满足时 | 样例 |
+  | --- | --- | --- |
+  | 必须是医生（患者没有医生档案） | 403 `FORBIDDEN_ROLE` | `doctor-patient-records-patient-403` |
+  | 该患者必须**在这位医生名下**挂过号（判断在 SQL 里） | 404 `APPOINTMENT_NOT_FOUND` | `doctor-patient-records-other-doctor-404` |
+  | 只回**已定稿**、且带正文与就诊上下文 | —（本就要给的） | `doctor-patient-records-200` |
+- **`items[]` 的 `status` 只可能是 `locked`**：草稿属于"正在写的那一份"，不会从既往列表漏出去
+  （样例里同一患者另有一张**只有草稿**的单，它不在 `items` 里 —— 这条样例同时证明了"能取到"与"不外泄"）。
+- **`?exclude_appointment_id=`**：工作台显示"既往"时要把正在写的这一份排除，
+  否则医生会看到两份"本次就诊"（`doctor-patient-records-exclude-200` 的 `count = 0` 就是这个语义）。
+- **`?limit=` 默认 5、上限 20，非法/越界一律回落默认**（不报 400，与患者侧 `/medical-records` 同一脾气）。
+- **`PUT /api/v1/doctor/visits/:id/record` 新增可选 `expected_updated_at`**（样例
+  `record-put-expected-stale-409`）。带上它且与服务端当前版本不符 ⇒ **409 `EMR_CHANGED`**，
+  且**新增 `error.fields`**（`updated_at` / `updated_by` / `record_id`）如实回报当前那一版 ——
+  这是本契约里**唯一**带 `fields` 的错误，配 `envelope-error-fields`（其余错误仍用 `envelope-error`，
+  它禁止额外成员，所以"多带字段"本身也会被门禁抓到）。
+- **不带 `expected_updated_at` ⇒ 行为与旧版完全一致**（不校验），客户端可以逐个入口上线。
+- **已定稿的单仍优先回 `EMR_LOCKED`**（`record-put-locked-409` 未变）：先讲最要紧的事，
+  而不是让客户端以为"只要重新读一次版本就能写进去"。
+
+### 为什么
+
+- 工作台的目标是"同屏写完本次 + 对照既往"：患者侧 `/medical-records` 走**令牌里的 patient_id**，
+  医生拿不到"我面前这位患者"这条路；而让客户端自己拼 patient_id 又等于把全院病历的枚举权交出去
+  （自增整数），所以归属判断必须在服务端、且在 SQL 里。
+- "不是我的患者"回 **404 而不是 403**：403 等于回答"这位患者真实存在"，那就是一个枚举 oracle。
+- 乐观锁：医生在诊室电脑和移动端各开一份草稿是常态，没有 `expected_updated_at` 时
+  **后提交的会静默覆盖先提交的**（现有 `draftSnapshotSql` 只做同一次请求内的乐观比较，
+  客户端无从表达"我读到的是哪一版"）。
+
+### 客户端要不要动
+
+- **医生端（必须）**：读取病历时记住 `data.updated_at`，提交时把它作为 `expected_updated_at` 回传；
+  收到 409 `EMR_CHANGED` 时**保留医生已输入的内容**，提示"这份病历已被他人修改"，
+  并可用 `error.fields.updated_at` 显示差异新旧；**不要**自动重试覆盖（那正是要防的事）。
+- **医生端（建议）**：角标/入口用 `status` 判定，别用 `sections` 是否为空 —— 草稿也有正文。
+- **存档/兼容**：`expected_updated_at` 是**可选**请求字段，旧客户端不发也能继续工作（只是没有并发保护）。
+
+---
+
 ## 模板（新增条目照抄）
 
 ```markdown

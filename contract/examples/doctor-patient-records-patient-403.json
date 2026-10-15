@@ -1,0 +1,20 @@
+{
+  "name": "doctor-patient-records-patient-403",
+  "group": "record",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/doctor/patients/{id}/records",
+    "auth": "patient"
+  },
+  "response": {
+    "status": 403,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "FORBIDDEN_ROLE",
+        "message": "该账号没有绑定医生档案，无法查看既往病历"
+      }
+    }
+  }
+}

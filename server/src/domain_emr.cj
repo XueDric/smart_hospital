@@ -567,6 +567,18 @@ public class EmrWriteOutcome {
      *     那会让"库写不进去"变成"医生锁不了病历"，两者严重程度不同。
      */
     public var revisionVersion: Int64 = 0
+    /*
+     * ★ 服务端**当前**那一版的时间与作者（改进 2，仅在 `conflict` 时有意义）。
+     *
+     * ⚠ 为什么必须回带：
+     *   客户端拿 `expected_updated_at` 来提交，被 409 挡下时如果只知道"冲突了"，
+     *   它只能整份丢掉本地输入重新拉取 —— 医生的输入就这么没了。
+     *   回带"服务端现在是 updated_at=X / updated_by=Y"之后，界面才能说
+     *   「另一位医生在 14:03 改过这一份」并让医生自己决定怎么合并。
+     *   0 = 服务端没读到（病历不存在/已被删），**不是**"时间是 1970"。
+     */
+    public var currentUpdatedAt: Int64 = 0
+    public var currentUpdatedBy: Int64 = 0
 }
 
 /* ===================== 病历仓储（直接 SQL）===================== */
@@ -674,6 +686,67 @@ public class MedicalRecordRepo {
     }
 
     /*
+     * ★ 该患者是否是**这位医生**看过的患者（改进 2 的隐私闸门）。
+     *
+     * 为什么必须存在：新端点 `GET /doctor/patients/:patientId/records` 让医生读
+     *   **既往**病历。若不加这道闸，任何医生只要猜到 patient_id（那是自增整数）
+     *   就能把全院患者的病历翻一遍 —— 而病历里含过敏史、既往史这些敏感信息。
+     *
+     * ⚠ 判断放在 **SQL 里**（`WHERE doctor_id = ? AND patient_id = ? LIMIT 1`），
+     *   不是"先读出就诊记录再在仓颉里比" —— 后者只是把同一件事写在两处，
+     *   一旦有人改了其中一处就会悄悄放行（照 `http_p4.cj` 的归属校验纪律）。
+     * ⚠ 返回 Bool 而不是"是不是 403"：调用方一律把它翻成 **404**，
+     *   不给"这个患者存在吗"的枚举信号（照 previsit 会话隔离的口径）。
+     */
+    public func patientTreatedByDoctor(doctorId: Int64, patientId: Int64): Bool {
+        if (doctorId <= 0 || patientId <= 0) {
+            return false
+        }
+        let rs = db.query("SELECT 1 FROM appointment WHERE doctor_id = ? AND patient_id = ? LIMIT 1",
+                          [DbInt(doctorId), DbInt(patientId)])
+        return rs.rowCount() > 0
+    }
+
+    /*
+     * ★ 该患者在该医生名下的**已定稿**病历（改进 2：医生工作台的"既往记录"）。
+     *
+     * ⚠ 三个约束都与"谁能看到什么"有关，改动前务必读完：
+     *   ① `doctor_id` 参与 WHERE ⇒ 医生只看到**自己**看过的那些次；
+     *      （"这位患者是不是我的患者"已由 `patientTreatedByDoctor` 单独把关，
+     *        这里再限一次是**纵深防御**：将来若有人把闸门挪走，这里仍然挡得住）
+     *   ② `status = 'locked'` ⇒ 草稿不外泄：草稿是医生个人的工作稿，
+     *      给另一个医生看等于把"未定稿当结论"（口径同 http_p4.cj 的 473-474 行）；
+     *   ③ `excludeAppointmentId` 用于"本次就诊"：工作台显示既往记录时
+     *      不能把正在写的这一份也算进"既往"。
+     * 排序：`updated_at DESC`（最近改过的在前）+ `id DESC` 兜底（同秒时顺序稳定，
+     *   否则同一秒内两次保存会让列表顺序抖动，前端"最近一次"的提示会跳）。
+     */
+    public func listLockedForDoctorPatient(doctorId: Int64, patientId: Int64,
+                                           limit: Int64,
+                                           excludeAppointmentId!: Int64 = 0): Array<MedicalRecord> {
+        let out = ArrayList<MedicalRecord>()
+        var sql = "SELECT " + selectCols +
+                  " FROM medical_record WHERE doctor_id = ? AND patient_id = ? AND status = ?"
+        let params = ArrayList<DbValue>()
+        params.add(DbInt(doctorId))
+        params.add(DbInt(patientId))
+        params.add(DbStr(EMR_LOCKED))
+        if (excludeAppointmentId > 0) {
+            sql = sql + " AND appointment_id <> ?"
+            params.add(DbInt(excludeAppointmentId))
+        }
+        sql = sql + " ORDER BY updated_at DESC, id DESC LIMIT ?"
+        params.add(DbInt(limit))
+        let rs = db.query(sql, params.toArray())
+        var i: Int64 = 0
+        while (i < rs.rowCount()) {
+            out.add(rowToRecord(rs, i))
+            i = i + 1
+        }
+        return out.toArray()
+    }
+
+    /*
      * ★ 保存草稿（幂等 upsert）。
      *
      * 语义：把 `patch` 里的段合并进现有病历；没有病历则新建一份。
@@ -687,7 +760,8 @@ public class MedicalRecordRepo {
                           patch: HashMap<String, String>, now: Int64,
                           actorId: Int64,
                           prefill!: HashMap<String, String> = HashMap<String, String>(),
-                          previsitSessionId!: String = ""): EmrWriteOutcome {
+                          previsitSessionId!: String = "",
+                          expectedUpdatedAt!: Int64 = 0): EmrWriteOutcome {
         let out = EmrWriteOutcome()
         // ① 校验段名与长度（**写入前**校验，不留半成品）
         for ((k, v) in patch) {
@@ -716,6 +790,23 @@ public class MedicalRecordRepo {
         }
         if (exists && rec.isLocked()) {
             out.locked = true
+            return out
+        }
+        /*
+         * ★ 乐观锁（改进 2）：客户端带 `expected_updated_at` 时，服务端**当前**那一版
+         *   必须还是它以为的那一版，否则 409 EMR_CHANGED。
+         *
+         * ⚠ 为什么不能只在 HTTP 层"先读再比"：那样两个请求会在
+         *   "读 → 比 → 写"之间交错，两人同时提交时**两个都过**（经典的 TOCTOU）。
+         *   所以这里除了本次校验，`exists` 分支的 UPDATE **还额外带一个
+         *   `updated_at = ?`**（见下方 `expectedGuard`）——把校验并进同一条写语句，
+         *   库层面保证"我改的正是我看到的那一版"。
+         */
+        if (exists && expectedUpdatedAt > 0 && rec.updatedAt != expectedUpdatedAt) {
+            out.conflict = true
+            out.currentUpdatedAt = rec.updatedAt
+            out.currentUpdatedBy = rec.updatedBy
+            out.recordId = rec.id
             return out
         }
         // 保存合并前的完整快照；rec 会在下方被修改。
@@ -772,9 +863,21 @@ public class MedicalRecordRepo {
                 values.add(x)
             }
             for (x in before) { values.add(x) }
+            /*
+             * ★ 乐观锁的第二道闸（改进 2）：客户端报的 `expected_updated_at` 也进 WHERE。
+             *   它与 `before` 里的 `updated_at` 不是同一个值 ——
+             *   `before` 是**本次**读到的，`expectedUpdatedAt` 是**客户端**读到的。
+             *   只有两者都成立（= 没人在这两次读之间插进来改过）才写入。
+             */
+            var guard = ""
+            if (expectedUpdatedAt > 0) {
+                guard = " AND updated_at = ?"
+                values.add(DbInt(expectedUpdatedAt))
+            }
             let n = db.exec("UPDATE medical_record SET chief_complaint = ?, present_illness = ?, " +
                     "past_history = ?, allergy_history = ?, physical_exam = ?, diagnosis = ?, " +
-                    "treatment = ?, updated_by = ?, updated_at = ? WHERE id = ? AND " + draftSnapshotSql,
+                    "treatment = ?, updated_by = ?, updated_at = ? WHERE id = ? AND " + draftSnapshotSql +
+                    guard,
                     values.toArray())
             out.recordId = rec.id
             out.ok = n == 1
@@ -791,6 +894,9 @@ public class MedicalRecordRepo {
                         out.ok = same
                         out.conflict = !same
                         out.locked = latest.isLocked()
+                        /* 冲突时把"服务端现在是哪一版"带回给调用方（改进 2）。 */
+                        out.currentUpdatedAt = latest.updatedAt
+                        out.currentUpdatedBy = latest.updatedBy
                     case None => ()
                 }
             }
@@ -1191,10 +1297,12 @@ public class MedicalRecordRepo {
     public func saveDraftWithIntake(appointmentId: Int64, doctorId: Int64,
                                     sessionId: String, patientId: Int64,
                                     patch: HashMap<String, String>, now: Int64,
-                                    actorId: Int64): EmrWriteOutcome {
+                                    actorId: Int64,
+                                    expectedUpdatedAt!: Int64 = 0): EmrWriteOutcome {
         return saveDraft(appointmentId, doctorId, patch, now, actorId,
                          prefill: intakePrefill(sessionId, patientId),
-                         previsitSessionId: sessionId)
+                         previsitSessionId: sessionId,
+                         expectedUpdatedAt: expectedUpdatedAt)
     }
 
     /*

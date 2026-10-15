@@ -185,6 +185,9 @@ Invoke-RestMethod http://127.0.0.1:8091/health
 
 `error.fields` **仅在**错误对象带了字段明细时出现（`ApiError.fields` 为 `Some`），形如 `{"字段名":"原因"}`；
 `http_common.cj:245-248` 会按需附加。客户端要**判空后再读**（当前患者端路径下它很少出现）。
+★ 2026-10-15 起有一个**会真的带上它**的场景：医生端保存病历的乐观锁冲突
+**409 `EMR_CHANGED`** ⇒ `fields = { updated_at, updated_by, record_id }`（见 §5.30.2）；
+它的形状由 `contract/schema/envelope-error-fields.schema.json` 钉住。
 
 **(2) 请求体不是合法 JSON** —— HTTP **400**，**平铺**，**没有 `ok`、没有 `error`**：
 
@@ -492,6 +495,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | 5.27 | `GET /api/v1/appointments/by-token/:token` | 是 | **仅 patient** | **按幂等键反查挂号结果**（★ 2026-10-14 新增，见 §5.27） |
 | 5.28 | `GET /api/v1/doctor/visits/:id/previsit` | 是 | **仅医生** | **读这一单的预问诊摘要**（★ 2026-10-14 新增，见 §5.28） |
 | 5.29 | `GET …/record/revisions`、`…/revisions/:version`、`…/revisions/:version/diff?against=` | 是 | **仅医生（本单）+ 管理员** | **病历修订历史**：列表 / 单版详情 / 逐段对比（★ 2026-10-15 新增，见 §5.29；同节含 `reopen` 必填 `reason` 与 `revision_version`） |
+| 5.30 | `GET /api/v1/doctor/patients/:patientId/records` | 是 | **仅医生（须接诊过该患者）** | **既往已定稿病历**（录入工作台同屏对比；★ 2026-10-15 新增，见 §5.30；同节含 `PUT …/record` 的可选 `expected_updated_at` 乐观锁与 409 `EMR_CHANGED` 的 `error.fields`） |
 
 > 权限判定收敛在**单一函数** `can(role, action)`（`http_app.cj:162-230`）。相关动作与角色：
 > `book` = 仅 patient；`view_schedule` = 三端；`query_own_medical_record` = patient | doctor；
@@ -1353,6 +1357,72 @@ POST /api/v1/doctor/visits/:id/record/reopen
 
 ---
 
+### 5.30 2026-10-15 新增：医生录入工作台（既往病历 + 保存冲突）
+
+> 对应改进 2 的服务端部分。**它不新增"自动保存"端点** —— 自动保存就是重复 `PUT …/record`（幂等）。
+
+#### 5.30.1 `GET /api/v1/doctor/patients/:patientId/records` —— 这位患者的既往已定稿病历
+
+医生端"同屏看本次问诊 + 既往记录"用的就是它。
+
+| 参数 | 位置 | 说明 |
+| --- | --- | --- |
+| `patientId` | 路径 | 必填。`<= 0` ⇒ **400 `VALIDATION_FAILED`** |
+| `limit` | 查询串 | 可选，默认 **5**，超过 20 或非法值**回落 5**（不报 400，与患者侧 `/medical-records` 同一脾气） |
+| `exclude_appointment_id` | 查询串 | 可选，排除"当前正在编辑的这次"（否则既往列表里会混进本次草稿单） |
+
+**放行条件（隐私边界，比"同科室"更严）**：仅当**该医生本人**在该患者名下至少有一条 appointment 时放行；
+否则一律 **404 `APPOINTMENT_NOT_FOUND`**（不区分 403，避免"这位患者是否存在/是否看过病"的枚举面）。
+归属判断在 SQL 里做，不在应用层"先读再比"。
+
+**只返回 `status='locked'` 的病历**（草稿是医生个人的工作稿，给另一个医生看会造成"未定稿当结论"）。
+
+```json
+{ "ok": true, "data": {
+  "patient_id": 0,
+  "count": 2,
+  "items": [ /* 就地展开的病历对象，与 `GET /doctor/visits/:id/record?include_sections=true` 同形状
+                （含 `sections[]` 与 `previsit_ref`），另加 `department_name`/`doctor_name` 等就诊上下文 */ ]
+} }
+```
+
+| 情形 | 状态码 | 业务码 |
+| --- | --- | --- |
+| 患者身份调（`doctorId = 0`） | 403 | `FORBIDDEN_ROLE` |
+| `patientId <= 0` | 400 | `VALIDATION_FAILED` |
+| 该医生没接诊过这位患者 | 404 | `APPOINTMENT_NOT_FOUND` |
+| 该医生接诊过、但一条已定稿病历都没有 | 200 | `items: []`、`count: 0`（**不是 404**） |
+
+#### 5.30.2 `PUT /api/v1/doctor/visits/:id/record` 新增可选 `expected_updated_at`（乐观锁）
+
+自动保存的竞态（两个窗口/两处同时改）靠它挡住：
+
+- 请求体里带 `"expected_updated_at": <上次响应里的 updated_at>`。
+- 与库里 `updated_at` **不一致** ⇒ **409 `EMR_CHANGED`**，且错误体多一个 `error.fields`：
+
+```json
+{ "ok": false, "error": { "code": "EMR_CHANGED", "message": "病历已被他人修改，请重新加载",
+  "fields": { "updated_at": 0, "updated_by": 0, "record_id": 0 } } }
+```
+
+- 比较发生在**同一条 UPDATE 的 `WHERE` 里**（`updated_at = ?`），不是"先查再比" —— 否则两个请求都能通过。
+- 不带该字段 ⇒ 保持旧行为（**不校验**，用于兼容与首次保存）。
+- 挂号单**还没有病历**时不校验（没有"当前版本"可比）。
+- **优先级**：已定稿的单先回 **409 `EMR_LOCKED`**（即使 `expected_updated_at` 也过期）——
+  先讲最要紧的事：要回 `EMR_CHANGED` 会让客户端以为"重读版本再写就行"，而实际得先去调解锁。
+- 重复 PUT 同内容**允许**，且**不产生修订版本**（版本只在 lock/reopen 落行，见 §5.29.1）：
+  自动保存可以放心按秒级频率发。
+
+#### 5.30.3 客户端要做什么
+
+| 端 | 要做什么 |
+| --- | --- |
+| 医生端（鸿蒙） | 工作台版式（患者栏 + 预问诊摘要卡 + 既往列表）；七段锚点导航；脏标记/离开保护；提交前预览；**保存时回传上一响应的 `updated_at` 作为 `expected_updated_at`**；收到 409 `EMR_CHANGED` ⇒ **保留本地输入**并展示服务端最新版，人工确认，不静默覆盖；收到 409 `EMR_LOCKED` ⇒ 提示"已定稿，需管理员解锁" |
+| 管理端（Web） | 不用动 |
+| 患者端（鸿蒙/安卓） | 不用动（这些端点在患者令牌下一律 403/404） |
+
+---
+
 ## 6. 不能调的端点（前端不应出现这些路径）
 
 以下端点**确实存在**，但权限矩阵把它们挡在患者之外（`http_app.cj:162-230`）。
@@ -1379,15 +1449,16 @@ POST /api/v1/doctor/visits/:id/record/reopen
 
 | 方法 + 路径 | Action | 源码依据 |
 | --- | --- | --- |
-| `GET /api/v1/doctor/visits` | `manage_visit` | `http_p4.cj:181` |
-| `POST /api/v1/doctor/visits/:id/start` \| `/finish` \| `/no-show` | `manage_visit` | `http_p4.cj:204/224/245` |
-| `GET` / `PUT /api/v1/doctor/visits/:id/record` | `query_own_medical_record` / `write_own_medical_record` | `http_p4.cj:480/545` |
-| `GET /api/v1/doctor/visits/:id/previsit` | `query_own_medical_record`（**且必须是我的号**，否则 404） | `http_p4.cj:515`（★ 2026-10-14 新增，见 §5.28） |
-| `POST /api/v1/doctor/visits/:id/record/lock` | `write_own_medical_record` | `http_p4.cj:593` |
-| `POST /api/v1/doctor/visits/:id/record/reopen` | **`manage_record_revision`（仅管理员）** —— 医生端也不能解锁；**必须带 `reason`** | `http_p4.cj:633`（★ 2026-10-15 改，见 §5.29） |
-| `GET /api/v1/doctor/visits/:id/record/revisions` | `query_own_medical_record`（**且必须是我的号**，否则 404；管理员可读任意单） | `http_p4.cj:688`（★ 2026-10-15 新增，见 §5.29） |
-| `GET /api/v1/doctor/visits/:id/record/revisions/:version` | 同上 | `http_p4.cj:714`（★ 同上） |
-| `GET /api/v1/doctor/visits/:id/record/revisions/:version/diff?against=N` | 同上 | `http_p4.cj:741`（★ 同上） |
+| `GET /api/v1/doctor/visits` | `manage_visit` | `http_p4.cj:443` |
+| `POST /api/v1/doctor/visits/:id/start` \| `/finish` \| `/no-show` | `manage_visit` | `http_p4.cj:467/487/508` |
+| `GET` / `PUT /api/v1/doctor/visits/:id/record` | `query_own_medical_record` / `write_own_medical_record` | `http_p4.cj:528/593`（★ 2026-10-15：PUT 支持可选 `expected_updated_at`，见 §5.30） |
+| `GET /api/v1/doctor/visits/:id/previsit` | `query_own_medical_record`（**且必须是我的号**，否则 404） | `http_p4.cj:563`（★ 2026-10-14 新增，见 §5.28） |
+| `POST /api/v1/doctor/visits/:id/record/lock` | `write_own_medical_record` | `http_p4.cj:648` |
+| `POST /api/v1/doctor/visits/:id/record/reopen` | **`manage_record_revision`（仅管理员）** —— 医生端也不能解锁；**必须带 `reason`** | `http_p4.cj:688`（★ 2026-10-15 改，见 §5.29） |
+| `GET /api/v1/doctor/visits/:id/record/revisions` | `query_own_medical_record`（**且必须是我的号**，否则 404；管理员可读任意单） | `http_p4.cj:743`（★ 2026-10-15 新增，见 §5.29） |
+| `GET /api/v1/doctor/visits/:id/record/revisions/:version` | 同上 | `http_p4.cj:769`（★ 同上） |
+| `GET /api/v1/doctor/visits/:id/record/revisions/:version/diff?against=N` | 同上 | `http_p4.cj:796`（★ 同上） |
+| `GET /api/v1/doctor/patients/:patientId/records` | `query_own_medical_record`（**且这位医生必须接诊过该患者**，否则 404；患者令牌 403） | `http_p4.cj:853`（★ 2026-10-15 新增，见 §5.30） |
 
 ### 6.3 刻意对患者 403 的一个"看似通用"端点
 
@@ -1850,6 +1921,7 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 | 404 | `EMR_NOT_FOUND` | 病历不存在或尚未提交 | ✅ |
 | 404 | `REVISION_NOT_FOUND` | 病历没有这一版修订（`GET …/record/revisions/:version` 与 `diff` 的 `against`；2026-10-15 新增，§5.29） | ❌（医生端） |
 | 409 | `EMR_LOCKED` | 病历已提交锁定，不可修改（需管理员解锁） | ❌（医生端） |
+| 409 | `EMR_CHANGED` | 病历已被他人修改（乐观锁：请求里的 `expected_updated_at` 不是当前版本）—— **`error.fields` 带 `{updated_at, updated_by, record_id}`**（2026-10-15 起真的会带，§5.30.2） | ❌（医生端） |
 | 409 | `EMR_NOT_LOCKED` | 完成就诊前必须先提交锁定病历 | ❌（医生端） |
 | 409 | `VISIT_BAD_STATE` | 当前就诊状态不允许该操作 | ❌（医生端） |
 | 404 | `ROUTE_NOT_FOUND` | 接口不存在 | ✅（**2026-10-15 起真的会被抛**：兜底中间件把未匹配的 `/api/v1/**` 改写成它，`http_app.cj:2684-2706`；旧版"实现里未见"的说法已作废） |

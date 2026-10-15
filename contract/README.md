@@ -12,8 +12,8 @@
 
 | 路径 | 是什么 | 生成方式 |
 | --- | --- | --- |
-| `contract/examples/*.json` | **48 条**真实响应样例（含请求、状态码、`content-type`、响应体） | `server/tests/export-contract.ps1` **自动生成，不要手工改** |
-| `contract/schema/*.schema.json` | **22 个** JSON Schema：8 个 **body 级**（`artifact` / `envelope-ok` / `envelope-error` / `flat-error` / `static-not-found` / `method-not-allowed` / `health` / `previsit-stream`），14 个 **data 级**（`data-*.schema.json`，校验 `response.body.data`） | 手工维护 |
+| `contract/examples/*.json` | **53 条**真实响应样例（含请求、状态码、`content-type`、响应体） | `server/tests/export-contract.ps1` **自动生成，不要手工改** |
+| `contract/schema/*.schema.json` | **24 个** JSON Schema：9 个 **body 级**（`artifact` / `envelope-ok` / `envelope-error` / `envelope-error-fields` / `flat-error` / `static-not-found` / `method-not-allowed` / `health` / `previsit-stream`），15 个 **data 级**（`data-*.schema.json`，校验 `response.body.data`） | 手工维护 |
 | `contract/schema-map.json` | 样例 → Schema 的映射（`body` / `data` / `body_text` / `error_code`）+ 文件级 Schema 声明 | 手工维护，**新增样例必须登记** |
 | `contract/CHANGELOG.md` | 形状变更日志（给人看：改了什么、客户端要不要动） | 手工维护 |
 
@@ -69,6 +69,7 @@ cd E:\harmonyOS\智能医院客户端\server
 | 文本里的日期 / 手机号 / 长数字 | `<date>` / `<phone>` / `<N>` | 错误消息里回显的参数 |
 | 夹具专名 | `<dept>` / `<doctor>` / `<patient>` | 契约夹具的固定名字 |
 | 请求路径里的数字段 | `{id}` | `/api/v1/medical-records/{id}` |
+| **查询串里**值为库内自增 id 的参数 | `{id}` | `?exclude_appointment_id={id}` —— ⚠ 它同样是"每次导出都不同"的库内主键；而 `limit=9999`/`offset=-5`/`against=2` 这类**脚本文写死的常量**不归一化（它们是样例要钉住的东西）。漏了这条 → `doctor-patient-records-exclude-200` 每次都红（2026-10-15 实测） |
 | 键顺序 | **排序**（`To-CanonicalJson`，非 `ConvertTo-Json`） | 保证 diff 可读、跨 PS 版本一致 |
 
 **volatile 逃生口**：极少数样例的内容依赖整库状态（当前只有 `admin-users-page-clamped-200` 的

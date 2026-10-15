@@ -1,0 +1,21 @@
+{
+  "name": "doctor-patient-records-exclude-200",
+  "group": "record",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/doctor/patients/{id}/records?exclude_appointment_id={id}",
+    "auth": "doctor"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": true,
+      "data": {
+        "items": [],
+        "count": 0,
+        "patient_id": 0
+      }
+    }
+  }
+}

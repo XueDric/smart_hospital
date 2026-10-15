@@ -74,7 +74,7 @@ cd server     # ⚠ cwd 必须是 server/，见下
 | `triagetest` | P2 分诊 + 预问诊**纯逻辑**自检（**110 项**断言），不碰库不调模型 | ❌ |
 | `authtest` | **口令/令牌原语自检**（含 3 个公开测试向量，**17 项**） | ❌ |
 | `check-db <dsn>` | 连库 + 幂等建表 + 打印表清单（★ 标记号源域） | ✅ |
-| `accept <dsn>` | 验收测试 AC-1…AC-17（**612 项断言**：AC-1…AC-13 + **AC-14/AC-15**（令牌续期回值、`/health` 日期口径）+ **AC-16/AC-17**（`ai_model` 模型配置、账号列表/排班可改）+ AC-P2-1…6 / AC-P3-1…6 / **AC-P4-1…6** / AC-BASE-1…3 / AC-AICALL-1…3 / AC-NOTICE-1…3；⚠ 只允许库名含 `test` 的测试库） | ✅ |
+| `accept <dsn>` | 验收测试 AC-1…AC-17（**638 项断言**：AC-1…AC-13 + **AC-14/AC-15**（令牌续期回值、`/health` 日期口径）+ **AC-16/AC-17**（`ai_model` 模型配置、账号列表/排班可改）+ AC-P2-1…6 / AC-P3-1…6 / **AC-P4-1…7** / AC-BASE-1…3 / AC-AICALL-1…3 / AC-NOTICE-1…3；⚠ 只允许库名含 `test` 的测试库） | ✅ |
 | `create-db <dsn>` | 幂等建库（utf8mb4）—— 测试库靠它 | ✅ |
 | `create-admin <dsn>` | 建/重置管理员并打印口令（**引导入口**） | ✅ |
 | `serve <dsn>` | **P1**：启动 HTTP / HTTPS 服务（默认只绑 `127.0.0.1`） | ✅ |
@@ -180,6 +180,18 @@ $env:HOSP_ADMIN_PW = "<管理员口令>"
 # P2 预问诊 HTTP / SSE（流式帧格式 + 多轮状态机 + 会话隔离）
 .\tests\previsit-check.ps1    -Base http://127.0.0.1:8091 -AdminPw <管理员口令>
 
+# 预问诊交接（改进 1）：挂号带 previsit_id 绑定 + 医生读这一单的自述 + 病历 previsit_ref
+.\tests\previsit-bridge-check.ps1 -Base http://127.0.0.1:8091 -AdminPw <管理员口令>
+
+# 病历修订历史（改进 3）：定稿落版 / 解锁带理由 / 版本列表与逐段对比 / 权限与幂等
+.\tests\revision-check.ps1    -Base http://127.0.0.1:8091 -AdminPw <管理员口令>
+
+# 医生录入工作台（改进 2）：既往已定稿病历（隐私边界/只回 locked/exclude/limit）+ 乐观锁 409
+.\tests\workbench-check.ps1   -Base http://127.0.0.1:8091 -AdminPw <管理员口令>
+
+# 接口契约门禁（改进 5）：样例与实测逐字节一致 + Schema 校验 + 登记完整性
+.\tests\contract-check.ps1    -Base http://127.0.0.1:8091 -AdminPw <管理员口令>
+
 # 探活接口（/health 与 /api/v1/health：响应形状 + ★ 医院日期口径；无需认证）
 .\tests\health-check.ps1   -Base http://127.0.0.1:8091
 
@@ -256,7 +268,7 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 | `src/dashboard.cj` | **P4 运营看板**：只出聚合、绝不出明细（隐私红线写在文件头） |
 | `src/triage_stat.cj` | **P4 分诊统计**：只存结论；`record()` 签名里**没有主诉参数**（类型层面存不进敏感文本） |
 | `src/http_p4.cj` | **P4 接口层**：11 个端点（接诊队列 / 病历 / 看板）；路由注册仍集中在 http_app.cj |
-| `src/acceptance_p4.cj` | AC-P4-1…4：病历锁定不可改 / 状态机 / 看板隐私 / 统计不落敏感文本 |
+| `src/acceptance_p4.cj` | AC-P4-1…7：病历锁定不可改 / 状态机 / 看板隐私 / 统计不落敏感文本 / **AC-P4-5 预问诊绑定与预填（改进 1）** / **AC-P4-6 病历修订历史（改进 3）** / **AC-P4-7 医生读既往病历 + 乐观锁（改进 2）** |
 | `src/domain_base.cj` | **基础数据域（科室/医生）仓储**：CRUD + 唯一键冲突分类 + **引用保护**（有引用不删）+ **软删**（force） |
 | `src/http_base.cj` | **基础数据域接口**（12 个端点）：科室/医生的管理端 CRUD（仅 `ManageBaseData`，管理员；**列表支持 `limit`/`offset` 且回 `total`**，见文件头"分页"一节）+ **患者可读字典** `GET /api/v1/departments`、`GET /api/v1/doctors`（**刻意不分页**） |
 | `src/domain_notice.cj` | **公告域仓储**（2026-10-12）：院内公告/健康提示的 CRUD；列顺序单一定义 + 列数守卫；⚠ 公告**不进检索、不出站**（与 `kb_doc` 的边界写在文件头） |

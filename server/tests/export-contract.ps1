@@ -134,7 +134,14 @@ function Normalize-Node($node) {
 
 function Norm-Path([string]$p) {
     # 路径里的自增 id（整段都是数字）→ {id}；token/会话 id 这类含字母的段不动。
-    return ($p -replace '/(\d+)(?=/|$)', '/{id}')
+    $q = $p -replace '/(\d+)(?=/|$)', '/{id}'
+    # ⚠ 查询串里的自增 id 也要归一化：
+    #   `?exclude_appointment_id=123` 里的 123 是当天新建挂号单的自增主键，**每次导出都不同**
+    #   ⇒ 不归一化这条样例每次都红（2026-10-15 实测：doctor-patient-records-exclude-200 第 6 行）。
+    #   只处理"值是库内自增 id"的键；`limit=9999` / `offset=-5` / `against=2` 这类**脚本里写死的常量**不动
+    #   —— 它们正是那些样例要钉住的东西。
+    $q = $q -replace '([?&](?:exclude_appointment_id|appointment_id|patient_id|schedule_id|doctor_id)=)\d+', '${1}{id}'
+    return $q
 }
 
 # 把 volatile 路径（形如 data.items）换成 "<volatile>"，让这类样例只钉信封。
@@ -492,6 +499,27 @@ $null = Cap 'record-put-after-unlock-200' 'record' 'PUT' ("/api/v1/doctor/visits
         '{"allergy_history":"青霉素过敏"}'
 $null = Cap 'record-lock-again-200' 'record' 'POST' ("/api/v1/doctor/visits/$appt2/record/lock") 'doctor' $A $null
 $null = Cap 'record-revision-diff-200' 'record' 'GET' ("/api/v1/doctor/visits/$appt2/record/revisions/3/diff?against=2") 'doctor' $A $null
+
+# ── [6.6] 医生工作台：既往病历 + 乐观锁（改进 2）──────────────────────────
+Write-Host ""
+Write-Host "[6.6] 医生工作台：既往病历（改进 2）与乐观锁 expected_updated_at"
+# ⚠ 顺序有讲究：**先**造一张"只有草稿"的单，再取既往病历 —— 这样这条样例同时证明了
+#   "草稿不外泄"，而不是只证明"能取到"。
+$b3 = Req 'wb-book' 'POST' '/api/v1/appointments' $P '{"schedule_id":706001,"client_token":"contract-tok-wb"}'
+if ($b3.Http -ne 201) { Fail "工作台夹具挂号未成功（HTTP $($b3.Http)）：$($b3.Body)" }
+$appt3 = [int64]$b3.Json.data.appointment_id
+$null = Req 'wb-draft' 'PUT' ("/api/v1/doctor/visits/$appt3/record") $A '{"chief_complaint":"咽痛 1 天"}'
+# 既往病历：本单医生读本患者（appt2 已定稿 ⇒ 出现在历史里；appt3 是草稿 ⇒ 不出现）
+$null = Cap 'doctor-patient-records-200' 'record' 'GET' '/api/v1/doctor/patients/706001/records' 'doctor' $A $null
+# 排除"正在写的这一份"（工作台不该把本次就诊算成既往）
+$null = Cap 'doctor-patient-records-exclude-200' 'record' 'GET' ("/api/v1/doctor/patients/706001/records?exclude_appointment_id=$appt2") 'doctor' $A $null
+# 隐私闸门：另一位医生**从没接诊过**这位患者 ⇒ 404（不是 403，403 等于回答"这人存在"）
+$null = Cap 'doctor-patient-records-other-doctor-404' 'record' 'GET' '/api/v1/doctor/patients/706001/records' 'doctor' $A2 $null
+# 患者自己调医生端点 ⇒ 403（患者没有医生档案）
+$null = Cap 'doctor-patient-records-patient-403' 'record' 'GET' '/api/v1/doctor/patients/706001/records' 'patient' $P $null
+# 乐观锁：拿**过期**版本提交 ⇒ 409 EMR_CHANGED，且 error.fields 回报当前那一版
+$null = Cap 'record-put-expected-stale-409' 'record' 'PUT' ("/api/v1/doctor/visits/$appt3/record") 'doctor' $A `
+        '{"chief_complaint":"并发改的","expected_updated_at":1}'
 
 # ── [7] 列表分页与上限（成员集合依赖全院数据 ⇒ 只钉形状）────────────────────
 Write-Host ""
