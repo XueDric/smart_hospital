@@ -100,6 +100,7 @@ export class SessionStore {
   static setPrevisitSessionId(sessionId: string): void {
     SessionStore.previsitSessionIdValue = sessionId;
     SessionStore.putString(KEY_PREVISIT_SESSION_ID, sessionId);
+    SessionStore.flush();
   }
 
   static setApiConfig(mode: string, baseUrl: string): void {
@@ -107,6 +108,7 @@ export class SessionStore {
     SessionStore.baseUrlValue = baseUrl;
     SessionStore.putString(KEY_API_MODE, mode);
     SessionStore.putString(KEY_BASE_URL, baseUrl);
+    SessionStore.flush();
   }
 
   static saveLogin(token: string, expiresAt: number, userId: number, role: string, refId: number,

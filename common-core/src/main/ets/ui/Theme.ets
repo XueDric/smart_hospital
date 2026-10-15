@@ -1,25 +1,93 @@
+import { ThemeManager } from './ThemeManager';
+
 export class AppColor {
-  static readonly PRIMARY: string = '#00A9A7';
-  static readonly PRIMARY_DARK: string = '#007F7D';
-  static readonly PRIMARY_SOFT: string = '#DFF5F3';
-  static readonly BACKGROUND: string = '#F3F8F7';
-  static readonly SURFACE: string = '#FFFFFF';
-  static readonly SURFACE_ALT: string = '#EAF3F2';
-  static readonly TEXT: string = '#193331';
-  static readonly TEXT_SECONDARY: string = '#5F7371';
-  static readonly BORDER: string = '#D6E4E2';
-  static readonly DANGER: string = '#C83B3B';
-  static readonly DANGER_SOFT: string = '#FCE8E8';
-  static readonly WARNING: string = '#A35A00';
-  static readonly WARNING_SOFT: string = '#FFF1D9';
-  static readonly SUCCESS: string = '#147A55';
-  static readonly SUCCESS_SOFT: string = '#DFF3E9';
-  static readonly INFO: string = '#315B96';
-  static readonly INFO_SOFT: string = '#E7EFFB';
-  static readonly DISABLED: string = '#AAB8B6';
+  static get PRIMARY(): string {
+    return ThemeManager.getInstance().palette().primary;
+  }
+
+  static get PRIMARY_DARK(): string {
+    return ThemeManager.getInstance().palette().primaryDark;
+  }
+
+  static get PRIMARY_SOFT(): string {
+    return ThemeManager.getInstance().palette().primarySoft;
+  }
+
+  static get BACKGROUND(): string {
+    return ThemeManager.getInstance().palette().background;
+  }
+
+  static get SURFACE(): string {
+    return ThemeManager.getInstance().palette().surface;
+  }
+
+  static get SURFACE_ALT(): string {
+    return ThemeManager.getInstance().palette().surfaceAlt;
+  }
+
+  static get TEXT(): string {
+    return ThemeManager.getInstance().palette().text;
+  }
+
+  static get TEXT_SECONDARY(): string {
+    return ThemeManager.getInstance().palette().textSecondary;
+  }
+
+  static get BORDER(): string {
+    return ThemeManager.getInstance().palette().border;
+  }
+
+  static get DANGER(): string {
+    return ThemeManager.getInstance().palette().danger;
+  }
+
+  static get DANGER_SOFT(): string {
+    return ThemeManager.getInstance().palette().dangerSoft;
+  }
+
+  static get WARNING(): string {
+    return ThemeManager.getInstance().palette().warning;
+  }
+
+  static get WARNING_SOFT(): string {
+    return ThemeManager.getInstance().palette().warningSoft;
+  }
+
+  static get SUCCESS(): string {
+    return ThemeManager.getInstance().palette().success;
+  }
+
+  static get SUCCESS_SOFT(): string {
+    return ThemeManager.getInstance().palette().successSoft;
+  }
+
+  static get INFO(): string {
+    return ThemeManager.getInstance().palette().info;
+  }
+
+  static get INFO_SOFT(): string {
+    return ThemeManager.getInstance().palette().infoSoft;
+  }
+
+  static get DISABLED(): string {
+    return ThemeManager.getInstance().palette().disabled;
+  }
+
+  static get NAV_BACKGROUND(): string {
+    return ThemeManager.getInstance().palette().navBackground;
+  }
+
+  static get NAV_TEXT(): string {
+    return ThemeManager.getInstance().palette().navText;
+  }
 }
 
 export class AppSize {
+  static readonly BASE_GRID: number = 4;
+  static readonly STEP_GRID: number = 8;
+  static readonly TOUCH_MIN: number = 40;
+  static readonly ICON_SM: number = 20;
+  static readonly ICON_MD: number = 24;
   static readonly PAGE_PADDING: number = 16;
   static readonly CARD_RADIUS: number = 8;
   static readonly CONTROL_RADIUS: number = 8;
@@ -29,11 +97,15 @@ export class AppSize {
 }
 
 export class AppText {
+  static readonly DISPLAY: number = 30;
+  static readonly GLYPH: number = 28;
   static readonly TITLE: number = 24;
+  static readonly LEAD: number = 20;
   static readonly HEADING: number = 18;
   static readonly SUBHEADING: number = 16;
-  static readonly BODY: number = 15;
+  static readonly BODY: number = 16;
   static readonly CAPTION: number = 13;
+  static readonly MICRO: number = 12;
 }
 
 export function periodText(period: string): string {
