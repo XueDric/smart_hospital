@@ -15,8 +15,8 @@
 # 支持：
 #   type（字符串或字符串数组）/ required / properties / additionalProperties:false /
 #   items（单个 schema，作用于所有元素）/ enum / const /
-#   minimum / maximum / minLength / maxLength
-# 不支持（出现即报错）：pattern / oneOf / anyOf / allOf / not / $ref / format / …
+#   minimum / maximum / minLength / maxLength / minItems / maxItems / pattern
+# 不支持（出现即报错）：oneOf / anyOf / allOf / not / $ref / format / …
 #
 # 一个特殊约定：节点值恰为字符串 "<volatile>" 时**跳过任何校验**。
 #   这是导出机的 volatile 占位（成员集合依赖全院数据的端点，比如管理员用户列表），
@@ -25,7 +25,7 @@
 $script:JsonSchemaSupported = @(
     'type', 'required', 'properties', 'additionalProperties', 'items',
     'enum', 'const', 'minimum', 'maximum', 'minLength', 'maxLength', 'pattern',
-    'title', 'description'
+    'minItems', 'maxItems', 'title', 'description'
 )
 
 function Get-SchemaKeys($Schema) {
@@ -176,6 +176,13 @@ function Invoke-SchemaCheck {
 
     # ── 数组 ──
     if ($tn -eq 'array') {
+        # 元素条数下限/上限（2026-10-15 为改进 3 的「sections 至少一段」加的）。
+        # ⚠ 用 @($Node).Count 而不是 $Node.Count：单元素数组被隐式展开时后者是 $null。
+        $n = @($Node).Count
+        $minI = Get-SchemaValue $Schema 'minItems'
+        if ($null -ne $minI -and $n -lt [int]$minI) { $null = $Errs.Add(("{0}: 元素个数应 ≥ {1}（实际 {2}）" -f $Path, $minI, $n)) }
+        $maxI = Get-SchemaValue $Schema 'maxItems'
+        if ($null -ne $maxI -and $n -gt [int]$maxI) { $null = $Errs.Add(("{0}: 元素个数应 ≤ {1}（实际 {2}）" -f $Path, $maxI, $n)) }
         $items = Get-SchemaValue $Schema 'items'
         if ($null -ne $items) {
             $i = 0

@@ -1,0 +1,33 @@
+{
+  "title": "病历两版逐段对比 data（GET …/record/revisions/:version/diff?against=N）",
+  "description": "应用于 response.body.data。`left` = against 那一版，`right` = :version 那一版（即「从 left 改到 right」）。sections 含**全部七段**（没改的段也在、标 changed=false）——只回变化的段会让客户端无法显示「其余未变」，也无法在段数变化（七段表升级）时自证。changed 是**服务端判定**的（逐字符比较）：客户端不要自己比较 left/right 来重算（两边算法一旦不同，角标就会和详情页自相矛盾）。`against` 默认 = version-1；**第一版没有上一版 ⇒ 400 要求显式指定**，刻意不退化成「拿 v1 跟自己比」（那会返回「一切未变」，是一个看起来成功的错答案）。",
+  "type": "object",
+  "required": ["appointment_id", "left", "right", "status_changed", "changed_count", "sections"],
+  "additionalProperties": false,
+  "properties": {
+    "appointment_id": { "type": "integer" },
+    "status_changed": {
+      "type": "boolean",
+      "description": "两版之间的**病历状态**是否变化（lock→reopen 的对比里通常为 false：两版都是 locked 快照；解锁把状态改成 draft 记在**当前**病历上，不在快照里）"
+    },
+    "changed_count": { "type": "integer", "minimum": 0, "description": "标了 changed 的段数（= 客户端角标数量）" },
+    "left": { "type": "object", "description": "against 那一版的头部信息（字段同列表项）" },
+    "right": { "type": "object", "description": ":version 那一版的头部信息（字段同列表项）" },
+    "sections": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["key", "label", "changed", "left", "right"],
+        "additionalProperties": false,
+        "properties": {
+          "key": { "type": "string", "minLength": 1 },
+          "label": { "type": "string", "minLength": 1 },
+          "changed": { "type": "boolean" },
+          "left": { "type": "string" },
+          "right": { "type": "string" }
+        }
+      }
+    }
+  }
+}

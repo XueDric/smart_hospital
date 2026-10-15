@@ -1,0 +1,20 @@
+{
+  "name": "record-revision-diff-no-against-400",
+  "group": "record",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/doctor/visits/{id}/record/revisions/{id}/diff",
+    "auth": "doctor"
+  },
+  "response": {
+    "status": 400,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "against 必须是**另一个**版本号（第一版没有上一版，请显式指定要与哪一版对比）"
+      }
+    }
+  }
+}

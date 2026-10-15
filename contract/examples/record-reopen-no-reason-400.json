@@ -1,0 +1,20 @@
+{
+  "name": "record-reopen-no-reason-400",
+  "group": "record",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/doctor/visits/{id}/record/reopen",
+    "auth": "admin"
+  },
+  "response": {
+    "status": 400,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "解锁病历：解锁必须填写理由（4-255 字，例如「患者要求补充过敏史」）"
+      }
+    }
+  }
+}

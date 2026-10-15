@@ -40,9 +40,20 @@
     "record-reopen-admin-200": { "body": ["envelope-ok"], "data": ["data-record"] },
     "record-put-locked-409": { "body": ["envelope-error"], "error_code": "EMR_LOCKED" },
     "record-reopen-doctor-403": { "body": ["envelope-error"], "error_code": "FORBIDDEN_ROLE" },
+    "record-reopen-no-reason-400": { "body": ["envelope-error"], "error_code": "VALIDATION_FAILED" },
+    "record-reopen-short-reason-400": { "body": ["envelope-error"], "error_code": "VALIDATION_FAILED" },
     "record-patient-before-lock-404": { "body": ["envelope-error"], "error_code": "EMR_NOT_FOUND" },
     "record-patient-after-lock-200": { "body": ["envelope-ok"], "data": ["data-record-patient"] },
     "records-list-200": { "body": ["envelope-ok"], "data": ["data-record-list"] },
+
+    "record-revisions-200": { "body": ["envelope-ok"], "data": ["data-record-revisions"] },
+    "record-revision-detail-200": { "body": ["envelope-ok"], "data": ["data-record-revision"] },
+    "record-revision-diff-200": { "body": ["envelope-ok"], "data": ["data-record-revision-diff"] },
+    "record-revision-unknown-404": { "body": ["envelope-error"], "error_code": "REVISION_NOT_FOUND" },
+    "record-revision-diff-no-against-400": { "body": ["envelope-error"], "error_code": "VALIDATION_FAILED" },
+    "record-revisions-patient-404": { "body": ["envelope-error"], "error_code": "APPOINTMENT_NOT_FOUND" },
+    "record-put-after-unlock-200": { "body": ["envelope-ok"], "data": ["data-record"] },
+    "record-lock-again-200": { "body": ["envelope-ok"], "data": ["data-record"] },
 
     "admin-users-page-clamped-200": { "body": ["envelope-ok"], "data": ["data-admin-users-page"] }
   }

@@ -1,0 +1,90 @@
+{
+  "name": "record-revision-diff-200",
+  "group": "record",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/doctor/visits/{id}/record/revisions/{id}/diff?against=2",
+    "auth": "doctor"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": true,
+      "data": {
+        "appointment_id": 0,
+        "left": {
+          "version": 2,
+          "status": "locked",
+          "operation": "reopen",
+          "reason": "患者要求补充过敏史，解锁重写",
+          "operator_user_id": 0,
+          "operator_role": "admin",
+          "created_at": 0
+        },
+        "right": {
+          "version": 3,
+          "status": "locked",
+          "operation": "lock",
+          "reason": "",
+          "operator_user_id": 0,
+          "operator_role": "doctor",
+          "created_at": 0
+        },
+        "status_changed": false,
+        "changed_count": 0,
+        "sections": [
+          {
+            "key": "chief_complaint",
+            "label": "主诉",
+            "changed": false,
+            "left": "上腹隐痛 3 天",
+            "right": "上腹隐痛 3 天"
+          },
+          {
+            "key": "present_illness",
+            "label": "现病史",
+            "changed": false,
+            "left": "病程：3 天；程度：影响睡眠；伴随：反酸",
+            "right": "病程：3 天；程度：影响睡眠；伴随：反酸"
+          },
+          {
+            "key": "past_history",
+            "label": "既往史",
+            "changed": false,
+            "left": "高血压 5 年，服降压药",
+            "right": "高血压 5 年，服降压药"
+          },
+          {
+            "key": "allergy_history",
+            "label": "过敏史",
+            "changed": false,
+            "left": "青霉素过敏",
+            "right": "青霉素过敏"
+          },
+          {
+            "key": "physical_exam",
+            "label": "体格检查",
+            "changed": false,
+            "left": "咽部充血，扁桃体 I 度肿大",
+            "right": "咽部充血，扁桃体 I 度肿大"
+          },
+          {
+            "key": "diagnosis",
+            "label": "诊断",
+            "changed": false,
+            "left": "急性上呼吸道感染",
+            "right": "急性上呼吸道感染"
+          },
+          {
+            "key": "treatment",
+            "label": "处理意见",
+            "changed": false,
+            "left": "多饮水，必要时对症退热；三天无好转复诊",
+            "right": "多饮水，必要时对症退热；三天无好转复诊"
+          }
+        ]
+      }
+    }
+  }
+}

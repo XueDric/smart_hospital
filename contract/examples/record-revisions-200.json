@@ -1,0 +1,40 @@
+{
+  "name": "record-revisions-200",
+  "group": "record",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/doctor/visits/{id}/record/revisions",
+    "auth": "doctor"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": true,
+      "data": {
+        "appointment_id": 0,
+        "items": [
+          {
+            "version": 1,
+            "status": "locked",
+            "operation": "lock",
+            "reason": "",
+            "operator_user_id": 0,
+            "operator_role": "doctor",
+            "created_at": 0
+          },
+          {
+            "version": 2,
+            "status": "locked",
+            "operation": "reopen",
+            "reason": "患者要求补充过敏史，解锁重写",
+            "operator_user_id": 0,
+            "operator_role": "admin",
+            "created_at": 0
+          }
+        ],
+        "count": 2
+      }
+    }
+  }
+}

@@ -179,7 +179,7 @@ public func acP4_1(runner: TestRunner, db: DbBackend): Unit {
                      r1.patientId == 8801)
 
         // ③ 必填未齐时**不许锁定**（且说清缺哪两段）
-        let l1 = emr.lock(apptId, now, 9901)
+        let l1 = emr.lock(apptId, now, 9901, "doctor")
         runner.check("★★ ③ 缺必填段时锁定被拒（missingRequired）", l1.missingRequired)
         runner.check("③ 且缺的是诊断与处理意见（实得「${l1.detail}」）",
                      l1.detail.contains("诊断") && l1.detail.contains("处理意见"))
@@ -189,7 +189,7 @@ public func acP4_1(runner: TestRunner, db: DbBackend): Unit {
         // ④ 填满后能锁定
         let w2 = hFillAllSections(emr, apptId, 900001, now, 9901)
         runner.check("④ 填满七段成功", w2.ok)
-        let l2 = emr.lock(apptId, now, 9901)
+        let l2 = emr.lock(apptId, now, 9901, "doctor")
         runner.check("④ 填满后可锁定", l2.ok)
         runner.check("④ 库里的状态是 locked",
                      emr.findByAppointment(apptId).getOrThrow().status == EMR_LOCKED)
@@ -207,11 +207,17 @@ public func acP4_1(runner: TestRunner, db: DbBackend): Unit {
                      after.updatedAt == before.updatedAt)
 
         // ⑥ 重复锁定 ⇒ 如实说"已锁定"，不当成功
-        let l3 = emr.lock(apptId, now + 20, 9901)
+        let l3 = emr.lock(apptId, now + 20, 9901, "doctor")
         runner.check("⑥ 重复提交锁定时 locked=true（不假装成功）", l3.locked && !l3.ok)
+        /*
+         * ★ 改进 3 新增：幂等路径**自愈**快照 —— 重复 lock 不该悄悄什么都不做。
+         *   （第一次成功锁定已经落下 v1，这里复查它仍在、且没有多出重复版本。）
+         */
+        runner.check("★ ⑥ 重复锁定后仍只有 1 版快照（实得 ${emr.revisions(apptId).size}）",
+                     emr.revisions(apptId).size == 1)
 
-        // ⑦ 管理员解锁后可改
-        let ro = emr.reopen(apptId, now + 30, 9902)
+        // ⑦ 管理员解锁后可改（**必须给理由** —— 改进 3）
+        let ro = emr.reopen(apptId, now + 30, 9902, "admin", "患者反馈诊断需补充，解锁重写")
         runner.check("⑦ 管理员解锁成功", ro.ok)
         let p3 = HashMap<String, String>()
         p3["diagnosis"] = "修订后的诊断"
@@ -264,7 +270,7 @@ public func acP4_2(runner: TestRunner, db: DbBackend): Unit {
         runner.check("★★ ③ 病历只是草稿 ⇒ 完成就诊仍被拒（草稿不算完成诊疗）",
                      visit.finishVisit(apptId, 900002).recordNotLocked)
         // ④ 锁定后可以完成
-        let _l = emr.lock(apptId, now, 9901)
+        let _l = emr.lock(apptId, now, 9901, "doctor")
         runner.check("④ 病历锁定后可以完成就诊", visit.finishVisit(apptId, 900002).ok)
         runner.check("④ 且库里状态是 done",
                      visit.findForDoctor(apptId, 900002).getOrThrow().status == VISIT_DONE)
@@ -320,7 +326,7 @@ public func acP4_3(runner: TestRunner, db: DbBackend): Unit {
         /* 造一点真实数据，让看板有东西可算（否则"没有明细"是空集的废话） */
         let a1 = hSeedAppointmentForDoctor(db, 3, 8811, VISIT_VISITING)
         let _w = hFillAllSections(emr, a1, 900003, now, 9901)
-        let _l = emr.lock(a1, now, 9901)
+        let _l = emr.lock(a1, now, 9901, "doctor")
         let a2 = hSeedAppointmentForDoctor(db, 3, 8812, VISIT_BOOKED)
         let ts = TriageStatRepo(db)
         ts.record("OK", false, "P4测试科", false, "rules", now)
@@ -541,5 +547,139 @@ public func acP4_5(runner: TestRunner, db: DbBackend): Unit {
                      out3.ok && emr.findByAppointment(a3).getOrThrow().chiefComplaint.size == 0)
         runner.check("★★ ⑦ 且这张单的来源痕迹为空（不会凭空宣称有患者自述）",
                      emr.findByAppointment(a3).getOrThrow().previsitRef.size == 0)
+    })
+}
+
+/*
+ * AC-P4-6（★ 2026-10-15 改进 3）：病历修订历史 —— 定稿留痕、解锁需理由、逐段可比。
+ *
+ * 独占 id 段：seed 8 / 患者 9608、9609，医生 900008（由 seed 派生）。
+ *
+ * ⚠ 这一组测的是**审计的可信度**，不是"功能有没有"：
+ *   审计行的价值全在"它说的是真的"——所以每条断言都在反着问
+ *   "这条痕迹有没有可能说谎"（锁没锁成却留了痕？解锁没给理由？版本号乱跳？）。
+ */
+public func acP4_6(runner: TestRunner, db: DbBackend): Unit {
+    println("=== AC-P4-6 ★★ 病历修订历史（改进 3：定稿留痕 / 解锁需理由 / 逐段可比）===")
+    runner.section("AC-P4-6", { =>
+        hResetAll(db)
+        let now = hNowEpoch()
+        let emr = MedicalRecordRepo(db)
+        let apptId = hSeedAppointmentForDoctor(db, 8, 9608, VISIT_VISITING)
+        runner.check("① 起手没有任何修订（新单没有历史）", emr.revisions(apptId).size == 0)
+        runner.check("★ ① 草稿保存**不**产生版本（draft 不是定稿，不留痕）",
+                     hFillAllSections(emr, apptId, 900008, now, 9901).ok &&
+                     emr.revisions(apptId).size == 0)
+
+        /* ② 定稿 ⇒ 恰好一版，内容 = 锁定前那一版，操作者/角色如实 */
+        let l1 = emr.lock(apptId, now, 9901, "doctor")
+        runner.check("② 定稿成功", l1.ok)
+        runner.check("★ ② 定稿落下一版，版本号是 1（实得 ${l1.revisionVersion}）",
+                     l1.revisionVersion == 1)
+        let revs = emr.revisions(apptId)
+        runner.check("② 库里确实只有一版（实得 ${revs.size}）", revs.size == 1)
+        let v1 = revs[0]
+        runner.check("★ ② 这一版的状态是 locked（记的是**锁定那一刻**）", v1.status == EMR_LOCKED)
+        runner.check("★ ② 操作是 lock、理由是空（定稿不需要理由）",
+                     v1.operation == EMR_OP_LOCK && v1.reason.size == 0)
+        runner.check("★ ② 操作者如实：user_id=9901、role=doctor",
+                     v1.operatorUserId == 9901 && v1.operatorRole == "doctor")
+        runner.check("② 时间戳是锁定时刻（实得 ${v1.createdAt} vs ${now}）", v1.createdAt == now)
+        let vals1 = emrSectionValues(v1.sectionsJson)
+        let diag1 = emrValueOfForm(vals1, "diagnosis")
+        runner.check("★★ ② 快照里的正文 == 锁定前的正文（诊断「${diag1}」）",
+                     diag1 == "测试内容-diagnosis")
+        runner.check("★ ② 快照含**七段**（含空段：既能看出「当时写了什么」，也能看出「当时没写什么」）（实得 ${vals1.size}）",
+                     vals1.size == emrSections().size)
+
+        /* ③ ★★ 解锁**必须给理由**（否则病历可以被无痕推翻） */
+        let bad1 = emr.reopen(apptId, now + 10, 9902, "admin", "")
+        runner.check("★★ ③ 没有理由 ⇒ 解锁被拒（badReason）", bad1.badReason && !bad1.ok)
+        let bad2 = emr.reopen(apptId, now + 10, 9902, "admin", "太短")
+        runner.check("★★ ③ 理由过短（< ${EMR_REASON_MIN} 字）⇒ 同样被拒", bad2.badReason && !bad2.ok)
+        runner.check("★★ ③ 而且**库里状态没变**（拒了就是没解锁，不是「拒了但解了」）",
+                     emr.findByAppointment(apptId).getOrThrow().status == EMR_LOCKED)
+        runner.check("③ 被拒的解锁**不会**留下修订行（不留「未发生的审计」）",
+                     emr.revisions(apptId).size == 1)
+
+        /* ④ 正常解锁 ⇒ v2 = 解锁前那一版（reason 落档、操作者是管理员） */
+        let ro = emr.reopen(apptId, now + 20, 9902, "admin", "患者要求补充过敏史，解锁重写")
+        runner.check("④ 管理员带理由解锁成功", ro.ok)
+        runner.check("★ ④ 解锁落下的版本号是 2（实得 ${ro.revisionVersion}）", ro.revisionVersion == 2)
+        runner.check("④ 库里病历回到 draft",
+                     emr.findByAppointment(apptId).getOrThrow().status == EMR_DRAFT)
+        let revs2 = emr.revisions(apptId)
+        runner.check("④ 共两版（实得 ${revs2.size}）", revs2.size == 2)
+        let v2 = revs2[1]
+        runner.check("★★ ④ v2 记的是**解锁前那一版**的内容（状态 locked），不是解锁后的 draft",
+                     v2.status == EMR_LOCKED && v2.operation == EMR_OP_REOPEN)
+        runner.check("★★ ④ 解锁理由落档（实得「${v2.reason}」）",
+                     v2.reason == "患者要求补充过敏史，解锁重写")
+        runner.check("★ ④ 解锁的 operator_role 是 admin（如实记「谁推翻的」）",
+                     v2.operatorRole == "admin" && v2.operatorUserId == 9902)
+
+        /* ⑤ 改完再定稿 ⇒ v3；升序；逐段可比 */
+        let patch = HashMap<String, String>()
+        patch["allergy_history"] = "青霉素过敏"
+        runner.check("⑤ 解锁后可改", emr.saveDraft(apptId, 900008, patch, now + 30, 9901).ok)
+        let l2 = emr.lock(apptId, now + 40, 9901, "doctor")
+        runner.check("⑤ 再次定稿成功（版本号 ${l2.revisionVersion}）", l2.ok && l2.revisionVersion == 3)
+        let revs3 = emr.revisions(apptId)
+        var nums = ""
+        for (r in revs3) {
+            nums = nums + "${r.version},"
+        }
+        runner.check("★ ⑤ 版本号**升序**（v1 在前：${nums}）",
+                     revs3.size == 3 && revs3[0].version == 1 && revs3[2].version == 3)
+
+        let rv2 = emr.revisionAt(apptId, 2).getOrThrow()
+        let rv3 = emr.revisionAt(apptId, 3).getOrThrow()
+        let diff = emrDiffRows(emrSectionValues(rv2.sectionsJson),
+                               emrSectionValues(rv3.sectionsJson))
+        runner.check("★ ⑤ 逐段对比含**七段**（没改的段也在，标 changed=false）（实得 ${diff.size}）",
+                     diff.size == 7)
+        let changed = ArrayList<String>()
+        for (row in diff) {
+            if (row.changed) {
+                changed.add(row.key)
+            }
+        }
+        runner.check("★★ ⑤ 只有**真正被改的段**标 changed（实得：${joinStrings(changed.toArray(), ",")}）",
+                     changed.size == 1 && changed[0] == "allergy_history")
+        let allergyBefore = emrValueOfForm(emrSectionValues(rv2.sectionsJson), "allergy_history")
+        let allergyAfter = emrValueOfForm(emrSectionValues(rv3.sectionsJson), "allergy_history")
+        runner.check("★ ⑤ 对比的两侧值都对（前「${allergyBefore}」→ 后「${allergyAfter}」）",
+                     allergyBefore == "测试内容-allergy_history" && allergyAfter == "青霉素过敏")
+
+        /* ⑥ 取不到的那一版 ⇒ None（客户端据此 404，而不是渲染出一个空版本） */
+        runner.check("★ ⑥ 不存在的版本返回 None（不会给出「七段全空」的假版本）",
+                     emr.revisionAt(apptId, 99).isNone())
+        let latest = emr.latestLockedRevision(apptId)
+        runner.check("★ ⑥ latestLockedRevision 取到的是**最新那个已定稿版**（v3）",
+                     latest.isSome() && latest.getOrThrow().version == 3)
+
+        /* ⑦ ★★ 存量兼容：锁定但没有审计行的病历，迁移会补一版，且幂等 */
+        let legacy = hSeedAppointmentForDoctor(db, 9, 9609, VISIT_VISITING)
+        let _w = hFillAllSections(emr, legacy, 900009, now, 9901)
+        /*
+         * 绕过 `lock` 直接改状态 ⇒ 模拟「改进 3 上线前就已锁定的存量病历」
+         * （它没有审计行 —— 这正是迁移要补的那一批）。
+         */
+        db.exec("UPDATE medical_record SET status = ? WHERE appointment_id = ?",
+                [DbStr(EMR_LOCKED), DbInt(legacy)])
+        runner.check("⑦ 造出「已锁定但零审计行」的存量病历", emr.revisions(legacy).size == 0)
+        let backfilled = emrBackfillRevisions(db)
+        runner.check("★ ⑦ 迁移补写 ≥1 版（实得 ${backfilled}）", backfilled >= 1)
+        let legacyRevs = emr.revisions(legacy)
+        runner.check("★★ ⑦ 补出来的 v1 状态是 locked、操作是 lock",
+                     legacyRevs.size == 1 && legacyRevs[0].status == EMR_LOCKED &&
+                     legacyRevs[0].operation == EMR_OP_LOCK)
+        runner.check("★★ ⑦ 存量补写**不伪造角色**（operator_role 是空串=未知，不是「doctor」）",
+                     legacyRevs[0].operatorRole.size == 0)
+        /* 补写用的时间戳是病历的 updated_at，不是"现在" —— 审计要贴历史事实 */
+        runner.check("★ ⑦ 补写的时间戳取自病历的 updated_at（不是迁移那一刻）",
+                     legacyRevs[0].createdAt == emr.findByAppointment(legacy).getOrThrow().updatedAt)
+        runner.check("★★ ⑦ 再跑一次迁移 ⇒ 补 0 版（幂等：不会把同一份病历记两遍）",
+                     emrBackfillRevisions(db) == 0)
     })
 }

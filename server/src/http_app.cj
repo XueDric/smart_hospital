@@ -166,6 +166,24 @@ public enum Action {
      */
     | ManageAi                // 维护 AI 配置（设置/Prompt/工具/模型，含密钥引用）（仅管理员）
     | ManageUser              // 维护账号与口令（建号/改口令/列号）（仅管理员）
+    /*
+     * ★ 2026-10-15（改进 3：病历修订历史）新增一条。
+     *
+     * 覆盖两个动作：**解锁病历**（`record/reopen`）与**读全部修订审计**。
+     *
+     * ⚠ 为什么这次**必须**新增动作，而不是继续复用 `ManageSchedule`：
+     *   改进 3 落地前，`record/reopen` 复用的是 `ManageSchedule`，并写了理由
+     *   （"没有'解锁病历'这个动作，复用一个管理员动作避免矩阵膨胀"）。
+     *   那条理由的前提是"该端点只有一个用处"。现在前提变了：
+     *   本动作有了**第二个用处**（修订历史的审计读）—— 正是当时写下的
+     *   "等它有了第二个用处再提升为独立 Action"。
+     *   ⚠ 关键区别不在"谁能用"（两者今天都是 admin-only，授权结果不变），
+     *     而在**将来能不能只放开其中一个**：把"解锁病历"和"调整号源排班"
+     *     绑成同一个答案，意味着某天"让护士长调号源"会连带把
+     *     "推翻已定稿的医疗文书"一起放开 —— 而且不会有任何测试变红。
+     *   📌 本仓纪律（第四次应用）：权限动作按**语义**分，不按"当前谁能做"分。
+     */
+    | ManageRecordRevision    // 解锁病历与读修订审计（仅管理员）
 }
 
 public func actionName(a: Action): String {
@@ -187,6 +205,7 @@ public func actionName(a: Action): String {
         case ViewDashboard => return "view_dashboard"
         case ManageAi => return "manage_ai"
         case ManageUser => return "manage_user"
+        case ManageRecordRevision => return "manage_record_revision"
     }
 }
 
@@ -332,6 +351,18 @@ public func can(role: Role, action: Action): Bool {
                 case _ => return false
             }
         case ManageUser =>
+            match (role) {
+                case Admin => return true
+                case _ => return false
+            }
+        /*
+         * ★ 2026-10-15（改进 3）新增：解锁已定稿病历（= 推翻一份临床记录）。
+         *
+         * ⚠ 授权结果与它此前借用的 `ManageSchedule` **完全一致**（都是 admin-only），
+         *   所以这次拆分不改变任何人的实际权限 —— 改的是"语义"：
+         *   以后若要放宽排班（例如让科室主任改班）就不会**顺带**放宽解锁病历。
+         */
+        case ManageRecordRevision =>
             match (role) {
                 case Admin => return true
                 case _ => return false

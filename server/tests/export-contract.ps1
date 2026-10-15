@@ -64,7 +64,7 @@ $NormZero = @(
     'id', 'appointment_id', 'patient_id', 'doctor_id', 'department_id', 'schedule_id',
     'user_id', 'ref_id', 'updated_by', 'created_at', 'updated_at', 'server_time',
     'expires_at', 'captured_at', 'published_at', 'at', 'seq_no', 'doc_id', 'chunk_id',
-    'notice_id', 'chat_id', 'record_id', 'login_at', 'last_login_at'
+    'notice_id', 'chat_id', 'record_id', 'login_at', 'last_login_at', 'operator_user_id'
 )
 # 字符串型易变字段（换占位符）。
 $NormStr = @{
@@ -138,16 +138,28 @@ function Norm-Path([string]$p) {
 }
 
 # 把 volatile 路径（形如 data.items）换成 "<volatile>"，让这类样例只钉信封。
-function Set-Volatile($node, [string]$path) {
+#
+# ⚠ 路径是相对**信封体**（`response.body`）的，和 `schema-map.json` 里 `body`/`data` 两个靶位同一套坐标
+#   —— 于是 `data.items` 指 `body.data.items`。
+# ⚠ 路径解析不到时**直接失败**，不静默跳过：静默跳过 = 声明了 volatile 却还在逐字节比真实数据，
+#   结果就是"这条样例随机假红"（2026-10-15 实测踩到：`data.items` 写成相对 response 根的路径，
+#   于是 `$cur` 变 $null、函数悄悄 return，文件里存的仍是全量 items，final-verify 里 contract-check 红）。
+function Set-Volatile($bodyNode, [string]$path) {
     $parts = $path.Split('.')
-    $cur = $node
+    $cur = $bodyNode
     for ($i = 0; $i -lt $parts.Count - 1; $i++) {
-        if ($null -eq $cur) { return }
-        $cur = $cur.($parts[$i])
+        if ($null -eq $cur) { break }
+        if ($cur -is [System.Collections.IDictionary]) { $cur = $cur[$parts[$i]] } else { $cur = $cur.($parts[$i]) }
     }
-    if ($null -eq $cur) { return }
     $leaf = $parts[$parts.Count - 1]
-    $cur.$leaf = '<volatile>'
+    if ($null -eq $cur) {
+        Fail ("volatile 路径 '{0}' 在响应体里**解析不到**：样例会随库状态假红。请核对路径拼写（相对 body，例如 data.items）" -f $path)
+    }
+    $hasLeaf = if ($cur -is [System.Collections.IDictionary]) { $cur.Contains($leaf) } else { $null -ne $cur.PSObject.Properties[$leaf] }
+    if (-not $hasLeaf) {
+        Fail ("volatile 路径 '{0}' 的最后一段 '{1}' 在响应体里不存在：样例会随库状态假红" -f $path, $leaf)
+    }
+    if ($cur -is [System.Collections.IDictionary]) { $cur[$leaf] = '<volatile>' } else { $cur.$leaf = '<volatile>' }
 }
 
 # ─── 规范化 JSON 文本（自己写，不用 ConvertTo-Json）──────────────────────────
@@ -305,7 +317,8 @@ function Cap($name, $group, $method, $path, $auth, $headers, $jsonBody, $volatil
     $doc['response'] = $resp
     if (@($volatile).Count -gt 0) {
         $doc['volatile'] = @($volatile)
-        foreach ($vp in $volatile) { Set-Volatile $resp $vp }
+        # ⚠ 相对**信封体**（$resp['body']）解析，与 schema-map 的 body/data 靶位同一套坐标。
+        foreach ($vp in $volatile) { Set-Volatile $resp['body'] $vp }
     }
     $null = $Script:Docs.Add([pscustomobject]$doc)
     Info ("{0,-46} {1} {2}" -f $name, $r.Http, $r.ContentType)
@@ -452,10 +465,33 @@ $null = Cap 'record-put-locked-409' 'record' 'PUT' ("/api/v1/doctor/visits/$appt
         '{"diagnosis":"锁定后篡改"}'
 $null = Cap 'record-patient-after-lock-200' 'record' 'GET' ("/api/v1/medical-records/$appt2") 'patient' $P $null
 $null = Cap 'records-list-200' 'record' 'GET' '/api/v1/medical-records' 'patient' $P $null
-# 重新打开：**医生 403、管理员 200** —— 这条把"状态回退的权限门槛"钉进契约
-# （实测：医生令牌调 reopen 得 403 FORBIDDEN_ROLE，因为它要 ManageSchedule 动作）。
-$null = Cap 'record-reopen-doctor-403' 'record' 'POST' ("/api/v1/doctor/visits/$appt2/record/reopen") 'doctor' $A $null
-$null = Cap 'record-reopen-admin-200' 'record' 'POST' ("/api/v1/doctor/visits/$appt2/record/reopen") 'admin' $AD $null
+# 重新打开：**医生 403、管理员 200** —— 这条把"状态回退的权限门槛"钉进契约。
+# ★ 2026-10-15（改进 3）两处变化，契约里都要看得见：
+#   ① 解锁**必须给理由**（`{"reason":"…"}`，4-255 **字符**）⇒ 无理由/过短都是 400；
+#   ② 权限从「借 ManageSchedule」改为语义动作 `ManageRecordRevision`（授权结果不变，医生仍 403）。
+$null = Cap 'record-reopen-doctor-403' 'record' 'POST' ("/api/v1/doctor/visits/$appt2/record/reopen") 'doctor' $A `
+        '{"reason":"医生想改诊断，请解锁"}'
+$null = Cap 'record-reopen-no-reason-400' 'record' 'POST' ("/api/v1/doctor/visits/$appt2/record/reopen") 'admin' $AD '{}'
+$null = Cap 'record-reopen-short-reason-400' 'record' 'POST' ("/api/v1/doctor/visits/$appt2/record/reopen") 'admin' $AD `
+        '{"reason":"太短"}'
+$null = Cap 'record-reopen-admin-200' 'record' 'POST' ("/api/v1/doctor/visits/$appt2/record/reopen") 'admin' $AD `
+        '{"reason":"患者要求补充过敏史，解锁重写"}'
+
+# ── [6.5] 修订历史（改进 3）：列表 / 单版详情 / 逐段对比 ────────────────────
+Write-Host ""
+Write-Host "[6.5] 病历修订历史"
+$null = Cap 'record-revisions-200' 'record' 'GET' ("/api/v1/doctor/visits/$appt2/record/revisions") 'doctor' $A $null
+$null = Cap 'record-revision-detail-200' 'record' 'GET' ("/api/v1/doctor/visits/$appt2/record/revisions/1") 'doctor' $A $null
+$null = Cap 'record-revision-unknown-404' 'record' 'GET' ("/api/v1/doctor/visits/$appt2/record/revisions/99") 'doctor' $A $null
+# 第一版没有上一版 ⇒ 默认 against 会算成 0 ⇒ **400 要求显式指定**（不退化成"一切未变"的假答案）
+$null = Cap 'record-revision-diff-no-against-400' 'record' 'GET' ("/api/v1/doctor/visits/$appt2/record/revisions/1/diff") 'doctor' $A $null
+# 患者读修订历史 ⇒ 404（这里含 reason / operator_role 等内部审计话术，不给患者）
+$null = Cap 'record-revisions-patient-404' 'record' 'GET' ("/api/v1/doctor/visits/$appt2/record/revisions") 'patient' $P $null
+# 解锁后改一段、再定稿 ⇒ 第 3 版；与第 2 版逐段对比，只有改动的那段标 changed
+$null = Cap 'record-put-after-unlock-200' 'record' 'PUT' ("/api/v1/doctor/visits/$appt2/record") 'doctor' $A `
+        '{"allergy_history":"青霉素过敏"}'
+$null = Cap 'record-lock-again-200' 'record' 'POST' ("/api/v1/doctor/visits/$appt2/record/lock") 'doctor' $A $null
+$null = Cap 'record-revision-diff-200' 'record' 'GET' ("/api/v1/doctor/visits/$appt2/record/revisions/3/diff?against=2") 'doctor' $A $null
 
 # ── [7] 列表分页与上限（成员集合依赖全院数据 ⇒ 只钉形状）────────────────────
 Write-Host ""

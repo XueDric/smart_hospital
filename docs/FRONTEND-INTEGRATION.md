@@ -491,6 +491,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | 5.23 | `GET/POST /api/v1/admin/notices`、`GET/PUT/DELETE /api/v1/admin/notices/:id` | 是 | **仅 admin** | 公告维护（§6.1） |
 | 5.27 | `GET /api/v1/appointments/by-token/:token` | 是 | **仅 patient** | **按幂等键反查挂号结果**（★ 2026-10-14 新增，见 §5.27） |
 | 5.28 | `GET /api/v1/doctor/visits/:id/previsit` | 是 | **仅医生** | **读这一单的预问诊摘要**（★ 2026-10-14 新增，见 §5.28） |
+| 5.29 | `GET …/record/revisions`、`…/revisions/:version`、`…/revisions/:version/diff?against=` | 是 | **仅医生（本单）+ 管理员** | **病历修订历史**：列表 / 单版详情 / 逐段对比（★ 2026-10-15 新增，见 §5.29；同节含 `reopen` 必填 `reason` 与 `revision_version`） |
 
 > 权限判定收敛在**单一函数** `can(role, action)`（`http_app.cj:162-230`）。相关动作与角色：
 > `book` = 仅 patient；`view_schedule` = 三端；`query_own_medical_record` = patient | doctor；
@@ -879,6 +880,11 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 > 医生后续把预填内容改掉、或又补写了别的段，这个字段**都不会变**（`domain_emr.cj` 只在**新建病历**那一次写入）。
 > ⇒ 前端角标文案用「患者自述（已由医生编辑）」而不是「当前内容＝患者原话」；要拿患者原话请用 §5.28 的摘要端点。
 
+> ★ **2026-10-15（改进 3）**：`POST …/record/lock` 与 `POST …/record/reopen` 的**成功响应**在此形状上多一个
+> `revision_version`（Int，本次动作落下的版本号；`0` = 审计行没写上，病历动作本身已成功）；
+> 且 **`reopen` 现在必须带 `{"reason": "…"}`（trim 后 4–255 字符）**、权限动作为
+> `Action.ManageRecordRevision`（仅管理员）。详见 §5.29。
+
 **七个病历段**（`domain_emr.cj:83-92`）
 
 | `key` | `label` | `max_len` | `required_to_lock` |
@@ -1233,6 +1239,120 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 ---
 
+### 5.29 2026-10-15 新增：病历修订历史（医生端 + 管理员）
+
+> 改进 3。**病历锁定后**的每一次「解锁 → 重写 → 再锁定」都留一版快照 + 一条理由，
+> 对应纸质病历的"划改并签名"。契约样例与 Schema 见 `contract/examples/record-revision-*.json`、
+> `contract/schema/data-record-revision*.schema.json`；端到端演练见 `server/tests/revision-check.ps1`（46 条断言，已进门禁）。
+
+#### 5.29.1 什么时候会落一版（**只有两个时机**）
+
+| 动作 | 落版？ | `operation` | 快照内容 |
+| --- | --- | --- | --- |
+| `PUT …/record`（草稿保存） | ❌ **不落** | — | — |
+| `POST …/record/lock`（定稿） | ✅ 每次定稿落一版 | `lock` | **定稿后**的病历（`status: "locked"`） |
+| `POST …/record/reopen`（解锁） | ✅ 每次解锁落一版 | `reopen` | **解锁前**那一版（`status: "locked"`）+ `reason` |
+
+> 草稿 PUT 不落版是刻意的：否则一个上午能刷出几百版，历史变成噪声。
+> 因此 `revisions` 里的版本号是**稀疏**的语义 —— 它记的是"定稿过几次"，不是"保存过几次"。
+
+#### 5.29.2 `GET /api/v1/doctor/visits/:id/record/revisions` —— 版本列表
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `appointment_id` | Int | 挂号单 |
+| `count` | Int | 条数 |
+| `items[]` | Array | **按 `version` 升序**（v1 在前） |
+| `items[].version` | Int | 从 **1** 开始（版本号是资源标识，不是偏移量） |
+| `items[].status` | String | **快照那一刻**的状态，`draft` / `locked`（lock/reopen 落的版都是 `locked`） |
+| `items[].operation` | String | `lock` / `reopen` |
+| `items[].reason` | String | 仅 `reopen` 非空（4–255 字符）；`lock` 恒为 `""` |
+| `items[].operator_user_id` | Int | 谁做的 |
+| `items[].operator_role` | String | `doctor` / `admin`；**`""` = 未知**（存量病历由迁移补写的那一版） |
+| `items[].created_at` | Int | 动作发生时刻（epoch 秒）；存量补写用病历的 `updated_at` |
+
+⚠ 列表**没有 `sections`**（刻意的）：列表带正文会让"打开版本抽屉"变成一次几 MB 的响应。要正文取 5.29.3。
+默认**升序**，要"最新在上"客户端自己反转一行。
+
+#### 5.29.3 `GET …/record/revisions/:version` —— 某一版详情
+
+成功 `200`：
+
+```json
+{"ok": true, "data": {
+  "version": 2, "status": "locked", "operation": "reopen",
+  "reason": "患者要求补充过敏史，解锁重写",
+  "operator_user_id": 0, "operator_role": "admin", "created_at": 0,
+  "record_id": 0, "appointment_id": 0,
+  "sections": [ {"key": "chief_complaint", "label": "主诉", "value": "…", "max_len": 2000}, … ]
+}}
+```
+
+- `sections` **与病历的 `sections` 同形状**（`key`/`label`/`value`/`max_len`）——同一份数据两种形状是两端不一致的高发地。
+- `sections` 含**全部七段**（空段也在、`value` 为空串）：既能看出"当时写了什么"，也能看出"当时没写什么"。
+- 取不到的版本 ⇒ **404 `REVISION_NOT_FOUND`**，**不是空对象** —— 空对象会让客户端渲染出"七段全空"的假版本，看起来像病历被清空了。
+
+#### 5.29.4 `GET …/record/revisions/:version/diff?against=N` —— 逐段对比
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `appointment_id` | Int | 挂号单 |
+| `left` / `right` | Object | against 那一版 / `:version` 那一版的头部信息（字段同列表项） |
+| `status_changed` | Bool | 两版之间病历状态是否变（lock↔reopen 的对比里通常是 `false`：两版都是 `locked` 快照） |
+| `changed_count` | Int | 标了 `changed` 的段数（= 客户端角标数量） |
+| `sections[]` | Array | **全部七段**，每项 `{key,label,changed,left,right}` |
+
+语义是「从 `left` 改到 `right`」。`changed` 由**服务端**逐字符判定 ——
+客户端**不要**自己比较 `left`/`right` 重算（两边算法一旦不同，角标会和详情页自相矛盾）。
+
+`against` 缺省 = `version - 1`。⚠ **`version = 1` 且没给 `against` ⇒ 400 `VALIDATION_FAILED`**：
+第一版没有"上一版"，刻意不退化成"拿 v1 跟自己比"（那会返回"一切未变"，是一个**看起来成功的错答案**）。
+`against <= 0`、`against == version`、`against` 不是数字 ⇒ 都是 400；`against` 那一版不存在 ⇒ 404 `REVISION_NOT_FOUND`。
+
+#### 5.29.5 错误表
+
+| 状态 | 码 | 何时 |
+| --- | --- | --- |
+| 400 | `VALIDATION_FAILED` | `:version` 非数字/`<= 0`；`diff` 的 `against` 非法；`reopen` 缺 `reason` 或 trim 后 < 4 字符或 > 255 字符 |
+| 403 | `FORBIDDEN_ROLE` | 医生调 `reopen`（**解锁是管理员动作**）；角色不是医生/管理员 |
+| 404 | `APPOINTMENT_NOT_FOUND` | 不是我的号（医生）/ 挂号单不存在；**患者读修订历史也走这里**（不给他 403，避免"这东西存在但不是你的"） |
+| 404 | `REVISION_NOT_FOUND` | 这一版不存在 |
+
+#### 5.29.6 定稿 / 解锁响应的新增字段：`revision_version`
+
+`POST …/record/lock` 与 `POST …/record/reopen` 的**成功响应**（`data` 是病历 JSON）新增：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `revision_version` | Int | 本次动作落下的版本号 |
+
+⚠ **`0` = 审计行没写上（病历动作本身已成功）** ⇒ 客户端当成「版本号未知/待补」，
+**不要当失败重试**（重试会走幂等路径自愈那一版：`lock` 的幂等分支会补齐缺失的 v1）。
+`PUT` / `GET` 病历的响应**不含**这个字段。
+
+#### 5.29.7 `reopen` 现在**必须**带理由
+
+```
+POST /api/v1/doctor/visits/:id/record/reopen
+{"reason": "患者要求补充过敏史，解锁重写"}
+```
+
+- 长度按**字符**算（不是字节）：trim 后 **4–255**。少于 4 或超 255 ⇒ **400 `VALIDATION_FAILED`**。
+- 权限动作从"借 `ManageSchedule`"改为语义动作 **`Action.ManageRecordRevision`（仅管理员）**：
+  **授权结果不变**（医生仍是 403），但将来"让护士长调号源"不会连带放开"推翻已定稿的文书"。
+- 存量已锁定病历由 `migrateSchema` 第 ⑩ 步补一版 v1（`operation="lock"`、`operator_role=""`、
+  `created_at` = 病历的 `updated_at`）：客户端看到"只有 1 版"是正常的，**不是**历史丢了。
+
+#### 5.29.8 客户端要做什么
+
+| 端 | 要做什么 |
+| --- | --- |
+| 医生端（鸿蒙） | `EmrEditPage.ets` 解锁对话框**必须**收集理由（4–255 字，提交前本地校验长度）；病历详情页加"版本"入口（列表 → 详情 → 对比）；角标数量用 `diff.changed_count`，不要前端自己比 `left/right` |
+| 管理端（Web） | 可加"病历修订审计"视图（管理员能读任意单的修订历史）：列表 → 详情；`reason` / `operator_role` 是审计话术，**不要**出现在患者可见的任何界面 |
+| 患者端（鸿蒙/安卓） | **不用动**（患者读修订历史一律 404，这是刻意的） |
+
+---
+
 ## 6. 不能调的端点（前端不应出现这些路径）
 
 以下端点**确实存在**，但权限矩阵把它们挡在患者之外（`http_app.cj:162-230`）。
@@ -1261,10 +1381,13 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | --- | --- | --- |
 | `GET /api/v1/doctor/visits` | `manage_visit` | `http_p4.cj:181` |
 | `POST /api/v1/doctor/visits/:id/start` \| `/finish` \| `/no-show` | `manage_visit` | `http_p4.cj:204/224/245` |
-| `GET` / `PUT /api/v1/doctor/visits/:id/record` | `query_own_medical_record` / `write_own_medical_record` | `http_p4.cj:265/291` |
-| `GET /api/v1/doctor/visits/:id/previsit` | `query_own_medical_record`（**且必须是我的号**，否则 404） | `http_p4.cj:419`（★ 2026-10-14 新增，见 §5.28） |
-| `POST /api/v1/doctor/visits/:id/record/lock` | `write_own_medical_record` | `http_p4.cj:339` |
-| `POST /api/v1/doctor/visits/:id/record/reopen` | **`manage_schedule`（管理员）** —— 医生端也不能解锁 | `http_p4.cj:363` |
+| `GET` / `PUT /api/v1/doctor/visits/:id/record` | `query_own_medical_record` / `write_own_medical_record` | `http_p4.cj:480/545` |
+| `GET /api/v1/doctor/visits/:id/previsit` | `query_own_medical_record`（**且必须是我的号**，否则 404） | `http_p4.cj:515`（★ 2026-10-14 新增，见 §5.28） |
+| `POST /api/v1/doctor/visits/:id/record/lock` | `write_own_medical_record` | `http_p4.cj:593` |
+| `POST /api/v1/doctor/visits/:id/record/reopen` | **`manage_record_revision`（仅管理员）** —— 医生端也不能解锁；**必须带 `reason`** | `http_p4.cj:633`（★ 2026-10-15 改，见 §5.29） |
+| `GET /api/v1/doctor/visits/:id/record/revisions` | `query_own_medical_record`（**且必须是我的号**，否则 404；管理员可读任意单） | `http_p4.cj:688`（★ 2026-10-15 新增，见 §5.29） |
+| `GET /api/v1/doctor/visits/:id/record/revisions/:version` | 同上 | `http_p4.cj:714`（★ 同上） |
+| `GET /api/v1/doctor/visits/:id/record/revisions/:version/diff?against=N` | 同上 | `http_p4.cj:741`（★ 同上） |
 
 ### 6.3 刻意对患者 403 的一个"看似通用"端点
 
@@ -1528,7 +1651,7 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 | --- | --- | --- | --- |
 | 1 | `server/README.md` 的启动示例用 `--port 8091` / `8443`，容易让人以为这是默认端口 | **默认端口是 8080**（`main.cj:556`）；8091/8443 只是启动参数约定 | §1、§2.2 明确写"默认 8080，8091/8443 只是约定" |
 | 2 | 一般文档措辞会让人以为"患者可搜知识库" | `GET /api/v1/kb/search` 需要 `query_knowledge_base`（admin\|doctor）⇒ **患者 403**（`http_app.cj:206-218` 有明确设计说明） | §6.3 |
-| 3 | `docs/P4-HANDOFF.md` 未提 `record/reopen` 的实际鉴权 | `http_p4.cj:363` 用 `requireCan(p.role, Action.ManageSchedule)` ⇒ **reopen 是管理员动作，医生也 403** | §6.2 |
+| 3 | `docs/P4-HANDOFF.md` 未提 `record/reopen` 的实际鉴权 | 原为 `http_p4.cj:363` 借 `requireCan(p.role, Action.ManageSchedule)`；**2026-10-15（改进 3）改为语义动作 `Action.ManageRecordRevision`**（`http_p4.cj:633`）⇒ **reopen 仍是管理员动作、医生仍 403**（授权结果不变，只是动作名不再含混） | §6.2、§5.29.7 |
 | 4 | 登录响应里的 `patient_id` 容易被读成"患者 id" | 实现是 `u.refId` 且**不判角色**（`http_app.cj:774`）⇒ 医生/管理员登录时它只是各自的档案 id | §4.2（含实测） |
 | 5 | 错误码表里可能登记着 `AUTH_TOKEN_INVALID` | **`apiErrorSpec` 里没有这个码**（`http_common.cj:55-197`）：令牌无效/过期一律 `AUTH_TOKEN_EXPIRED` 401，message「令牌无效或已过期，请重新登录」（`http_app.cj:313-316`） | §14.1 只列实现里真实存在的码 |
 | 6 | 文档写"连续失败 5 次后锁定"，容易被读成"第 6 次才 429" | 实现在 `recordFailure` 之后判 `fail_count >= 5` ⇒ **第 5 次失败就返回 429**（`auth_repo.cj:381-386`）。实测确认 | §4.2 |
@@ -1725,6 +1848,7 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 | 409 | `APPOINTMENT_NOT_CANCELLABLE` | 该挂号单当前状态不允许退号（只有「已挂号」可以退）—— **`message` 实际带中文状态名**，如「该挂号单当前状态为「接诊中」，不能退号」（2026-10-12 新增，§5.16/§8.2） | ✅ |
 | 404 | `PREVISIT_NOT_FOUND` | 预问诊会话不存在或已失效 | ✅ |
 | 404 | `EMR_NOT_FOUND` | 病历不存在或尚未提交 | ✅ |
+| 404 | `REVISION_NOT_FOUND` | 病历没有这一版修订（`GET …/record/revisions/:version` 与 `diff` 的 `against`；2026-10-15 新增，§5.29） | ❌（医生端） |
 | 409 | `EMR_LOCKED` | 病历已提交锁定，不可修改（需管理员解锁） | ❌（医生端） |
 | 409 | `EMR_NOT_LOCKED` | 完成就诊前必须先提交锁定病历 | ❌（医生端） |
 | 409 | `VISIT_BAD_STATE` | 当前就诊状态不允许该操作 | ❌（医生端） |

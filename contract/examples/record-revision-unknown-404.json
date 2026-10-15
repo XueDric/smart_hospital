@@ -1,0 +1,20 @@
+{
+  "name": "record-revision-unknown-404",
+  "group": "record",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/doctor/visits/{id}/record/revisions/{id}",
+    "auth": "doctor"
+  },
+  "response": {
+    "status": 404,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "ok": false,
+      "error": {
+        "code": "REVISION_NOT_FOUND",
+        "message": "该病历没有这一版修订"
+      }
+    }
+  }
+}

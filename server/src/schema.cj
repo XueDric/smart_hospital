@@ -58,6 +58,25 @@ public let TABLE_SCHEDULE: String = "schedule"
 public let TABLE_APPOINTMENT: String = "appointment"
 public let TABLE_PATIENT: String = "patient"
 public let TABLE_MEDICAL_RECORD: String = "medical_record"
+/*
+ * ★ 病历**修订历史**（2026-10-15 增，改进 3）。
+ *
+ * ── 为什么必须单独一张表，而不是在 `medical_record` 上加几列 ──────────────
+ *   病历是**不可变定稿 + 可解锁修订**的文书：同一张单会经历
+ *   `草稿 → 锁定 v1 → 解锁（带理由）→ 再改 → 锁定 v2 → …`。
+ *   只留"当前版 + 最后修改人"（改进 3 之前的状态）意味着：
+ *     · 上一版写了什么、谁改的、为什么解锁，**全部丢失**；
+ *     · 医疗纠纷时无法回答"当时写的是不是这样"。
+ *   这是"每份病历有 N 个版本"的**一对多**关系 ⇒ 只能是一张子表。
+ *
+ * ⚠ 为什么不复用 `medical_record.updated_by` 那套"最后修改人"：
+ *   那是**当前状态**（一行一值），本表是**事件流**（每版一行）。两者不冲突：
+ *   前者回答"现在该谁负责"，后者回答"这一版是谁在什么时候、因何而立"。
+ *
+ * ⚠ 留存纪律与 `medical_record` **相同**（临床数据、长期留、不设 TTL）——
+ *   所以它归 `emrTables` 一类（见 main.cj 的表集分项断言），而不是单独一类。
+ */
+public let TABLE_MEDICAL_RECORD_REVISION: String = "medical_record_revision"
 
 /*
  * 鉴权表（P1 令牌体系）。
@@ -212,7 +231,9 @@ public let ALL_TABLES: Array<String> = [
     TABLE_APPOINTMENT, TABLE_PATIENT, TABLE_MEDICAL_RECORD,
     TABLE_AUTH_USER, TABLE_AUTH_TOKEN, TABLE_AUTH_ATTEMPT, TABLE_PREVISIT,
     TABLE_AI_SETTING, TABLE_TRIAGE_STAT,
-    TABLE_KB_DOC, TABLE_KB_CHUNK, TABLE_NOTICE
+    TABLE_KB_DOC, TABLE_KB_CHUNK, TABLE_NOTICE,
+    /* ★ 2026-10-15（改进 3）：病历修订历史（与 medical_record 同域，见 emrTables） */
+    TABLE_MEDICAL_RECORD_REVISION
 ]
 
 /* ===================== DDL ===================== */
@@ -395,6 +416,58 @@ public let SCHEMA_DDL: Array<String> = [
     "updated_at BIGINT NOT NULL DEFAULT 0, " +
     "PRIMARY KEY (id), " +
     "UNIQUE KEY uk_record_appointment (appointment_id)" +
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+
+    /*
+     * ★ 病历修订历史（2026-10-15 增，改进 3；表名常量见文件上方）。
+     *
+     * ── 何时落一行（**钉死在这里，是实现里最容易做歪的地方**）────────────
+     *   · `lock`（定稿）      ⇒ 落一行 `operation='lock'`、`status='locked'` 的快照；
+     *   · `reopen`（解锁）    ⇒ 落一行 `operation='reopen'`、`reason` 必填的审计行
+     *     （快照内容是**解锁前**那一版，`status` 记 `'locked'`）；
+     *   · 再次 `lock`         ⇒ `version + 1` 的新快照；
+     *   · **草稿保存（PUT）不落版本** —— 否则一天几十版，体积与噪声都不可控，
+     *     而"草稿"本身就是"还没定稿"，不构成需要留档的文书。
+     *   ⇒ 本表的行数 == 该单"定稿次数 + 解锁次数"，由 AC-P4-6 钉住。
+     *
+     * ── 为什么 `sections_json` 存**全部七段**（含空段）────────────────────
+     *   diff 要能说清"哪一段从有到无"。只存非空段的话，"
+     *   医生把诊断删空了"看起来就和"这一版没有诊断段"一样。
+     *
+     * ── 为什么记 `appointment_id`（明明可由 `record_id` 联表得到）──────────
+     *   ① 三个新端点都是**按挂号单**寻址的（医生手里只有单号，没有病历 id），
+     *      冗余一列 + `idx_rev_appt` 让"某次就诊的全部版本"一次索引扫完；
+     *   ② `medical_record` 行若因异常被删，审计行仍能回答"哪次就诊发生过什么"。
+     *
+     * ── 容量 ──────────────────────────────────────────────────────────────
+     *   单份七段正文 ≈ 2–4 KB；按 60 单/天、每单 1–2 版 ≈ 0.5 MB/天 ⇒
+     *   一年不到 200 MB，**不需要**归档策略（写在这里，免得下次又评估一遍）。
+     */
+    "CREATE TABLE IF NOT EXISTS medical_record_revision (" +
+    "id BIGINT NOT NULL AUTO_INCREMENT, " +
+    "record_id BIGINT NOT NULL, " +
+    "appointment_id BIGINT NOT NULL, " +
+    "version BIGINT NOT NULL, " +          // 从 1 起，按 (record_id) 单调递增
+    "status VARCHAR(16) NOT NULL, " +      // 快照产生时的病历状态（locked）
+    "sections_json TEXT NOT NULL, " +      // 七段正文快照（含空段，便于逐段 diff）
+    "operation VARCHAR(24) NOT NULL, " +   // lock / reopen（archive 预留）
+    "reason VARCHAR(255) NOT NULL DEFAULT '', " +  // reopen 必填；lock 为空串
+    /*
+     * ★ 操作者：**user_id + role 两个都记**。
+     *   只记 `operator_user_id` 的话，将来账号被删（或角色被改）就再也说不出
+     *   "当时是医生自己还是管理员解的锁"——而这两件事的追责口径完全不同。
+     */
+    "operator_user_id BIGINT NOT NULL DEFAULT 0, " +
+    "operator_role VARCHAR(16) NOT NULL DEFAULT '', " +
+    "created_at BIGINT NOT NULL DEFAULT 0, " +
+    "PRIMARY KEY (id), " +
+    /*
+     * ⚠ 唯一键是 (record_id, version)：并发的两次 lock 若算出同一个 version，
+     *   数据库会挡下第二条（应用层因此可以"插失败就重算版本号再插一次"，
+     *   而不是先查后写地赌一把）。
+     */
+    "UNIQUE KEY uk_rev (record_id, version), " +
+    "KEY idx_rev_appt (appointment_id, version)" +
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 
     // ⚠ 这里曾有一张 `booking_idem`（挂号幂等登记表）—— 2026-10-07 **连表带实现一起删除**。
@@ -1046,6 +1119,28 @@ public func migrateSchema(db: DbBackend): Int64 {
         db.exec("ALTER TABLE medical_record " +
                 "ADD COLUMN previsit_ref VARCHAR(1024) NOT NULL DEFAULT ''",
                 Array<DbValue>())
+        done = done + 1
+    }
+
+    /*
+     * ⑩ ★ 2026-10-15（改进 3）：给**存量已锁定病历**补 v1 快照。
+     *
+     * ⚠ 为什么必须补，而不是"历史就让它空着"：
+     *   新端点 `GET …/record/revisions` 会告诉医生"这份病历有 1 个版本"。
+     *   若存量单不补，同一张单在改进 3 上线**前**锁定的会显示"0 个版本"，
+     *   医生看到的却是已锁定的病历 —— 两个事实互相矛盾，
+     *   而查不到版本时医生的第一反应是"系统把我的病历弄丢了"。
+     *   补的这版内容**就是当时锁定的内容**（`status='locked'` 的行原样快照），
+     *   不编造、不推断：`reason` 记空串（那时没有"解锁理由"这个概念），
+     *   `operator_user_id` 记 `updated_by`（最后一次改这份病历的人）。
+     *
+     * ⚠ 幂等：只补"一条修订都没有"的病历（`NOT EXISTS`），
+     *   所以重复执行 `migrateSchema` 不会重复补、也不会覆盖新版本。
+     *   实现放在 `domain_emr.cj` 的 `emrBackfillRevisions`（它要用七段序列化，
+     *   而那套代码与本表在同一个域里，避免 schema.cj 里再抄一遍列名）。
+     */
+    let backfilled = emrBackfillRevisions(db)
+    if (backfilled > 0) {
         done = done + 1
     }
 

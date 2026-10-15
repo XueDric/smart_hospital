@@ -44,6 +44,12 @@ func hNowEpoch(): Int64 {
  */
 func hResetAll(db: DbBackend): Unit {
     db.exec("DELETE FROM appointment", Array<DbValue>())
+    /*
+     * ★ 2026-10-15（改进 3）：修订历史必须先于病历清（它是病历的从属数据）。
+     * ⚠ 现在没有外键约束，先后顺序不影响执行 —— 但**按从属顺序写**，
+     *   将来若补上 `ON DELETE CASCADE` 或加外键，这里不用再改。
+     */
+    db.exec("DELETE FROM medical_record_revision", Array<DbValue>())
     db.exec("DELETE FROM medical_record", Array<DbValue>())
     db.exec("DELETE FROM schedule", Array<DbValue>())
     db.exec("DELETE FROM doctor", Array<DbValue>())
@@ -1171,6 +1177,12 @@ public func runAcceptance(db: DbBackend): Int64 {
      *   的患者，与前面用例的 88xx/95xx 段不重叠（本仓"每个用例独占 id 段"的约定）。
      */
     acP4_5(runner, db)
+    /*
+     * ★ 2026-10-15（改进 3）：病历修订历史。
+     * ⚠ 同样自己 `hResetAll`，造 **9608/9609** 段的患者 + 900008/900009 医生
+     *   （与 95xx/88xx 段不重叠）。
+     */
+    acP4_6(runner, db)
     /*
      * 基础数据域（科室/医生）的管理端 CRUD（定义在 acceptance_base.cj）。
      *

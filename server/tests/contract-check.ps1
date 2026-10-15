@@ -159,6 +159,20 @@ foreach ($f in $files) {
     if ($entry.Count -eq 1) {
         $ev = $entry[0].Value
         $bodyNode = Get-PropSafe $doc.response 'body'
+        # volatile 声明必须**真的生效**：文件里那条路径要就是字符串 "<volatile>"。
+        # ⚠ 少了这道检查，"声明了 volatile 但导出机没替换"会变成一条随库状态随机假红的样例
+        #   （2026-10-15 实测：final-verify 里 contract-check 红在 admin-users-page-clamped-200）。
+        foreach ($vp in @(Get-PropNames $doc 'volatile')) {
+            $cur = $bodyNode
+            foreach ($seg in ([string]$vp).Split('.')) {
+                if ($null -eq $cur) { break }
+                $cur = Get-PropSafe $cur $seg
+            }
+            if ($cur -is [System.Collections.IEnumerable] -and -not ($cur -is [string])) { $cur = '<array>' }
+            if ([string]$cur -ne '<volatile>') {
+                $null = $errs.Add("[volatile] 声明的路径 '$vp' 实际是 '$cur'（应为字符串 <volatile>）—— 样例会随库状态假红")
+            }
+        }
         # 三个可选靶位：body（整个响应体）/ data（信封里的 data）/ body_text（SSE 等非 JSON 主体）
         $targetNode = @{
             'body'      = $bodyNode

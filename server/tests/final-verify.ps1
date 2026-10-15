@@ -1,4 +1,4 @@
-# 收官全量验证（2026-10-14，SERVER-REVIEW 修复后）
+﻿# 收官全量验证（2026-10-14，SERVER-REVIEW 修复后）
 #
 # 目的：一次跑完**所有** HTTP 层门禁脚本 + 三种部署形态的 health-check，
 #       并给出统一的 EXIT 汇总表（供修复文档引用）。
@@ -68,6 +68,9 @@ try {
         @{ n = 'kb-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'triage-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'emr-check'; p = @{ Base = $dev; AdminPw = $pw } },
+        # revision-check（改进 3）自建 704xxx 段夹具（科室/医生/患者/挂号单 + 直写病历），
+        # 不依赖 emr-check 的状态；放在这里只是让它和其它 HTTP 脚本一样**串行**跑。
+        @{ n = 'revision-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'previsit-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'previsit-bridge-check'; p = @{ Base = $dev; AdminPw = $pw } },
         # ⚠ contract-check 必须排在 p1-extra-check **之前**：后者会重设管理员口令，

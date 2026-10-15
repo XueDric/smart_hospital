@@ -1,0 +1,28 @@
+{
+  "title": "病历修订列表 data（GET /api/v1/doctor/visits/:id/record/revisions）",
+  "description": "应用于 response.body.data。items **按 version 升序**（v1 在前）——因为「与上一版对比」要的是 version-1，倒序会让「上一版」指向未来；客户端要「最新在上」自己 reverse 一行即可。⚠ items 里**没有 sections**（这是刻意的）：列表带正文会让「打开版本抽屉」变成一次几 MB 的响应。要正文就再取 `GET …/revisions/:version`。operator_role **可能是空串**（存量病历迁移补写的那一版没有这个历史信息，空串对客户端是「未知」，不是「没有角色」）。",
+  "type": "object",
+  "required": ["appointment_id", "items", "count"],
+  "additionalProperties": false,
+  "properties": {
+    "appointment_id": { "type": "integer" },
+    "count": { "type": "integer", "minimum": 0 },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["version", "status", "operation", "reason", "operator_user_id", "operator_role", "created_at"],
+        "additionalProperties": false,
+        "properties": {
+          "version": { "type": "integer", "minimum": 1, "description": "从 1 开始（版本号是资源标识，不是偏移量）" },
+          "status": { "type": "string", "enum": ["draft", "locked"], "description": "**快照那一刻**的病历状态。lock/reopen 落的版都是 locked（解锁记的是「解锁前那一版」）" },
+          "operation": { "type": "string", "enum": ["lock", "reopen"], "description": "这一版是**因为什么动作**留下的" },
+          "reason": { "type": "string", "description": "仅 operation=reopen 非空（4-255 字符）；lock 恒为空串" },
+          "operator_user_id": { "type": "integer", "description": "谁做的；存量补写的一版是病历的 updated_by" },
+          "operator_role": { "type": "string", "description": "doctor / admin；**空串 = 未知**（迁移补写的存量版）" },
+          "created_at": { "type": "integer", "description": "动作发生时刻；存量补写用病历的 updated_at（贴历史事实，不是迁移那一刻）" }
+        }
+      }
+    }
+  }
+}

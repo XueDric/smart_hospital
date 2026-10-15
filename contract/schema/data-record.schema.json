@@ -15,6 +15,11 @@
     "total_sections": { "type": "integer", "minimum": 1 },
     "complete": { "type": "boolean" },
     "updated_by": { "type": "integer" },
+    "revision_version": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "★ 2026-10-15（改进 3）**仅定稿（lock）与解锁（reopen）的响应**带这个字段：本次动作落下的修订版本号。`0` = 审计行没写上（**病历动作已成功**）⇒ 客户端要当成「版本号未知/待补」，不能当失败重试（重试会走幂等路径自愈那一版）。PUT/GET 病历的响应**不含**它。"
+    },
     "created_at": { "type": "integer" },
     "updated_at": { "type": "integer" },
     "missing_required": { "type": "array", "items": { "type": "string" } },

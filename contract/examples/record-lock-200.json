@@ -85,7 +85,8 @@
             "allergy_history"
           ],
           "at": 0
-        }
+        },
+        "revision_version": 1
       }
     }
   }

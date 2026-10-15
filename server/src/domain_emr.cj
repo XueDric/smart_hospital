@@ -57,6 +57,38 @@ public let EMR_DRAFT: String = "draft"
 public let EMR_LOCKED: String = "locked"
 
 /*
+ * 修订历史里的**操作**取值（改进 3）。
+ * ⚠ 用常量而不是散落的字面量：AC 与文档都要引用它们，"lock" 写错一个字母
+ *   不会编译失败，只会让审计查询查不到东西。
+ *   `archive` 是**预留**（归档策略当前不需要，见 DDL 的容量估算）。
+ */
+public let EMR_OP_LOCK: String = "lock"
+public let EMR_OP_REOPEN: String = "reopen"
+
+/*
+ * 解锁理由的长度约束（**按字符**，与本项目"长度一律按字符算"一致）。
+ * ⚠ 为什么必须填：解锁是"推翻一份已定稿的医疗文书"，
+ *   而"为什么推翻"是这个动作里唯一能留给后来人的信息。
+ *   4 字下限只是拒绝"x"/"aaa"这种敷衍，不做语义判断。
+ */
+public let EMR_REASON_MIN: Int64 = 4
+public let EMR_REASON_MAX: Int64 = 255
+
+/* 解锁理由是否合法（trim 后 4–255 **字符**）。 */
+public func emrReasonValid(reason: String): Bool {
+    let t = reason.trimAscii()
+    /*
+     * ⚠ 必须用 `previsitCharLen`（字符数），不能用 `t.size`：
+     *   `String.size` 是**字节**数 ⇒ 中文理由的"太短"永远拦不住
+     *   （「太短」= 6 字节，会通过 4 字下限）。这一条是**实测**出来的：
+     *   验收里"理由过短 ⇒ 被拒"的用例正是因此变红。
+     *   仓库里 `domain_base.cj:94` 对 BASE_CODE_MAX 用的是同一个辅助函数 —— 口径一致。
+     */
+    let n = previsitCharLen(t)
+    return n >= EMR_REASON_MIN && n <= EMR_REASON_MAX
+}
+
+/*
  * 病历**七段式**（照 brief §2.1 医生端的原文顺序）。
  *
  * ⚠ 顺序**有意义**：它是医生书写时的自然顺序（主诉 → 现病史 → … → 处理意见），
@@ -362,6 +394,138 @@ public class MedicalRecord {
     }
 }
 
+/* ===================== 病历修订历史（改进 3，2026-10-15）===================== */
+
+/*
+ * 七段正文 → JSON 快照（**含空段**）。
+ *
+ * ⚠ 为什么连空段也写进去：diff 要能区分"这一段被删空了"与"这一版根本没有这一段"。
+ *   只存非空段的话，两种情况在 JSON 里长得一模一样，而它们临床含义相反。
+ * ⚠ 用 `JsonObject` 而不是手工拼串：段正文是**医生输入的任意文本**，
+ *   里面完全可能有引号/反斜杠/换行 —— 手工拼 JSON 必然踩转义
+ *   （本项目的纪律：不手工拼 JSON，见 `emrPrevisitRefJson` 的同款注释）。
+ *   `rec.get(s.key)` 与 `emrSections()` 是**同一处定义**，所以键名不会漂移。
+ */
+public func emrSectionsJson(rec: MedicalRecord): String {
+    let o = JsonObject()
+    for (s in emrSections()) {
+        o.put(s.key, JsonString(rec.get(s.key)))
+    }
+    return o.toString()
+}
+
+/*
+ * JSON 快照 → 段值表（坏数据/空串 ⇒ 空表，**不抛**）。
+ *
+ * ⚠ 宽容解析的理由与 `emrPrevisitRefSections` 同：库里一条坏 JSON
+ *   不该让"读修订历史"这个只读操作 500。
+ * ⚠ 只取 `emrSections()` 里已知的段（未知键忽略）：快照是历史数据，
+ *   将来若删掉某一段，旧快照里的那个键不该凭空出现在接口上。
+ */
+public func emrSectionValues(json: String): HashMap<String, String> {
+    let out = HashMap<String, String>()
+    if (json.size == 0) {
+        return out
+    }
+    try {
+        let o = JsonValue.fromStr(json).asObject()
+        for (s in emrSections()) {
+            match (o.get(s.key)) {
+                case Some(v) =>
+                    if (v is JsonString) {
+                        out[s.key] = v.asString().getValue()
+                    }
+                case None => ()
+            }
+        }
+    } catch (e: Exception) {
+        return HashMap<String, String>()
+    }
+    return out
+}
+
+/* 取段值（缺键 ⇒ 空串）。 */
+func emrValueOfForm(m: HashMap<String, String>, k: String): String {
+    match (m.get(k)) {
+        case Some(v) => return v
+        case None => return ""
+    }
+}
+
+/*
+ * 一条修订记录（`medical_record_revision` 的一行）。
+ *
+ * ⚠ 它是**不可变**的历史行：没有任何写方法（只有读）。
+ *   要改历史，只能再落一行新版本 —— 这正是"审计流"的意思。
+ */
+public class MedicalRecordRevision {
+    public var id: Int64 = 0
+    public var recordId: Int64 = 0
+    public var appointmentId: Int64 = 0
+    public var version: Int64 = 0
+    public var status: String = ""
+    public var sectionsJson: String = ""
+    public var operation: String = ""
+    public var reason: String = ""
+    public var operatorUserId: Int64 = 0
+    public var operatorRole: String = ""
+    public var createdAt: Int64 = 0
+
+    public init() {}
+
+    /* 该版本的段值表（解析 sections_json，坏数据 ⇒ 空表）。 */
+    public func values(): HashMap<String, String> {
+        return emrSectionValues(sectionsJson)
+    }
+
+    /* 该版本已填段数（列表里给"v2 · 5/7 段"用）。 */
+    public func filledCount(): Int64 {
+        let m = values()
+        var n: Int64 = 0
+        for (s in emrSections()) {
+            if (emrValueOfForm(m, s.key).trimAscii().size > 0) {
+                n = n + 1
+            }
+        }
+        return n
+    }
+}
+
+/*
+ * 两个版本之间**某一段**的差异。
+ *
+ * ⚠ 逐段给全七段（未变的 `changed = false` 也在内），不只给变化的那几段：
+ *   界面要做"差异视图"（未变段也要显示，只是不高亮），
+ *   而"只回变化段"会让客户端不得不自己再排一次段序、自己补未变的段 ——
+ *   那就是把"七段有哪些、什么顺序、什么标签"复制到三个客户端。
+ */
+public class EmrDiffRow {
+    public let key: String
+    public let label: String
+    public let before: String
+    public let after: String
+    public let changed: Bool
+
+    public init(key: String, label: String, before: String, after: String) {
+        this.key = key
+        this.label = label
+        this.before = before
+        this.after = after
+        this.changed = before != after
+    }
+}
+
+/* 逐段对比两个版本的段值表（顺序 = `emrSections()` 的临床顺序）。 */
+public func emrDiffRows(before: HashMap<String, String>,
+                        after: HashMap<String, String>): Array<EmrDiffRow> {
+    let out = ArrayList<EmrDiffRow>()
+    for (s in emrSections()) {
+        out.add(EmrDiffRow(s.key, s.label,
+                           emrValueOfForm(before, s.key), emrValueOfForm(after, s.key)))
+    }
+    return out.toArray()
+}
+
 /* ===================== 写结果 ===================== */
 
 /*
@@ -386,9 +550,23 @@ public class EmrWriteOutcome {
     public var tooLong: Bool = false
     /* 缺必填段（提交时）。 */
     public var missingRequired: Bool = false
+    /* ★ 解锁理由不合法（改进 3：缺理由 / 太短 / 太长）。 */
+    public var badReason: Bool = false
     /* 供报错用的细节（段名/上限/缺哪几段）。 */
     public var detail: String = ""
     public var recordId: Int64 = 0
+    /*
+     * ★ 本次操作落下的修订版本号（改进 3）：lock / reopen 成功时 > 0，**0 = 没记上**。
+     *
+     * ⚠ 为什么把"版本号"放在写结果里、并透出到响应：
+     *   ① 客户端要显示"已锁定 · v1"，而这个数字只有服务端知道（客户端算不出来，
+     *      也不该算 —— 版本号是审计事实，不是界面推出来的）；
+     *   ② **它让"审计写失败"不再静默** —— 锁定成功了但版本没记上时，
+     *      响应里 `revision_version` 为 0，医生看到的就不是一句笼统的"已锁定"。
+     *   📌 锁定的**业务效果**（status=locked）不因审计写失败而回滚：
+     *     那会让"库写不进去"变成"医生锁不了病历"，两者严重程度不同。
+     */
+    public var revisionVersion: Int64 = 0
 }
 
 /* ===================== 病历仓储（直接 SQL）===================== */
@@ -690,7 +868,8 @@ public class MedicalRecordRepo {
      * 条件UPDATE同时约束draft和刚校验的完整内容快照。只约束draft不能阻止
      * “校验完成→另一个保存清空必填→锁定空病历”的交错；失配明确返回409。
      */
-    public func lock(appointmentId: Int64, now: Int64, actorId: Int64): EmrWriteOutcome {
+    public func lock(appointmentId: Int64, now: Int64, actorId: Int64,
+                     actorRole: String): EmrWriteOutcome {
         let out = EmrWriteOutcome()
         var rec = MedicalRecord()
         var exists = false
@@ -708,6 +887,11 @@ public class MedicalRecordRepo {
             /* 幂等：已锁定再提交 ⇒ 明确告知"已锁定"，不当成成功（否则用户以为刚锁的） */
             out.locked = true
             out.recordId = rec.id
+            /*
+             * ★ 改进 3：幂等路径上**自愈**一次快照（见 ensureLockRevision 的说明）。
+             *   没有它，上一轮"锁定成功但审计行没写上"会**永久**留在库里。
+             */
+            out.revisionVersion = ensureLockRevision(rec, actorId, actorRole, now)
             return out
         }
         let missing = rec.missingRequired()
@@ -733,6 +917,25 @@ public class MedicalRecordRepo {
         }
         out.ok = true
         out.recordId = rec.id
+        /*
+         * ★ 改进 3：定稿即落一版**不可变快照**。
+         *
+         * ⚠ 为什么在 UPDATE **之后**写（而不是之前）：快照必须"锁定发生了才有"。
+         *   写在前面的话，一旦 UPDATE 因并发改稿失败（返回 0），
+         *   库里就会留下一版"其实没锁成"的快照 —— 而审计行**不能**说谎。
+         *   写失败时 `revisionVersion` 保持 0（见 EmrWriteOutcome 的说明），
+         *   下一次 lock 重试会在幂等路径上自愈。
+         * ⚠ `rec` 是锁定前读到的内容，且 UPDATE 用 `draftSnapshotSql` 把它当成乐观版本
+         *   ⇒ 落盘的正文与 `rec` **逐字节相同**，快照忠实。
+         * ⚠⚠ 但正文相同不代表**状态**相同：`rec.status` 此刻还是 `'draft'`（它是锁定**前**
+         *   读到的），直接落盘会写出"一版状态是 draft 的定稿快照" —— 实测验收里
+         *   "这一版的状态是 locked" 正是因此变红。所以先把 `rec` 就地改成**落库后的样子**，
+         *   再写快照：快照要记的是"锁定后库里长什么样"。
+         */
+        rec.status = EMR_LOCKED
+        rec.updatedBy = actorId
+        rec.updatedAt = now
+        out.revisionVersion = writeRevision(rec, EMR_OP_LOCK, "", actorId, actorRole, now)
         return out
     }
 
@@ -742,22 +945,186 @@ public class MedicalRecordRepo {
      * ⚠ 为什么需要它：病历写错是**必然会发生**的（真实医疗场景也一样），
      *   而"锁定即永久不可改"会把一次笔误变成无法纠正的档案。
      *   正确做法不是允许随便改，而是**留一条有迹可循的通道**：
-     *   仅管理员、显式动作、`updated_by` 记录操作者。
-     *   ⚠ 本轮的**边界**：只做到"解锁 + 记操作者"，**没有**做完整的修订历史表
-     *     （谁在第几版改了什么）—— 那属后续，已写进 P4-HANDOFF 未做清单。
+     *   仅管理员、显式动作、**必须写理由**、操作者与理由一起落进审计行。
+     *   ✅ 2026-10-15（改进 3）：解锁**已**记进 `medical_record_revision`
+     *     （`operation='reopen'` + `reason` + `operator_user_id/operator_role`），
+     *     并且定稿那一刻也留一版 —— 所以"谁在第几版改了什么"现在查得到。
+     *     （此前这里写着"没有做完整的修订历史表，属后续" —— 那句话已经过期。）
      */
-    public func reopen(appointmentId: Int64, now: Int64, actorId: Int64): EmrWriteOutcome {
+    public func reopen(appointmentId: Int64, now: Int64, actorId: Int64, actorRole: String,
+                       reason: String): EmrWriteOutcome {
         let out = EmrWriteOutcome()
+        /*
+         * ★ 改进 3：解锁**必须说明理由**，且理由要能落进审计行。
+         *   校验放在域层（不只放 HTTP 层）：域层是"病历不可无理由解锁"这条规则的
+         *   唯一归属地；只写在 HTTP 层的话，任何新的调用方（脚本/AC）都能绕过它。
+         */
+        if (!emrReasonValid(reason)) {
+            out.badReason = true
+            return out
+        }
+        /*
+         * ⚠ 快照必须取**解锁前**的内容 ⇒ 先读一份（此刻 `status='locked'`）再 UPDATE。
+         *   反过来（先 UPDATE 再读）读到的就是 `draft`，
+         *   审计行会把"当时锁定的那一版"记成草稿 —— 而它正是要留档的那一版。
+         * ⚠ 与此前行为的一处**收紧**：挂号单根本没有病历时，此前也返回
+         *   `locked=true`（⇒ 409 EMR_LOCKED，把"没有这张单"说成"已锁定"）。
+         *   现在如实区分：没有病历 ⇒ `noSuchAppointment` ⇒ 404。
+         */
+        var before = MedicalRecord()
+        var exists = false
+        match (findByAppointment(appointmentId)) {
+            case Some(r) =>
+                before = r
+                exists = true
+            case None => ()
+        }
+        if (!exists) {
+            out.noSuchAppointment = true
+            return out
+        }
         let n = db.exec("UPDATE medical_record SET status = ?, updated_by = ?, updated_at = ? " +
                         "WHERE appointment_id = ? AND status = ?",
                         [DbStr(EMR_DRAFT), DbInt(actorId), DbInt(now),
                          DbInt(appointmentId), DbStr(EMR_LOCKED)])
         if (n == 0) {
-            out.locked = true      // 语义：没有"已锁定的病历"可解锁
+            out.locked = true      // 语义：没有"已锁定的病历"可解锁（当前是草稿）
             return out
         }
         out.ok = true
+        out.recordId = before.id
+        /* ★ 解锁也是一次状态变更 ⇒ 落一行带理由的审计快照（内容 = 解锁前那一版）。 */
+        out.revisionVersion = writeRevision(before, EMR_OP_REOPEN, reason.trimAscii(),
+                                            actorId, actorRole, now)
         return out
+    }
+
+    /* ===== 修订历史（改进 3）：只增不改 ===== */
+
+    private let revCols: String =
+        "id, record_id, appointment_id, version, status, sections_json, operation, " +
+        "reason, operator_user_id, operator_role, created_at"
+
+    private func rowToRevision(rs: DbResultSet, row: Int64): MedicalRecordRevision {
+        let r = MedicalRecordRevision()
+        r.id = rs.getInt(row, 0)
+        r.recordId = rs.getInt(row, 1)
+        r.appointmentId = rs.getInt(row, 2)
+        r.version = rs.getInt(row, 3)
+        r.status = rs.getString(row, 4)
+        r.sectionsJson = rs.getString(row, 5)
+        r.operation = rs.getString(row, 6)
+        r.reason = rs.getString(row, 7)
+        r.operatorUserId = rs.getInt(row, 8)
+        r.operatorRole = rs.getString(row, 9)
+        r.createdAt = rs.getInt(row, 10)
+        return r
+    }
+
+    /* 该病历已有的最大版本号（一行都没有 ⇒ 0）。 */
+    public func latestRevisionVersion(recordId: Int64): Int64 {
+        let rs = db.query("SELECT IFNULL(MAX(version), 0) FROM medical_record_revision " +
+                          "WHERE record_id = ?", [DbInt(recordId)])
+        if (rs.rowCount() > 0) {
+            return rs.getInt(0, 0)
+        }
+        return 0
+    }
+
+    /*
+     * 落一版快照，返回版本号（0 = 没写上）。
+     *
+     * ⚠ 版本号是"先查 MAX 再 +1"，两次并发写会算出同一个号 ——
+     *   而 `uk_rev (record_id, version)` 会挡下第二条（**数据库兜底**，
+     *   这就是那个唯一键存在的理由）。被挡下时**重算一次**再写：
+     *   重算而不是"报错让用户重试"，因为这个动作没有用户可感知的失败语义
+     *   （用户只是点了"提交锁定"）。
+     * ⚠ 两次都失败 ⇒ 返回 0，**不抛**：调用方（lock/reopen）已经完成了业务动作，
+     *   把审计写失败升级成"病历锁不了"是本末倒置（见 EmrWriteOutcome.revisionVersion）。
+     */
+    private func writeRevision(rec: MedicalRecord, operation: String, reason: String,
+                               operatorUserId: Int64, operatorRole: String,
+                               now: Int64): Int64 {
+        var attempt: Int64 = 0
+        while (attempt < 2) {
+            let v = latestRevisionVersion(rec.id) + 1
+            try {
+                db.exec("INSERT INTO medical_record_revision (record_id, appointment_id, version, " +
+                        "status, sections_json, operation, reason, operator_user_id, operator_role, " +
+                        "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        [DbInt(rec.id), DbInt(rec.appointmentId), DbInt(v), DbStr(rec.status),
+                         DbStr(emrSectionsJson(rec)), DbStr(operation), DbStr(reason),
+                         DbInt(operatorUserId), DbStr(operatorRole), DbInt(now)])
+                return v
+            } catch (e: Exception) {
+                attempt = attempt + 1
+            }
+        }
+        return 0
+    }
+
+    /*
+     * 幂等路径上的**自愈**：已锁定、但一条修订行都没有 ⇒ 补一版。
+     *
+     * ⚠ 这个函数存在的唯一理由是一个真实可能的窗口：
+     *   `lock` 的 UPDATE 成功、紧接着的 INSERT 修订行失败（连接/磁盘抖动）。
+     *   没有自愈的话，那份病历会**永远**显示"0 个版本" ——
+     *   而界面上它是"已锁定"，两个事实互相矛盾，医生会以为系统丢了数据。
+     *   客户端重试一次 lock（幂等路径）就把这一版补上。
+     */
+    private func ensureLockRevision(rec: MedicalRecord, actorId: Int64, actorRole: String,
+                                    now: Int64): Int64 {
+        let v = latestRevisionVersion(rec.id)
+        if (v > 0) {
+            return v
+        }
+        return writeRevision(rec, EMR_OP_LOCK, "", actorId, actorRole, now)
+    }
+
+    /*
+     * 某次就诊的全部修订（**升序**：v1 在前）。
+     *
+     * ⚠ 为什么不按时间倒序（"最新的在最上面"是界面常见诉求）：
+     *   ① `version` 才是这个列表的主键语义，升序读起来是"病历的历史"；
+     *   ② "与上一版对比"要的是 `version - 1`，倒序会让这个映射看起来是反的；
+     *      倒序展示是客户端 `.reverse()` 一行的事，而排序口径搞反了
+     *      会让"上一版"指向未来。**服务端给规范序，客户端管展示序。**
+     * ⚠ **不带正文**（`sections_json` 不出站）：列表可能几十版，
+     *   带正文会让"打开版本抽屉"变成一次几 MB 的响应。
+     *   要正文请走 `/revisions/:version`。
+     */
+    public func revisions(appointmentId: Int64): Array<MedicalRecordRevision> {
+        let rs = db.query("SELECT " + revCols + " FROM medical_record_revision " +
+                          "WHERE appointment_id = ? ORDER BY version ASC", [DbInt(appointmentId)])
+        let out = ArrayList<MedicalRecordRevision>()
+        var i: Int64 = 0
+        while (i < rs.rowCount()) {
+            out.add(rowToRevision(rs, i))
+            i = i + 1
+        }
+        return out.toArray()
+    }
+
+    /* 某次就诊的**某一版**（带正文）；没有这一版 ⇒ None。 */
+    public func revisionAt(appointmentId: Int64, version: Int64): ?MedicalRecordRevision {
+        let rs = db.query("SELECT " + revCols + " FROM medical_record_revision " +
+                          "WHERE appointment_id = ? AND version = ?",
+                          [DbInt(appointmentId), DbInt(version)])
+        if (rs.rowCount() > 0) {
+            return Some(rowToRevision(rs, 0))
+        }
+        return None
+    }
+
+    /* 某次就诊**已锁定**的最新一版（`reopen` 之后就是刚解锁的那一版）。 */
+    public func latestLockedRevision(appointmentId: Int64): ?MedicalRecordRevision {
+        let rs = db.query("SELECT " + revCols + " FROM medical_record_revision " +
+                          "WHERE appointment_id = ? AND status = ? ORDER BY version DESC LIMIT 1",
+                          [DbInt(appointmentId), DbStr(EMR_LOCKED)])
+        if (rs.rowCount() > 0) {
+            return Some(rowToRevision(rs, 0))
+        }
+        return None
     }
 
     /*
@@ -829,6 +1196,50 @@ public class MedicalRecordRepo {
                          prefill: intakePrefill(sessionId, patientId),
                          previsitSessionId: sessionId)
     }
+
+    /*
+     * ★ 迁移用：给**存量已锁定病历**补 v1 快照（幂等；由 `migrateSchema` 第 ⑩ 步调用）。
+     *
+     * ⚠ 为什么不写成 `INSERT ... SELECT`（SQL 一句搞定）：
+     *   ① 本仓**从未跑通过** `INSERT ... SELECT`（带占位符时驱动会失败，且
+     *      只给空错误消息 —— 见 `saveDraft` 里那段教训）；
+     *   ② `sections_json` 要由 `emrSectionsJson` 生成（拼接/转义口径只有一处），
+     *      在 SQL 里再用 `JSON_OBJECT` 写一遍就是**第二处定义**。
+     *   ⇒ 一次 SELECT（只挑"一条修订都没有"的锁定病历）+ 逐行 INSERT。
+     *     存量库的量级是"几百行"，一次迁移跑几百条 INSERT 完全可接受。
+     * ⚠ `status = 'locked'` 的行才补：草稿本来就不落版本（本项的既定取舍）。
+     * ⚠ `operator_user_id` 用 `updated_by`、`created_at` 用 `updated_at`：
+     *   那是**唯一可得的**历史信息（最后改这份病历的人 / 那一刻）。
+     *   `operator_role` 留空串 —— 历史数据里**没有**这个信息，编一个就是伪造审计。
+     */
+    public func backfillRevisions(): Int64 {
+        let rs = db.query("SELECT " + selectCols + " FROM medical_record " +
+                          "WHERE status = ? AND NOT EXISTS (" +
+                          "SELECT 1 FROM medical_record_revision r WHERE r.record_id = medical_record.id)",
+                          [DbStr(EMR_LOCKED)])
+        var done: Int64 = 0
+        var i: Int64 = 0
+        while (i < rs.rowCount()) {
+            let m = rowToRecord(rs, i)
+            let v = writeRevision(m, EMR_OP_LOCK, "", m.updatedBy, "", m.updatedAt)
+            if (v > 0) {
+                done = done + 1
+            }
+            i = i + 1
+        }
+        return done
+    }
+}
+
+/*
+ * 迁移入口（schema.cj 的第 ⑩ 步调用它）。
+ *
+ * ⚠ 为什么用自由函数包一层：`migrateSchema` 只拿得到 `DbBackend`，
+ *   而补快照要用仓储的行映射（列序只在一处）。包一层比把 `rowToRecord`
+ *   改成 public 更好 —— 后者会把"仓储私有列序"暴露给所有调用方。
+ */
+public func emrBackfillRevisions(db: DbBackend): Int64 {
+    return MedicalRecordRepo(db).backfillRevisions()
 }
 
 /* ===================== 接诊队列（appointment 状态机）===================== */

@@ -160,6 +160,15 @@ public func apiErrorSpec(code: String): (Int64, String) {
     if (code == "EMR_CHANGED") {
         return (409, "病历已被其他操作修改，请重新读取后确认")
     }
+    /*
+     * ★ 2026-10-15（改进 3）：请求的那一版修订不存在。
+     * ⚠ 404（不是 400）：`version` 是个**资源标识**（`/revisions/:version`），
+     *   版本号合法但不存在，与路径写错同类 —— 都是"这个资源没有"。
+     *   给 400 会把"版本被清理了/你记错了"说成"参数格式错"。
+     */
+    if (code == "REVISION_NOT_FOUND") {
+        return (404, "该病历没有这一版修订")
+    }
     /* 完成就诊前必须先提交锁定病历（409：当前状态不允许该操作）。 */
     if (code == "EMR_NOT_LOCKED") {
         return (409, "完成就诊前必须先提交锁定病历")

@@ -30,7 +30,7 @@
 | **预问诊 → 病历的预填桥**（⭐ 容易被当成"不存在"） | `PUT /doctor/visits/:id/record` 支持可选 `use_intake_session`；服务端按 **`WHERE id=? AND patient_id=?`** 校验"是你这个患者的单"，再把六槽位映射到病历四段（主诉；现病史＝病程+程度+伴随；既往史；过敏史），**仅在"该单还没有病历"时**写一次，已有病历一律不覆盖 | `server/src/http_p4.cj:355-372`（路由）、`server/src/domain_emr.cj:655-708`（`intakePrefill`）、`domain_emr.cj:710-722`（`saveDraftWithIntake`）、用例 `server/tests/emr-check.ps1:280-291` |
 | 请求编号 | 框架 `requestId` 中间件**已装**，响应头回传 `X-Request-Id`，也接受客户端传入 | `server/third_party/qingzhou/src/requestid.cj:39-53`、`server/src/http_app.cj:2447` |
 | 时间口径 | 服务端业务时间戳 = **epoch 秒**；`elapsed_ms` 是**毫秒** | `server/src/acceptance.cj:37-39`（`hNowEpoch`）、`server/src/ai_call.cj:158` |
-| 服务端门禁 | 进程内 4 套件（`selftest` / `authtest` / `triagetest` / `accept`）+ **13 项** live 检查脚本汇总入口（含 `contract-check`） | `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1` |
+| 服务端门禁 | 进程内 4 套件（`selftest` / `authtest` / `triagetest` / `accept`）+ **14 项** live 检查脚本汇总入口（含 `contract-check`、`revision-check`） | `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1` |
 
 ### 1.2 真正的缺口（7 条各自指向的地方）
 
@@ -202,6 +202,25 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 ### 改进 3（高）保留病历修订历史
 
 **目标**：定稿时保存**不可变版本**；记录解锁**理由、操作者和时间**；能看前后两版。
+
+#### ✅ 实施状态：**服务端已实现（2026-10-15）**，与本文计划的差异如下
+
+| # | 本文计划 | 实际落地 | 为什么 |
+| --- | --- | --- | --- |
+| 1 | `reopen(...)` 传 `reason` | 签名是 `reopen(appointmentId, now, actorId, **actorRole**, reason)`；`lock` 也加了 `actorRole` | 审计行要记「**谁以什么身份**做的」——同一个 user_id 在医生/管理员两种身份下做的事，事后必须能分开 |
+| 2 | 缺理由 ⇒ 400 | 长度按**字符**算（trim 后 4–255），不是字节；用 `previsitCharLen` | 中文一个字符 3 字节：按字节判会让「太短」（6 字节 = 2 字）**通过**校验（实测踩到，见 `emrReasonValid`） |
+| 3 | `version = max+1` | `writeRevision` 撞 `uk_rev` 时**重算一次再插**，两次都失败 ⇒ **返回 0、不抛**；调用方把 0 放进响应字段 `revision_version` | 审计行写不上**不该让医生的定稿动作失败**（病历已经锁了，回滚才是更坏的结果）；但客户端必须知道"版本号未知"，所以同一次响应里带出来 |
+| 4 | `lock` 幂等分支直接返回 | 幂等分支改为 `ensureLockRevision`：**≥1 版就返回该版，否则补一版** | 自愈：写入版本失败过（返回 0）的病历，医生再点一次"定稿"就能把那一版补上，不需要人工 SQL |
+| 5 | 存量补 v1 用 `INSERT ... SELECT ... WHERE NOT EXISTS` | 实际是**查出待补行再逐行 `writeRevision`**（`emrBackfillRevisions`），`operator_role` 留**空串**、`created_at` 用病历的 `updated_at` | 历史数据里没有"以什么身份"这个信息时**不编造**（写 `admin` 或 `doctor` 都是假话）；逐行写法也复用了同一处版本号分配逻辑，不出现第二套 `max+1` |
+| 6 | diff 返回 `[{key,label,before,after,changed}]` | 字段名是 `left`/`right`（不是 before/after），**含全部七段**（未变的也在，`changed=false`），外层还有 `status_changed` / `changed_count` | 只回变化的段会让客户端无法显示"其余未变"；`changed` 由服务端判定，`changed_count` 直接当角标数量 |
+| 7 | 三个端点都写"仅医生" | 修订历史三条**管理员也能读**（`ManageRecordRevision`），医生仅限**本单**（否则 404） | 审计的意义就是管理员能查；医生跨单读会变成"横向翻别人的病历" |
+| 8 | （未提） | 患者读修订历史 ⇒ **404 `APPOINTMENT_NOT_FOUND`**，且 `REVISION_NOT_FOUND` 是**新错误码**（登记进 `http_common.cj`） | 修订条目含 `reason`/`operator_role` 内部审计话术，不给患者；404 而不是 403 是为了不给"这东西存在"的枚举信号 |
+| 9 | （未提） | `version` 非数字或 `<= 0` ⇒ 400；`diff` 的 `against` 缺省 = `version-1`，但 **`version=1` 且未给 `against` ⇒ 400** | 第一版没有"上一版"：退化成"拿 v1 跟自己比"会返回「一切未变」——一个**看起来成功的错答案** |
+| 10 | （未提，改进 5 的缺陷） | 契约 `volatile` 路径统一为**相对信封体**，导出机解析不到**直接失败**，门禁断言"声明的路径确实被替换成 `<volatile>`" | 旧实现在解析不到时静默跳过 ⇒ `admin-users-page-clamped-200` 里存的是全量 items，别的脚本一改库就逐字节红（`final-verify` 里实测踩到：单独跑绿、汇总跑红） |
+
+> 验收：`accept` 新增 **AC-P4-6**（612 项断言全过；AC-P4-1 里也补了一句"重复定稿不新增版本"）+
+> 新增 live 脚本 **`server/tests/revision-check.ps1`（46 条）**，已并入 `final-verify.ps1`（13 → **14 项**）；
+> 契约新增 **11 条样例 / 3 个 Schema**（`contract/examples/record-revision-*`），见 `contract/CHANGELOG.md` 2026-10-15 条。
 
 #### 后端任务
 
@@ -500,8 +519,8 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 | 改动范围 | 必须跑的闸门 | 说明 |
 | --- | --- | --- |
 | 服务端任何改动 | `server/build.ps1`（框架 38 + 业务 37 = 75 文件） | 编译不过就别谈测试 |
-| 服务端业务逻辑 | 进程内四套件：`selftest` / `authtest` / `triagetest`（110 项）/ `accept <dsn>`（575 项） | `accept` 需要 DSN；`server/tests/doc-counts.ps1` 会顺带重跑并核对文档数字 |
-| HTTP 契约层 | `server/tests/final-verify.ps1`（现 **13 项**，全绿 exit 0；含 `previsit-bridge-check` 与 `contract-check`） | ⚠ 本机端口必须 ≥15001；脚本前先 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`；含中文的 .ps1 必须带 **UTF-8 BOM** |
+| 服务端业务逻辑 | 进程内四套件：`selftest`（51 项）/ `authtest`（17 项）/ `triagetest`（110 项）/ `accept <dsn>`（**612 项**） | `accept` 需要 DSN；`server/tests/doc-counts.ps1` 会顺带重跑并核对文档数字 |
+| HTTP 契约层 | `server/tests/final-verify.ps1`（现 **14 项**，全绿 exit 0；含 `previsit-bridge-check`、`revision-check` 与 `contract-check`） | ⚠ 本机端口必须 ≥15001；脚本前先 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`；含中文的 .ps1 必须带 **UTF-8 BOM** |
 | 契约变更 | `server/tests/contract-check.ps1`（改进 5，已并入 final-verify 第 13 项）：改动**响应形状** ⇒ 逐字节比对红 / Schema 红 / 登记缺失红 | 更新样例 = 不带 `-Check` 跑 `export-contract.ps1`（写盘），再 review diff + 登记 `schema-map.json` + 写 `contract/CHANGELOG.md` |
 | 管理台（浏览器） | `server/tests/admin-web-smoke.mjs`（`SMOKE-EXIT=0`，写路径 + 模态框 + 逐页断言） | 需要 Edge；断言失败会写进退出码 |
 | 文档数字 | `server/tests/doc-counts.ps1` | 加表/加端点/加 AC 后**必然**失败，这是设计意图：改代码的人必须同步文档 |
@@ -551,8 +570,9 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 - `server/src/http_app.cj:78-191`（Action 与矩阵）、`:1061-1083`（health/login）、`:1929-2032`（预问诊）、`:2098-2132`（我的挂号）、`:2170-2196`（挂号/退号）、`:2447`（中间件装配）
 - `server/src/http_p4.cj:39-105`（病历/队列 JSON）、`:226-301`（接诊队列与流转）、`:310-433`（读/存/锁定/解锁）、`:445-501`（患者侧病历）、`:517-521`（看板）、`:536-555`（流转失败映射）
 - `server/src/domain_emr.cj:655-722`（**预问诊→病历预填桥**：`intakePrefill` / `saveDraftWithIntake`）、`:738-742`（就诊状态常量）
+- `server/src/domain_emr.cj`（**改进 3**：`lock`/`reopen` 签名与落版、`writeRevision`/`ensureLockRevision`/`revisions`/`revisionAt`/`backfillRevisions`）、`server/src/schema.cj`（`medical_record_revision` DDL + 迁移第 ⑩ 步）、`server/src/http_p4.cj:688-775`（修订历史三条端点）
 - `server/src/ai_call.cj:125-158`（`source`/`reason`/`elapsedMs`）、`server/src/triage_stat.cj:57`（落库写入点）
-- `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1`、`server/tests/admin-web-smoke.mjs`、`server/tests/emr-check.ps1:280-291`（`use_intake_session` 用例）
+- `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1`、`server/tests/admin-web-smoke.mjs`、`server/tests/emr-check.ps1:280-291`（`use_intake_session` 用例）、`server/tests/revision-check.ps1`（改进 3 的 46 条 live 断言）、`server/tests/export-contract.ps1` / `contract-check.ps1`（改进 5 契约门禁）
 
 **客户端**
 - `common-core/src/main/ets/config/ApiConfig.ets:6-51`（LIVE/MOCK 与 baseUrl）、`.../network/ApiError.ets:1-16`（`ErrorCode` 清单）

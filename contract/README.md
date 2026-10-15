@@ -12,8 +12,8 @@
 
 | 路径 | 是什么 | 生成方式 |
 | --- | --- | --- |
-| `contract/examples/*.json` | **38 条**真实响应样例（含请求、状态码、`content-type`、响应体） | `server/tests/export-contract.ps1` **自动生成，不要手工改** |
-| `contract/schema/*.schema.json` | **19 个** JSON Schema：8 个 **body 级**（`artifact` / `envelope-ok` / `envelope-error` / `flat-error` / `static-not-found` / `method-not-allowed` / `health` / `previsit-stream`），11 个 **data 级**（`data-*.schema.json`，校验 `response.body.data`） | 手工维护 |
+| `contract/examples/*.json` | **48 条**真实响应样例（含请求、状态码、`content-type`、响应体） | `server/tests/export-contract.ps1` **自动生成，不要手工改** |
+| `contract/schema/*.schema.json` | **22 个** JSON Schema：8 个 **body 级**（`artifact` / `envelope-ok` / `envelope-error` / `flat-error` / `static-not-found` / `method-not-allowed` / `health` / `previsit-stream`），14 个 **data 级**（`data-*.schema.json`，校验 `response.body.data`） | 手工维护 |
 | `contract/schema-map.json` | 样例 → Schema 的映射（`body` / `data` / `body_text` / `error_code`）+ 文件级 Schema 声明 | 手工维护，**新增样例必须登记** |
 | `contract/CHANGELOG.md` | 形状变更日志（给人看：改了什么、客户端要不要动） | 手工维护 |
 
@@ -63,7 +63,7 @@ cd E:\harmonyOS\智能医院客户端\server
 
 | 类别 | 处理 | 例 |
 | --- | --- | --- |
-| 主键/外键/时间戳字段 | **置 0** | `id`、`appointment_id`、`department_id`、`created_at`、`server_time`、`captured_at`、`seq_no`… |
+| 主键/外键/时间戳字段 | **置 0** | `id`、`appointment_id`、`department_id`、`created_at`、`server_time`、`captured_at`、`seq_no`、`operator_user_id`… |
 | 令牌/会话 id 字段 | 占位符 | `<token>`、`<session_id>`、`<request_id>`、`<client_token>` |
 | **文本里的**会话 id（如 SSE 帧内嵌 JSON） | 正则替换为 `<session_id>` | 否则 `previsit-stream-sse-200` 每次都变 |
 | 文本里的日期 / 手机号 / 长数字 | `<date>` / `<phone>` / `<N>` | 错误消息里回显的参数 |
@@ -72,9 +72,17 @@ cd E:\harmonyOS\智能医院客户端\server
 | 键顺序 | **排序**（`To-CanonicalJson`，非 `ConvertTo-Json`） | 保证 diff 可读、跨 PS 版本一致 |
 
 **volatile 逃生口**：极少数样例的内容依赖整库状态（当前只有 `admin-users-page-clamped-200` 的
-`data.items` / `data.count` / `data.total`），在样例文件的 `volatile` 数组里登记路径，值写成 `"<volatile>"`；
-校验器遇到该占位符**跳过**校验。它只用来表达"这条形状有意义、内容没意义"，
+`data.items` / `data.count` / `data.total`），在样例文件的 `volatile` 数组里登记路径，导出机会把这些路径的值
+写成 `"<volatile>"`；校验器遇到该占位符**跳过**校验。它只用来表达"这条形状有意义、内容没意义"，
 **不允许**用它掩盖真实的不稳定。
+
+> ⚠ **路径坐标**：`volatile` 里的路径相对**信封体**（`response.body`），和 `schema-map.json` 的
+> `body`/`data` 靶位同一套 —— 所以 `data.items` 指 `body.data.items`。
+> ⚠ **两条防呆（都是踩过坑之后加的）**：① 导出机解析不到某条 volatile 路径时**直接失败**（不静默跳过）；
+> ② 门禁会断言"声明的 volatile 路径在文件里**确实是** `"<volatile>"`"。
+> 没有这两条时，一条"声明了 volatile 但导出机其实没替换"的样例会在**别的脚本改了库之后**随机假红
+> （2026-10-15 实测：`final-verify` 里 `contract-check` 红在 `admin-users-page-clamped-200`，
+> 而单独跑它却是绿的 —— 典型的"环境相关假红"）。
 
 ## 4. 新增一条样例的步骤
 
@@ -89,7 +97,8 @@ cd E:\harmonyOS\智能医院客户端\server
 `server/tests/json-schema-lite.ps1`（不依赖 PS7 的 `Test-Json`，PS 5.1 与 PS7 行为一致）支持：
 
 `type`（字符串或数组）/ `required` / `properties` / `additionalProperties: false` /
-`items` / `enum` / `const` / `minimum` / `maximum` / `minLength` / `maxLength` / `title` / `description`。
+`items` / `enum` / `const` / `minimum` / `maximum` / `minLength` / `maxLength` /
+`minItems` / `maxItems` / `pattern`（.NET 正则，2 秒超时）/ `title` / `description`。
 
 ⚠ **遇到不认识的关键字直接 throw**，不静默跳过 —— 否则写错的 Schema 会假装在校验。
 

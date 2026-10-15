@@ -13,7 +13,7 @@
       "ok": false,
       "error": {
         "code": "FORBIDDEN_ROLE",
-        "message": "角色 doctor 无权执行 manage_schedule"
+        "message": "角色 doctor 无权执行 manage_record_revision"
       }
     }
   }

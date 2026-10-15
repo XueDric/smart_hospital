@@ -93,8 +93,97 @@ func medicalRecordJson(m: MedicalRecord, includeSections: Bool): JsonObject {
     return o
 }
 
-/* 接诊队列里的一条（挂号单 + 该单的病历进度）。 */
-func visitQueueItemJson(a: BookingResult, rec: ?MedicalRecord, previsitReady: Bool): JsonObject {
+/*
+ * ★ 2026-10-15（改进 3）：修订历史的三种出站形状。
+ *
+ * ⚠ 列表项**不带正文**、详情才带 —— 一次就诊可能有几十版，
+ *   列表带正文会让"打开版本抽屉"变成一次几 MB 的响应
+ *   （与"病历列表不给正文"同一条纪律，见 `revisions()` 的注释）。
+ * ⚠ 详情里的 `sections` 与 `medicalRecordJson(...).sections` **同形状**
+ *   （key/label/value/max_len）：客户端已经写好了渲染七段的那段代码，
+ *   换一个形状就得再写一遍 —— 而"同一份数据两种形状"是两端不一致的高发地。
+ */
+func revisionItemJson(r: MedicalRecordRevision): JsonObject {
+    let o = JsonObject()
+    o.put("version", JsonInt(r.version))
+    o.put("status", JsonString(r.status))
+    o.put("operation", JsonString(r.operation))
+    o.put("reason", JsonString(r.reason))
+    o.put("operator_user_id", JsonInt(r.operatorUserId))
+    /*
+     * ⚠ `operator_role` 可能是**空串**：存量病历补写的那一版没有这个历史信息
+     *   （迁移时只有 `updated_by`）。空串对客户端是"未知"，不是"没有角色"。
+     */
+    o.put("operator_role", JsonString(r.operatorRole))
+    o.put("created_at", JsonInt(r.createdAt))
+    return o
+}
+
+/* 某一版的详情（带正文）。 */
+func revisionDetailJson(r: MedicalRecordRevision): JsonObject {
+    let o = revisionItemJson(r)
+    o.put("record_id", JsonInt(r.recordId))
+    o.put("appointment_id", JsonInt(r.appointmentId))
+    let vals = emrSectionValues(r.sectionsJson)
+    let arr = ArrayList<JsonValue>()
+    for (s in emrSections()) {
+        var text = ""
+        match (vals.get(s.key)) {
+            case Some(v) => text = v
+            case None => ()
+        }
+        let e = JsonObject()
+        e.put("key", JsonString(s.key))
+        e.put("label", JsonString(s.label))
+        e.put("value", JsonString(text))
+        e.put("max_len", JsonInt(s.maxLen))
+        arr.add(e)
+    }
+    o.put("sections", JsonArray(arr.toArray()))
+    return o
+}
+
+/* 两版的逐段对比（七段都在、顺序 = `emrSections()` 的临床顺序）。 */
+func revisionDiffJson(left: MedicalRecordRevision, right: MedicalRecordRevision): JsonObject {
+    let o = JsonObject()
+    o.put("appointment_id", JsonInt(right.appointmentId))
+    o.put("left", revisionItemJson(left))
+    o.put("right", revisionItemJson(right))
+    o.put("status_changed", JsonBool(left.status != right.status))
+    let arr = ArrayList<JsonValue>()
+    var changed: Int64 = 0
+    for (row in emrDiffRows(emrSectionValues(left.sectionsJson),
+                            emrSectionValues(right.sectionsJson))) {
+        let e = JsonObject()
+        e.put("key", JsonString(row.key))
+        e.put("label", JsonString(row.label))
+        e.put("changed", JsonBool(row.changed))
+        e.put("left", JsonString(row.before))
+        e.put("right", JsonString(row.after))
+        if (row.changed) {
+            changed = changed + 1
+        }
+        arr.add(e)
+    }
+    o.put("changed_count", JsonInt(changed))
+    o.put("sections", JsonArray(arr.toArray()))
+    return o
+}
+
+/* 解锁理由（请求体 `{"reason": "…"}`）；缺字段/类型不对 ⇒ 空串（交给 emrReasonValid 判 400）。 */
+func emrReasonFromBody(ctx: Context): String {
+    let o = bodyObj(ctx)
+    match (o.get("reason")) {
+        case Some(v) =>
+            if (v is JsonString) {
+                return v.asString().getValue()
+            }
+            return ""
+        case None => return ""
+    }
+}
+
+/* 接诊队列里的一条（挂号单 + 该单的病历进度）。 */func visitQueueItemJson(a: BookingResult, rec: ?MedicalRecord, previsitReady: Bool): JsonObject {
     let o = JsonObject()
     o.put("appointment_id", JsonInt(a.appointmentId))
     o.put("patient_id", JsonInt(a.patientId))
@@ -186,10 +275,17 @@ func visitPrevisitJson(s: PrevisitSession, bound: Bool): JsonObject {
  *     · 已锁定                  ⇒ 409 EMR_LOCKED（**状态冲突**，不是输入错误；
  *                                  409 才能让客户端区分"改不了"与"写错了"）
  *     · 预约不存在 / 不属于我   ⇒ 404（**不区分 403**：区分开就是枚举 oracle）
+ *     · 解锁理由不合法          ⇒ 400 VALIDATION_FAILED（★ 改进 3 新增：
+ *                                  理由缺失/过短与"字段填错"同类 —— 是**可以改**的输入问题，
+ *                                  不是状态冲突；给 409 会让客户端以为"重试就好"）
  */
 func emrThrowOnFailure(out: EmrWriteOutcome, what: String): Unit {
     if (out.ok) {
         return
+    }
+    if (out.badReason) {
+        throw apiErrorMsg("VALIDATION_FAILED",
+                          "${what}：解锁必须填写理由（${EMR_REASON_MIN}-${EMR_REASON_MAX} 字，例如「患者要求补充过敏史」）")
     }
     if (out.noSuchAppointment) {
         throw apiErrorMsg("APPOINTMENT_NOT_FOUND", "${what}：挂号单不存在或不属于你")
@@ -504,45 +600,172 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
         if (visit.findForDoctor(id, p.doctorId).isNone()) {
             throw apiErrorMsg("APPOINTMENT_NOT_FOUND", "挂号单不存在或不属于你")
         }
-        let out = emr.lock(id, hNowEpoch(), p.userId)
+        let out = emr.lock(id, hNowEpoch(), p.userId, roleName(p.role))
         emrThrowOnFailure(out, "提交病历")
         let locked = emr.findByAppointment(id).getOrThrow()
-        sendOk(ctx, medicalRecordJson(locked, true))
+        let o = medicalRecordJson(locked, true)
+        /*
+         * ★ 改进 3：本次定稿落下的版本号（前端用它做"已生成第 N 版"的提示）。
+         *   ⚠ `0` = **审计行没写上**（`writeRevision` 两次都被唯一键/连接问题挡下），
+         *     此时病历**已经锁定**（业务动作成功）—— 客户端不该把这当失败重试锁，
+         *     重试会走幂等路径并**自愈**那一版（`ensureLockRevision`）。
+         *     契约里 `0` 必须被理解为"版本号未知/待补"，不是"没有版本"。
+         */
+        o.put("revision_version", JsonInt(out.revisionVersion))
+        sendOk(ctx, o)
     })
 
     /*
      * POST /api/v1/doctor/visits/:id/record/reopen —— 解锁（**仅管理员**）。
      *
      * ⚠ 这是"修订通道"：管理员**不能写病历**（见 can() 的说明），
-     *   但需要能解锁让医生改。所以这条端点要求 `CancelAny` 这类
-     *   "管理动作"权限 —— 这里用 `ViewDashboard` 不合适，故单独查角色：
-     *   ⚠⚠ 这是本文件里**唯一**一处直接看角色，理由与处置都写在下面。
+     *   但需要能解锁让医生改。
+     *
+     * ★ 2026-10-15（改进 3）两处收紧：
+     *   ① 权限从"借 `ManageSchedule`"改为**语义动作** `ManageRecordRevision`
+     *      —— 授权结果不变（两者今天都是 admin-only），但将来能只放开其中一个
+     *      （见 `Action` 枚举里的理由）。
+     *   ② **必须给理由**（`{"reason": "…"}`，4-255 字）：解锁是推翻一份
+     *      已经定稿的医疗文书，事由必须留档（理由会落进修订历史，
+     *      与"解锁前那一版"的内容一起成为审计证据）。
+     *      ⇒ 没有理由的解锁现在是 **400**，而不是静默生效。
      */
     r.post("/api/v1/doctor/visits/:id/record/reopen", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
-        /*
-         * ⚠ 为什么这里不写 `requireCan(p.role, 某个 Action)`：
-         *   权限矩阵里**没有**"解锁病历"这个动作，而它是管理员专属的写操作。
-         *   两条路：① 加一个 Action（那要动权限矩阵与它的测试）；
-         *           ② 复用已有的管理员动作。
-         *   我选 ②：复用 `ManageSchedule`（当前= 管理员专属的管理动作），
-         *   并在这里显式说明 —— 而不是新增一个只被一个端点用到的 Action
-         *   （那会让权限矩阵膨胀，而矩阵的价值在于"能一眼看全"）。
-         *   📌 若将来解锁需要独立授权（例如"只有医务科能解锁"），
-         *     再把它提升为独立 Action —— 那时它就有了第二个用处。
-         */
-        requireCan(p.role, Action.ManageSchedule)
+        requireCan(p.role, Action.ManageRecordRevision)
         let id = parseInt64Or(ctx.paramOr("id", "0"), 0)
         if (id <= 0) {
             throw apiErrorMsg("VALIDATION_FAILED", "挂号单 id 必须是正整数")
         }
-        let out = emr.reopen(id, hNowEpoch(), p.userId)
+        let out = emr.reopen(id, hNowEpoch(), p.userId, roleName(p.role), emrReasonFromBody(ctx))
         emrThrowOnFailure(out, "解锁病历")
         let m = emr.findByAppointment(id)
         if (m.isNone()) {
             throw apiErrorMsg("APPOINTMENT_NOT_FOUND", "该挂号单没有已锁定的病历可解锁")
         }
-        sendOk(ctx, medicalRecordJson(m.getOrThrow(), true))
+        let o = medicalRecordJson(m.getOrThrow(), true)
+        /* ★ 本次解锁落下的版本号（= 解锁前那一版；0 = 审计写入失败，病历已解锁）。 */
+        o.put("revision_version", JsonInt(out.revisionVersion))
+        sendOk(ctx, o)
+    })
+
+    /* ========== 二·补、病历修订历史（改进 3） ========== */
+
+    /*
+     * 修订历史的读取权限：**医生读自己接诊的单，管理员读任何单，患者没有这条路径**。
+     *
+     * 顺序有意义：
+     *   ① 管理员（`ManageRecordRevision`）⇒ **不受"这是谁的号"限制**：
+     *      解锁本来就是他做的，而管理员账号没有 `doctorId` ——
+     *      若也要求 `findForDoctor` 命中，这条审计路径对管理员永远 404。
+     *   ② 其它角色 ⇒ 必须 `QueryOwnMedicalRecord`（医生/患者都有这条动作），
+     *      再确认"这张单是**我的**"：不匹配一律 **404**（与写病历同一口径 ——
+     *      区分 403 就是"哪些挂号单存在"的枚举 oracle）。
+     *      ⇒ 患者实际走到 ② 会被归属校验挡下（他的 `doctorId` 是 0）⇒ 404。
+     * ⚠ 为什么**不给患者**看修订历史：这里含 `reason`（例如"录入错误，解锁重写"）
+     *   与 `operator_role` 等内部审计信息。患者要的"这份病历定稿过没有"
+     *   由病历接口的 `status` 表达；把内部审计话术直接给患者，
+     *   等于让患者替我们做质控解释。
+     */
+    func requireRevisionRead(p: Principal, id: Int64, visit: VisitRepo): Unit {
+        if (can(p.role, Action.ManageRecordRevision)) {
+            return
+        }
+        requireCan(p.role, Action.QueryOwnMedicalRecord)
+        if (visit.findForDoctor(id, p.doctorId).isNone()) {
+            throw apiErrorMsg("APPOINTMENT_NOT_FOUND", "挂号单不存在或不属于你")
+        }
+    }
+
+    /*
+     * GET /api/v1/doctor/visits/:id/record/revisions —— 该单的全部修订（**升序**）。
+     *
+     * ⚠ 顺序是 `version ASC`（v1 在前），见 `MedicalRecordRepo.revisions()` 的注释：
+     *   "与上一版对比"要的是 `version - 1`，倒序会让"上一版"指向未来。
+     *   客户端要"最新在上"自己 reverse 一行即可。
+     * ⚠ 列表**不带正文**（版本/操作/理由/操作者/时间）。
+     */
+    r.get("/api/v1/doctor/visits/:id/record/revisions", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        let id = parseInt64Or(ctx.paramOr("id", "0"), 0)
+        if (id <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "挂号单 id 必须是正整数")
+        }
+        requireRevisionRead(p, id, visit)
+        let rows = emr.revisions(id)
+        let arr = ArrayList<JsonValue>()
+        for (r in rows) {
+            arr.add(revisionItemJson(r))
+        }
+        let o = JsonObject()
+        o.put("appointment_id", JsonInt(id))
+        o.put("items", JsonArray(arr.toArray()))
+        o.put("count", JsonInt(rows.size))
+        sendOk(ctx, o)
+    })
+
+    /*
+     * GET /api/v1/doctor/visits/:id/record/revisions/:version —— 某一版（带正文）。
+     *
+     * ⚠ 没有修订行 ⇒ 404 `REVISION_NOT_FOUND`（**不是**空对象）：
+     *   空对象会让客户端渲染出一个"七段全空的版本"，看起来像病历被清空了。
+     * ⚠ 版本号从 **1** 开始（`0`/负数 ⇒ 400）：`version` 是资源标识，不是偏移量。
+     */
+    r.get("/api/v1/doctor/visits/:id/record/revisions/:version", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        let id = parseInt64Or(ctx.paramOr("id", "0"), 0)
+        if (id <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "挂号单 id 必须是正整数")
+        }
+        let ver = parseInt64Or(ctx.paramOr("version", "0"), 0)
+        if (ver <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "版本号必须是正整数（第一版是 1）")
+        }
+        requireRevisionRead(p, id, visit)
+        match (emr.revisionAt(id, ver)) {
+            case Some(r) => sendOk(ctx, revisionDetailJson(r))
+            case None => throw apiErrorMsg("REVISION_NOT_FOUND", "该病历没有这一版修订")
+        }
+    })
+
+    /*
+     * GET /api/v1/doctor/visits/:id/record/revisions/:version/diff?against=N
+     *   —— 某一版与另一版的逐段差异（`against` 默认 = **上一版**）。
+     *
+     * ⚠ 默认"上一版"是"这次改了什么"的默认诉求；但 **v1 没有上一版**，
+     *   此时默认值会算成 0 ⇒ 400 并要求显式给 `against`。
+     *   刻意**不**退化成"拿 v1 跟自己比"：那会返回"一切未变"，
+     *   是一个**看起来成功**的错答案（比报错坏得多）。
+     * ⚠ `against == version` 也拒（400）：与自己对比同样是那个假答案。
+     */
+    r.get("/api/v1/doctor/visits/:id/record/revisions/:version/diff", { ctx: Context, _: () -> Unit =>
+        let p = principalOf(ctx, gate, auth)
+        let id = parseInt64Or(ctx.paramOr("id", "0"), 0)
+        if (id <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "挂号单 id 必须是正整数")
+        }
+        let ver = parseInt64Or(ctx.paramOr("version", "0"), 0)
+        if (ver <= 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "版本号必须是正整数（第一版是 1）")
+        }
+        let againstText = ctx.queryParamOr("against", "").trimAscii()
+        var against = ver - 1
+        if (againstText.size > 0) {
+            against = parseInt64Or(againstText, -1)
+        }
+        if (against <= 0 || against == ver) {
+            throw apiErrorMsg("VALIDATION_FAILED",
+                              "against 必须是**另一个**版本号（第一版没有上一版，请显式指定要与哪一版对比）")
+        }
+        requireRevisionRead(p, id, visit)
+        match (emr.revisionAt(id, ver)) {
+            case Some(right) =>
+                match (emr.revisionAt(id, against)) {
+                    case Some(left) => sendOk(ctx, revisionDiffJson(left, right))
+                    case None => throw apiErrorMsg("REVISION_NOT_FOUND", "要对比的那一版不存在")
+                }
+            case None => throw apiErrorMsg("REVISION_NOT_FOUND", "该病历没有这一版修订")
+        }
     })
 
     /* ========== 三、电子病历（患者侧：只读自己的） ========== */

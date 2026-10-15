@@ -379,7 +379,18 @@ func selftest(): Int64 {
      * 📌 为什么每次都真的加一类、而不是"归到最接近的那类"：
      *   分类的意义就是**让纪律可见**。硬塞进别类 = 那条纪律从此没人看得到。
      */
-    let emrTables = 1       // medical_record（临床数据，直接 SQL，MedicalRecordRepo 独占）
+    /*
+     * ★ 2026-10-15（改进 3）：病历域由 1 张变 **2 张** —— 新增 `medical_record_revision`。
+     *   为什么**合进这类而不是像 P4 那样再开一类**：
+     *     主类依据是"**留存纪律**是否相同"（见上面 kbTables 的注释）。
+     *     修订历史与病历同为**临床数据**：长期留、不设 TTL、由 `MedicalRecordRepo` 独占写。
+     *     它不属"统计数据"（triage_stat 那种只存计数、带 TTL），也不属知识库/公告。
+     *   ⚠ 唯一的差别是"病历主体可改（锁定/解锁），修订行不可变" ——
+     *     但那是**同一份文书内部**的关系，不是两种数据纪律。
+     *   📌 这条分类是**第五次**因为加表而改动（前四次见上面注释），
+     *     而"改这里"正是断言存在的目的：漏改就立刻红。
+     */
+    let emrTables = 2       // medical_record / medical_record_revision（临床数据，直接 SQL，MedicalRecordRepo 独占）
     let statTables = 1      // triage_stat（聚合统计，只存计数，带 TTL）
     /*
      * ★ P5 新增两张表，**合成一类**（知识库域）：
