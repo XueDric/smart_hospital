@@ -7,7 +7,14 @@ import {
   asRecord,
   asString
 } from 'common-core';
-import { EmrRecord, EmrSection, LoginResult, VisitItem } from '../model/DoctorModels';
+import {
+  EmrRecord,
+  EmrSection,
+  LoginResult,
+  PrevisitSlot,
+  PrevisitSummary,
+  VisitItem
+} from '../model/DoctorModels';
 import { MockDoctorRepository } from './MockDoctorRepository';
 
 export class DoctorRepository {
@@ -110,6 +117,43 @@ export class DoctorRepository {
     return this.parseRecord(response);
   }
 
+  async logout(): Promise<void> {
+    if (ApiConfig.isMock()) {
+      return MockDoctorRepository.logout();
+    }
+    const body: Record<string, Object> = {};
+    await HttpClient.getInstance().post('/api/v1/auth/logout', body);
+  }
+
+  // 读该单的预问诊摘要（服务端 2026-10-14 新增；仅医生，且必须是「我的号」）。
+  async getPrevisit(appointmentId: number): Promise<PrevisitSummary> {
+    if (ApiConfig.isMock()) {
+      return MockDoctorRepository.getPrevisit(appointmentId);
+    }
+    const response = asRecord(await HttpClient.getInstance()
+      .get(`/api/v1/doctor/visits/${appointmentId}/previsit`));
+    const result = new PrevisitSummary();
+    result.sessionId = asString(response['session_id']);
+    result.bound = asBool(response['bound']);
+    result.turn = asNumber(response['turn']);
+    result.completed = asBool(response['completed']);
+    result.filled = asNumber(response['filled']);
+    result.total = asNumber(response['total'], 6);
+    result.capturedAt = asNumber(response['captured_at']);
+    const sections: PrevisitSlot[] = [];
+    for (const item of asArray(response['sections'])) {
+      const source = asRecord(item);
+      const slot = new PrevisitSlot();
+      slot.key = asString(source['key']);
+      slot.label = asString(source['label']);
+      slot.value = asString(source['value']);
+      slot.maxLen = asNumber(source['max_len']);
+      sections.push(slot);
+    }
+    result.sections = sections;
+    return result;
+  }
+
   private parseVisit(response: Record<string, Object>): VisitItem {
     const result = new VisitItem();
     result.appointmentId = asNumber(response['appointment_id']);
@@ -120,6 +164,8 @@ export class DoctorRepository {
     result.period = asString(response['period']);
     result.seqNo = asNumber(response['seq_no']);
     result.status = asString(response['status']);
+    result.visitStatus = asString(response['visit_status'], result.status);
+    result.previsitReady = asBool(response['previsit_ready']);
     result.recordId = asNumber(response['record_id']);
     result.recordStatus = asString(response['record_status'], 'none');
     result.recordFilled = asNumber(response['record_filled']);
@@ -146,6 +192,17 @@ export class DoctorRepository {
       missing.push(asString(value));
     }
     result.missingRequired = missing;
+    // 预问诊来源痕迹：只在服务端确实下发该字段时才解析（缺失 = 没有预填过）。
+    const previsitRef = asRecord(response['previsit_ref']);
+    if (Object.keys(previsitRef).length > 0) {
+      result.previsitRefSessionId = asString(previsitRef['session_id']);
+      result.previsitRefAt = asNumber(previsitRef['at']);
+      const refSections: string[] = [];
+      for (const value of asArray(previsitRef['sections'])) {
+        refSections.push(asString(value));
+      }
+      result.previsitRefSections = refSections;
+    }
     const sections: EmrSection[] = [];
     for (const item of asArray(response['sections'])) {
       const source = asRecord(item);

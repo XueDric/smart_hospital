@@ -1,5 +1,12 @@
 import { ApiError, ErrorCode } from 'common-core';
-import { EmrRecord, EmrSection, LoginResult, VisitItem } from '../model/DoctorModels';
+import {
+  EmrRecord,
+  EmrSection,
+  LoginResult,
+  PrevisitSlot,
+  PrevisitSummary,
+  VisitItem
+} from '../model/DoctorModels';
 
 class MockDoctorState {
   static visits: VisitItem[] = [];
@@ -20,6 +27,11 @@ class MockDoctorState {
       MockDoctorState.visit(604, 104, date, 'AM', 3, 'done', 'locked', 7)
     ];
     MockDoctorState.records[601] = MockDoctorState.draft(601, 101);
+    // 601 这单演示「患者已交预问诊」：队列徽标 + 病历页「患者自述」卡片/角标。
+    MockDoctorState.visits[0].previsitReady = true;
+    MockDoctorState.records[601].previsitRefSessionId = 'mock-previsit-601';
+    MockDoctorState.records[601].previsitRefSections = ['chief_complaint', 'present_illness'];
+    MockDoctorState.records[601].previsitRefAt = Math.floor(Date.now() / 1000) - 1800;
   }
 
   private static visit(appointmentId: number, patientId: number, visitDate: string, period: string,
@@ -131,6 +143,43 @@ export class MockDoctorRepository {
     MockDoctorState.initialize();
     const item = MockDoctorRepository.find(appointmentId);
     item.status = 'no_show';
+  }
+
+  static async logout(): Promise<void> {
+    // Mock 无服务端会话，登出即本地清理即可。
+  }
+
+  static async getPrevisit(appointmentId: number): Promise<PrevisitSummary> {
+    MockDoctorState.initialize();
+    if (appointmentId !== 601) {
+      throw new ApiError('PREVISIT_NOT_FOUND', '该患者没有可用的预问诊摘要', 404);
+    }
+    const result = new PrevisitSummary();
+    result.sessionId = 'mock-previsit-601';
+    result.bound = true;
+    result.turn = 6;
+    result.completed = true;
+    result.filled = 6;
+    result.total = 6;
+    result.capturedAt = Math.floor(Date.now() / 1000) - 1800;
+    result.sections = [
+      MockDoctorRepository.previsitSlot('chief', '主诉', '咳嗽伴咽痛 3 天', 200),
+      MockDoctorRepository.previsitSlot('duration', '病程', '3 天', 60),
+      MockDoctorRepository.previsitSlot('severity', '程度', '影响睡眠', 60),
+      MockDoctorRepository.previsitSlot('associated', '伴随', '发热、咽干', 200),
+      MockDoctorRepository.previsitSlot('history', '既往史', '无', 300),
+      MockDoctorRepository.previsitSlot('allergy', '过敏史', '青霉素过敏', 200)
+    ];
+    return result;
+  }
+
+  private static previsitSlot(key: string, label: string, value: string, maxLen: number): PrevisitSlot {
+    const result = new PrevisitSlot();
+    result.key = key;
+    result.label = label;
+    result.value = value;
+    result.maxLen = maxLen;
+    return result;
   }
 
   static async getRecord(appointmentId: number): Promise<EmrRecord> {

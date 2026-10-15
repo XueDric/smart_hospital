@@ -25,6 +25,7 @@ export struct VisitQueuePage {
   @Local filter: string = 'ALL';
   @Local notice: string = '';
   @Local noticeTone: string = 'info';
+  @Local loggingOut: boolean = false;
 
   aboutToAppear(): void {
     this.load();
@@ -109,9 +110,24 @@ export struct VisitQueuePage {
     return result;
   }
 
-  private logout(): void {
-    SessionStore.clearLogin();
-    AppRouter.getInstance().reset(RouteName.DOCTOR_LOGIN);
+  private async logout(): Promise<void> {
+    if (this.loggingOut) {
+      return;
+    }
+    this.loggingOut = true;
+    this.notice = '';
+    try {
+      await this.repository.logout();
+      SessionStore.clearLogin();
+      AppRouter.getInstance().reset(RouteName.DOCTOR_LOGIN);
+    } catch (error) {
+      // 网络注销未确认：本地身份照常清除（设备安全优先），但如实提示，
+      // 不宣称服务端已注销。下次任何鉴权请求会 401 并被送回登录页。
+      SessionStore.clearLogin();
+      this.notice = '服务端注销未确认（网络异常），本地登录已清除';
+      this.noticeTone = 'error';
+      this.loggingOut = false;
+    }
   }
 
   build() {
@@ -159,6 +175,16 @@ export struct VisitQueuePage {
                   }
                   .layoutWeight(1)
                   .alignItems(HorizontalAlign.Start)
+
+                  if (item.previsitReady) {
+                    Text('预问诊')
+                      .fontSize(AppText.CAPTION)
+                      .fontColor(AppColor.INFO)
+                      .backgroundColor(AppColor.INFO_SOFT)
+                      .borderRadius(6)
+                      .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+                      .margin({ right: AppSize.GAP })
+                  }
 
                   StatusChip({
                     text: appointmentStatusText(item.status),
