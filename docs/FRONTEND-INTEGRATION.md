@@ -1241,6 +1241,11 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 姓名/性别按 `patient_id` 从 `patient` 表**一次批量**查回（`VisitRepo.patientBriefs`），
 不是每行打一次库；查不到患者时给**空串**（形状不随数据在不在变化）。
 
+> ⚠ **空串是契约允许的合法值**，Schema 刻意**不设** `minLength`（`contract/CHANGELOG.md` 2026-10-16 条目）：
+> `appointment.patient_id` **没有外键**，孤儿引用是真实可达的形态（患者档案迁移 / 历史数据带进来的 id）。
+> 客户端拿到空串要回退显示 `#<patient_id>`，**不要**当成解析失败或服务端故障；
+> 也**不要**指望用「字段缺席 vs 空串」区分「有没有这个患者」—— 服务端不省字段，两种情况都是空串。
+
 > 同一天，医生侧另外两条读接口也补了这两个字段（都是「医生认人」的落点）：
 > - `GET /api/v1/doctor/visits/:id/record`（§6.2；**空病历骨架也带**：那时姓名取自**挂号单**，
 >   因为骨架的 `patient_id` 是 0）
@@ -1416,7 +1421,7 @@ POST /api/v1/doctor/visits/:id/record/reopen
 
 **每一份都带 `patient_name` / `patient_gender`（2026-10-16 增）**：名字来自 `patient` 表，
 按 `patient_id` **一次批量**查回（不是每份记录打一次库）。查不到患者时服务端给**空串**，
-不省字段 —— 响应形状不随数据在不在变化。
+不省字段 —— 响应形状不随数据在不在变化。**空串是合法值**（Schema 不设 `minLength`，理由见 §5.28.5 的 ⚠）。
 
 ```json
 { "ok": true, "data": {

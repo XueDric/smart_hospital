@@ -932,6 +932,12 @@ public func acP4_7(runner: TestRunner, db: DbBackend): Unit {
          *   `catch (e: Exception)` 吞掉**所有**异常。真正那条路径只有真并发才走得到
          *   （验收里造不出确定性竞态），所以这里直接钉住它依赖的判据函数：
          *   库故障/空消息 ⇒ None（原样上抛），重复键 ⇒ Some（转成冲突）。
+         *
+         * 📌 2026-10-16（复核 N3）：那条**真实路径**已由 HTTP 层门禁端到端覆盖 ——
+         *   `server/tests/emr-check.ps1` 的 `[8] 真并发` 段用 8 轮 × 6 个独立 curl 进程
+         *   同时首建同一张单的病历（实测 8/8 轮撞上），断言"任何 409 都必须带
+         *   error.fields、每张单终态恰好 1 行、存下来的必须是某个赢家的原文"。
+         *   本文件这里仍是单线程**判据**级断言，两者不重复：一个钉真值表，一个钉端到端。
          */
         runner.check("★★ ⑩ 重复键异常被识别（`Duplicate entry` 前缀）",
                      baseDuplicateMessage(Exception("Duplicate entry '7001' for key 'uk_medical_record_appointment'")).isSome())

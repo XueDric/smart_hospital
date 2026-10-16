@@ -10,6 +10,7 @@
 #   [5] 患者侧：只能读自己的、且**读不到草稿**
 #   [6] 归属与越权：一律 404（不是 403 —— 403 是枚举 oracle）
 #   [7] 预问诊衔接：问诊单 → 病历预填
+#   [8] 真并发首建同一张单：竞态下的 409 也必须带 error.fields（2026-10-16 复核 N3）
 #
 # 用法：
 #   .\emr-check.ps1 -Base http://127.0.0.1:8091 -AdminPw <口令> -Dsn <DSN>
@@ -177,6 +178,20 @@ Check "★★ 患者**不能**写病历" ($r.Http -eq 403) ("HTTP $($r.Http)")
 # ── [2] 接诊队列
 Write-Host ""
 Write-Host "[2] 接诊队列"
+# ★★ 2026-10-16（复核 N1）：再造一张**孤儿引用**挂号单 —— `patient_id` 在 patient 表里查不到。
+#
+# 为什么必须有这张单：服务端对"查不到患者"给的是**空串**（`http_p4.cj` 的 `putPatientInto`），
+#   而 `appointment.patient_id` **没有外键**（`schema.cj` 里 `FOREIGN KEY|REFERENCES` 命中 0 次）
+#   ⇒ 患者档案迁移/清理/历史导入都会造出这种行，空串是**真实可达**的合法取值。
+#   不造它，队列接口的 patient_name 就永远是真姓名，那条路**一次都跑不到**，
+#   于是 contract schema 里写 `minLength: 1` 也永远不红（样例是从真库导的，复核 N1 说的就是这个）。
+#   ⚠ 行数必须自己校验：`Invoke-MySqlFile` 只在"SQL 报错"时抛出，"文件没落盘"它不报（见 [7] 的坑）。
+$orphanSql = @"
+INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (700005, 700001, 700999, 700001, 700001, '2026-12-25', 'PM', 5, 'booked', 1, 0);
+"@
+SqlFile 'orphan' $orphanSql
+$orphanCnt = RowCount "校验孤儿引用已插入" "SELECT COUNT(*) FROM appointment a LEFT JOIN patient p ON p.id = a.patient_id WHERE a.id = 700005 AND p.id IS NULL"
+Check "夹具：孤儿引用挂号单已落库（patient_id=700999，无对应患者；实得 $orphanCnt 行）" ("$orphanCnt" -eq '1')
 $r = Req 'queue' 'GET' '/api/v1/doctor/visits' @("Authorization: Bearer $docTok") $null
 Check "医生读队列 → 200" ($r.Http -eq 200) ("HTTP $($r.Http)")
 $q = $r.Body | ConvertFrom-Json
@@ -188,6 +203,20 @@ Check "队列项带病历进度（record_status）" ($null -ne ($q.data.items | 
 $qItem = $q.data.items | Where-Object { $_.appointment_id -eq 700001 } | Select-Object -First 1
 Check "★★ 队列项带 patient_name（实得「$($qItem.patient_name)」）" ($qItem.patient_name -eq 'P4端到端患者')
 Check "★★ 队列项带 patient_gender（实得「$($qItem.patient_gender)」）" ($qItem.patient_gender -eq 'M')
+# ★★ 复核 N1：孤儿引用 ⇒ 查不到患者 ⇒ **空串**（不是省字段、更不是 500/报错）。
+#   断言刻意写 `$null -ne $oItem.patient_name -and $oItem.patient_name -eq ''`：
+#   若服务端改成"查不到就省字段"，属性是 $null，`$null -eq ''` 为假 ⇒ 这条会红。
+#   也就是说这条同时钉住了「形状不随数据在不在变化」这条纪律（省字段就违反了 required）。
+$oItem = $q.data.items | Where-Object { $_.appointment_id -eq 700005 } | Select-Object -First 1
+if ($null -eq $oItem) { $oShape = '<队列里没有这单>' }
+elseif ($null -eq $oItem.patient_name) { $oShape = '<字段被省掉（null）>' }
+elseif ($oItem.patient_name -eq '') { $oShape = '<空串>' }
+else { $oShape = "「$($oItem.patient_name)」" }
+Check "★★ 孤儿引用：该单仍出现在队列里（查不到患者不影响这单进队列）" ($null -ne $oItem)
+Check "★★ 孤儿引用：patient_name 是空串而不是省字段（实得 $oShape）" `
+      ($null -ne $oItem -and $null -ne $oItem.patient_name -and $oItem.patient_name -eq '')
+Check "★★ 孤儿引用：patient_gender 同样是空串（实得「$(if ($null -eq $oItem) { '<无>' } else { $oItem.patient_gender } )」）" `
+      ($null -ne $oItem -and $null -ne $oItem.patient_gender -and $oItem.patient_gender -eq '')
 
 # ── [3] 状态机
 Write-Host ""
@@ -314,6 +343,125 @@ $r = Req 'prefill2' 'PUT' '/api/v1/doctor/visits/700004/record' @("Authorization
      ('{"use_intake_session":"' + $sid + '","chief_complaint":"医生改过的主诉"}')
 Check "★★ 已有病历时再带 session **不覆盖**已写内容（医生判断优先）" `
       ((($r.Body | ConvertFrom-Json).data.sections | Where-Object { $_.key -eq 'chief_complaint' } | Select-Object -First 1).value -eq '医生改过的主诉')
+
+# ── [8] 真并发首建同一张单（2026-10-16 复核 N3）
+#
+# 为什么必须有这一段：问题 1 修完后，`http_p4.cj` 里仍留着一条**故意**不带 `error.fields`
+#   的 EMR_CHANGED 出口（`out.currentUpdatedAt <= 0` 时）—— 契约口径本身没错（拿不到真值就不编），
+#   但它今天只剩**一条**路可达：两个请求几乎同时**首建同一张挂号单**的病历 ⇒ 两边都先读到
+#   "还没有病历"，一个 INSERT 成功、另一个撞唯一键 `uk_record_appointment`，回读时又拿不到当前版本。
+#   仓库自己写着"真正那条路径只有真并发才走得到"（`acceptance_p4.cj`），而验收里钉的是
+#   `baseDuplicateMessage` **这个助手函数**，不是那句 catch 的真实路径；
+#   `stress-booking.ps1` 压的是挂号超卖，也没有"两个请求同时首建一张单的病历"。
+#   ⇒ 这条路径此前没有端到端门禁。本段用**独立进程真并发**补上，断言核心不是"撞没撞上"，
+#     而是**一旦撞上，那个 409 必须带 error.fields**（外加唯一键与不丢更新这两条不变式）。
+#
+# ⚠ 为什么用独立 curl 进程而不是线程：与 `stress-booking.ps1` 同因（本仓通篇没有 spawn），
+#   且进程各自独立 ⇒ 服务端收到的是真的两个并发请求，而不是一个连接上的顺序请求。
+# ⚠ 令牌走 curl 配置文件（`-K`），不上命令行（否则会出现在进程表里被人看到）。
+# ⚠ 载荷用**纯 ASCII**（`race-<轮>-<工>`）：下面要拿库里的值跟"赢家原文"比对，
+#   而 mariadb 客户端在 Windows 上的输出编码不可靠（中文可能变成乱码 ⇒ 假红）。
+Write-Host ""
+Write-Host "[8] 真并发：两个请求同时首建同一张单的病历"
+$raceDir = Join-Path $env:TEMP ("emrrace-" + [Guid]::NewGuid().ToString("N"))
+$null = New-Item -ItemType Directory -Path $raceDir -Force
+$raceRounds = 8
+$raceWorkers = 6
+$raceBadCode = @()
+$raceBadFields = @()
+$raceBadRows = @()
+$raceLost = @()
+$raceWon = 0
+$raceConflict = 0
+$raceRoundsHit = 0
+for ($rd = 1; $rd -le $raceRounds; $rd++) {
+    $raceId = 700100 + $rd
+    $raceSeq = 100 + $rd
+    $raceSql = "INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES ($raceId, 700001, 700002, 700001, 700001, '2026-12-25', 'AM', $raceSeq, 'visiting', 1, 0);"
+    SqlFile ("race" + $rd) $raceSql
+    $racePre = RowCount "竞态单 $raceId 起跑前无病历" "SELECT COUNT(*) FROM medical_record WHERE appointment_id = $raceId"
+    if ("$racePre" -ne '0') {
+        $raceBadRows += "第 $rd 轮：起跑前就已经有 $racePre 行病历（夹具不对，本轮作废）"
+        continue
+    }
+    $procs = @()
+    for ($w = 0; $w -lt $raceWorkers; $w++) {
+        $bodyFile = Join-Path $raceDir ("b$rd-$w.json")
+        # 带 use_intake_session：走"预填"那条更长的路径（医生显式提交的段仍优先 ⇒ 下面的
+        # "存下来的必须是某个赢家的原文"依然有效）
+        $payload = '{"chief_complaint":"race-' + $rd + '-' + $w + '","use_intake_session":"' + $sid + '"}'
+        [System.IO.File]::WriteAllText($bodyFile, $payload, (New-Object System.Text.UTF8Encoding($false)))
+        $cfg = Join-Path $raceDir ("c$rd-$w.cfg")
+        # ⚠⚠ `data` 这一行**必须单独拼**（不能用数组字面量里 `"data = `"@" + …`）：
+        #   实测那样拼出来的是 `data = "@` + 换行 + 路径（PowerShell 把它当成了**here-string**），
+        #   而 curl 报的是 `option -K: error encountered when reading a file` —— 看起来像
+        #   "配置文件读不了"，与真因（配置内容坏了）差着十万八千里，白查半天。
+        #   ⇒ 常量段用**单引号**拼，`@` 旁边不留转义引号，就不可能有这个歧义。
+        $raceData = $bodyFile -replace '\\','/'
+        $lines = @("request = `"PUT`"", "silent", "write-out = `"\n__M__%{http_code}`"",
+                   "header = `"Authorization: Bearer $docTok`"",
+                   "header = `"Content-Type: application/json`"")
+        $lines += ('data = "@' + $raceData + '"')
+        [System.IO.File]::WriteAllText($cfg, ($lines -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
+        $outFile = Join-Path $raceDir ("o$rd-$w.txt")
+        $procs += Start-Process -FilePath "curl.exe" `
+                  -ArgumentList @("-s", "-K", $cfg, "$Base/api/v1/doctor/visits/$raceId/record") `
+                  -RedirectStandardOutput $outFile -NoNewWindow -PassThru
+    }
+    foreach ($pr in $procs) { $pr.WaitForExit() }
+    $hitThisRound = 0
+    $wonThisRound = @()
+    for ($w = 0; $w -lt $raceWorkers; $w++) {
+        $raw = [System.IO.File]::ReadAllText((Join-Path $raceDir ("o$rd-$w.txt")))
+        $code = 0
+        if ($raw -match '__M__(\d+)') { $code = [int]$Matches[1] }
+        $body = ($raw -replace '(?s)\n?__M__\d+\s*$', '')
+        if ($code -eq 200) {
+            $raceWon++
+            $wonThisRound += ("race-" + $rd + "-" + $w)
+        } elseif ($code -eq 409) {
+            $raceConflict++
+            $hitThisRound++
+            $code409 = ''
+            $fUp = 0
+            $fBy = 0
+            try {
+                $j = $body | ConvertFrom-Json
+                $code409 = "$($j.error.code)"
+                if ($null -ne $j.error.fields) {
+                    if ($null -ne $j.error.fields.updated_at) { $fUp = [int64]$j.error.fields.updated_at }
+                    if ($null -ne $j.error.fields.updated_by) { $fBy = [int64]$j.error.fields.updated_by }
+                }
+            } catch { $code409 = "<响应不是合法 JSON：$body>" }
+            if ($code409 -ne 'EMR_CHANGED' -or $fUp -le 0 -or $fBy -le 0) {
+                $raceBadFields += "第 $rd 轮 worker$w：code=$code409 updated_at=$fUp updated_by=$fBy body=$body"
+            }
+        } else {
+            $raceBadCode += "第 $rd 轮 worker$w：HTTP $code（既不是 200 也不是 409）body=$body"
+        }
+    }
+    if ($hitThisRound -gt 0) { $raceRoundsHit++ }
+    $raceRows = RowCount "竞态单 $raceId 终态病历行数" "SELECT COUNT(*) FROM medical_record WHERE appointment_id = $raceId"
+    if ("$raceRows" -ne '1') { $raceBadRows += "第 $rd 轮：终态 $raceRows 行病历（期望恰好 1 行）" }
+    if ($wonThisRound.Count -gt 0) {
+        $raceStored = (RowCount "竞态单 $raceId 存下来的主诉" "SELECT chief_complaint FROM medical_record WHERE appointment_id = $raceId").Trim()
+        $okStored = $false
+        foreach ($wv in $wonThisRound) { if ($raceStored -eq $wv) { $okStored = $true } }
+        if (-not $okStored) { $raceLost += "第 $rd 轮：库里存的是「$raceStored」，但 200 的赢家写的是 $($wonThisRound -join ' / ')" }
+    }
+}
+Write-Host "  竞态实测：$raceRounds 轮 × $raceWorkers 并发 —— 200 共 $raceWon 次、409 共 $raceConflict 次、撞上窗口的轮次 $raceRoundsHit/$raceRounds" -ForegroundColor DarkGray
+Check "★★ 真并发：每个响应都是 200 或 409（没有 5xx、没有 HTTP 0 = 连不上）" ($raceBadCode.Count -eq 0) ($raceBadCode -join ' | ')
+Check "★★ 真并发：**任何** 409 都必须带 error.fields（updated_at / updated_by > 0）" ($raceBadFields.Count -eq 0) ($raceBadFields -join ' | ')
+Check "★★ 真并发：每张单终态**恰好 1 行**病历（唯一键 uk_record_appointment 成立）" ($raceBadRows.Count -eq 0) ($raceBadRows -join ' | ')
+Check "★★ 真并发：库里存下来的段必须是某个赢家的原文（没有半截 / 没被覆盖）" ($raceLost.Count -eq 0) ($raceLost -join ' | ')
+Check "★★ 真并发：至少有一轮真的撞上首建竞态（撞不上说明本用例只跑了一半）" ($raceRoundsHit -gt 0) `
+      "撞上 $raceRoundsHit/$raceRounds 轮（撞不上不是产品缺陷，是本机没凑上那个窗口；但覆盖也就没落到那条 catch 上）"
+# 收尾：删竞态临时目录（**先校验解析后的绝对路径确实在 TEMP 下**，不拿算出来的路径直接删）
+$raceDirFull = [System.IO.Path]::GetFullPath($raceDir)
+if ($raceDirFull.StartsWith([System.IO.Path]::GetFullPath($env:TEMP)) -and (Test-Path $raceDirFull)) {
+    Remove-Item -Recurse -Force $raceDirFull
+}
 
 Write-Host ""
 if ($failed -eq 0) {

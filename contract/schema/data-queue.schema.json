@@ -16,7 +16,7 @@
         "properties": {
           "appointment_id": { "type": "integer" },
           "patient_id": { "type": "integer" },
-          "patient_name": { "type": "string", "minLength": 1, "description": "★ 2026-10-16 增：患者姓名（医生诊疗必需）。查不到患者时服务端给**空串**而不是省字段 —— 形状不随数据在不在变化。" },
+          "patient_name": { "type": "string", "description": "★ 2026-10-16 增：患者姓名（医生诊疗必需）。查不到患者时服务端给**空串**而不是省字段 —— 形状不随数据在不在变化。⚠ **本字段不得设 `minLength: 1`**（2026-10-16 复核 N1）：`appointment.patient_id` 在本仓**没有外键**（`server/src/schema.cj` 里 `FOREIGN KEY`/`REFERENCES` 零命中）⇒ 患者档案迁移/清理带进来的孤儿引用是**可能存在**的数据形态，那时服务端如实发空串，而 `minLength: 1` 会把**合规行为**判成违约（样例全来自真实库、恰好没有孤儿引用，所以门禁此前跑不到这条路）。空串这条路现已由 `server/tests/emr-check.ps1` 的孤儿引用夹具实测钉住。" },
           "patient_gender": { "type": "string", "description": "★ 2026-10-16 增：患者性别，取值同 patient.gender（可为空串）" },
           "doctor_id": { "type": "integer" },
           "department_id": { "type": "integer" },

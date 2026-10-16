@@ -6,6 +6,42 @@
 
 ---
 
+## 2026-10-16 —— 复核 N1/N3：`patient_name` 拿掉 `minLength: 1`、并发首建的竞态补上门禁（仍是 67 条样例 / 27 个 Schema）
+
+**样例形状没变**（`patient_name` / `patient_gender` 仍在、仍必填），变的是**值域约束**：
+三个 Schema 上 `patient_name` 的 `"minLength": 1` 全部删掉。触发：
+`DOCTOR-BACKEND-ISSUES-2026-10-16.md` 之后的**追加两条复核**（N1「`minLength: 1` 与『查不到给空串』自相矛盾」、
+N3「并发那条出口没有端到端门禁」）。
+
+### 变更
+
+- `data-queue.schema.json` / `data-doctor-patient-records.schema.json` / `data-record.schema.json`：
+  `patient_name` **不再设 `minLength`**（`patient_gender` 本来就没设）。字段**仍在 `required` 里** ——
+  「字段永远在」与「值可能为空串」不矛盾，这两句必须同时成立。
+- `data-doctor-patient-records.schema.json` 头注释的「三个不变式」更正为「五个不变式」（描述性修正，无形状影响）。
+
+### 为什么
+
+- **空串是真实可达的**：`appointment.patient_id` **没有外键**（`schema.cj` 里 `FOREIGN KEY` / `REFERENCES`
+  零命中），门诊库一旦出现孤儿引用（患者档案迁移 / 历史数据带进来的 id），服务端按既定口径给**空串**
+  （`http_p4.cj` 的 `putPatientInto`：形状不随数据在不在变化，不省字段）。那条路径上的响应就会
+  **合规地**违反 `minLength: 1` —— 约束和实现两者必有一错。
+- **门禁抓不到它**：样例是 `export-contract` 在真库上导的，当时 `orphan_appointments = 0`、
+  `orphan_records = 0`，而 `json-schema-lite.ps1` 的 `minLength` 校验只跑样例 ⇒ 它**永远**不会红。
+  一个只在「库刚好干净」时才成立的约束，比没有约束更坏：它给人「已经校验过」的错觉。
+- 另一条路（查不到就省字段）被否：`data-queue.schema.json` 把 `patient_name` 列进了 `required`，
+  省字段直接违约；而且会破坏「形状不随数据在不在变化」这条纪律。
+- 现在这条路径由**夹具**钉住（不再靠「库里刚好没有孤儿引用」）：`server/tests/emr-check.ps1` 造一张
+  `patient_id` 指向不存在患者的挂号单，断言该医生队列里 `patient_name == ''` 且 `patient_gender == ''`。
+
+### 客户端影响
+
+- **`patient_name` / `patient_gender` 可能是空串，这是合法值**，不是解析失败、也不是服务端 bug。
+  显示不出来时请回退到 `#<patient_id>`（`patient_id` 一直在），不要渲染成 `null` / `undefined` / 空白行。
+- **不要**试图用「字段缺席」与「空串」区分「有没有这个患者」：服务端**不省字段**，两种情况都是空串。
+
+---
+
 ## 2026-10-15 —— 初版：38 条样例 / 19 个 Schema
 
 **覆盖 7 组**（对应 `docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md` §改进 5 要求的

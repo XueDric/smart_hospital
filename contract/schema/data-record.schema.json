@@ -8,7 +8,7 @@
     "id": { "type": "integer" },
     "appointment_id": { "type": "integer" },
     "patient_id": { "type": "integer" },
-    "patient_name": { "type": "string", "description": "★ 2026-10-16 增（可选）：只在医生侧**读**病历的响应里出现；查不到患者时是空串。空骨架上也有值（取自挂号单）。" },
+    "patient_name": { "type": "string", "description": "★ 2026-10-16 增（可选）：只在医生侧**读**病历的响应里出现；查不到患者时是空串。空骨架上也有值（取自挂号单）。⚠ 同样**不得**设 `minLength: 1`（理由与实测覆盖见 `data-queue.schema.json` 同名字段，2026-10-16 复核 N1）。" },
     "patient_gender": { "type": "string", "description": "★ 2026-10-16 增（可选）：同上，可为空串。" },
     "doctor_id": { "type": "integer" },
     "status": { "type": "string", "enum": ["draft", "locked"] },

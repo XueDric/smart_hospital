@@ -763,6 +763,30 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 
 ---
 
+### 8.8 同上两条的追加复核（N1 / N3，2026-10-16）
+
+§8.7 推送后（`f005fd7`）第三方又回了**两条**，都属于「设计对、落地有缝」：
+
+| # | 复核结论 | 实修 |
+| --- | --- | --- |
+| ★★ N1（**新引入**的缺陷） | `patient_name` 在 `data-queue` / `data-doctor-patient-records` 里写着 `"minLength": 1`，而**同一行**的 description 明写「查不到患者时服务端给空串」—— 两句话不能同时为真 | 三个 Schema（含 `data-record`）的 `patient_name` **拿掉 `minLength`**（`contract/CHANGELOG.md` 新增条目）；并用**孤儿引用夹具**把那条路径钉进 `emr-check`，而不是继续依赖「导出那天库里刚好没有孤儿引用」 |
+| ★ N3（覆盖缺口） | 竞态那条出口只有 `acceptance_p4.cj` 钉着**助手函数** `baseDuplicateMessage`，没走真实路径（仓库自己的注释也承认「真正那条路径只有真并发才走得到」），而 `stress-booking.ps1` 只压挂号超卖 | `emr-check.ps1` 新增 `[8] 真并发首建同一张病历`：每轮起 **6 个独立 `curl.exe` 进程**同时 PUT 同一张单，断言「每个响应都是 200/409、**每个 409 都带 `error.fields` 且 `updated_at`/`updated_by` > 0**、恰好 1 行病历、内容等于某个赢家的原样」 |
+
+**实测**：`emr-check` **73/0**（61 → 64 → **73**），并发段 **8 轮全部撞上**（200 共 20、409 共 28，
+8/8 轮都 `>=1` 成功且 `>=1` 冲突）；契约门禁 **PASS 69 / FAIL 0**；`doc-counts` 全 OK。
+
+**N3 的定性（第二处"理论出口"不是 bug）**：`http_p4.cj:331` 那个**不带 `fields`** 的出口**保留**——
+这是刻意的契约口径（真的拿不到数据时宁缺勿假）。它今天只剩一条路可达：`domain_emr.cj` 回读时
+`case None => ()`，即「记录在 UPDATE 与回读之间被删」，而全仓**没有任何删除病历的端点**
+（`DELETE FROM medical_record` 只出现在验收夹具里）⇒ **不可达**，判定不是 bug。
+
+**方法论（这次最值得留下的一条）**：并发用例本身也会「测错」。所以断言写成**双向**：既要
+「每次响应都合规」，也要报出「这一轮到底有没有撞上」。8 轮全中说明压测**确实**复现了竞态；
+若某轮没撞上，脚本会说「本轮未复现」，而不是假装产品通过了 —— 否则这个用例会像 N1 一样，
+在"因为环境太干净所以永远绿"的状态里腐烂。
+
+---
+
 ## 附：本篇引用的关键位置索引
 
 **服务端**
@@ -772,7 +796,7 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 - `server/src/domain_emr.cj:655-722`（**预问诊→病历预填桥**：`intakePrefill` / `saveDraftWithIntake`）、`:738-742`（就诊状态常量）
 - `server/src/domain_emr.cj`（**改进 3**：`lock`/`reopen` 签名与落版、`writeRevision`/`ensureLockRevision`/`revisions`/`revisionAt`/`backfillRevisions`）、`server/src/schema.cj`（`medical_record_revision` DDL + 迁移第 ⑩ 步）、`server/src/http_p4.cj:688-775`（修订历史三条端点）
 - `server/src/ai_call.cj:125-158`（`source`/`reason`/`elapsedMs`）、`server/src/triage_stat.cj:57`（落库写入点）
-- `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1`、`server/tests/admin-web-smoke.mjs`、`server/tests/emr-check.ps1:280-291`（`use_intake_session` 用例）、`server/tests/revision-check.ps1`（改进 3 的 46 条 live 断言，2026-10-16 补 ⑪ 自清后 **47** 条）、`server/tests/workbench-check.ps1`（改进 2 的 **31** 条 live 断言，2026-10-16 补患者姓名后 29 → 31）、`server/tests/emr-check.ps1`（**64** 条 live 断言，同日 61 → 64）、`server/tests/visit-timeline-check.ps1`（改进 6 的 **47** 条 live 断言）、`server/tests/ai-telemetry-check.ps1`（改进 7 的 **53** 条 live 断言）、`server/tests/ai-eval/`（改进 7 评测：`cases.jsonl` + `run-ai-eval.ps1` + `recorded/`）、`server/tests/export-contract.ps1` / `contract-check.ps1`（改进 5 契约门禁）
+- `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1`、`server/tests/admin-web-smoke.mjs`、`server/tests/emr-check.ps1:280-291`（`use_intake_session` 用例）、`server/tests/revision-check.ps1`（改进 3 的 46 条 live 断言，2026-10-16 补 ⑪ 自清后 **47** 条）、`server/tests/workbench-check.ps1`（改进 2 的 **31** 条 live 断言，2026-10-16 补患者姓名后 29 → 31）、`server/tests/emr-check.ps1`（**73** 条 live 断言，同日 61 → 64 → 73，末尾 9 条为真并发首建 + 孤儿引用）、`server/tests/visit-timeline-check.ps1`（改进 6 的 **47** 条 live 断言）、`server/tests/ai-telemetry-check.ps1`（改进 7 的 **53** 条 live 断言）、`server/tests/ai-eval/`（改进 7 评测：`cases.jsonl` + `run-ai-eval.ps1` + `recorded/`）、`server/tests/export-contract.ps1` / `contract-check.ps1`（改进 5 契约门禁）
 
 **客户端**
 - `common-core/src/main/ets/config/ApiConfig.ets:6-51`（LIVE/MOCK 与 baseUrl）、`.../network/ApiError.ets:1-16`（`ErrorCode` 清单）
