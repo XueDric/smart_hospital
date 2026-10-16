@@ -2542,6 +2542,24 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         requireCan(p.role, Action.Book)
         let scheduleId = requireInt(ctx, "schedule_id")
         let clientToken = requireStr(ctx, "client_token")
+        /*
+         * ★ 形状校验（2026-10-17 补）：与 `GET /appointments/by-token/:token` 的
+         *   `:2472-2478` **同一口径** —— 那边的注释把理由写全了（列是 VARCHAR(64)），
+         *   但这边漏了同样的检查，于是"同一个幂等键，查得到 400、写进去 500"。
+         *
+         * ⚠ 不检查的后果是 **500 而不是 400**：超长值直接撞 MySQL 的
+         *   "Data too long for column 'client_token'"，`hospitalErrorHandler`
+         *   把它归到"未预期异常" ⇒ `INTERNAL` + 500，客户端看到的是一句
+         *   "服务器内部错误"，而真因是它自己生成令牌时没截断 —— 与
+         *   `http_app.cj:735-736` 记的那次"超长头撞 Data too long"是同一类。
+         */
+        if (clientToken.size == 0) {
+            throw apiErrorMsg("VALIDATION_FAILED", "缺少幂等键 client_token")
+        }
+        if (clientToken.size > 64) {
+            throw apiErrorMsg("VALIDATION_FAILED",
+                              "幂等键最长 64 个字符（收到 ${clientToken.size} 个）——客户端生成时应自行截断")
+        }
         // 患者只能给自己挂号：不接受 body 里的 patient_id，
         // 一律用**身份里的** patientId。这样"帮别人挂号"这个面根本不存在。
         if (p.patientId <= 0) {
@@ -2654,6 +2672,20 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
             case NotCancellable(st) =>
                 throw apiErrorMsg("APPOINTMENT_NOT_CANCELLABLE",
                                   "该挂号单当前状态为「" + visitStatusLabel(st) + "」，不能退号")
+            /*
+             * ★ 2026-10-17 增：状态没问题（还是 `booked`），但**病历已定稿**。
+             *
+             * 与上面 `NotCancellable` 分开的理由就是"处置不同"：
+             *   `NotCancellable` = 这单已经走到别的状态了 → 刷新看看；
+             *   `RecordLocked`   = 病历定稿了 → **刷新永远没用**，必须先把这份病历
+             *                      定稿状态处理掉（管理员走病历修订/解锁），或直接就诊。
+             * 压成同一句话会让使用者在一个走不通的位置反复重试。
+             * ⚠ 用 409 而不是 403：这是**业务状态**问题，谁登录都一样（与上面同口径）。
+             */
+            case RecordLocked =>
+                throw apiErrorMsg("APPOINTMENT_RECORD_LOCKED",
+                                  "该挂号单的病历已定稿（锁定后不可再修改），不能退号；" +
+                                  "如确需退号，请先联系管理员处理该次病历")
         }
     })
 
@@ -2700,6 +2732,34 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
         let selectedDoctor = doctor.getOrThrow()
         if (!selectedDoctor.enabled || selectedDoctor.departmentId != departmentId) {
             throw apiErrorMsg("VALIDATION_FAILED", "医生必须启用且属于所选科室")
+        }
+        /*
+         * ★ 2026-10-17 补：同一医生 + 同一天 + 同一时段**只能有一条排班**。
+         *
+         * 实测缺陷（修复前）：连发两次完全相同的请求得到**两条 201**，
+         *   `total_num` 各 20 ⇒ 同医生同时段号源合计 40（`schedule` 表上
+         *   `KEY idx_schedule_doctor_date` 是**普通索引**，拦不住）。
+         *   号源翻倍 = 同一个医生在同一时段被排了两份工，管理台的放号数/余量再也对不上。
+         *
+         * ⚠ 报 **409 并带上已存在的那条 id**：调用方真正要做的是"去改那一条"
+         *   （`PUT /admin/schedules/:id`），只回一句"重复了"它还是不知道该改谁。
+         * ⚠ 不用 400：请求本身没写错，是**资源已存在**（同 `USER_EXISTS` 的口径）。
+         * ⚠ 这里是"先查后插"，**残留一个并发窗口**（两个同时到达的完全相同的 POST
+         *   仍可能各插一条）。这次刻意**不用数据库唯一键兜**：试过
+         *   `UNIQUE KEY (doctor_id, work_date, period)`，代价是 `accept` 红 2 项
+         *   （夹具 AC-P4-7/8 刻意让多个 seed 共用一个医生、同一天同一时段）
+         *   且与"排班可顺延（改 work_date）"冲突（顺延到已有时段会撞库报错）。
+         *   详见 `schema.cj` 的 schedule DDL 注释与迁移 ⑮。
+         *   ⇒ 如实登记：这个窗口要靠"管理台不重复点、失败后刷新"兜，
+         *     而不是假装它不存在。
+         */
+        match (repo.findScheduleIdByDoctorSlot(doctorId, workDate, period)) {
+            case Some(existingId) =>
+                throw apiErrorMsg("SCHEDULE_EXISTS",
+                                  "该医生在 " + workDate + " " + period + " 已有排班" +
+                                  "（schedule_id = " + existingId.toString() + "），" +
+                                  "请直接修改该排班（改放号数 / 恢复停诊），不要新建")
+            case None => ()
         }
         let now = hNowEpoch()
         let sid = repo.insertSchedule(doctorId, departmentId, workDate, period, total, now)
@@ -2839,6 +2899,22 @@ public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGat
      * 必须在这里就置位（早于 `router.middleware()` 的构造）。
      */
     router.passOnNotFound = true
+    /*
+     * ★★ 2026-10-17（S14 修）：路由器**直接写出**的 404/405 也必须走本应用的三段式信封。
+     *
+     * 修的是什么（实测抓到的契约违反）：`router.cj` 原来硬编码
+     *   `{"error":"Method Not Allowed","allow":"GET"}` / `{"error":"Not Found","path":…}`。
+     *   客户端 `HttpClient.parseResponse` 严格读 `ok` / `error.code`，遇到这种平铺体
+     *   只能报"响应格式非法"，把真因（方法不匹配 / 路径不存在）盖掉。
+     * ⚠ 这两条响应**不经过** `app.onError`（路由器自己写完就返回），所以只能在这里
+     *   把钩子换掉 —— 业务层里 `sendError(...)` 的正确写法对它无效。
+     * ⚠ code 用已登记的 `ROUTE_NOT_FOUND` / `METHOD_NOT_ALLOWED`（见 http_common.cj
+     *   的错误码表），客户端按 code 分支即可，不必看 status。
+     */
+    router.errorBody = { status: Int64, msg: String =>
+        let code = if (status == 405) { "METHOD_NOT_ALLOWED" } else { "ROUTE_NOT_FOUND" }
+        errorEnvelopeString(code, msg, None)
+    }
     var app = QingZhouApp()
         .use(requestId())
         .use(logger())
@@ -2848,7 +2924,10 @@ public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGat
         // ⚠ 搬迁前的 `bodyLimit()` 是**搬迁前自己写的**（搬迁前 limits.cj:83），
         //   不在框架里；这里用框架原生的 `contentLengthLimit(maxBytes)`（bodyparser.cj:168）。
         //   上限 64 KiB —— 与搬迁前 MAX_BODY_BYTES 同口径（limits.cj:47）。
-        .use(contentLengthLimit(64 * 1024))
+        // ★ 2026-10-17（S14 修）：不能再用便利函数 `contentLengthLimit(64 * 1024)` ——
+        //   它走框架**默认** onError，413 会回 `{"code":413,...}` 平壳（实测残留）。
+        //   改成传自己组好的 opts，两处限流出口（外层 64 KiB / 内层 1 MiB）共用同一个信封。
+        .use(contentLengthLimit(hospitalContentLengthLimitOptions(64 * 1024)))
         /*
          * ⚠ bodyParser() 的真实上限是**框架默认的 1 MiB**（bodyparser.cj:36
          *   `maxBytes = 1024 * 1024`），**不是**上面那个 64 KiB。
@@ -2860,8 +2939,15 @@ public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGat
          *   实测：发 100 KiB 的 body → 413（外层闸门生效）。
          *   （复查指出"文档说 64 KiB、注释说 1 MiB"的口径不一致，根因就是把
          *     两个不同层的限额混着说了。这里把关系写清楚，数字不再打架。）
+         *
+         * ★★ 2026-10-17（S14 修）：必须传 opts 把 `onError` 换成统一信封。
+         *   框架默认的 `defaultBodyParserError` 写的是 `{"code":400,"message":
+         *   "Invalid JSON body","data":null}` —— 没有 `ok`、没有 `error` 对象，
+         *   客户端按三段式信封解析必然解不开。而 body parser 在**进入 handler 之前**
+         *   就回应并短路，所以业务层里 `bodyObj()` 那套正确写法根本执行不到：
+         *   **只能在这里换**，改 handler 没用。
          */
-        .use(bodyParser())
+        .use(bodyParser(hospitalBodyParserOptions()))
         .use(cors())
         /*
          * ⚠ `timeout(15000)` **不能中断**已经进入的同步 handler —— 这是实测确认的
@@ -2926,6 +3012,22 @@ public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGat
         let staticOpts = StaticOptions("/admin")
         staticOpts.indexFile = "index.html"
         staticOpts.spaFallback = false
+        /*
+         * ★★ 2026-10-17（S14 修，附带）：静态层自己的 404/403/416 也统一信封。
+         *
+         * 框架把这三条响应体做成了**可配项**（static.cj:51 `notFoundBody`、
+         *   :53 `forbiddenBody`，第三条 `rangeNotSatisfiableBody` 为本次新增），
+         *   所以不需要 fork 框架 —— 这也替换掉了下面原来那句
+         *   "那条路径只被浏览器访问……故不为此 fork 框架"的边界记录：
+         *   该 404 早已进了机器可读契约
+         *   `contract/examples/error-static-not-found-404.json`，
+         *   而管理台自己的 JS 也是按 `error.message` 取错误文案的（admin-web/js/api.js），
+         *   拿到平铺的 `{"error":"Not Found"}` 只能显示成一句无意义的兜底。
+         */
+        staticOpts.notFoundBody = errorEnvelopeString("ROUTE_NOT_FOUND", "静态资源不存在", None)
+        staticOpts.forbiddenBody = errorEnvelopeString("FORBIDDEN_ROLE", "静态资源禁止访问", None)
+        staticOpts.rangeNotSatisfiableBody =
+            errorEnvelopeString("RANGE_NOT_SATISFIABLE", "Range 请求超出文件大小", None)
         staticOpts.apiPrefix = "/api"
         staticOpts.enableCache = false
         app = app.use(serveWithOpts(adminWebDir, staticOpts))
@@ -2942,12 +3044,15 @@ public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGat
          *
          * 改法：`passOnNotFound = true`（router.cj:88）让未命中**透传**到
          * 本中间件，由它回与其它接口同形状的 404（`ROUTE_NOT_FOUND`，
-         * 登记在 http_common.cj:129 ⇒ 404）。中间件必须注册在
+         * 登记在 http_common.cj:148 ⇒ 404）。中间件必须注册在
          * `router.middleware()` **之后**：洋葱模型里后注册的要在前者 `next()` 之后才轮到。
          *
-         * ⚠ 边界（不改、只记明）：`/admin` 下**静态文件**的 404 仍是框架静态层
-         *   自己写的 `{"error":"Not Found"}`（`third_party` 里的 vendored 代码）。
-         *   那条路径只被浏览器访问、不经过 API 客户端，故不为此 fork 框架。
+         * ⚠ 边界（**2026-10-17 起作废**，只作历史）：本节写下时 `/admin` 下**静态文件**的 404
+         *   还是框架静态层自己写的 `{"error":"Not Found"}`（`third_party` 里的 vendored 代码），
+         *   当时理由是"那条路径只被浏览器访问、不经过 API 客户端，故不为此 fork 框架"。
+         *   ⇒ 2026-10-17 改了结论：**仍不 fork 框架**，因为 `StaticOptions` 本来就有
+         *   `notFoundBody` / `forbiddenBody`（本次再补 `rangeNotSatisfiableBody`），
+         *   上面几行已把它们注成信封。
          */
         .use({ ctx: Context, _: () -> Unit =>
             sendError(ctx, apiErrorMsg("ROUTE_NOT_FOUND",

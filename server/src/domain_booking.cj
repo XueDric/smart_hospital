@@ -128,7 +128,7 @@ public enum BookingOutcome {
 }
 
 /*
- * 取消（退号）结果 —— **四态**，刻意不用 Bool。
+ * 取消（退号）结果 —— **五态**，刻意不用 Bool。
  *
  * 理由见 `cancel()` 的注释：把"单子取消了"与"号还回去了"压进一个 bool，
  * 必然丢掉"单已取消但号未归还"这一真实存在的中间状态，导致对外**报错方向与事实相反**。
@@ -138,11 +138,19 @@ public enum BookingOutcome {
  *   `visiting` / `done` / `no_show` 也一并退掉并归还号源 —— 覆盖就诊结果、凭空多出号源。
  *   这一态与 `NotFound` 必须分开：**"这张单不存在"与"存在但不能退"是两件事**，
  *   对外一个是 404、一个是 409，客户端要提示的话术也完全不同。
+ *
+ * ★ 2026-10-17 增第五态 `RecordLocked`：状态仍是 `booked`（状态机允许 cancelled），
+ *   但**病历已定稿**，退号会让"一份不可再改的病历"挂在一张已退号、号源已转卖的单上
+ *   （该单再也不可能 finish）。它与 `NotCancellable` 必须分开：两者虽然都是 409，
+ *   但处置完全不同 —— `NotCancellable` 是"这单已经走到别的状态了，刷新看看"，
+ *   `RecordLocked` 是"**病历已定稿**，要退必须先由管理员处理病历（解锁/作废修订）"。
+ *   把它们压成一句话，使用者会在一个**永远不会成功**的操作上反复刷新。
  */
 public enum CancelOutcome {
     | Cancelled                            // 单已取消，且号源已归还（或本就无需归还）
     | SlotNotRestored                     // ★ 单**已取消**，但号源未归还（需运维介入）
     | NotCancellable(String)              // ★ 当前状态不允许退号（携带该状态，供上层如实说明）
+    | RecordLocked                        // ★ 2026-10-17 增：病历已定稿，不允许退号
     | NotFound                            // 挂号单不存在
 }
 
@@ -660,6 +668,34 @@ public class BookingRepo {
     /* ---------- 写：排班（管理员） ---------- */
 
     /*
+     * ★ 2026-10-17 增：按「医生 + 就诊日 + 时段」找已有排班，返回其 id。
+     *
+     * 为什么要它（实测确认的缺陷）：`insertSchedule` 是**裸 INSERT**，
+     *   同一医生同一天同一时段可以建出任意多条排班 —— 实测连发两次**完全相同的**
+     *   请求得到两条 201（schedule_id 930010 / 930011），号源合计翻倍（20 → 40）。
+     *   号源翻倍不是"多卖几张"这么轻：它意味着**同一个医生在同一时段被排了两份工**，
+     *   放号数与余量在管理台上再也对不上账。
+     *
+     * ⚠ 判据用 `(doctor_id, work_date, period)` 三元组，**不含 `enabled`**：
+     *   已停诊（`enabled = 0`）的那条也是"这个时段已经排过了"，
+     *   正确处置是**改它**（`PUT /admin/schedules/:id` 打开 `enabled`），
+     *   而不是再建一条 —— 否则停诊记录越积越多，患者端还会看到"两条同样的排班"。
+     * ⚠ 与 `listSchedules` 的分工：那个是"按科室/日期列给患者看的读模型"，
+     *   不带 `doctor_id`；这里只需要一个 id 做存在性判断。
+     */
+    public func findScheduleIdByDoctorSlot(doctorId: Int64, workDate: String,
+                                           period: String): ?Int64 {
+        let rs = db.query(
+            "SELECT id FROM schedule WHERE doctor_id = ? AND work_date = ? AND period = ? " +
+            "ORDER BY id ASC LIMIT 1",
+            [DbInt(doctorId), DbStr(workDate), DbStr(period)])
+        if (rs.rowCount() > 0) {
+            return Some(rs.getInt(0, 0))
+        }
+        return None
+    }
+
+    /*
      * 新建排班（号源）。
      *
      * 新排班 `version = 0`、`remain_num = total_num` —— 与乐观锁起点一致。
@@ -908,6 +944,27 @@ public class BookingRepo {
              *   明确结论拖成"重试耗尽后的 SlotGone"—— 结果一样，但白烧预算，
              *   而且在高并发下会掩盖真正的问题（少卖就是被这个掩盖出来的）。
              */
+            /*
+             * ★ 2026-10-17 补：扣号 0 行时**必须先复查幂等键**，与上面 catch 分支
+             *   (`:878-881`) 的"唯一索引冲突 → 回读既有单"是**同一条纪律**。
+             *
+             * 漏掉的后果（实测复现，6/6 轮）：同一个 `client_token` 的并发重发里，
+             *   请求 A 抢到最后一个号并建单成功，请求 B 与它并发、扣号时余量已是 0
+             *   ⇒ 0 行 ⇒ 直接落到下面判成 `SlotGone`，于是 B 拿到 **409「号源已被抢空」**，
+             *   而它自己的那张单**其实已经存在**（A 建的就是它的 token）。
+             *   客户端按契约"同值重试必须 200 重放"处理，这里却报失败 ⇒
+             *   界面提示患者挂号失败、患者改约别的号源 ⇒ **一次挂号变成两次**。
+             *
+             * ⚠ 为什么这条路径和"排班被停用"也有关：无论最终该判 SlotGone 还是
+             *   ScheduleNotFound，只要这个 token 已经有单，正确结论就只有一个 ——
+             *   幂等回放（200）。所以复查要放在**分类之前**。
+             * ⚠ 成本：只在"扣号 0 行"这条失败路径上多一次索引查询
+             *   （唯一键 `uk_appointment_patient_token` 精确命中），不在热路径上。
+             */
+            let againAfterDeduct = findAppointmentByToken(patientId, clientToken)
+            if (againAfterDeduct.isSome()) {
+                return fillFromAppointment(againAfterDeduct.getOrThrow())
+            }
             if (findBookableSchedule(scheduleId, today: todayDate).isNone()) {
                 r.outcome = BookingOutcome.ScheduleNotFound
                 return r
@@ -1010,6 +1067,25 @@ public class BookingRepo {
         if (!visitTransitionAllowed(a.status, VISIT_CANCELLED)) {
             return CancelOutcome.NotCancellable(a.status)
         }
+        /*
+         * ★★ 2026-10-17 增：**病历已定稿（locked）的单不能退号**。
+         *
+         * 与上面那条状态机的分工：状态机管"这张单走到哪一步了"，这条管"这张单的病历
+         * 是不是已经定稿了" —— 两件事都成立才允许退。实测确认的缺陷（修复前）：
+         *   `booked` 的单 → 医生写病历 + **锁定**（`medical_record.status = 'locked'`）
+         *   → 患者退号仍然 200 ⇒ 组合状态 `appt=cancelled` + `emr=locked`，
+         *   号源回到池子（`remain_num` 归还、可能被卖给别人）。
+         *   而 `finish` 要求 `visiting` + 病历已锁定，`cancelled` 是终态 ⇒
+         *   **该单永远走不到 `done`**，那份定稿病历成了孤儿
+         *   （`UNIQUE KEY uk_record_appointment` 保证不可能再建第二份）。
+         *
+         * ⚠ 口径**唯一来自病历状态**（`emrHasLockedRecord`），这里不写
+         *   "有没有病历"这种判断：草稿（draft）本来就该允许退号
+         *   （医生还没定稿，退号后草稿随单作废是合理的）。
+         */
+        if (emrHasLockedRecord(db, appointmentId)) {
+            return CancelOutcome.RecordLocked
+        }
         let tx = TxResult()
         db.withTransaction({ =>
             /*
@@ -1027,10 +1103,21 @@ public class BookingRepo {
              * 代价（如实记录）：退号后我们就**不再保留**"当初是哪个 token 建的"这条信息。
              *   挂号单的 id / 时间 / 就诊日都还在，业务上不需要 token 做回溯。
              */
+            /*
+             * ⚠ `NOT EXISTS` 那半句是**真正的护栏**（与 `finish` 的写法同源，
+             *   见 domain_emr.cj 里 `UPDATE appointment ... AND EXISTS (SELECT 1 FROM
+             *   medical_record mr WHERE ... mr.status = ?)`）：
+             *   上面的前置 SELECT 只能给出准确的对外结果，**挡不住并发** ——
+             *   医生在同一瞬间点"提交锁定病历"时，先读后判必然过期，
+             *   于是定稿病历照样挂在一张刚退号、号源已归还的单上。
+             *   把条件放进 WHERE，判据与更新在**同一条语句**里求值，窗口才关上。
+             */
             let n = db.exec(
                 "UPDATE appointment SET status = 'cancelled', cancelled_at = ?, " +
-                "client_token = NULL WHERE id = ? AND status = ?",
-                [DbInt(now), DbInt(appointmentId), DbStr(VISIT_BOOKED)])
+                "client_token = NULL WHERE id = ? AND status = ? " +
+                "AND NOT EXISTS (SELECT 1 FROM medical_record mr " +
+                "WHERE mr.appointment_id = appointment.id AND mr.status = ?)",
+                [DbInt(now), DbInt(appointmentId), DbStr(VISIT_BOOKED), DbStr(EMR_LOCKED)])
             if (n == 1) {
                 tx.cancelDone = true
                 tx.released = releaseSlotFor(a.scheduleId)
@@ -1066,6 +1153,16 @@ public class BookingRepo {
              *   （典型的：医生刚好点了"开始接诊"）。把"不能退"说成"不存在"，客户端只能提示
              *   "挂号单不存在"，患者据此**永远查不出真正原因**。
              */
+            /*
+             * ★ 2026-10-17：状态**仍是 `booked`** 却没退成功，只可能是上面那条
+             *   `NOT EXISTS` 挡住的 —— 即"提交病历锁定"与"患者退号"并发，
+             *   锁先落地。这时报 `NotCancellable('booked')` 会拼出
+             *   「当前状态为「已挂号」，不能退号」这种自相矛盾的话术，
+             *   使用者只会在一个永远不会成功的位置反复重试。如实报 `RecordLocked`。
+             */
+            if (emrHasLockedRecord(db, appointmentId)) {
+                return CancelOutcome.RecordLocked
+            }
             return CancelOutcome.NotCancellable(b.status)
         }
         if (!tx.released) {

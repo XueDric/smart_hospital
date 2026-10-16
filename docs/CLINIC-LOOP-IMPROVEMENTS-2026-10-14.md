@@ -395,6 +395,8 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
    - **时间口径**（§5.25 Asia/Shanghai 的"今天" vs epoch 秒）；
    - **分页与上限**（§3.5）。
 
+> ⚠ 2026-10-17 更新：框架层三种平铺错误体（非法 JSON 400 / 静态 404 / 405）已统一为项目信封；见 contract/CHANGELOG.md 与 docs/FRONTEND-INTEGRATION.md §3.2。（本页"改进 5"第 4 点列的三条形状因此收敛为一条：业务错误信封。）
+
 #### 鸿蒙端任务
 
 1. **抽解析层**：把现在散在 `PatientRepository.ets` / 各页面里的 `asRecord/asString/asNumber` 取字段代码收敛到 `common-core/src/main/ets/dto/`（响应 → 模型），使"喂一段 JSON 得到模型"成为可测函数。

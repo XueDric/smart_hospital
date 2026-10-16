@@ -10,9 +10,11 @@
     "status": 400,
     "content_type": "application/json; charset=utf-8",
     "body": {
-      "code": 400,
-      "message": "Invalid JSON body",
-      "data": null
+      "ok": false,
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "请求体不是合法 JSON"
+      }
     }
   }
 }

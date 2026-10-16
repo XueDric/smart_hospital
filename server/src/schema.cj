@@ -321,6 +321,25 @@ public let SCHEMA_DDL: Array<String> = [
     "enabled TINYINT NOT NULL DEFAULT 1, " +
     "created_at BIGINT NOT NULL DEFAULT 0, " +
     "PRIMARY KEY (id), " +
+    /*
+     * ⚠ 这里**刻意不加** `UNIQUE KEY (doctor_id, work_date, period)`（2026-10-17 试过、退回）。
+     *
+     * 加它的动机成立：同一医生同一天同一时段有两条排班 ⇒ 号源被静默翻倍
+     *   （实测：同请求发两次 = 两条 201、号源 20 → 40）。
+     * 但**数据库级唯一键不是这个缺陷的正确修法**，实测代价如下：
+     *   · `accept` 立刻红 2 项 —— 夹具 `hSeedAppointmentForDoctor`
+     *     （acceptance_p4.cj:63-130）刻意给每个 seed 造自己的排班行，
+     *     而 AC-P4-7/8 用 `asDoctorId: 900010/900020` 让**多个 seed 共用一个医生**：
+     *     `Duplicate entry '900010-2026-12-20-AM' for key 'uk_schedule_doctor_slot'`。
+     *   · 更要紧的是语义：`work_date` 是**可顺延**的（本文件 :250、AC-6），
+     *     管理员把排班顺延到"该医生已有时段"的日期时，唯一键会让这条改期
+     *     **撞库报错**（裸 SQL 客户端看到的是 Duplicate entry），
+     *     而正确处置是业务层给一句"该时段已有排班"。
+     * ⇒ 结论："能拦住重复" 不等于 "该用数据库约束拦"。
+     *   重复创建由**业务层**挡（`http_app.cj` 的 `SCHEDULE_EXISTS` 409，
+     *   带已是哪一条排班 id），并如实登记残留窗口（见那里的注释）。
+     *   📌 与 ⑮ 步（DROP 掉曾经误加的这个键）配对 —— 新库、老库都不带它。
+     */
     "KEY idx_schedule_doctor_date (doctor_id, work_date)" +
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 
@@ -367,7 +386,18 @@ public let SCHEMA_DDL: Array<String> = [
      *   于是"置 NULL 即释放"天然成立，可以有多张已取消的单。
      *   若用空串，第二个被取消的单就会撞 (patient_id, '') —— 空串在唯一索引里是**相等**的。
      */
-    "client_token VARCHAR(64) NULL DEFAULT NULL, " + // ← 幂等键（退号置 NULL）
+    /*
+     * ★ 2026-10-17：`client_token` 显式声明 `COLLATE utf8mb4_bin`（**大小写敏感**）。
+     *
+     * 为什么必须写出来（实测缺陷）：幂等键 `"Booking-A"` 建单后，用 `"booking-a"`
+     *   再挂**没有**新建单，而是幂等回放（200 + 同一张单）—— 因为列/表的默认排序规则
+     *   随实例而定（MySQL 8 是 utf8mb4_0900_ai_ci，**大小写不敏感**），
+     *   而"幂等键"是客户端生成的令牌，语义上必须**字节精确**。
+     * ⚠ 与 `domain_emr.cj` 里 `BINARY chief_complaint = BINARY ?`（版本快照必须二进制
+     *   比较）同源：凡是被当作"标识/版本"的字符串，都不能用不区分大小写的比较。
+     * ⚠ 存量库由 `migrateSchema` 的 ⑭ 步改（`CREATE TABLE IF NOT EXISTS` 对已有表不生效）。
+     */
+    "client_token VARCHAR(64) COLLATE utf8mb4_bin NULL DEFAULT NULL, " + // ← 幂等键（退号置 NULL，大小写敏感）
     /*
      * ★ 退号时**号源是否已归还**（2026-10-07 增）。
      *
@@ -1266,6 +1296,78 @@ public func migrateSchema(db: DbBackend): Int64 {
         "started_at BIGINT NOT NULL DEFAULT 0",
         "finished_at BIGINT NOT NULL DEFAULT 0"
     ])
+
+    /*
+     * ⑭ ★ 2026-10-17：`appointment.client_token` 改成**大小写敏感**（`utf8mb4_bin`）。
+     *
+     * 修的是什么（实测复现）：幂等键 `"Booking-A"` 建单后，用 `"booking-a"` 再挂
+     *   **没有**新建单，而是幂等回放（200 + 同一张单）。根因是全仓**没有任何 COLLATE
+     *   声明** ⇒ 比较规则随实例默认（MySQL 8 = utf8mb4_0900_ai_ci，大小写不敏感），
+     *   而幂等键是客户端生成的令牌，必须**字节精确**：把大小写不同的两个键当同一个，
+     *   会让"令牌碰撞"从"可发现的冲突"变成"静默回放别人的单"。
+     *
+     * ⚠ 与 ⑬ 同理：新库走上面的 `CREATE TABLE`（已带 `COLLATE utf8mb4_bin`），
+     *   老库走这里 —— 两处必须一致，否则"新库严格、老库宽松"，同一份代码两种语义。
+     * ⚠ **先查"只差大小写"的重复键**：有的话 MODIFY 会撞唯一索引
+     *   `uk_appointment_patient_token` 而整条 ALTER 失败 ⇒ `migrateSchema` 抛错
+     *   ⇒ 服务起不来。所以有重复就打印出来并**跳过**（应用层不受影响），
+     *   让人先合并再重启。这比"赌存量数据干净"稳。
+     */
+    let tokCollation = db.query(
+        "SELECT COLLATION_NAME FROM information_schema.columns " +
+        "WHERE table_schema = DATABASE() AND table_name = 'appointment' " +
+        "AND column_name = 'client_token'",
+        Array<DbValue>())
+    if (tokCollation.rowCount() > 0 && tokCollation.getString(0, 0) != "utf8mb4_bin") {
+        let caseDup = db.query(
+            "SELECT COUNT(*) FROM (SELECT patient_id, LOWER(client_token) AS t " +
+            "FROM appointment WHERE client_token IS NOT NULL " +
+            "GROUP BY patient_id, LOWER(client_token) HAVING COUNT(*) > 1) x",
+            Array<DbValue>())
+        if (caseDup.rowCount() > 0 && caseDup.getInt(0, 0) > 0) {
+            println("[SCHEMA] ⚠ ⑭ 跳过：appointment 里存在**只差大小写**的 client_token 重复键，" +
+                    "改列会撞唯一索引。请先合并这些行（幂等键应字节精确），再重启完成迁移。")
+        } else {
+            db.exec("ALTER TABLE appointment MODIFY COLUMN client_token " +
+                    "VARCHAR(64) COLLATE utf8mb4_bin NULL DEFAULT NULL",
+                    Array<DbValue>())
+            done = done + 1
+        }
+    }
+
+    /*
+     * ⑮ ★ 2026-10-17：**DROP 掉** `uk_schedule_doctor_slot`（若存在）。
+     *
+     * 为什么是"删"而不是"加"（如实记录这次反复）：
+     *   我一开始给 `schedule` 加了 `UNIQUE KEY (doctor_id, work_date, period)`
+     *   来根治"同一医生同时段能建两条排班 ⇒ 号源翻倍"。动机没错，但实测代价：
+     *     · `accept` 立刻红 2 项 —— 夹具 `hSeedAppointmentForDoctor`
+     *       （acceptance_p4.cj:63-130）刻意给每个 seed 造自己的排班行，
+     *       而 AC-P4-7/8 用 `asDoctorId: 900010/900020` 让多个 seed **共用一个医生**：
+     *       `[FAIL] AC-P4-7 抛出异常：Duplicate entry '900010-2026-12-20-AM'
+     *        for key 'uk_schedule_doctor_slot'`（两项同因）。
+     *     · 语义上也不对：`work_date` 是**可顺延**的（见 :250 与 AC-6），
+     *       顺延到"该医生已有时段"的日期会撞库报错，而正确处置是业务层
+     *       给一句"该时段已有排班"。
+     *   ⇒ 缺陷改由**业务层**挡（`http_app.cj` 的 `SCHEDULE_EXISTS` 409，
+     *     且消息里带上已是哪一条排班 id），数据库约束退回。
+     *
+     * ⚠ 这一步**必须留着**：任何跑过中间版本（加过键）的库都要能被修回来，
+     *   否则"新库没有、老库有"——同一份代码两种约束，最难看的一类不一致。
+     * ⚠ `DROP INDEX` 幂等：先查 `information_schema.statistics` 再删。
+     */
+    let staleSlotIdx = db.query(
+        "SELECT COUNT(*) FROM information_schema.statistics " +
+        "WHERE table_schema = DATABASE() AND table_name = 'schedule' " +
+        "AND index_name = 'uk_schedule_doctor_slot'",
+        Array<DbValue>())
+    if (staleSlotIdx.rowCount() > 0 && staleSlotIdx.getInt(0, 0) > 0) {
+        db.exec("ALTER TABLE schedule DROP INDEX uk_schedule_doctor_slot",
+                Array<DbValue>())
+        println("[SCHEMA] ⑮ 已删除 schedule.uk_schedule_doctor_slot ——" +
+                "该唯一键与「排班顺延」及现有夹具冲突，重复排班改由业务层拒绝（409）。")
+        done = done + 1
+    }
 
     return done
 }

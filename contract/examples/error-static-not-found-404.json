@@ -10,7 +10,11 @@
     "status": 404,
     "content_type": "application/json",
     "body": {
-      "error": "Not Found"
+      "ok": false,
+      "error": {
+        "code": "ROUTE_NOT_FOUND",
+        "message": "静态资源不存在"
+      }
     }
   }
 }

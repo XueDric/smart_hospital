@@ -49,6 +49,13 @@ public class StaticOptions {
     public var indexFile: String = "index.html"  // directory -> file
     public var notFoundStatus: Int64 = 404
     public var notFoundBody: String = "{\"error\":\"Not Found\"}"
+    /*
+     * 416 的响应体（2026-10-17 增）。
+     * 与 notFoundBody / forbiddenBody 同理：原来是硬编码的
+     * `{"error":"Range Not Satisfiable"}`，客户端按统一信封解析时解不开。
+     * 补成可配项，让应用把自己的信封装进来（见 server/src/http_app.cj 的静态层配置）。
+     */
+    public var rangeNotSatisfiableBody: String = "{\"error\":\"Range Not Satisfiable\"}"
     public var forbiddenStatus: Int64 = 403
     public var forbiddenBody: String = "{\"error\":\"Forbidden\"}"
     /* feature flags (defaults ON; turn off for byte-perfect ). */
@@ -283,9 +290,9 @@ public func serveWithOpts(rootDir: String, opts: StaticOptions): Middleware {
                             }
                         case RangesResult.Unsatisfiable =>
                             ctx.status(416)
-                                .header("content-type", "application/json")
+                                .header("content-type", "application/json; charset=utf-8")
                                 .header("content-range", formatUnsatisfiableContentRange(sendBytes.size))
-                                .body("{\"error\":\"Range Not Satisfiable\"}")
+                                .body(capturedOpts.rangeNotSatisfiableBody)
                             return
                         case RangesResult.Malformed =>
                             // Per RFC 7233 section 3.1, ignore the malformed header

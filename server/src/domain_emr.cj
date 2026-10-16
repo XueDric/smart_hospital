@@ -1394,6 +1394,31 @@ public func emrBackfillRevisions(db: DbBackend): Int64 {
     return MedicalRecordRepo(db).backfillRevisions()
 }
 
+/*
+ * ★ 2026-10-17 增：该挂号单的病历是否**已定稿（`locked`）**。
+ *
+ * 为什么需要它（实测确认的缺陷）：`locked` 的语义是"病历已定稿、不可再改"，
+ *   但**退号那条路完全不看病历** —— 患者可以把一张已定稿病历挂着的单退掉，
+ *   号源回到池子（可能被卖给别人）。后果：
+ *     · 那张单再也不可能 `finish`（`finish` 要求 `visiting` + 病历已锁，
+ *       而 `cancelled` 是终态）⇒ **一份定稿病历永久挂在一张已退号、号源已转卖的单上**；
+ *     · `medical_record` 有 `UNIQUE KEY uk_record_appointment (appointment_id)`，
+ *       同一张单不可能再建第二份病历 ⇒ 这条记录成了孤儿，只能靠管理员改修订。
+ *
+ * ⚠ 为什么放在 domain_emr 而不是就地写在 BookingRepo：`medical_record.status`
+ *   的取值与"哪个值代表不可再改"属于 EMR 域的语义，散到别的文件里写 `'locked'`
+ *   字面量就等于有了第二份定义（本项目反复踩的"同一语义两处"）。
+ * ⚠ 与 `emrBackfillRevisions` 同理用自由函数包一层：BookingRepo 拿不到
+ *   `MedicalRecordRepo` 实例，而它只需要一个布尔判断。
+ * ⚠ 这是**前置判断**（为了给出准确的对外结果），真正的护栏是 `domain_booking.cj`
+ *   退号那条原子 UPDATE 里的 `NOT EXISTS(...)` —— 并发下"先读后判"永远可能过期。
+ */
+public func emrHasLockedRecord(db: DbBackend, appointmentId: Int64): Bool {
+    let rs = db.query("SELECT status FROM medical_record WHERE appointment_id = ?",
+                      [DbInt(appointmentId)])
+    return rs.rowCount() > 0 && rs.getString(0, 0) == EMR_LOCKED
+}
+
 /* ===================== 接诊队列（appointment 状态机）===================== */
 
 /*

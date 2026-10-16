@@ -167,7 +167,7 @@ Invoke-RestMethod http://127.0.0.1:8091/health
 | 响应 `Content-Type` | `application/json; charset=utf-8`（`http_common.cj:225-238` → `ctx.json()`，`context.cj:285-286`） |
 | SSE 响应头 | `text/event-stream; charset=utf-8` + `transfer-encoding: chunked` + `cache-control: no-cache`（`http_app.cj:1262`、`context.cj:304-306`） |
 
-### 3.2 信封与**三种**失败形状（最容易被前端踩的一条）
+### 3.2 信封与失败形状（2026-10-17 起**只有一种**；最容易被前端踩的一条）
 
 成功（HTTP 200/201）：
 
@@ -175,7 +175,15 @@ Invoke-RestMethod http://127.0.0.1:8091/health
 { "ok": true, "data": { /* … */ } }
 ```
 
-失败：**共三种形状，解析必须先判 `ok` 字段存不存在**。
+失败：**2026-10-17 起只有一种形状 —— 本项目的错误信封**：
+
+```jsonc
+{ "ok": false, "error": { "code": "…", "message": "…", "fields"? } }
+```
+
+> ⚠ **2026-10-17 起已作废**：框架层三种平铺体（非法 JSON 400 / 静态 404 / 405）已全部改写信封。
+> 形状 (2)(4)(5) 在这里按**当前行为**写；它们改前的平铺样子只作**历史**收在下面的「改前 → 改后对照表」里。
+> `ok` 字段判存在**不再必要** —— 那个分支只为兼容旧服务端保留（见本节末尾的解析伪代码）。
 
 **(1) 业务错误（校验 / 鉴权 / 冲突）** —— `http_common.cj:241-253`：
 
@@ -189,46 +197,97 @@ Invoke-RestMethod http://127.0.0.1:8091/health
 **409 `EMR_CHANGED`** ⇒ `fields = { updated_at, updated_by, record_id }`（见 §5.30.2）；
 它的形状由 `contract/schema/envelope-error-fields.schema.json` 钉住。
 
-**(2) 请求体不是合法 JSON** —— HTTP **400**，**平铺**，**没有 `ok`、没有 `error`**：
+**(2) 请求体不是合法 JSON** —— HTTP **400**、走**信封**（2026-10-17 起）：
 
 ```json
-{"code":400,"message":"Invalid JSON body","data":null}
+{ "ok": false, "error": { "code": "VALIDATION_FAILED", "message": "请求体不是合法 JSON" } }
 ```
 
-依据：框架 `bodyparser.cj:50-54`（`defaultBodyParserError`）在 `handleJson` 解析失败时接管响应
-（`bodyparser.cj:103-109`），**在 `cors()` 之前短路**，不进入本项目的 `hospitalErrorHandler`。
-⇒ 这是**唯一**一条"请求体坏掉时拿不到 `ok:false` 信封"的路径。
+依据：`http_common.cj:413-429` 的 `hospitalBodyParserError` 把框架 `bodyparser.cj` 的 `onError` 出口换成信封，
+`http_app.cj:2950` 用 `.use(bodyParser(hospitalBodyParserOptions()))` 注入。
+⚠ 它仍然**在 `cors()` 之前短路**（`bodyparser.cj:103-109`），不进入本项目的 `hospitalErrorHandler`
+⇒ 跨域下这条 400 仍**不带 CORS 头**（见 §3.5）。
+⚠ 历史（**已作废**）：改前是框架自己的平铺体 `{"code":400,"message":"Invalid JSON body","data":null}`
+（`bodyparser.cj` 的 `defaultBodyParserError`）。
 
-**(3) 未匹配的 **API** 路由** —— HTTP **404**，走**本项目的信封**（**不是**平铺）：
+**(3) 未匹配的 **API** 路由** —— HTTP **404**，走**本项目的信封**：
 
 ```json
 { "ok": false, "error": { "code": "ROUTE_NOT_FOUND", "message": "接口不存在：GET /api/v1/aprpointments" } }
 ```
 
-依据：本项目在 `router.middleware()` **之后**注册了兜底中间件（`http_app.cj:2684-2706`，`passOnNotFound = true`），
-把框架的平铺 404 **改写**成信封；错误码登记在 `http_common.cj:129`。
+依据：本项目在 `router.middleware()` **之后**注册了兜底中间件（`http_app.cj:3054-3057`，`passOnNotFound = true`），
+把未命中的 404 写成信封；错误码登记在 `http_common.cj:148`。
 ⇒ 路径拼错时拿到的是**可读、可上报的业务码** `ROUTE_NOT_FOUND`，与业务 404（`APPOINTMENT_NOT_FOUND` 等）形状相同、**只差 code**。
 ⚠ 2026-10-15 实测修正：本文档旧版说"未匹配路由是平铺 `{"error":"Not Found","path":…}`"，那是**中间件加进来之前**的行为，已作废。
 
-**(4) 静态文件未命中**（**只有** `/admin/<不存在的文件>` 这一类路径）—— HTTP **404**、**平铺**、`content-type: application/json`（**无 charset**）：
+**(4) 静态文件未命中**（**只有** `/admin/<不存在的文件>` 这一类路径）—— HTTP **404**、走**信封**（2026-10-17 起），`content-type: application/json`（**无 charset**，历史遗留）：
 
 ```json
-{"error":"Not Found"}
+{ "ok": false, "error": { "code": "ROUTE_NOT_FOUND", "message": "静态资源不存在" } }
 ```
 
-依据：框架静态层自己写响应；`http_app.cj:2698-2700` 明确"不为它 fork 框架"。
-⚠ 与形状 (3) 的区别是**前缀**：`/api/v1/**` 未命中 → 信封 (3)；`/admin/**` 静态未命中 → 平铺 (4)。`/` 也是 404。
+依据：`http_app.cj:3027` 把 `staticOpts.notFoundBody` 注成信封（`static.cj` 的 `notFoundBody` 本来就是可配项），
+**仍然不 fork 框架** —— 原注释"不为它 fork 框架"现在读作"用框架的可配项解决，所以不必 fork"。
+⚠ 与形状 (3) 的区分**只剩 `message`**：`/api/v1/**` 未命中 → `接口不存在：GET /api/v1/…`；
+`/admin/**` 静态未命中 → `静态资源不存在`。**两者的 `error.code` 都是 `ROUTE_NOT_FOUND`**，不要靠 code 区分前缀。`/` 也是 404。
+⚠ 历史（**已作废**）：改前是静态层自己写的平铺 `{"error":"Not Found"}`。
 
-**(5) 方法不允许** —— HTTP **405**、**平铺**、并带 `allow` 响应头（`router.cj:227-231`）：
+**(5) 方法不允许** —— HTTP **405**、走**信封**（2026-10-17 起），并带 `allow` 响应头（`router.cj`）：
 
 ```json
-{"error":"Method Not Allowed","allow":"GET"}
+{ "ok": false, "error": { "code": "METHOD_NOT_ALLOWED", "message": "Method Not Allowed（允许的方法：GET）" } }
 ```
 
-⚠ 这是旧版文档**完全没写**的一种形状（实测于 `PUT /health`）。用错方法时**没有** `ok` / `error.code` 可读，只能靠 `allow` 猜正确方法。
+⚠ **`allow: GET` 响应头仍在**，但**体里不再有 `allow` 字段** —— 正确方法只能从响应头读。
+⚠ 历史（**已作废**）：改前是平铺 `{"error":"Method Not Allowed","allow":"GET"}`（`allow` 在**体**里）。
 
-> **这些形状现在都是可执行契约**：`contract/examples/*.json` 逐字节钉住了上面四种失败形状 + `/health`
-> （`server/tests/contract-check.ps1` 会在形状漂移时失败）。本节文字解释**语义**，`contract/` 才是**形状的权威**。
+**(6) 请求体过大** —— HTTP **413**、走**信封**（2026-10-17 起）：
+
+```json
+{ "ok": false, "error": { "code": "VALIDATION_FAILED", "message": "请求体过大，超出服务端允许的上限" } }
+```
+
+触发点有两层：外层 `contentLengthLimit(64 * 1024)`（按 `Content-Length` 预检，`http_app.cj:2930`）
+与内层 `bodyParser`（框架默认 1 MiB，兜 chunked）。文案刻意**不写具体数字** —— 两层上限不同，
+写死任何一个都会在另一个出口上撒谎（`http_common.cj:414-425`）。
+
+**(7) Range 超出文件大小** —— HTTP **416**、走**信封**（2026-10-17 起），仍带 `content-range: bytes */<文件大小>`：
+
+```json
+{ "ok": false, "error": { "code": "RANGE_NOT_SATISFIABLE", "message": "Range 请求超出文件大小" } }
+```
+
+**改前 → 改后对照表（2026-10-17，真机 `127.0.0.1:8091` 实测）**
+
+| 场景 | HTTP | 改前（**已作废**，只作历史） | 改后（当前，逐字） |
+| --- | --- | --- | --- |
+| 请求体不是合法 JSON（`POST /api/v1/auth/login`，体为 `{`） | 400 | `{"code":400,"message":"Invalid JSON body","data":null}` | `{"ok":false,"error":{"code":"VALIDATION_FAILED","message":"请求体不是合法 JSON"}}` |
+| 请求体过大（> 64 KiB，外层 `Content-Length` 闸门） | 413 | `{"code":413,"message":"Request body too large","data":null}` | `{"ok":false,"error":{"code":"VALIDATION_FAILED","message":"请求体过大，超出服务端允许的上限"}}` |
+| 方法不允许（`PUT /health`） | 405 | `{"error":"Method Not Allowed","allow":"GET"}`（`allow` 在**体**里） | `{"ok":false,"error":{"code":"METHOD_NOT_ALLOWED","message":"Method Not Allowed（允许的方法：GET）"}}` + **响应头** `allow: GET` |
+| API 路径未匹配（`GET /api/v1/nope`） | 404 | `{"error":"Not Found","path":"/api/v1/nope"}`（**2026-10-15 之前**；兜底中间件加进来后已改信封 404） | `{"ok":false,"error":{"code":"ROUTE_NOT_FOUND","message":"接口不存在：GET /api/v1/nope"}}` |
+| 静态文件未命中（`GET /admin/no-such-file.js`） | 404 | `{"error":"Not Found"}`（`content-type: application/json`，**无 charset**） | `{"ok":false,"error":{"code":"ROUTE_NOT_FOUND","message":"静态资源不存在"}}`，`content-type: application/json`（**仍无 charset**） |
+| Range 超出文件大小（`Range: bytes=99999999-` `GET /admin/js/api.js`） | 416 | `{"error":"Range Not Satisfiable"}` | `{"ok":false,"error":{"code":"RANGE_NOT_SATISFIABLE","message":"Range 请求超出文件大小"}}`，带 `content-range: bytes */7941` |
+
+**实现方式（为什么不再有平铺体）**：框架加**可注入点**、应用把自己的信封装进去，
+**框架默认值不变**（框架自己的自测/手工清单仍走平铺）：
+
+* `server/third_party/qingzhou/src/router.cj`：新增 `Router.errorBody: (Int64, String) -> String`
+  （默认 `defaultRouterErrorBody`），5 处硬编码体改用它。
+* `server/third_party/qingzhou/src/static.cj`：`StaticOptions` 新增 `rangeNotSatisfiableBody`
+  （原 416 体硬编码）；`notFoundBody` / `forbiddenBody` 本来就有。
+* `server/src/http_app.cj` 注入：405 → `METHOD_NOT_ALLOWED`（`http_app.cj:2914-2917`）、
+  其余路由 404 → `ROUTE_NOT_FOUND`、静态 404 → `ROUTE_NOT_FOUND`、静态 403 → `FORBIDDEN_ROLE`、
+  静态 416 → `RANGE_NOT_SATISFIABLE`（`http_app.cj:3027-3030`）；
+  `.use(bodyParser(hospitalBodyParserOptions()))` 管非法 JSON；
+  `.use(contentLengthLimit(hospitalContentLengthLimitOptions(64 * 1024)))` 管 413。
+* `server/src/http_common.cj`：新增 `errorEnvelopeString(code, message, fields)`（`:377`）、
+  `hospitalBodyParserError`（`:413`）、`hospitalBodyParserOptions`（`:440`）、
+  `hospitalContentLengthLimitOptions`（`:456`）；`apiErrorSpec` 新增 `METHOD_NOT_ALLOWED`(405) / `RANGE_NOT_SATISFIABLE`(416)。
+
+> **这些形状现在都是可执行契约**：`contract/examples/*.json` 逐字节钉住了上面六种失败场景 + `/health`
+> （`server/tests/contract-check.ps1` 会在形状漂移时失败）。本节文字解释**语义**，`contract/` 才是**形状的权威**
+> （变更记录见 `contract/CHANGELOG.md` 的 2026-10-17 条）。
 
 **推荐解析顺序（ArkTS / TypeScript 伪代码）**：
 
@@ -236,25 +295,30 @@ Invoke-RestMethod http://127.0.0.1:8091/health
 type Envelope = { ok?: boolean; data?: any; error?: any; code?: number; message?: string; allow?: string };
 
 function unwrap(res: Envelope): any {
-  // ① 先判 ok 字段存不存在 —— 不存在 ⇒ 框架/静态层的平铺响应（形状 2 / 4 / 5），没有业务码可读
-  if (res.ok !== true && res.ok !== false) {
-    if (typeof res.code === 'number') throw new ApiError('HTTP_' + res.code, res.message ?? '请求体不是合法 JSON');
-    if (res.error === 'Method Not Allowed') throw new ApiError('HTTP_405', `方法不允许，应为 ${res.allow ?? '?'}`);
-    if (res.error === 'Not Found') throw new ApiError('HTTP_404_STATIC', '静态资源不存在');
-    throw new ApiError('HTTP_UNKNOWN', '响应格式未知');
-  }
-  // ② 有 ok:false ⇒ 本项目的错误信封（含 API 未匹配路由 ROUTE_NOT_FOUND）
+  // ① 主力分支：唯一的错误形状 = 本项目的信封（含框架层改写的 400 / 静态 404 / 405，以及 413、416 与 API 未匹配路由）
   if (res.ok === false) {
     const e = res.error ?? {};
     throw new ApiError(e.code ?? 'UNKNOWN', e.message ?? '', e.fields);
   }
-  // ③ ok:true
-  return res.data;
+  // ② ok:true —— 成功信封（/health 是特例，见下）
+  if (res.ok === true) {
+    return res.data;
+  }
+  // ③ 可选回退：ok 字段**缺席** ⇒ 旧服务端 / 旧框架（2026-10-17 之前）的平铺体。
+  //    这只是为了兼容尚未升级的服务端，不是"要处理的一套形状"；新服务端不会走到这里。
+  return parseLegacyFlat(res);
 }
 ```
 
-> `/health` 是**第四种**形状（平铺、有 `ok:true` 但没有 `data`）——用上面的 `unwrap` 会返回 `undefined`。
-> 建议 `health()` 单独解析，不要复用同一个解析器。
+> **回退分支是故意保留的**：`common-core/src/main/ets/network/HttpClient.ets:143-153` 的
+> `parseFrameworkError()` 就是这个回退（`HttpClient.ets:113-116` 只在 `ok` **缺席**时进入）。
+> 它认的是旧框架的 `{"code":400,"message":"Invalid JSON body"}` / `{"error":"Not Found","path":…}`
+> —— 2026-10-17 起服务端不再发这些形状，但**不能删**：删了就变成"遇到旧服务端一律报响应格式非法"。
+> 新写客户端时可以先不实现 ③，等确认服务端版本后再决定。
+
+> `/health` **不是**第四种失败形状，而是**成功形状里的特例**：它有 `ok:true`、但**没有 `data`**
+> ——用上面的 `unwrap` 会返回 `undefined`。建议 `health()` 单独解析，不要复用同一个解析器。
+> 错误形状现在只有**一种**（上文的信封）。
 
 ### 3.3 HTTP 状态码 vs 业务码
 
@@ -294,7 +358,7 @@ function unwrap(res: Envelope): any {
 | 请求体上限 | 外层 `contentLengthLimit(64 * 1024)`：`Content-Length > 64 KiB` → **413**（`http_app.cj:1602`）；内层 `bodyParser()` 兜底 **1 MiB**（`bodyparser.cj:36`），用于没有 `Content-Length` 的 chunked 请求（`http_app.cj:1603-1614`） |
 | 超时 | `timeout(15000)`。⚠ **它不会打断已进入的同步 handler**：handler 没写响应时补一个 **408**，已写响应则只附加 `x-timeout-ms` 头（`http_app.cj:1617-1630`）。**客户端自己设超时更可靠** |
 | CORS | `cors()` 已启用，默认 `access-control-allow-origin: *`、暴露 `X-Request-Id`（`cors.cj:32-55`）。⚠ **请求体非法 JSON** 那条 400 由 `bodyParser` 在 `cors()` 之前短路 ⇒ **不带 CORS 头**（`http_app.cj:1602-1616` 的中间件顺序 + `bodyparser.cj:68-73` 的 `return`）。做 Web 前端时这条会影响跨域下读错误体 |
-| 未匹配路由 | **API** 路径（`/api/v1/**`）→ 信封 404 `ROUTE_NOT_FOUND`（见 §3.2 形状 3）；**静态**路径（`/admin/**`）→ 平铺 404 |
+| 未匹配路由 | **API** 路径（`/api/v1/**`）→ 信封 404 `ROUTE_NOT_FOUND`（message「接口不存在：GET /…」，见 §3.2 形状 3）；**静态**路径（`/admin/**`）→ **也是**信封 404 `ROUTE_NOT_FOUND`（message「静态资源不存在」，见 §3.2 形状 4） |
 
 ---
 
@@ -352,7 +416,8 @@ function unwrap(res: Envelope): any {
 | HTTP | code | 触发 |
 | --- | --- | --- |
 | 400 | `VALIDATION_FAILED` | 缺字段 / 空字段 / 字段名写错（`error.message` 指明是哪个字段） |
-| 400 | （平铺形状） | 请求体不是合法 JSON → `{"code":400,"message":"Invalid JSON body","data":null}`（见 §3.2） |
+| 400 | `VALIDATION_FAILED` | 请求体不是合法 JSON → `{"ok":false,"error":{"code":"VALIDATION_FAILED","message":"请求体不是合法 JSON"}}`（见 §3.2 形状 2） |
+| 413 | `VALIDATION_FAILED` | 请求体超过上限（外层 `Content-Length > 64 KiB` 或内层流式读入超 1 MiB）→ message 是「请求体过大，超出服务端允许的上限」（见 §3.2 形状 6） |
 | 401 | `AUTH_BAD_CREDENTIALS` | 账号不存在**或**口令错误**或**账号被停用（服务端刻意不区分，防枚举；`http_app.cj:792-797`、`auth_repo.cj:618-641`） |
 | **429** | `AUTH_RATE_LIMITED` | 连续失败达到 `LOGIN_FAIL_LIMIT = 5` 次（`auth_repo.cj:90`）。**响应头带 `retry-after: <剩余秒数>`**（至少 1 s，`http_app.cj:789`、`auth_repo.cj:381-386`） |
 
@@ -924,8 +989,8 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | 404 + `PREVISIT_NOT_FOUND` | 会话过期/不属于你/被回收 | 回退到开新会话（复用逻辑见 §7.3） |
 | 404 + `EMR_NOT_FOUND` | 病历还没提交 | 显示「尚未提交」 |
 | 404 + `ROUTE_NOT_FOUND` | **API 路径拼错了**（信封形状） | 检查路径（这是 bug，不是业务态） |
-| 404 平铺 `{"error":"Not Found"}` | 静态资源不存在（只在 `/admin/**` 出现） | 检查静态文件（App 端不该遇到） |
-| 405 平铺 `{"error":"Method Not Allowed","allow":…}` | **HTTP 方法用错了** | 检查方法；`allow` 就是服务端接受的方法 |
+| 404 + `ROUTE_NOT_FOUND`（message「静态资源不存在」） | 静态资源不存在（只在 `/admin/**` 出现） | 检查静态文件（App 端不该遇到） |
+| 405 + `METHOD_NOT_ALLOWED`（`allow` 在**响应头**，体里没有） | **HTTP 方法用错了** | 检查方法；`allow` 响应头就是服务端接受的方法 |
 | 409 + `SLOT_GONE` | 号没了 | 刷新号源列表 |
 | 429 + `AUTH_RATE_LIMITED` | 登录被限流 | 读 `retry-after` 倒计时 |
 
@@ -1945,13 +2010,18 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 
 ### 8.4 `SLOT_GONE` 的正确处置
 
-* 409 `SLOT_GONE` = 号源被抢完（`remain_num = 0` 或并发抢光）。
-* **刷新号源列表**，不要自己重试：`book()` 对"扣号返回 0 行"是**直接返回 SlotGone**，
-  并不重试（`domain_booking.cj:694-701`），重试只会拿到同样的结果。
-* 注意：`tryDeductSlot` 的 SQL 条件是 `remain_num > 0 AND enabled = 1`（`domain_booking.cj:459-465`），
-  所以**停用的排班**也会表现为 `SLOT_GONE`（而不是 `SCHEDULE_NOT_FOUND`）：
-  `findSchedule` 命中但 `enabled = false` 时 `book()` 返回 `ScheduleNotFound`（`domain_booking.cj:630-633`），
-  而"读到时 enabled=1、扣减时被改成 0"会落到 `SLOT_GONE`。两种都要能用 UI 表达。
+* 409 `SLOT_GONE` = **号源被抢完**（`remain_num = 0` 或并发抢光）。
+* **刷新号源列表**，不要自己重试：`book()` 对"扣号返回 0 行"**不重试**
+  （`domain_booking.cj:941-946` 的注释写明理由），重试只会拿到同样的结果。
+* 404 `SCHEDULE_NOT_FOUND` = 这个排班**根本不可售**：停诊（`enabled = 0`）、
+  科室或医生被停用、已过就诊日、放号数被改成 0。
+  判据是同一条可售谓词 `bookingSchedulePredicate`（`domain_booking.cj:104-113`）：
+  入口判一次（`findBookableSchedule`，`:875-877`），**扣号 0 行后再判一次**（`:968-971`）。
+* ⚠ **2026-10-17 更正**（本行此前写反了）："读到时 `enabled=1`、扣减时被改成 0"
+  这条竞态**也回 404 `SCHEDULE_NOT_FOUND`**，不再落到 `SLOT_GONE` ——
+  后者语义是"被别人抢走了"，把它用在"排班被停掉"上会误导患者去刷新重试。
+* 两种都要能用 UI 表达：`SLOT_GONE` ⇒ "号源已被抢完"；`SCHEDULE_NOT_FOUND` ⇒
+  "该排班已停诊 / 不存在"；动作都是**回到列表刷新**。
 
 ---
 
@@ -2191,7 +2261,7 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 | SSE **原始字节**逐字节核对（`\n\n` 的字节序列、汉字跨 chunk 切分） | **由脚本断言覆盖**（帧计数 + 每帧 1 行 + 空行分隔），**无独立手工原始字节证据** |
 | `POST /previsit/answer` **空值语义**（空串不落库、不推进 `turn`） | **由脚本断言覆盖**，无独立手工证据（源码 `previsit.cj:451-460`） |
 | 挂号**幂等重放**与**退号后 token 复用** | **由脚本断言覆盖**（`stress-booking` 的重复提交用例、`p1-extra-check` 的退号用例），无独立手工证据 |
-| §3.2 的"非法 JSON 平铺 400"与"未知路径平铺 404" | **源码级**（`bodyparser.cj:50-54`、`router.cj:202-212`）确认，但**未在本次实测中手工复现** |
+| §3.2 的"非法 JSON 平铺 400"与"未知路径平铺 404"（**当时**的形状） | 2026-10-11 为**源码级**确认（`bodyparser.cj:50-54`、`router.cj:202-212`），未在本次实测中手工复现。★ **2026-10-17 后续结论**：两种都已是统一信封（平铺体作废），并已由真机实测覆盖 —— 见 §3.2 的「改前 → 改后对照表」 |
 | §3.5 的"非法 JSON 的 400 不带 CORS 头" | **源码级**推理（`bodyParser` 在 `cors()` 之前短路），**未实测** |
 
 ---
@@ -2212,14 +2282,15 @@ curl -s -X POST http://127.0.0.1:8091/api/v1/auth/login \
 # 3) 带令牌查身份
 curl -s http://127.0.0.1:8091/api/v1/auth/me -H "Authorization: Bearer <token>"
 
-# 4) 故意打错路径 —— 看平铺 404（对比业务 404 的形状差异）
+# 4) 故意打错路径 —— 看信封 404 ROUTE_NOT_FOUND（与业务 404 只差 code）
 curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer <token>"
 ```
 
 ### 13.2 三个"后人必踩"的工具坑
 
 1. **PowerShell 里把含双引号的 JSON 直接交给 `curl.exe` 会被剥引号** ⇒ 服务端回
-   `{"code":400,"message":"Invalid JSON body","data":null}`（就是 §3.2 的形状 2）。
+   `{"ok":false,"error":{"code":"VALIDATION_FAILED","message":"请求体不是合法 JSON"}}`（就是 §3.2 的形状 2；
+   2026-10-17 之前这里是平铺 `{"code":400,"message":"Invalid JSON body","data":null}`）。
    必须写进文件再 `--data-binary "@文件"`，或干脆用 `Invoke-RestMethod -Body (@{…} | ConvertTo-Json -Compress)`。
 2. **PowerShell 的数组 splat `@a` 是位置传参**，**不能**用来传 `-Base` / `-Dsn` / `-AdminPw` 这类**命名**参数。
    要传命名参数请用**哈希表** splat `@params`（`$params = @{ Base = …; Dsn = … }`）。
@@ -2239,7 +2310,7 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 | 401 | `AUTH_TOKEN_EXPIRED` | 登录已过期，请重新登录 | ✅（令牌无效**或**过期；message 会被覆盖成「令牌无效或已过期，请重新登录」`http_app.cj:314-315`） |
 | 429 | `AUTH_RATE_LIMITED` | 登录失败次数过多，请稍后再试 | ✅（登录，带 `retry-after`） |
 | 403 | `FORBIDDEN_ROLE` | 当前角色无权执行此操作 | ✅（用非患者账号登了患者端；退别人的单） |
-| 400 | `VALIDATION_FAILED` | 参数校验失败（**具体原因在 `error.message`**） | ✅ |
+| 400 | `VALIDATION_FAILED` | 参数校验失败（**具体原因在 `error.message`**）；**`413` 请求体过大也用这个 code**，message 是「请求体过大，超出服务端允许的上限」（§3.2 形状 6，2026-10-17 起） | ✅ |
 | 404 | `SCHEDULE_NOT_FOUND` | 排班不存在或已停诊 | ✅ |
 | 409 | `SLOT_GONE` | 号源已被抢完，请选择其它排班 | ✅ |
 | 404 | `APPOINTMENT_NOT_FOUND` | 挂号单不存在 | ✅ |
@@ -2251,7 +2322,9 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 | 409 | `EMR_CHANGED` | 病历已被他人修改（乐观锁：请求里的 `expected_updated_at` 不是当前版本）—— **`error.fields` 带 `{updated_at, updated_by, record_id}`**（2026-10-15 起真的会带，§5.30.2） | ❌（医生端） |
 | 409 | `EMR_NOT_LOCKED` | 完成就诊前必须先提交锁定病历 | ❌（医生端） |
 | 409 | `VISIT_BAD_STATE` | 当前就诊状态不允许该操作 | ❌（医生端） |
-| 404 | `ROUTE_NOT_FOUND` | 接口不存在 | ✅（**2026-10-15 起真的会被抛**：兜底中间件把未匹配的 `/api/v1/**` 改写成它，`http_app.cj:2684-2706`；旧版"实现里未见"的说法已作废） |
+| 404 | `ROUTE_NOT_FOUND` | 接口不存在 / **静态资源不存在**（**同一个 code**，靠 `message` 区分） | ✅（**2026-10-15 起真的会被抛**：兜底中间件把未匹配的 `/api/v1/**` 改写成它，`http_app.cj:3054-3057`；2026-10-17 起静态层未命中也是它；旧版"实现里未见"的说法已作废） |
+| 405 | `METHOD_NOT_ALLOWED` | Method Not Allowed（允许的方法：GET）—— **`allow` 在响应头，体里没有 `allow` 字段**（2026-10-17 新增，§3.2 形状 5） | ✅（HTTP 方法用错） |
+| 416 | `RANGE_NOT_SATISFIABLE` | Range 请求超出文件大小（带 `content-range: bytes */<文件大小>`；2026-10-17 新增，§3.2 形状 7） | ❌（静态层断点续传路径） |
 | 409 | `SLOT_NOT_RESTORED` | 已退号，但号源归还异常，请联系人工处理 | ❌ **死条目**：登记在表里但当前实现路径**不抛**（归还失败走 200 + `warning`，`http_app.cj:1501-1512`） |
 | 404 | `USER_NOT_FOUND` | 账号不存在 | ❌（管理端） |
 | 409 | `USER_EXISTS` | 登录名已存在 | ❌（管理端） |
@@ -2267,11 +2340,15 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 | 500 | *（任何未登记码，含 `INTERNAL` / `INTERNAL_ERROR` / `KB_WRITE_FAILED`）* | 服务器内部错误 | ✅（兜底） |
 
 > ⚠ **不存在** `AUTH_TOKEN_INVALID` 这个码（见 §11 第 5 条）。
-> ⚠ 框架/静态层还有**四个非本表**的响应形状（都登记进契约样例了）：
-> **400 `Invalid JSON body`**（平铺）、**404 `Not Found`**（平铺，**只有静态路径** `/admin/**`）、
-> **405**（方法不匹配，平铺 `{"error":"Method Not Allowed","allow":"…"}`，`router.cj:227-231`）、
-> **413**（body 超 64 KiB / 1 MiB）、**408**（handler 超时且未写响应，`http_app.cj:1617-1630`）。
-> ⚠ 注意 **API 路径**未匹配**不属于**上面这一组：它是信封 404 `ROUTE_NOT_FOUND`（§3.2 形状 3）。
+> ⚠ **2026-10-17 更新**：框架/静态层不再输出"非本表形状"—— 下列各条的**主体都是统一信封**，
+> 只是触发点在框架层：
+> **400 `VALIDATION_FAILED`**（请求体不是合法 JSON）、**404 `ROUTE_NOT_FOUND`**（`静态资源不存在`，
+> **只有静态路径** `/admin/**`）、**405 `METHOD_NOT_ALLOWED`**（`allow` 在**响应头**）、
+> **413 `VALIDATION_FAILED`**（body 超 64 KiB / 1 MiB）、**416 `RANGE_NOT_SATISFIABLE`**（Range 超出文件大小）。
+> `METHOD_NOT_ALLOWED` / `RANGE_NOT_SATISFIABLE` 已登记进本表（`http_common.cj:163-168`）。
+> ⚠ **例外是 408**：handler 超时且未写响应时，`timeout(15000)` 补的是**纯文本** `Request Timeout`
+> （`timeout.cj:46-48`）—— 既不是信封、也不在本表，客户端按网络层失败处理。
+> ⚠ **API 路径未匹配与静态未命中是同一个 code** `ROUTE_NOT_FOUND`，只能靠 `message` 区分（§3.2 形状 3 / 4）。
 
 ### 14.2 逐字 `error.message` 速查（仅供兜底展示）
 
@@ -2401,11 +2478,11 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 // 业务错误
 { "ok": false, "error": { "code": "SLOT_GONE", "message": "号源已被抢完，请选择其它排班" } }
 
-// 框架层：请求体不是合法 JSON（平铺，无 ok / 无 error）
-{ "code": 400, "message": "Invalid JSON body", "data": null }
+// 框架层：请求体不是合法 JSON（2026-10-17 起走信封）
+{ "ok": false, "error": { "code": "VALIDATION_FAILED", "message": "请求体不是合法 JSON" } }
 
-// 框架层：路径不匹配（平铺，回显 path）
-{ "error": "Not Found", "path": "/api/v1/aprpointments" }
+// 框架层：路径不匹配（2026-10-17 起走信封，不再回显 path）
+{ "ok": false, "error": { "code": "ROUTE_NOT_FOUND", "message": "接口不存在：GET /api/v1/aprpointments" } }
 ```
 
 ---
@@ -2418,8 +2495,9 @@ base        http://127.0.0.1:8091                     （默认端口其实是 8
 鉴权        Authorization: Bearer <64hex>             （头名/Bearer 前缀大小写不敏感）
 成功        {"ok":true,"data":{…}}         200 / 201
 失败        {"ok":false,"error":{code,message,fields?}}
-框架失败    {"code":400,"message":"Invalid JSON body","data":null}
-            {"error":"Not Found","path":"/api/v1/…"}
+框架失败    同上（信封）—— 非法 JSON 400 VALIDATION_FAILED / 静态 404 ROUTE_NOT_FOUND /
+            405 METHOD_NOT_ALLOWED（allow 在响应头）/ 413 VALIDATION_FAILED / 416 RANGE_NOT_SATISFIABLE
+            （2026-10-17 起；此前的平铺体 {"code":400,…} / {"error":"Not Found"} 已作废）
 SSE         data: {"event":"meta|delta|done","data":{…}}\n\n  严格按 \n\n 分帧、整段解码
 挂号        client_token 幂等键：重放 → 200，首次 → 201；换号源 = 换 token
 退号        永远 200，成功看 data.status==='cancelled'；slot_restored:false 要提示 warning
@@ -2428,7 +2506,7 @@ SSE         data: {"event":"meta|delta|done","data":{…}}\n\n  严格按 \n\n �
 401         清 token → 登录页
 429         读 retry-after 做倒计时（同一窗口内会递减）
 403         用非患者账号登了患者端 ⇒ 提示"本 App 仅面向患者"
-拼错路径    平铺 404 ⇒ 这是 bug，不是业务态
+拼错路径    信封 404 ROUTE_NOT_FOUND ⇒ 这是 bug，不是业务态
 ```
 
 ---

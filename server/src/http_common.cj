@@ -89,6 +89,14 @@ public func apiErrorSpec(code: String): (Int64, String) {
     if (code == "SCHEDULE_NOT_FOUND") {
         return (404, "排班不存在或已停诊")
     }
+    /*
+     * ★ 2026-10-17 增：同一医生同一天同一时段不能建两条排班。
+     * ⚠ 与 `SCHEDULE_NOT_FOUND` 分开：这条**不是**找不到，而是"已经有了、去改它"。
+     *   压成 404「排班不存在」会让调用方以为要重试 —— 而重试**永远建不出来**。
+     */
+    if (code == "SCHEDULE_EXISTS") {
+        return (409, "该医生在该时段的排班已存在，请直接修改已有排班")
+    }
     if (code == "APPOINTMENT_NOT_FOUND") {
         return (404, "挂号单不存在")
     }
@@ -126,8 +134,37 @@ public func apiErrorSpec(code: String): (Int64, String) {
     if (code == "APPOINTMENT_NOT_CANCELLABLE") {
         return (409, "该挂号单当前状态不允许退号（只有「已挂号」可以退）")
     }
+    /*
+     * ★ 2026-10-17 增：状态没问题（仍是 `booked`），但**病历已定稿**。
+     *
+     * ⚠ 与 `APPOINTMENT_NOT_CANCELLABLE` **必须分开**：处置完全不同 ——
+     *   那条是"刷新看看"，这条是"刷新永远没用，要先把病历定稿状态处理掉"。
+     * ⚠ 必须登记在这里，否则落到兜底 `(500, "服务器内部错误")` ——
+     *   那就是上面 135-142 行记过的那个坑（正常业务拒绝被报成服务端故障）。
+     */
+    if (code == "APPOINTMENT_RECORD_LOCKED") {
+        return (409, "该挂号单的病历已定稿，不能退号")
+    }
     if (code == "ROUTE_NOT_FOUND") {
         return (404, "接口不存在")
+    }
+    /*
+     * ★ 2026-10-17（S14 修）增：框架层两条错误也纳入同一张码表。
+     *
+     * 为什么"用不到"也要登记：这张表是**客户端可见 code 集合**的唯一来源
+     *   （文件顶部与下面 P4 那段都强调过"新错误码必须在这里登记"）。
+     *   路由器 405 与静态层 416 从今天起会以本项目的信封发出去，客户端因此会
+     *   真的看到这两个 code —— 不登记就等于让 `code` 集合出现表外成员，
+     *   而这正是先前"落到兜底 500"那个坑的同源问题。
+     * ⚠ 实际响应文案由调用处决定（router 的 errorBody 钩子会把"允许的方法/路径"
+     *   拼进 message、静态层用可配 body 字符串），这里的文案只是
+     *   `apiError("METHOD_NOT_ALLOWED")` 这种直接调用时的兜底。
+     */
+    if (code == "METHOD_NOT_ALLOWED") {
+        return (405, "该接口不支持此请求方法")
+    }
+    if (code == "RANGE_NOT_SATISFIABLE") {
+        return (416, "请求的字节范围超出文件大小")
     }
     /*
      * ★ P4（2026-10-07）：病历与接诊的四个错误码。
@@ -325,19 +362,102 @@ func sendEnvelope(ctx: Context, status: Int64, data: JsonObject): Unit {
     ctx.status(status).json(root.toString())
 }
 
-/* 统一失败响应。 */
-public func sendError(ctx: Context, e: ApiError): Unit {
+/*
+ * 统一失败信封的**字符串**形式（2026-10-17 抽出）。
+ *
+ * 为什么必须抽出来：失败信封此前只在 `sendError(ctx, e)` 里拼一次 —— 而那是一条
+ *   **往 ctx 写出**的路径。但有两处错误响应**不经过 ctx 写出**、只接受一个字符串：
+ *     · 路由器直接写出的 404/405（`router.cj` 的 `errorBody` 钩子，见 http_app.cj 的装配处）；
+ *     · 静态层的 404/403/416（`static.cj` 的 `notFoundBody` / `forbiddenBody` /
+ *       `rangeNotSatisfiableBody`）。
+ *   若各处各拼各的，信封形状就会有第二、第三处定义，迟早漂移 —— 而这类漂移正是
+ *   本次 S14 的来源（框架三处错误体各写各的形状，客户端要写三套解析）。
+ *   ⇒ 定义收敛到这里，`sendError` 与两个钩子共用同一份。
+ */
+public func errorEnvelopeString(code: String, message: String, fields: ?JsonObject): String {
     let err = JsonObject()
-    err.put("code", JsonString(e.code))
-    err.put("message", JsonString(e.message))
-    match (e.fields) {
+    err.put("code", JsonString(code))
+    err.put("message", JsonString(message))
+    match (fields) {
         case Some(f) => err.put("fields", f)
         case None => ()
     }
     let root = JsonObject()
     root.put("ok", JsonBool(false))
     root.put("error", err)
-    ctx.status(e.status_).json(root.toString())
+    return root.toString()
+}
+
+/* 统一失败响应。 */
+public func sendError(ctx: Context, e: ApiError): Unit {
+    ctx.status(e.status_).json(errorEnvelopeString(e.code, e.message, e.fields))
+}
+
+/*
+ * ★ 2026-10-17：body parser 的错误出口也走**统一信封**。
+ *
+ * 背景（实测抓到的契约违反）：框架的 `defaultBodyParserError`
+ *   （third_party/qingzhou/src/bodyparser.cj:50-54）自己写
+ *   `{"code":400,"message":"Invalid JSON body","data":null}` —— 既没有 `ok` 字段，
+ *   也没有 `error` 对象。而客户端严格按三段式信封读 `ok` / `error.code`
+ *   （契约见 docs/HARMONY-INTERFACE-GUIDE.md；common-core 的 `HttpClient.parseResponse`
+ *   也是这么实现的），于是"请求体不是合法 JSON"这种**客户端自己就能修**的错误，
+ *   在界面上会退化成一个与真因毫无关系的报错。
+ *
+ * ⚠ 为什么必须在**挂中间件**这一层换掉，而不能改 handler：
+ *   body parser 在进入 handler **之前**就回应了并短路（`handleJson` 返回 false
+ *   后不调 next），所以业务层里那套正确写法（`http_app.cj` 的 `bodyObj()`
+ *   → `ctx.bodyJsonError()` → `VALIDATION_FAILED`）**根本执行不到**。
+ * ⚠ 复用 `sendError`：任何出口的信封形状只允许有**一处**定义。
+ */
+public func hospitalBodyParserError(ctx: Context, status: Int64, message: String): Unit {
+    /*
+     * 框架传的是英文短语，这里按状态给中文文案。
+     * ⚠ 413 的文案刻意**不写具体数字**：同一个 onError 被两处复用 ——
+     *   外层 `contentLengthLimit(64 KiB)`（按 Content-Length 预检）与
+     *   内层 `bodyParser`（默认 1 MiB，兜 chunked），两个上限不同，
+     *   写死任何一个数字都会在另一个出口上撒谎。
+     */
+    let msg = if (status == 413) {
+        "请求体过大，超出服务端允许的上限"
+    } else {
+        "请求体不是合法 JSON"
+    }
+    /* 原始英文短语只进服务端日志，不进响应体 —— 免得客户端里混两种语言。 */
+    println("[BODY] 请求体被中间件拒绝：status=" + status.toString() + " framework=" + message)
+    sendError(ctx, ApiError("VALIDATION_FAILED", status, msg, None))
+}
+
+/*
+ * body parser 的选项：把错误出口换成统一信封后交给 `bodyParser(...)`。
+ *
+ * ⚠ 为什么要有这个工厂函数：`BodyParserOptions.onError` 是**可变字段**，
+ *   给字段赋值需要一个"有名字的落点"（`let o = BodyParserOptions(); o.onError = f`）。
+ *   集中在这里也便于以后调 `maxBytes`（当前沿用框架默认 1 MiB）。
+ * 📌 本项目 37 个业务文件全部声明 `package qingzhou`（与服务端框架**同包同编**），
+ *   所以这里不需要 import —— `BodyParserOptions` 直接可见。
+ */
+public func hospitalBodyParserOptions(): BodyParserOptions {
+    let opts = BodyParserOptions()
+    opts.onError = hospitalBodyParserError
+    return opts
+}
+
+/*
+ * 外层 `contentLengthLimit` 闸门的选项：同样换成统一信封，并保留原有的 64 KiB 上限。
+ *
+ * ⚠ 这是 S14 的**第二处**出口，容易漏：`http_app.cj` 原先调的是便利函数
+ *   `contentLengthLimit(maxBytes)`（bodyparser.cj:168-172），它在内部 new 了
+ *   `ContentLengthLimitOptions()` 走**默认** `onError`，于是 413 仍回
+ *   `{"code":413,"message":"Request body too large","data":null}` —— 实测抓到的残留。
+ *   便利函数不接受 onError，所以这里必须自己组 opts。
+ * 📌 `onIndeterminate` 保持默认 Pass（无 Content-Length 时放行，交给内层兜底）。
+ */
+public func hospitalContentLengthLimitOptions(maxBytes: Int64): ContentLengthLimitOptions {
+    let opts = ContentLengthLimitOptions()
+    opts.maxBytes = maxBytes
+    opts.onError = hospitalBodyParserError
+    return opts
 }
 
 /*

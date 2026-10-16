@@ -303,6 +303,8 @@ const failed = consoleErrors.length + exceptions.length + badResponses.length + 
 
 **修法**：探测判据换成"存在且为目录"并打印解析后的绝对路径；缺失时按 `--prod` 直接失败退出（否则至少 `exit 1`）；框架级 404 复用 `ROUTE_NOT_FOUND`。
 
+> ⚠ 2026-10-17 更新：框架层三种平铺错误体（非法 JSON 400 / 静态 404 / 405）已统一为项目信封；见 contract/CHANGELOG.md 与 docs/FRONTEND-INTEGRATION.md §3.2。（本节 D6 记录的"框架兜底 404 是平铺体"同样已作废：`ROUTE_NOT_FOUND` 现在既覆盖 API 未命中，也覆盖静态未命中。）
+
 ### D7 ⚠ CLI 退出码与 usage 不一致
 
 - `main.cj:1127-1130`：无参数 `usage(); return 0`，而 `badcmd`/`--help` 都是 `return 2` ⇒ CI 用 `$LASTEXITCODE` 判"是否成功运行"时，无参调用被判成功。

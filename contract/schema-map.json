@@ -3,10 +3,10 @@
   "file": ["artifact"],
   "map": {
     "health-200": { "body": ["health"] },
-    "error-invalid-json-400": { "body": ["flat-error"] },
+    "error-invalid-json-400": { "body": ["envelope-error"], "error_code": "VALIDATION_FAILED" },
     "error-route-not-found-404": { "body": ["envelope-error"], "error_code": "ROUTE_NOT_FOUND" },
-    "error-method-not-allowed-405": { "body": ["method-not-allowed"] },
-    "error-static-not-found-404": { "body": ["static-not-found"] },
+    "error-method-not-allowed-405": { "body": ["envelope-error"], "error_code": "METHOD_NOT_ALLOWED" },
+    "error-static-not-found-404": { "body": ["envelope-error"], "error_code": "ROUTE_NOT_FOUND" },
 
     "auth-login-200": { "body": ["envelope-ok"], "data": ["data-auth-login"] },
     "auth-login-bad-password-401": { "body": ["envelope-error"], "error_code": "AUTH_BAD_CREDENTIALS" },

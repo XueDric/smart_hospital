@@ -503,7 +503,13 @@ public func triageComplaint(repo: TriageRepo, chiefComplaint: String, today: Str
     }
 
     // 该科室没号（或本院没有这个科室）→ 如实区分，并尽力给出**有号的**备选
-    if (!repo.departmentExists(guess.deptName)) {
+    /*
+     * ⚠ 这个判断结果要**留到下面用**（2026-10-17 W1 修）：备选分支会把
+     *   `v.reasonCode` 覆盖成 TR_ALTERNATIVES，之后就再也分不出"科室不存在"了，
+     *   所以先存进局部变量，别靠回读 `v.reasonCode` 判断。
+     */
+    let deptMissing = !repo.departmentExists(guess.deptName)
+    if (deptMissing) {
         v.reasonCode = TR_NO_SUCH_DEPT
     } else {
         v.reasonCode = TR_NO_BOOKABLE
@@ -541,8 +547,27 @@ public func triageComplaint(repo: TriageRepo, chiefComplaint: String, today: Str
          * 📌 一般规律：**输出格式由消费方决定**。
          *    本字段的消费方是原生 UI 文本控件，不是 Markdown 渲染器。
          */
-        v.patientNote = "建议就诊：${guess.deptName}（该科当前无可挂号源）。" +
-                        "以下这些科室当前有号，如需尽快就诊可考虑。"
+        /*
+         * ★ 2026-10-17（W1 修）：措辞必须区分"科室存在但暂时没号"与"本院没有这个科室"。
+         *
+         * 实测（2026-10-16，安卓端真机 + curl 双证）：主诉"咳嗽三天，晚上更明显"时
+         *   规则表把科室猜到 `呼吸内科`，而本院 `department` 表只有 `内科` 一行 ——
+         *   原措辞却统一说"建议就诊：呼吸内科（**该科当前无可挂号源**）"，
+         *   等于告诉患者"本院有这个科，只是暂时没号，过几天再来"。
+         *   事实是**本院根本没开这个科**，患者会白跑一趟。
+         *   :506-510 专门算出的 `TR_NO_SUCH_DEPT` 在这里被无条件覆盖成 ALTERNATIVES，
+         *   而 :555 那句正确的"在本院暂未开诊"因此**几乎不可达**。
+         * ⚠ 这不只是文案问题：它把"换个科可行"误导成"等等就行"。
+         * ⚠ 只改**文案**、不改 `reasonCode`：`acceptance_triage.cj:226-229` 明确接受
+         *   ALTERNATIVES（"给出**有号的**备选"才是真实意图），改码会打翻那条断言。
+         */
+        if (deptMissing) {
+            v.patientNote = "本院暂未开诊「${guess.deptName}」，建议咨询导诊台确认科室。" +
+                            "以下这些科室当前有号，如需尽快就诊可考虑。"
+        } else {
+            v.patientNote = "建议就诊：${guess.deptName}（该科当前无可挂号源）。" +
+                            "以下这些科室当前有号，如需尽快就诊可考虑。"
+        }
         return v
     }
 

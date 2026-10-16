@@ -8,10 +8,13 @@
   },
   "response": {
     "status": 405,
-    "content_type": "application/json",
+    "content_type": "application/json; charset=utf-8",
     "body": {
-      "error": "Method Not Allowed",
-      "allow": "GET"
+      "ok": false,
+      "error": {
+        "code": "METHOD_NOT_ALLOWED",
+        "message": "Method Not Allowed（允许的方法：GET）"
+      }
     },
     "allow": "GET"
   }

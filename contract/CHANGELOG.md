@@ -6,6 +6,58 @@
 
 ---
 
+## 2026-10-17 —— 收敛为**单一**错误信封：框架层三种平铺形状全部改写信封（仍是 67 条样例 / **24** 个 Schema）
+
+**这是一次让契约变简单的变更**：4xx/5xx 从此**只有一种**主体形状
+`{"ok":false,"error":{"code":…,"message":…}}`。触发：复验报告里的 **S14**
+（`docs/` 的复验文档，2026-10-17）——「框架自己写出的错误体不是项目信封」在报告里提了 4 处。
+
+### 变更
+
+- **框架层新增可注入点**（`server/third_party/qingzhou/src/`）：
+  - `router.cj`：新增 `Router.errorBody: (Int64, String) -> String`（默认 `defaultRouterErrorBody`，
+    **默认行为不变**，框架自己的单测/手工清单仍走平铺）+ `defaultRouterErrorBody` 工具函数；
+    5 处硬编码体（`:199` / `:204` / `:211` / `:231` / `:244`）改为 `errorBody(…, …)`。
+  - `static.cj`：`StaticOptions` 原本就有 `notFoundBody` / `forbiddenBody`，本版补上
+    `rangeNotSatisfiableBody`（原 416 体硬编码在 `:288`）。
+- **应用侧**（`server/src/http_app.cj`）：`buildHospitalApp` 里注入
+  `router.errorBody = {…}`（405 → `METHOD_NOT_ALLOWED`，其余 404 → `ROUTE_NOT_FOUND`）、
+  `staticOpts.notFoundBody/forbiddenBody/rangeNotSatisfiableBody`，并把
+  `.use(bodyParser())` 换成 `.use(bodyParser(hospitalBodyParserOptions()))`（`http_common.cj`），
+  非法 JSON → 400 `VALIDATION_FAILED`「请求体不是合法 JSON」。
+- **两处外层闸门也一起换掉**（否则会漏出平铺体，实测抓到过）：
+  `.use(contentLengthLimit(hospitalContentLengthLimitOptions(64 * 1024)))` —— 便利函数
+  `contentLengthLimit(maxBytes)` 内部 new 的是默认 `ContentLengthLimitOptions`，413 会回
+  `{"code":413,"message":"Request body too large","data":null}`。现在 413 也是信封：
+  `{"ok":false,"error":{"code":"VALIDATION_FAILED","message":"请求体过大，超出服务端允许的上限"}}`
+  （文案刻意不写具体数字：同一段 onError 被外层闸门与流式读入两处复用）。
+- **契约文件**：`flat-error.schema.json` / `static-not-found.schema.json` / `method-not-allowed.schema.json`
+  **删除**（27 → 24）；`schema-map.json` 里 `error-invalid-json-400` /
+  `error-method-not-allowed-405` / `error-static-not-found-404` 改指 `envelope-error` 并加
+  `error_code` 断言（`VALIDATION_FAILED` / `METHOD_NOT_ALLOWED` / `ROUTE_NOT_FOUND`）。
+
+### 为什么
+
+- **平铺体让客户端无法按 `code` 分支**：`{"code":400,…}` 的 `code` 是整数、`{"error":…}` 的 `error`
+  是字符串，与业务信封的 `error.code` 同名不同型 —— 客户端要么写三套解析，要么退化成 `HTTP_400`
+  / `HTTP_404`，丢掉「到底哪里错」。
+- **同一份 API 里出现两种 404 形状**（API 走信封、静态走平铺）没有任何收益：静态路径也在
+  `/admin/**` 的同一台服务上，客户端拿到的是同一个 `res`。
+- 框架的**默认值仍然可注入**：不想统一的用法（含框架自测）不受影响，所以这是**加法**不是破坏。
+
+### 客户端影响
+
+- **唯一**的错误形状是信封，`error.code` 是字符串业务码；解析器可以删掉 `res.error === 'Method Not Allowed'`
+  / `res.error === 'Not Found'` 这类分支（留着也无害）。注意 405 的 **`Allow` 响应头仍在**
+  （样例里 `response.allow` 逐字节钉住），但**响应体里不再有 `allow` 字段**。
+- `common-core/src/main/ets/network/HttpClient.ets` 的 `parseFrameworkError()` 回退分支
+  （`code === '400' && message === 'Invalid JSON body'` 与 `path` 分支）**不需要改**：它只在
+  `ok` 字段缺席时进入，即"对面是旧服务端"，保留它正好用于向后兼容。
+- 静态 404 的 `content-type` 仍是 `application/json`（**无 charset**，历史遗留）；主体是 UTF-8
+  JSON，按 RFC 8259 客户端一律按 UTF-8 解析。静态 416 与其余信封一致（带 `charset=utf-8`）。
+
+---
+
 ## 2026-10-16 —— 复核 N1/N3：`patient_name` 拿掉 `minLength: 1`、并发首建的竞态补上门禁（仍是 67 条样例 / 27 个 Schema）
 
 **样例形状没变**（`patient_name` / `patient_gender` 仍在、仍必填），变的是**值域约束**：

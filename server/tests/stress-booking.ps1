@@ -138,7 +138,7 @@ Remove-Item $tmp -Force
 
 # 建排班（走管理员接口，顺带验证写接口）
 # ⚠ body 走**文件**而不是 -d 内联：PowerShell 会把内联 JSON 的花括号/引号弄成非法 JSON
-#   （实测报 `Invalid JSON body`）。`--data-binary @文件` 最稳。
+#   （实测报 400 VALIDATION_FAILED，旧版文案是 `Invalid JSON body`）。`--data-binary @文件` 最稳。
 $createFile = "$tmpDirCurl/create.body"
 [System.IO.File]::WriteAllText(($createFile -replace '/', '\'),
     '{"doctor_id":1,"department_id":1,"work_date":"2026-11-01","period":"AM","total_num":' + $ScheduleTotal + '}',

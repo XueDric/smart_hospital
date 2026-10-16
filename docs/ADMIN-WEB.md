@@ -256,7 +256,7 @@ $node = "D:\DevEco Studio\tools\node\node.exe"   # 或任何 ≥18 的 node
 | AM | 仓颉**块注释可嵌套** ⇒ 注释里不要出现 `/*`（`/admin/**`、`js/*.js` 都会触发 `unterminated block comment`，报错位置还指到文件末尾） |
 | AN | "用户指定的默认（`is_default`）"与"运行时真正生效（`in_use`）"是**两个事实**，只回一个就会出现"没有任何默认标记、但 AI 确实在用某一行" |
 | AO | 测试脚本的自清要覆盖它改过的**所有**状态：抢走默认位再删掉自己那行 ⇒ 库进入"该类型没有默认行"，表现为**首跑红、复跑绿**的假偶发 |
-| — | PowerShell 下 `curl -d '<json>'` 的引号会被剥（服务端报 `Invalid JSON body`）⇒ JSON 写文件 + `-d "@file"`；`Invoke-WebRequest` 在非交互模式直接不可用 |
+| — | PowerShell 下 `curl -d '<json>'` 的引号会被剥（服务端报 400 `VALIDATION_FAILED`，旧版文案是 `Invalid JSON body`）⇒ JSON 写文件 + `-d "@file"`；`Invoke-WebRequest` 在非交互模式直接不可用 |
 | — | 含中文的 `server/**/*.ps1` **必须 UTF-8 with BOM**；`edit` 工具会剥掉 BOM ⇒ 改完要用 `UTF8Encoding($true)` 重写（否则 PS 5.1 按 ANSI 解析报"意外的标记"） |
 | AP | ★★ **模拟器会自己息屏 + 上锁，"黑屏截图"不等于应用崩了** | `snapshot_display` 在息屏/锁屏时给**全黑**图（1320×2856、≈60 KB），此时 `uitest uiInput click` 全部打空；`power-shell timeout -o` 只挡息屏超时、**挡不住锁屏** | 截图**按字节数**判活（>100 KB 才算有内容）；恢复：`power-shell wakeup` → 仍黑则 `uinput -K -d 18 -u 18`（电源键，**是切换**）→ 上滑解锁 |
 | AQ | ★★ **IME 弹出后注入文本会被输入法吞掉** | 登录名能填、紧接着点「口令」再注入就**始终为空**；地址栏那次表现为**开头 `http:` 被吃掉** | 输入前先收键盘（点空白处），或用 `hdc shell "uinput -K -t <文本>"`；`click 1031 2618` 只在键盘弹出时才是"回车"，否则是浏览器工具栏 |

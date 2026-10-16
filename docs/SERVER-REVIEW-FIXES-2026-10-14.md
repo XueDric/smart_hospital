@@ -100,6 +100,8 @@
 | **D6** | ① `server/src/main.cj` 新增 `isDirectoryPath(path)`（`FileInfo(path).isDirectory()`，异常⇒false）与 `printAdminWebMissingHint()`（打印三个候选 + `canonicalize(...)` 绝对路径 + CWD）；`pickAdminWebDir()` 改用它（原用 `exists` 判"任意条目"）。② `--prod` 下找不到管理台目录 ⇒ **拒绝启动**（原静默 404）。③ 404 信封：`buildHospitalApp` 里 `router.passOnNotFound = true`，并在 `router.middleware()` **之后**追加中间件输出 `ROUTE_NOT_FOUND` 信封 | HTTP：`GET /api/v1/definitely-not-here` 与 `GET /no-such-static-file-xyz` 均 `404 {"ok":false,"error":{"code":"ROUTE_NOT_FOUND",…}}`；banner 提示路径核对。**边界**：`/admin` 下静态文件未命中仍由 vendored 静态层写 `{"error":"Not Found"}`，不为此外 fork 框架（已记入 `docs/ADMIN-WEB.md`） |
 | **D7** | `server/src/main.cj`：无参 ⇒ usage + 退 **2**；`--help`/`-h`/`help` ⇒ usage + 退 **0**；usage 补 `triagetest`、`--tls-files`、`--help`，accept 说明改为"AC-1…AC-17，且只允许库名含 test 的库" | CLI 矩阵核对退出码与 usage 文本 |
 
+> ⚠ 2026-10-17 更新：框架层三种平铺错误体（非法 JSON 400 / 静态 404 / 405）已统一为项目信封；见 contract/CHANGELOG.md 与 docs/FRONTEND-INTEGRATION.md §3.2。（本表 **D6** 记的边界"`/admin` 下静态未命中仍由 vendored 静态层写 `{"error":"Not Found"}`"已解决：改用 `StaticOptions.notFoundBody` 注入信封，**仍未 fork 框架**。）
+
 ## 六、低风险 / 需澄清（E1-E8）
 
 | 项 | 裁定 |

@@ -81,11 +81,33 @@ public enum DispatchResult {
     | NotFound
 }
 
+/*
+ * 路由器错误响应体的**默认**实现（2026-10-17 增）：沿用框架自己的统一壳
+ * `{"code":N,"message":"...","data":null}` —— 与 bodyparser.cj:50-54 的
+ * A-3 口径保持一致（那条注释明确把旧的 `{"error":...}` 称为"与统一响应壳不一致"）。
+ * ⚠ 转义复用 `escapeJsonString`（bodyparser.cj:224，同包 `qingzhou` 可直接用）——
+ *   否则路径里带引号或反斜杠时会拼出非法 JSON。
+ */
+public func defaultRouterErrorBody(status: Int64, msg: String): String {
+    return "{\"code\":" + status.toString() + ",\"message\":\"" +
+        escapeJsonString(msg) + "\",\"data\":null}"
+}
+
 public class Router {
     private let root: TrieNode = TrieNode()
     /* 透传模式：NotFound 时调 next() 而非短路，支持多个 Router 串联
      * （例如公开路由 + 鉴权路由 + 静态兜底）。默认 false 保持向后兼容。 */
     public var passOnNotFound: Bool = false
+    /*
+     * 错误响应体的构造钩子（2026-10-17 增）。
+     *
+     * 路由器自己写出的 404/405 此前是硬编码的 `{"error":"Method Not Allowed","allow":"GET"}`
+     *   —— 既不是框架自己的统一壳（`{"code":N,"message":"...","data":null}`），
+     *   更不是应用的信封（`{ok:false,error:{code,message}}`），等于让客户端为同一件事
+     *   写第三套解析。实测症状：客户端按 `error.code` 取错误码只能拿到 undefined。
+     * 默认实现 = 框架统一壳（向后兼容）；应用可把它换成自己的信封。
+     */
+    public var errorBody: (Int64, String) -> String = defaultRouterErrorBody
     /* 命名路由表：name -> 原始 pattern（未做可选参数展开），供 urlFor 反查。 */
     private let namedRoutes: HashMap<String, String> = HashMap<String, String>()
 
@@ -195,20 +217,20 @@ public class Router {
                             let allow = String.join(collectKeys(node.handlers), delimiter: ", ")
                             ctx.status(405)
                                 .header("allow", allow)
-                                .header("content-type", "application/json")
-                                .body("{\"error\":\"Method Not Allowed\",\"allow\":\"${allow}\"}")
+                                .header("content-type", "application/json; charset=utf-8")
+                                .body(errorBody(405, "Method Not Allowed（允许的方法：" + allow + "）"))
                             return DispatchResult.MethodNotAllowed(allow)
                         } else {
                             ctx.status(404)
-                                .header("content-type", "application/json")
-                                .body("{\"error\":\"Not Found\",\"path\":\"${path}\"}")
+                                .header("content-type", "application/json; charset=utf-8")
+                                .body(errorBody(404, "Not Found（路径：" + path + "）"))
                             return DispatchResult.NotFound
                         }
                 }
             case None =>
                 ctx.status(404)
-                    .header("content-type", "application/json")
-                    .body("{\"error\":\"Not Found\",\"path\":\"${path}\"}")
+                    .header("content-type", "application/json; charset=utf-8")
+                    .body(errorBody(404, "Not Found（路径：" + path + "）"))
                 return DispatchResult.NotFound
         }
     }
@@ -227,8 +249,8 @@ public class Router {
                 case DispatchResult.MethodNotAllowed(allow) =>
                     ctx.status(405)
                         .header("allow", allow)
-                        .header("content-type", "application/json")
-                        .body("{\"error\":\"Method Not Allowed\",\"allow\":\"${allow}\"}")
+                        .header("content-type", "application/json; charset=utf-8")
+                        .body(errorBody(405, "Method Not Allowed（允许的方法：" + allow + "）"))
                 case DispatchResult.NotFound =>
                     if (r.passOnNotFound) {
                         // 透传前必须复位 lookup()
@@ -240,8 +262,8 @@ public class Router {
                         next()
                     } else {
                         ctx.status(404)
-                            .header("content-type", "application/json")
-                            .body("{\"error\":\"Not Found\",\"path\":\"${ctx.path()}\"}")
+                            .header("content-type", "application/json; charset=utf-8")
+                            .body(errorBody(404, "Not Found（路径：" + ctx.path() + "）"))
                     }
             }
         }

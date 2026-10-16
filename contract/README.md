@@ -13,7 +13,7 @@
 | 路径 | 是什么 | 生成方式 |
 | --- | --- | --- |
 | `contract/examples/*.json` | **67 条**真实响应样例（含请求、状态码、`content-type`、响应体） | `server/tests/export-contract.ps1` **自动生成，不要手工改** |
-| `contract/schema/*.schema.json` | **27 个** JSON Schema：9 个 **body 级**（`artifact` / `envelope-ok` / `envelope-error` / `envelope-error-fields` / `flat-error` / `static-not-found` / `method-not-allowed` / `health` / `previsit-stream`），18 个 **data 级**（`data-*.schema.json`，校验 `response.body.data`） | 手工维护 |
+| `contract/schema/*.schema.json` | **24 个** JSON Schema：6 个 **body 级**（`artifact` / `envelope-ok` / `envelope-error` / `envelope-error-fields` / `health` / `previsit-stream`），18 个 **data 级**（`data-*.schema.json`，校验 `response.body.data`） | 手工维护 |
 | `contract/schema-map.json` | 样例 → Schema 的映射（`body` / `data` / `body_text` / `error_code`）+ 文件级 Schema 声明 | 手工维护，**新增样例必须登记** |
 | `contract/CHANGELOG.md` | 形状变更日志（给人看：改了什么、客户端要不要动） | 手工维护 |
 
@@ -122,6 +122,7 @@ cd E:\harmonyOS\智能医院客户端\server
 
 | 文档旧说法 | 实测（契约样例为准） |
 | --- | --- |
-| "未匹配路由是平铺 `{"error":"Not Found","path":…}`" | **API** 路径是信封 `404 ROUTE_NOT_FOUND`；平铺 404 **只有**静态路径 `/admin/**` |
-| §3.2 只列 3 种失败形状 | 实际 **5 种**：信封 / 非法 JSON 平铺 400 / 静态平铺 404 / **405 + `allow`** / `/health` 第四种成功形状 |
+| "未匹配路由是平铺 `{"error":"Not Found","path":…}`" | **API** 路径是信封 `404 ROUTE_NOT_FOUND` |
+| §3.2 只列 3 种失败形状 | **2026-10-17 起已收敛为 1 种**：所有 4xx/5xx（含框架的非法 JSON 400、路由/静态 404、405、416）都是 `{ok:false,error:{code,message}}`；`/health` 是第四种**成功**形状（`{ok,data}` 但字段少） |
+| §3.2 那三种平铺形状（`flat-error` / `static-not-found` / `method-not-allowed`） | **已作废**（2026-10-17）：框架层改成可注入的 `router.errorBody` / `StaticOptions.notFoundBody|forbiddenBody|rangeNotSatisfiableBody`，三个 Schema 文件已删除，样例改指 `envelope-error` + `error_code` |
 | `ROUTE_NOT_FOUND`"实现里未见任何 handler 抛它" | 兜底中间件会抛（`http_app.cj:2684-2706`） |
