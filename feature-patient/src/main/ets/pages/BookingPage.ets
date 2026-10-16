@@ -6,6 +6,7 @@ import {
   AppColor,
   AppSize,
   AppText,
+  VisitStatus,
   nowToken,
   periodText,
   todayString
@@ -81,7 +82,8 @@ export struct BookingPage {
       const appointments = await this.repository.appointments(false);
       const ids: number[] = [];
       for (const appointment of appointments) {
-        if (appointment.status === 'booked' || appointment.status === 'visiting') {
+        // 「这个排班我已经占了一个号」= 非终态，含到院/候诊/接诊中（缺陷 C2）。
+        if (VisitStatus.occupiesSchedule(appointment.status)) {
           ids.push(appointment.scheduleId);
         }
       }

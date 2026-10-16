@@ -14,8 +14,9 @@ import {
   AppColor,
   AppSize,
   AppText,
+  VisitStatus,
+  appointmentDisplayText,
   appointmentStatusColor,
-  appointmentStatusText,
   periodText
 } from 'common-core';
 
@@ -46,10 +47,11 @@ export struct AppointmentsPage {
     }
   }
 
+  // 判据全部收敛到 common-core 的 VisitStatus 谓词，页面不再写状态集合（缺陷 C1/C2/C3）。
   private activeAppointments(): Appointment[] {
     const result: Appointment[] = [];
     for (const appointment of this.appointments) {
-      if (appointment.status === 'booked' || appointment.status === 'visiting') {
+      if (VisitStatus.isActive(appointment.status)) {
         result.push(appointment);
       }
     }
@@ -59,16 +61,55 @@ export struct AppointmentsPage {
   private historyAppointments(): Appointment[] {
     const result: Appointment[] = [];
     for (const appointment of this.appointments) {
-      if (appointment.status !== 'booked' && appointment.status !== 'visiting') {
+      if (!VisitStatus.isActive(appointment.status)) {
         result.push(appointment);
       }
     }
     return result;
   }
 
+  /** 状态文案：优先服务端 status_label，本地兜底表只在字段缺失时生效。 */
+  private statusText(appointment: Appointment): string {
+    return appointmentDisplayText(appointment.status, appointment.statusLabel);
+  }
+
+  /** 科室与医生：优先用服务端下发的名字，缺字段时才回落到 id。 */
+  private placeText(appointment: Appointment): string {
+    const department = appointment.departmentName.length > 0
+      ? appointment.departmentName : `科室 #${appointment.departmentId}`;
+    let doctor = `医生 #${appointment.doctorId}`;
+    if (appointment.doctorName.length > 0) {
+      doctor = appointment.doctorTitle.length > 0
+        ? `${appointment.doctorName} ${appointment.doctorTitle}` : appointment.doctorName;
+    }
+    return `序号 ${appointment.seqNo} · ${department} · ${doctor}`;
+  }
+
+  /** 到院 / 接诊 / 完成时间线（服务端 times 口径，0 = 该步未发生）。 */
+  private timelineText(appointment: Appointment): string {
+    const parts: string[] = [];
+    if (appointment.arrivedAt > 0) {
+      parts.push(`到院 ${this.clockText(appointment.arrivedAt)}`);
+    }
+    if (appointment.startedAt > 0) {
+      parts.push(`开始接诊 ${this.clockText(appointment.startedAt)}`);
+    }
+    if (appointment.finishedAt > 0) {
+      parts.push(`完成 ${this.clockText(appointment.finishedAt)}`);
+    }
+    return parts.join(' · ');
+  }
+
+  private clockText(epoch: number): string {
+    const at = new Date(epoch * 1000);
+    const hh = at.getHours() < 10 ? `0${at.getHours()}` : `${at.getHours()}`;
+    const mm = at.getMinutes() < 10 ? `0${at.getMinutes()}` : `${at.getMinutes()}`;
+    return `${hh}:${mm}`;
+  }
+
   private canCancel(appointment: Appointment): boolean {
-    // 服务端没有 can_cancel 字段，仅按状态粗略判断，403/404 由错误分支兜底。
-    return appointment.status === 'booked';
+    // 权威在服务端 canCancel（server/src/http_app.cj:575）；本地谓词只是它的镜像，不放宽。
+    return VisitStatus.isCancellable(appointment.status);
   }
 
   private requestCancel(appointment: Appointment): void {
@@ -177,15 +218,21 @@ export struct AppointmentsPage {
             .fontSize(AppText.SUBHEADING)
             .fontWeight(FontWeight.Bold)
             .fontColor(AppColor.TEXT)
-          Text(`序号 ${appointment.seqNo} · 科室 #${appointment.departmentId} · 医生 #${appointment.doctorId}`)
+          Text(this.placeText(appointment))
             .fontSize(AppText.CAPTION)
             .fontColor(AppColor.TEXT_SECONDARY)
             .margin({ top: 5 })
+          if (this.timelineText(appointment).length > 0) {
+            Text(this.timelineText(appointment))
+              .fontSize(AppText.CAPTION)
+              .fontColor(AppColor.TEXT_SECONDARY)
+              .margin({ top: 3 })
+          }
         }
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start)
         StatusChip({
-          text: appointmentStatusText(appointment.status),
+          text: this.statusText(appointment),
           color: appointmentStatusColor(appointment.status),
           chipBackground: AppColor.SURFACE_ALT
         })
@@ -231,13 +278,21 @@ export struct AppointmentsPage {
           })
             .margin({ top: 12 })
         }
-      } else if (appointment.status === 'done') {
+      } else if (appointment.status === VisitStatus.DONE) {
         AppButton({
           text: '查看病历',
           secondary: true,
           onTap: () => this.openRecord(appointment.appointmentId)
         })
           .margin({ top: 12 })
+      } else if (VisitStatus.isActive(appointment.status)) {
+        // 到院 / 候诊 / 接诊中的单不可退号，但不该用一个空判断把入口藏掉 ——
+        // 患者看不到「为什么不能退」（缺陷 C3）。这里把原因写出来。
+        Text(VisitStatus.cancelBlockedReason(appointment.status, this.statusText(appointment)))
+          .fontSize(AppText.CAPTION)
+          .fontColor(AppColor.TEXT_SECONDARY)
+          .width('100%')
+          .margin({ top: 10 })
       }
     }
     .width('100%')
