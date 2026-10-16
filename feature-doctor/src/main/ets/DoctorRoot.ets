@@ -1,6 +1,7 @@
 import { AppColor, AppText, RouteName } from 'common-core';
 import { DoctorLoginPage } from './pages/DoctorLoginPage';
 import { EmrEditPage } from './pages/EmrEditPage';
+import { RecordHistoryPage } from './pages/RecordHistoryPage';
 import { VisitQueuePage } from './pages/VisitQueuePage';
 
 @ComponentV2
@@ -19,6 +20,10 @@ export struct DoctorRoot {
           .height('100%')
       } else if (this.route === RouteName.DOCTOR_RECORD) {
         EmrEditPage()
+          .width('100%')
+          .height('100%')
+      } else if (this.route === RouteName.DOCTOR_RECORD_HISTORY) {
+        RecordHistoryPage()
           .width('100%')
           .height('100%')
       } else {

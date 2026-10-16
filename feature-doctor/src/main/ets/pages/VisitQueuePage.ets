@@ -102,9 +102,16 @@ export struct VisitQueuePage {
   }
 
   private writeRecord(item: VisitItem): void {
+    // 把患者/就诊上下文一并带过去，省掉工作台首屏的空等：
+    // `patient_id` 决定"既往病历"能不能马上就取，`visit_date`/`period` 决定患者栏怎么显示。
+    // ⚠ 这些只是**省一次等待**，不是权威来源 —— 工作台仍会用 GET record 的
+    //   `patient_id` 校正（队列项与病历可能不同步，比如换了单）。
     const params: Record<string, Object> = {
       'appointmentId': item.appointmentId,
-      'seq': item.seqNo
+      'seq': item.seqNo,
+      'patientId': item.patientId,
+      'visitDate': item.visitDate,
+      'period': item.period
     };
     AppRouter.getInstance().push(RouteName.DOCTOR_RECORD, params);
   }
@@ -372,6 +379,19 @@ export struct VisitQueuePage {
                       .borderRadius(AppSize.CONTROL_RADIUS)
                       .margin({ left: AppSize.GAP })
                       .onClick(() => this.finish(item))
+                  } else if (item.status === 'done') {
+                    /*
+                     * 已完成的单也要能进病历页 —— 此前这条分支不存在，医生一旦点了
+                     * 「完成就诊」就再也回不到那份病历（只能重开 App 从别处找），
+                     * 而改进 3 的「版本历史」入口恰恰在病历页里（只读展示锁定后的文书）。
+                     */
+                    Button('看病历')
+                      .height(AppSize.TOUCH_MIN)
+                      .fontSize(AppText.CAPTION)
+                      .fontColor(AppColor.PRIMARY)
+                      .backgroundColor(AppColor.PRIMARY_SOFT)
+                      .borderRadius(AppSize.CONTROL_RADIUS)
+                      .onClick(() => this.writeRecord(item))
                   }
                 }
                 .width('100%')

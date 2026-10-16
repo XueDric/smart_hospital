@@ -34,6 +34,14 @@ export struct PageHeader {
   @Param title: string = '';
   @Param subtitle: string = '';
   @Param showBack: boolean = false;
+  /*
+   * 有未保存改动时，「返回」不能直接走人（会丢医生的输入）。
+   * ArkTS V2 的 @Event 必须有默认值、无法用"未传"表达"用默认返回"，
+   * 所以用 interactionBack 显式开关：true 时改调 onBack，由页面自己决定拦不拦。
+   */
+  @Param interceptBack: boolean = false;
+  @Event onBack: () => void = () => {
+  };
 
   build() {
     Row() {
@@ -44,7 +52,13 @@ export struct PageHeader {
           .fontSize(AppText.TITLE)
           .fontColor(AppColor.TEXT)
           .backgroundColor(Color.Transparent)
-          .onClick(() => AppRouter.getInstance().back())
+          .onClick(() => {
+            if (this.interceptBack) {
+              this.onBack();
+            } else {
+              AppRouter.getInstance().back();
+            }
+          })
       }
       Column() {
         Text(this.title)

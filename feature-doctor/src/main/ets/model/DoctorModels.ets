@@ -66,6 +66,13 @@ export class EmrRecord {
   previsitRefSessionId: string = '';
   previsitRefSections: string[] = [];
   previsitRefAt: number = 0;
+  /*
+   * 本次定稿落下的修订版本号（服务端改进 3 起在 lock/reopen 的成功响应里下发）。
+   * ⚠ `0` = 审计行没写上，**病历本身已经锁定成功** —— 当「版本号未知」展示，
+   *   绝不能当失败去重试（重试会走幂等分支，见 FRONTEND-INTEGRATION §5.29.6）。
+   * PUT/GET 病历的响应不含该字段，所以默认 0 = 「本次没落版」。
+   */
+  revisionVersion: number = 0;
 }
 
 // 预问诊摘要里的一项已作答槽位（GET /api/v1/doctor/visits/:id/previsit 的 sections[]）。
@@ -87,4 +94,73 @@ export class PrevisitSummary {
   total: number = 6;
   capturedAt: number = 0;
   sections: PrevisitSlot[] = [];
+}
+
+/*
+ * 既往已定稿病历（改进 2，GET /doctor/patients/:patientId/records，契约见 §5.30.1）。
+ * 为什么包一层而不是把上下文塞进 EmrRecord：这条端点的 item **就是**病历对象就地展开
+ * 再补就诊上下文，复用 parseRecord 才能保证"同一份数据只有一份解析"。
+ */
+export class PastRecord {
+  record: EmrRecord = new EmrRecord();
+  // 以下三个只在挂号单还在时下发，否则保持默认 0/空串。
+  departmentId: number = 0;
+  visitDate: string = '';
+  period: string = '';
+  // 以下三个总是下发，找不到就写空串（不是缺失）。
+  departmentName: string = '';
+  doctorName: string = '';
+  doctorTitle: string = '';
+}
+
+/*
+ * 一条修订记录（改进 3，§5.29.2/§5.29.3）。
+ * ⚠ `operatorRole` 可能是**空串**：存量病历由 migrateSchema 补写的那一版没有操作者角色，
+ *   空串的语义是「未知」，不是「没有权限」—— UI 上要显示成「系统补录」，别显示成空白。
+ */
+export class RevisionItem {
+  version: number = 0;
+  status: string = '';
+  // lock = 定稿落的版；reopen = 解锁落的版（解锁前那一版）。
+  operation: string = '';
+  // 仅 operation=reopen 时非空（4–255 字符）；lock 恒为空串。
+  reason: string = '';
+  operatorUserId: number = 0;
+  operatorRole: string = '';
+  createdAt: number = 0;
+}
+
+// 某一版详情（§5.29.3）：比列表项多 record_id / appointment_id / sections 正文。
+export class RevisionDetail {
+  version: number = 0;
+  status: string = '';
+  operation: string = '';
+  reason: string = '';
+  operatorUserId: number = 0;
+  operatorRole: string = '';
+  createdAt: number = 0;
+  recordId: number = 0;
+  appointmentId: number = 0;
+  // 含全部七段（空段也在，value 为空串）—— 既能看出写了什么，也能看出没写什么。
+  sections: EmrSection[] = [];
+}
+
+// 逐段对比里的一段（§5.29.4）。`changed` **由服务端判定**，客户端不得重算。
+export class RevisionDiffSection {
+  key: string = '';
+  label: string = '';
+  changed: boolean = false;
+  left: string = '';
+  right: string = '';
+}
+
+// 两版之间的逐段对比（§5.29.4）：语义是「从 left 改到 right」。
+export class RevisionDiff {
+  appointmentId: number = 0;
+  left: RevisionItem = new RevisionItem();
+  right: RevisionItem = new RevisionItem();
+  statusChanged: boolean = false;
+  // 服务端给的变更段数 = 客户端角标数量，**不要**自己比 left/right 重数。
+  changedCount: number = 0;
+  sections: RevisionDiffSection[] = [];
 }
