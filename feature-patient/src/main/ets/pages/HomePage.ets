@@ -12,8 +12,9 @@ import {
   AppColor,
   AppSize,
   AppText,
+  VisitStatus,
+  appointmentDisplayText,
   appointmentStatusColor,
-  appointmentStatusText,
   periodText
 } from 'common-core';
 
@@ -57,7 +58,8 @@ export struct HomePage {
     try {
       const appointments = await this.repository.appointments(false);
       for (const appointment of appointments) {
-        if (appointment.status === 'booked' || appointment.status === 'visiting') {
+        // 判据收敛到 VisitStatus：非终态即「下一次就诊」，到院/候诊的单不会再被漏掉（缺陷 C1）。
+        if (VisitStatus.isActive(appointment.status)) {
           this.nextAppointment = appointment;
           this.hasNextAppointment = true;
           break;
@@ -72,6 +74,24 @@ export struct HomePage {
 
   private navigate(route: string): void {
     AppRouter.getInstance().push(route);
+  }
+
+  /** 状态文案：优先服务端 status_label，本地兜底表只在字段缺失时生效。 */
+  private nextStatusText(): string {
+    return appointmentDisplayText(this.nextAppointment.status, this.nextAppointment.statusLabel);
+  }
+
+  /** 科室与医生：优先用服务端下发的名字，缺字段时才回落到 id。 */
+  private nextPlaceText(): string {
+    const appointment = this.nextAppointment;
+    const department = appointment.departmentName.length > 0
+      ? appointment.departmentName : `科室 #${appointment.departmentId}`;
+    let doctor = `医生 #${appointment.doctorId}`;
+    if (appointment.doctorName.length > 0) {
+      doctor = appointment.doctorTitle.length > 0
+        ? `${appointment.doctorName} ${appointment.doctorTitle}` : appointment.doctorName;
+    }
+    return `${department} · ${doctor}`;
   }
 
   build() {
@@ -116,7 +136,7 @@ export struct HomePage {
                   .fontWeight(FontWeight.Bold)
                   .fontColor(AppColor.TEXT)
                   .margin({ top: 6 })
-                Text(`科室 #${this.nextAppointment.departmentId} · 医生 #${this.nextAppointment.doctorId}`)
+                Text(this.nextPlaceText())
                   .fontSize(AppText.CAPTION)
                   .fontColor(AppColor.TEXT_SECONDARY)
                   .margin({ top: 6 })
@@ -124,7 +144,7 @@ export struct HomePage {
               .layoutWeight(1)
               .alignItems(HorizontalAlign.Start)
               StatusChip({
-                text: appointmentStatusText(this.nextAppointment.status),
+                text: this.nextStatusText(),
                 color: appointmentStatusColor(this.nextAppointment.status),
                 chipBackground: AppColor.INFO_SOFT
               })

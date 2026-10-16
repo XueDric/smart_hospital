@@ -12,7 +12,7 @@ import {
   SessionStore,
   StatusChip,
   appointmentStatusColor,
-  appointmentStatusText
+  appointmentDisplayText
 } from 'common-core';
 import { DoctorRepository } from '../data/DoctorRepository';
 import { VisitItem, patientDisplayText } from '../model/DoctorModels';
@@ -137,10 +137,9 @@ export struct VisitQueuePage {
    *   并让 `feature-patient` 直接转调 `common-core`，不再有第二份词汇表。
    */
   private statusTextOf(item: VisitItem): string {
-    if (item.statusLabel.length > 0) {
-      return item.statusLabel;
-    }
-    return appointmentStatusText(item.status);
+    // 「优先 status_label、本地兜底」的逻辑已收敛到 common-core 的 appointmentDisplayText，
+    // 这里不再保留第二份实现（否则又是一个可能漂移的副本）。
+    return appointmentDisplayText(item.status, item.statusLabel);
   }
 
   private clockText(epoch: number): string {

@@ -13,7 +13,13 @@ import {
   TriageOption,
   TriageResult
 } from '../model/PatientModels';
-import { ApiError, ErrorCode, SseHandlers } from 'common-core';
+import {
+  ApiError,
+  ErrorCode,
+  SseHandlers,
+  VisitStatus,
+  appointmentStatusText
+} from 'common-core';
 
 class MockBookingIntent {
   token: string = '';
@@ -28,20 +34,33 @@ class MockBookingIntent {
 class MockState {
   static readonly SESSION_ID: string =
     '4f3a1d55d5c64d3e8f6c4b4a7d1e7c2f4f3a1d55d5c64d3e8f6c4b4a7d1e7c2f';
+  /** 时间线基准：2026-10-15 09:00（+08:00）。夹具时间与状态自洽，便于验证「几点到院」的展示。 */
+  static readonly BASE_EPOCH: number = 1792026000;
   static filled: string[] = [];
   static appointments: Appointment[] = [];
   static bookingIntents: MockBookingIntent[] = [];
   static initialized: boolean = false;
-  static nextAppointmentId: number = 501;
+  /** 从 508 起 —— 501–507 已被 7 态夹具占用，否则新建挂号单会与之撞 id。 */
+  static nextAppointmentId: number = 508;
 
   static initialize(): void {
     if (MockState.initialized) {
       return;
     }
     MockState.initialized = true;
+    // ⚠ 7 态各一条。此前夹具只有 booked / done 两条（连 visiting 都没有），
+    //   导致「哪些状态算进行中」的筛选漏项在演示模式下**永远测不到** ——
+    //   这是缺陷 C1（arrived/waiting 被错排进历史记录）长期未被发现的直接原因。
+    //   状态机一扩，夹具必须同一次跟上，否则演示模式就是一个永远通过的测试。
+    //   scheduleId 只用真实存在的 41 / 42 / 48（见下方 schedules()），否则「已约」标记会失效。
     MockState.appointments = [
-      MockState.makeAppointment(501, 41, 9, 3, '2026-11-20', 'AM', 6, 'booked'),
-      MockState.makeAppointment(502, 52, 18, 6, '2026-11-24', 'PM', 2, 'done')
+      MockState.makeAppointment(501, 41, 9, 3, '2026-11-20', 'AM', 6, VisitStatus.BOOKED),
+      MockState.makeAppointment(502, 42, 9, 3, '2026-11-20', 'PM', 2, VisitStatus.ARRIVED),
+      MockState.makeAppointment(503, 48, 15, 5, '2026-11-21', 'PM', 5, VisitStatus.WAITING),
+      MockState.makeAppointment(504, 41, 9, 3, '2026-11-20', 'AM', 3, VisitStatus.VISITING),
+      MockState.makeAppointment(505, 42, 9, 3, '2026-11-20', 'PM', 1, VisitStatus.DONE),
+      MockState.makeAppointment(506, 48, 15, 5, '2026-11-21', 'PM', 4, VisitStatus.CANCELLED),
+      MockState.makeAppointment(507, 41, 9, 3, '2026-11-20', 'AM', 8, VisitStatus.NO_SHOW)
     ];
   }
 
@@ -57,8 +76,60 @@ class MockState {
     result.period = period;
     result.seqNo = seqNo;
     result.status = status;
+    // 与服务端同口径：status 是机器判据，status_label 是权威中文名（此处用已逐字对齐的本地表模拟）。
+    result.statusLabel = appointmentStatusText(status);
+    // 科室名 / 医生名：服务端在 bookingJson 里下发，夹具同步给出，界面才不必显示「科室 #3 医生 #9」。
+    // ⚠ 名字必须与本文件既有的分诊/排班夹具同口径（3 = 呼吸内科、4 = 消化内科、5 = 全科门诊）。
+    result.departmentName = MockState.departmentNameOf(departmentId);
+    result.doctorName = MockState.doctorNameOf(doctorId);
+    result.doctorTitle = MockState.doctorTitleOf(doctorId);
+    // 时间戳与状态自洽：到院之后才有 arrived_at，接诊之后才有 started_at，完成才有 finished_at。
+    if (status === VisitStatus.ARRIVED || status === VisitStatus.WAITING ||
+      status === VisitStatus.VISITING || status === VisitStatus.DONE) {
+      result.arrivedAt = MockState.BASE_EPOCH + id;
+    }
+    if (status === VisitStatus.VISITING || status === VisitStatus.DONE) {
+      result.startedAt = MockState.BASE_EPOCH + id + 600;
+    }
+    if (status === VisitStatus.DONE) {
+      result.finishedAt = MockState.BASE_EPOCH + id + 1200;
+    }
     result.slotRestored = true;
     return result;
+  }
+
+  /** 科室名：与分诊/排班夹具同口径；未登记时回落成 id，便于发现漏配。 */
+  private static departmentNameOf(departmentId: number): string {
+    if (departmentId === 3) {
+      return '呼吸内科';
+    }
+    if (departmentId === 4) {
+      return '消化内科';
+    }
+    if (departmentId === 5) {
+      return '全科门诊';
+    }
+    return `科室 #${departmentId}`;
+  }
+
+  private static doctorNameOf(doctorId: number): string {
+    if (doctorId === 9) {
+      return '李明医生';
+    }
+    if (doctorId === 15) {
+      return '周宁医生';
+    }
+    return `医生 #${doctorId}`;
+  }
+
+  private static doctorTitleOf(doctorId: number): string {
+    if (doctorId === 9) {
+      return '副主任医师';
+    }
+    if (doctorId === 15) {
+      return '主任医师';
+    }
+    return '';
   }
 }
 
@@ -210,7 +281,8 @@ export class MockPatientRepository {
     for (const intent of MockState.bookingIntents) {
       if (intent.token === clientToken) {
         for (const appointment of MockState.appointments) {
-          if (appointment.appointmentId === intent.appointmentId && appointment.status !== 'cancelled') {
+          if (appointment.appointmentId === intent.appointmentId &&
+            appointment.status !== VisitStatus.CANCELLED) {
             return appointment;
           }
         }
@@ -221,7 +293,7 @@ export class MockPatientRepository {
       throw new ApiError(ErrorCode.SLOT_GONE, '号源刚被约满，请刷新后选择其他号源', 409);
     }
     const appointment = MockState.makeAppointment(MockState.nextAppointmentId++, scheduleId,
-      schedule.doctorId, schedule.departmentId, schedule.workDate, schedule.period, 6, 'booked');
+      schedule.doctorId, schedule.departmentId, schedule.workDate, schedule.period, 6, VisitStatus.BOOKED);
     MockState.bookingIntents.push(new MockBookingIntent(clientToken, appointment.appointmentId));
     MockState.appointments.unshift(appointment);
     return appointment;
@@ -231,7 +303,7 @@ export class MockPatientRepository {
     MockState.initialize();
     const result: Appointment[] = [];
     for (const appointment of MockState.appointments) {
-      if (!includeCancelled && appointment.status === 'cancelled') {
+      if (!includeCancelled && appointment.status === VisitStatus.CANCELLED) {
         continue;
       }
       result.push(appointment);
@@ -243,7 +315,7 @@ export class MockPatientRepository {
     MockState.initialize();
     for (const appointment of MockState.appointments) {
       if (appointment.appointmentId === appointmentId) {
-        appointment.status = 'cancelled';
+        appointment.status = VisitStatus.CANCELLED;
         appointment.slotRestored = true;
         appointment.warning = '';
         return appointment;

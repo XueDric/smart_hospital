@@ -72,7 +72,18 @@ export class Appointment {
   visitDate: string = '';
   period: string = '';
   seqNo: number = 0;
+  /** 机器判据：分支逻辑只经 VisitStatus 谓词读它，不要拿它比字面量 */
   status: string = '';
+  /** 服务端下发的权威中文名（visitStatusLabel，server/src/domain_emr.cj:1455） */
+  statusLabel: string = '';
+  /** 到院 / 接诊 / 完成的时间戳；0 = 该步还没发生（服务端口径，见 http_app.cj:631-636） */
+  arrivedAt: number = 0;
+  startedAt: number = 0;
+  finishedAt: number = 0;
+  /** 科室名与医生名：服务端已下发，避免界面只能显示「科室 #3 医生 #9」 */
+  departmentName: string = '';
+  doctorName: string = '';
+  doctorTitle: string = '';
   slotRestored: boolean = true;
   warning: string = '';
 }

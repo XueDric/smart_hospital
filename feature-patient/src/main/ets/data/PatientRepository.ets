@@ -298,6 +298,16 @@ export class PatientRepository {
     result.period = asString(response['period']);
     result.seqNo = asNumber(response['seq_no']);
     result.status = asString(response['status']);
+    // 服务端同时下发机器判据 status 与权威中文名 status_label（http_app.cj:631-636）；
+    // 时间戳与科室/医生名同样在 bookingJson 里，此前漏读 ⇒ 界面只能显示「科室 #3 医生 #9」，
+    // 且服务端为患者记的「几点到院」完全看不到（缺陷 C4）。
+    result.statusLabel = asString(response['status_label']);
+    result.arrivedAt = asNumber(response['arrived_at']);
+    result.startedAt = asNumber(response['started_at']);
+    result.finishedAt = asNumber(response['finished_at']);
+    result.departmentName = asString(response['department_name']);
+    result.doctorName = asString(response['doctor_name']);
+    result.doctorTitle = asString(response['doctor_title']);
     result.slotRestored = asBool(response['slot_restored'], true);
     result.warning = asString(response['warning']);
     return result;
