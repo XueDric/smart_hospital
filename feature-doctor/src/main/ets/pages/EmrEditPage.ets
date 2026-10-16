@@ -17,7 +17,14 @@ import {
   periodText
 } from 'common-core';
 import { DoctorRepository } from '../data/DoctorRepository';
-import { EmrRecord, EmrSection, PastRecord, PrevisitSlot, PrevisitSummary } from '../model/DoctorModels';
+import {
+  EmrRecord,
+  EmrSection,
+  PastRecord,
+  PrevisitSlot,
+  PrevisitSummary,
+  patientDisplayText
+} from '../model/DoctorModels';
 
 /*
  * 七段锚点跳转时，List 项下标与"段序号"之间差的常量（预问诊卡 + 既往病历两个固定前缀块）。
@@ -54,6 +61,8 @@ export struct EmrEditPage {
   @Local appointmentId: number = 0;
   @Local seq: number = 0;
   @Local patientId: number = 0;
+  @Local patientName: string = '';
+  @Local patientGender: string = '';
   @Local visitDate: string = '';
   @Local period: string = '';
   @Local sections: EmrSection[] = [];
@@ -100,6 +109,8 @@ export struct EmrEditPage {
     this.seq = asNumber(params['seq']);
     // 队列带过来的患者编号只是"省一次等待"；`load()` 里会用病历响应的 patient_id 校正。
     this.patientId = asNumber(params['patientId']);
+    this.patientName = asString(params['patientName']);
+    this.patientGender = asString(params['patientGender']);
     this.visitDate = asString(params['visitDate']);
     this.period = asString(params['period']);
     this.load();
@@ -112,6 +123,9 @@ export struct EmrEditPage {
     try {
       const record = await this.repository.getRecord(this.appointmentId);
       this.applyRecord(record);
+      // GET record 是患者身份的权威来源；空串同样覆盖路由快照，回退到编号。
+      this.patientName = record.patientName;
+      this.patientGender = record.patientGender;
       this.dirty = false;
       this.conflicted = false;
       this.showConflict = false;
@@ -145,6 +159,13 @@ export struct EmrEditPage {
     this.recordUpdatedAt = record.updatedAt;
     this.revisionVersion = record.revisionVersion;
     this.previsitRefSections = record.previsitRefSections;
+    // PUT / lock 响应不带患者身份；只在确实下发时更新，避免保存后姓名消失。
+    if (record.patientName.length > 0) {
+      this.patientName = record.patientName;
+    }
+    if (record.patientGender.length > 0) {
+      this.patientGender = record.patientGender;
+    }
   }
 
   // 预问诊摘要只在进页时取一次：没有摘要（PREVISIT_NOT_FOUND）是正常态，静默。
@@ -713,18 +734,21 @@ export struct EmrEditPage {
         onBack: () => this.tryBack()
       })
 
-      /*
-       * 患者栏。⚠ 这里**只有患者编号**：医生端目前没有任何端点下发患者姓名/性别 ——
-       * 队列项、病历、预问诊摘要、既往病历一律只回 patient_id（后端有意不把姓名放进出参，
-       * 见 docs/FRONTEND-INTEGRATION.md §5.30.1 与验收脚本对 patient_name 的禁用）。
-       * TODO(后端补出参字段后): 姓名/性别接入此栏，编号退为副标题。
-       */
       Row() {
-        Text(`患者 #${this.patientId}`)
-          .fontSize(AppText.SUBHEADING)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(AppColor.TEXT)
-          .layoutWeight(1)
+        Column() {
+          Text(patientDisplayText(this.patientId, this.patientName, this.patientGender))
+            .fontSize(AppText.SUBHEADING)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(AppColor.TEXT)
+          if (this.patientName.length > 0) {
+            Text(`患者 #${this.patientId}`)
+              .fontSize(AppText.CAPTION)
+              .fontColor(AppColor.TEXT_SECONDARY)
+              .margin({ top: 4 })
+          }
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start)
         Text(this.visitLabel())
           .fontSize(AppText.CAPTION)
           .fontColor(AppColor.TEXT_SECONDARY)

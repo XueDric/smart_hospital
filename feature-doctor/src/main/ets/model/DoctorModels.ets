@@ -10,6 +10,9 @@ export class LoginResult {
 export class VisitItem {
   appointmentId: number = 0;
   patientId: number = 0;
+  // 医生侧队列契约必填；查不到患者时服务端给空串，UI 回退显示患者编号。
+  patientName: string = '';
+  patientGender: string = '';
   doctorId: number = 0;
   departmentId: number = 0;
   visitDate: string = '';
@@ -38,6 +41,27 @@ export class VisitItem {
   recordTotal: number = 7;
 }
 
+/*
+ * 医生侧患者标识文案。姓名缺失时回退 `患者 #<patientId>`；性别缺失不显示后缀。
+ * `patient.gender` 当前取值为 M/F，未知值原样显示，避免客户端吞掉服务端新值。
+ */
+export function patientDisplayText(patientId: number, patientName: string,
+  patientGender: string): string {
+  const base = patientName.length > 0 ? patientName : `患者 #${patientId}`;
+  const gender = patientGenderText(patientGender);
+  return gender.length > 0 ? `${base}（${gender}）` : base;
+}
+
+function patientGenderText(gender: string): string {
+  if (gender === 'M') {
+    return '男';
+  }
+  if (gender === 'F') {
+    return '女';
+  }
+  return gender;
+}
+
 export class EmrSection {
   key: string = '';
   label: string = '';
@@ -50,6 +74,9 @@ export class EmrRecord {
   id: number = 0;
   appointmentId: number = 0;
   patientId: number = 0;
+  // 仅医生侧 GET record 下发；PUT / lock 响应缺席，保存时不能用空值覆盖已有身份。
+  patientName: string = '';
+  patientGender: string = '';
   doctorId: number = 0;
   status: string = 'none';
   locked: boolean = false;
@@ -131,14 +158,7 @@ export class RevisionItem {
 }
 
 // 某一版详情（§5.29.3）：比列表项多 record_id / appointment_id / sections 正文。
-export class RevisionDetail {
-  version: number = 0;
-  status: string = '';
-  operation: string = '';
-  reason: string = '';
-  operatorUserId: number = 0;
-  operatorRole: string = '';
-  createdAt: number = 0;
+export class RevisionDetail extends RevisionItem {
   recordId: number = 0;
   appointmentId: number = 0;
   // 含全部七段（空段也在，value 为空串）—— 既能看出写了什么，也能看出没写什么。

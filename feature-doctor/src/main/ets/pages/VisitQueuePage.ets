@@ -15,7 +15,7 @@ import {
   appointmentStatusText
 } from 'common-core';
 import { DoctorRepository } from '../data/DoctorRepository';
-import { VisitItem } from '../model/DoctorModels';
+import { VisitItem, patientDisplayText } from '../model/DoctorModels';
 
 @ComponentV2
 export struct VisitQueuePage {
@@ -103,13 +103,15 @@ export struct VisitQueuePage {
 
   private writeRecord(item: VisitItem): void {
     // 把患者/就诊上下文一并带过去，省掉工作台首屏的空等：
-    // `patient_id` 决定"既往病历"能不能马上就取，`visit_date`/`period` 决定患者栏怎么显示。
+    // `patient_id` 决定"既往病历"能不能马上就取，姓名/性别让患者栏首帧就能认人。
     // ⚠ 这些只是**省一次等待**，不是权威来源 —— 工作台仍会用 GET record 的
-    //   `patient_id` 校正（队列项与病历可能不同步，比如换了单）。
+    //   `patient_id` / `patient_name` / `patient_gender` 校正。
     const params: Record<string, Object> = {
       'appointmentId': item.appointmentId,
       'seq': item.seqNo,
       'patientId': item.patientId,
+      'patientName': item.patientName,
+      'patientGender': item.patientGender,
       'visitDate': item.visitDate,
       'period': item.period
     };
@@ -230,7 +232,7 @@ export struct VisitQueuePage {
     Column() {
       PageHeader({
         title: `接诊队列（${SessionStore.getDisplayName()}）`,
-        subtitle: '队列仅显示序号与患者编号，不显示姓名'
+        subtitle: '按状态展示今日接诊顺序'
       })
 
       Row() {
@@ -260,7 +262,8 @@ export struct VisitQueuePage {
               Column() {
                 Row() {
                   Column() {
-                    Text(`序号 ${item.seqNo} · 患者 #${item.patientId}`)
+                    Text(`序号 ${item.seqNo} · ${patientDisplayText(item.patientId, item.patientName,
+                      item.patientGender)}`)
                       .fontSize(AppText.SUBHEADING)
                       .fontWeight(FontWeight.Bold)
                       .fontColor(AppColor.TEXT)

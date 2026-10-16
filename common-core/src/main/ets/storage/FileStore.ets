@@ -14,8 +14,14 @@ export class FileStore {
       return false;
     }
     try {
-      fileIo.writeTextSync(path, JSON.stringify(value));
-      return true;
+      const file = fileIo.openSync(path,
+        fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
+      try {
+        fileIo.writeSync(file.fd, JSON.stringify(value));
+        return true;
+      } finally {
+        fileIo.closeSync(file);
+      }
     } catch (error) {
       return false;
     }

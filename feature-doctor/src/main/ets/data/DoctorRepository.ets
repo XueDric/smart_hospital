@@ -336,6 +336,8 @@ export class DoctorRepository {
     const result = new VisitItem();
     result.appointmentId = asNumber(response['appointment_id']);
     result.patientId = asNumber(response['patient_id']);
+    result.patientName = asString(response['patient_name']);
+    result.patientGender = asString(response['patient_gender']);
     result.doctorId = asNumber(response['doctor_id']);
     result.departmentId = asNumber(response['department_id']);
     result.visitDate = asString(response['visit_date']);
@@ -362,6 +364,8 @@ export class DoctorRepository {
     result.id = asNumber(response['id']);
     result.appointmentId = asNumber(response['appointment_id']);
     result.patientId = asNumber(response['patient_id']);
+    result.patientName = asString(response['patient_name']);
+    result.patientGender = asString(response['patient_gender']);
     result.doctorId = asNumber(response['doctor_id']);
     result.status = asString(response['status'], 'none');
     result.locked = asBool(response['locked']);

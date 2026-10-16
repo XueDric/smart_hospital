@@ -135,10 +135,8 @@ class MockDoctorState {
       MockDoctorState.section('treatment', '处理意见', treatment, 4000, true)
     ];
     record.filled = MockDoctorRepository.countFilled(record);
-    /*
-     * 就诊上下文（服务端 putVisitContext 补的字段）。这里借科室名/医生名把既往单区分开，
-     * 但**患者姓名依旧没有** —— 医生端契约里就没有这个字段（§5.30.1 只回 patient_id）。
-     */
+    // 就诊上下文（服务端 putVisitContext 补的字段）。患者标识由 skeleton 从同一份
+    // Mock 患者表带入，保持队列、病历、既往病历三处一致。
     const past = new PastRecord();
     past.record = record;
     past.departmentId = 3;
@@ -197,6 +195,8 @@ class MockDoctorState {
     const result = new VisitItem();
     result.appointmentId = appointmentId;
     result.patientId = patientId;
+    result.patientName = MockDoctorState.patientNameOf(patientId);
+    result.patientGender = MockDoctorState.patientGenderOf(patientId);
     result.doctorId = 9;
     result.departmentId = 3;
     result.visitDate = visitDate;
@@ -233,6 +233,8 @@ class MockDoctorState {
     result.id = appointmentId;
     result.appointmentId = appointmentId;
     result.patientId = patientId;
+    result.patientName = MockDoctorState.patientNameOf(patientId);
+    result.patientGender = MockDoctorState.patientGenderOf(patientId);
     result.doctorId = 9;
     result.status = 'none';
     result.locked = false;
@@ -240,6 +242,32 @@ class MockDoctorState {
     result.totalSections = 7;
     result.complete = false;
     return result;
+  }
+
+  private static patientNameOf(patientId: number): string {
+    if (patientId === 101) {
+      return '张伟';
+    }
+    if (patientId === 102) {
+      return '李娜';
+    }
+    if (patientId === 103) {
+      return '王强';
+    }
+    if (patientId === 104) {
+      return '赵敏';
+    }
+    return '';
+  }
+
+  private static patientGenderOf(patientId: number): string {
+    if (patientId === 101 || patientId === 103) {
+      return 'M';
+    }
+    if (patientId === 102 || patientId === 104) {
+      return 'F';
+    }
+    return '';
   }
 
   static section(key: string, label: string, value: string, maxLen: number,
