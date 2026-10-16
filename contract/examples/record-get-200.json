@@ -85,7 +85,9 @@
             "allergy_history"
           ],
           "at": 0
-        }
+        },
+        "patient_name": "<patient>",
+        "patient_gender": "M"
       }
     }
   }

@@ -1,6 +1,6 @@
 {
   "title": "医生叫号队列 data",
-  "description": "应用于 response.body.data。每行都带 `previsit_ready`：**只有绑定到这张挂号单**的预问诊才算 true（否则历史单会全亮徽标，徽标就没意义了）。record_* 是这张单的病历状态摘要，避免队列页为每行再打一次详情请求。本端点**不回显分页字段**（队列是当天的，服务端自己夹取）。2026-10-15（改进 6）：新增 `arrived`/`waiting` 两个状态、`status_label`（与 status 同源的中文名）与三个时间戳（`arrived_at`/`started_at`/`finished_at`，epoch 秒，**0 = 这一步还没发生**，不是缺字段）；排序为「状态优先级 → seq_no」——到院与候诊两态排在已挂号之前，前端直接按服务器给的顺序渲染即可，**不要自己再排**。",
+  "description": "应用于 response.body.data。每行都带 `previsit_ready`：**只有绑定到这张挂号单**的预问诊才算 true（否则历史单会全亮徽标，徽标就没意义了）。record_* 是这张单的病历状态摘要，避免队列页为每行再打一次详情请求。本端点**不回显分页字段**（队列是当天的，服务端自己夹取）。2026-10-15（改进 6）：新增 `arrived`/`waiting` 两个状态、`status_label`（与 status 同源的中文名）与三个时间戳（`arrived_at`/`started_at`/`finished_at`，epoch 秒，**0 = 这一步还没发生**，不是缺字段）；排序为「状态优先级 → seq_no」——到院与候诊两态排在已挂号之前，前端直接按服务器给的顺序渲染即可，**不要自己再排**。2026-10-16（医生端复核 ★★★ 第 2 条）：每行新增 `patient_name`/`patient_gender`（按 `patient_id` 从 `patient` 表**一次批量**查回，服务端不再只给「患者 #700001」）。",
   "type": "object",
   "required": ["items", "count", "doctor_id"],
   "additionalProperties": false,
@@ -11,11 +11,13 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["appointment_id", "patient_id", "doctor_id", "department_id", "visit_date", "period", "seq_no", "status", "status_label", "arrived_at", "started_at", "finished_at", "previsit_ready", "record_id", "record_status", "record_filled", "record_total"],
+        "required": ["appointment_id", "patient_id", "patient_name", "patient_gender", "doctor_id", "department_id", "visit_date", "period", "seq_no", "status", "status_label", "arrived_at", "started_at", "finished_at", "previsit_ready", "record_id", "record_status", "record_filled", "record_total"],
         "additionalProperties": false,
         "properties": {
           "appointment_id": { "type": "integer" },
           "patient_id": { "type": "integer" },
+          "patient_name": { "type": "string", "minLength": 1, "description": "★ 2026-10-16 增：患者姓名（医生诊疗必需）。查不到患者时服务端给**空串**而不是省字段 —— 形状不随数据在不在变化。" },
+          "patient_gender": { "type": "string", "description": "★ 2026-10-16 增：患者性别，取值同 patient.gender（可为空串）" },
           "doctor_id": { "type": "integer" },
           "department_id": { "type": "integer" },
           "visit_date": { "type": "string", "minLength": 6, "description": "日期；样例里归一化成占位符 <date>（6 字符），真实值是 YYYY-MM-DD" },

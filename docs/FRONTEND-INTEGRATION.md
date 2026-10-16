@@ -1234,6 +1234,22 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
   **医生在同一次请求里显式给出的段不算预填**（比如医生自己填了诊断，诊断不会被记成"患者自述"）。
 * 医生端的「一键预填」按钮**保留**：它是 `use_intake_session` 的界面落点；而 5.28.1 的摘要卡片是"看得见"的落点，两者互补。
 
+**5.28.5 队列项带患者姓名 / 性别（2026-10-16 增，医生端复核 ★★★ 第 2 条）**
+
+`GET /api/v1/doctor/visits` 的每个 `items[]` 新增 **`patient_name`** 与 **`patient_gender`**：
+队列此前只有 `patient_id`，界面上是「患者 #700001」—— 医生在诊室里**认不出人**。
+姓名/性别按 `patient_id` 从 `patient` 表**一次批量**查回（`VisitRepo.patientBriefs`），
+不是每行打一次库；查不到患者时给**空串**（形状不随数据在不在变化）。
+
+> 同一天，医生侧另外两条读接口也补了这两个字段（都是「医生认人」的落点）：
+> - `GET /api/v1/doctor/visits/:id/record`（§6.2；**空病历骨架也带**：那时姓名取自**挂号单**，
+>   因为骨架的 `patient_id` 是 0）
+> - `GET /api/v1/doctor/patients/:patientId/records`（§5.30.1，每份既往病历都带）
+>
+> ⚠ 边界：**只给医生侧读接口**。患者侧（`/api/v1/medical-records*`）与
+> `GET /api/v1/admin/dashboard` **不给** —— 看板的禁用词表（`acceptance_p4.cj:428`）里就有
+> `patient_name`；患者姓名不进"聚合口径"，仍然只有本人与接诊医生看得到。
+
 **客户端要做什么**
 
 | 端 | 落点 | 做什么 |
@@ -1390,12 +1406,25 @@ POST /api/v1/doctor/visits/:id/record/reopen
 
 **只返回 `status='locked'` 的病历**（草稿是医生个人的工作稿，给另一个医生看会造成"未定稿当结论"）。
 
+**排序是契约（2026-10-16 改）**：按**就诊时间**倒序 —— `visit_date DESC, period DESC, id DESC`。
+服务端负责排，客户端按序渲染、**不要自己再排**（与 §5.31.2 的 `order` 字段同一纪律）。
+
+> ⚠ 此前按 `updated_at DESC, id DESC` 排，这是**错的**：`updated_at` 是"这份记录最后一次被写"的时间，
+> 而"解锁 → 重写 → 再锁定"会把一份**旧就诊**的病历顶到列表最前面。医生看到的顺序就会随
+> 「管理员今天解锁了哪一份」而变，与就诊先后无关。`updated_at` 仍然回给出站（客户端要拿它做乐观锁），
+> 只是**不再**充当排序键。
+
+**每一份都带 `patient_name` / `patient_gender`（2026-10-16 增）**：名字来自 `patient` 表，
+按 `patient_id` **一次批量**查回（不是每份记录打一次库）。查不到患者时服务端给**空串**，
+不省字段 —— 响应形状不随数据在不在变化。
+
 ```json
 { "ok": true, "data": {
   "patient_id": 0,
   "count": 2,
   "items": [ /* 就地展开的病历对象，与 `GET /doctor/visits/:id/record?include_sections=true` 同形状
-                （含 `sections[]` 与 `previsit_ref`），另加 `department_name`/`doctor_name` 等就诊上下文 */ ]
+                （含 `sections[]` 与 `previsit_ref`），另加 `department_name`/`doctor_name`
+                与 `patient_name`/`patient_gender` 等就诊上下文 */ ]
 } }
 ```
 
@@ -1420,7 +1449,15 @@ POST /api/v1/doctor/visits/:id/record/reopen
 
 - 比较发生在**同一条 UPDATE 的 `WHERE` 里**（`updated_at = ?`），不是"先查再比" —— 否则两个请求都能通过。
 - 不带该字段 ⇒ 保持旧行为（**不校验**，用于兼容与首次保存）。
-- 挂号单**还没有病历**时不校验（没有"当前版本"可比）。
+- 挂号单**还没有病历**时不走 UPDATE，而是 **INSERT**；两条请求同时首次保存时，唯一键
+  `uk_medical_record_appointment` 会让后到的那条 INSERT 失败 —— 服务端捕获它，**回读刚建出来的那一行**，
+  按"并发首建"处理成 **409 `EMR_CHANGED`**（与乐观锁同一个业务码，客户端同一套处理）。
+  ⚠ 2026-10-16 修（医生端复核 ★★★ 第 1 条）：这条路径此前**不回填** `updated_at`/`updated_by`，
+  于是它吐出的 409 **没有 `error.fields`**，与它自己的契约（`envelope-error-fields`）不符，
+  客户端读 `fields.updated_at` 会拿到 `undefined`。现在两条出口都填同一组值。
+- **`error.fields` 的保证（2026-10-16 起）**：只要回 `EMR_CHANGED`，`updated_at` 与 `updated_by`
+  **一定有**（都是整数，来自"当前库里那一版"或"刚建出来的那一版"）；`record_id` 是**可选**字段，
+  只有确实存在记录行时才给（`envelope-error-fields.schema.json` 的 `required` 据此只列前两个）。
 - **优先级**：已定稿的单先回 **409 `EMR_LOCKED`**（即使 `expected_updated_at` 也过期）——
   先讲最要紧的事：要回 `EMR_CHANGED` 会让客户端以为"重读版本再写就行"，而实际得先去调解锁。
 - 重复 PUT 同内容**允许**，且**不产生修订版本**（版本只在 lock/reopen 落行，见 §5.29.1）：
@@ -1933,6 +1970,7 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 | 12 | ~~**没有"这单还能不能退"的判定字段**~~ ✅ **服务端已强制校验 2026-10-12**（仍无 `can_cancel` 字段） | 退号按钮置灰 | 无 `can_cancel` 字段，`bookingJson` 里只有 `status`。**但现在服务端会拦**：非 `booked` 一律 409 `APPOINTMENT_NOT_CANCELLABLE`（§5.16/§8.2）。⇒ 置灰用 `status === 'booked'`，**并必须兜底 409**（列表快照会过期：医生随时可能点"开始接诊"） |
 | 13 | **分诊结果无法跳详情** | `options` 给了 `department_id`/`doctor_id`，但没有详情页可取（缺口 1/2） | ⇒ 分诊结果页**直接就地展示号源并允许挂号**，不做"科室详情"跳转 |
 | 14 | **没有 AI 流式分诊** | 分诊页不能做逐字输出 | 只有预问诊是 SSE；`POST /api/v1/triage` 是一次性 JSON（`http_app.cj:1157-1223` 无 stream 分支）。⇒ 分诊页用 loading 态即可 |
+| 15 | ~~**医生端任何接口都拿不到患者姓名**~~ ✅ **已补齐 2026-10-16**（医生端同学复核 ★★★ 第 2 条） | 医生工作台左栏「给谁看病」、队列行、既往病历列表都只能显示「患者 #700001」 | 三条医生侧**读**接口补了 `patient_name` / `patient_gender`：`GET /doctor/visits`（§5.28.5）、`GET /doctor/visits/:id/record`（含空骨架，§6.2）、`GET /doctor/patients/:patientId/records`（§5.30.1）。⚠ 患者侧与 `/admin/dashboard` **仍然不给**（后者禁用词表里就有 `patient_name`） |
 
 > 另有一条"半个缺口"：`GET /api/v1/previsit/:id` 能按 `session_id` 取单，但**没有"列出我的预问诊会话"**
 > 接口（`http_app.cj` 里只有 3 条 previsit 路由）⇒ 客户端必须自己持久化 `session_id`。

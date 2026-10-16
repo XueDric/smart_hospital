@@ -1,6 +1,6 @@
 {
   "title": "业务错误信封 + 当前版本回报 {ok:false,error:{code,message,fields}}",
-  "description": "乐观锁冲突（EMR_CHANGED）专用的错误信封：除 code/message 外还带 error.fields，如实回报**服务端当前那一版**（updated_at / updated_by / record_id），让客户端能重新读取并合并，而不是盲重试覆盖别人的修改。⚠ 只有冲突这条路带 fields —— 其余错误一律用 envelope-error（它禁止额外成员），这样“多带字段”本身也是可被门禁发现的契约变更。样例里的三个值已归一化为 0。",
+  "description": "乐观锁冲突（EMR_CHANGED）专用的错误信封：除 code/message 外还带 error.fields，如实回报**服务端当前那一版**（updated_at / updated_by / record_id），让客户端能重新读取并合并，而不是盲重试覆盖别人的修改。⚠ 只有冲突这条路带 fields —— 其余错误一律用 envelope-error（它禁止额外成员），这样「多带字段」本身也是可被门禁发现的契约变更。样例里的三个值已归一化为 0。⚠ 2026-10-16：fields 的必填只有 updated_at / updated_by —— record_id **可缺**。服务端只在「确实回读到那一行」时才回 record_id（http_p4.cj 的 if (out.recordId > 0)）；唯一键冲突但随后读不到那行时它给不出真实 id，宁缺勿假。客户端读 record_id 请按可选处理；updated_at / updated_by 是**必给**的（缺了客户端就只能盲重试）。",
   "type": "object",
   "required": ["ok", "error"],
   "additionalProperties": false,
@@ -15,7 +15,7 @@
         "message": { "type": "string", "minLength": 1 },
         "fields": {
           "type": "object",
-          "required": ["updated_at", "updated_by", "record_id"],
+          "required": ["updated_at", "updated_by"],
           "additionalProperties": false,
           "properties": {
             "updated_at": { "type": "integer" },

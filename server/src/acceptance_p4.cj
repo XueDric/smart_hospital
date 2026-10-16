@@ -850,11 +850,95 @@ public func acP4_7(runner: TestRunner, db: DbBackend): Unit {
         runner.check("★ ⑤ exclude 传 0 = 不排除（向后兼容）",
                      emr.listLockedForDoctorPatient(900010, 9610, 5, excludeAppointmentId: 0).size == 2)
 
-        /* ⑥ 排序与上限：最近改过的在前（同秒时用 id 兜底，避免列表抖动） */
+        /*
+         * ⑥ 上限与"并列兜底"：a10 与 a12 的 visit_date 都是夹具默认的 2026-12-20，
+         *   就诊日相同时用 `id DESC` 兜底（否则同一秒内的行会让列表顺序抖动）。
+         *   ⚠ 2026-10-16 改口径（医生端复核 ★★ 第 3 条）：排序键是**就诊时间**，
+         *     不再是 `updated_at` —— 本行的名字原来写"最近定稿的在前"，那是旧语义。
+         */
         let limited = emr.listLockedForDoctorPatient(900010, 9610, 1)
         runner.check("★ ⑥ limit=1 只回 1 份（实得 ${limited.size}）", limited.size == 1)
-        runner.check("★ ⑥ 最近定稿的（a12）排在前面",
+        runner.check("★ ⑥ 同一就诊日内的并列行用 id DESC 兜底（a12 在前）",
                      limited.size == 1 && limited[0].appointmentId == a12)
+
+        /*
+         * ★★ ⑧ 既往病历排序 = **就诊时间**倒序（2026-10-16 增，复核 ★★ 第 3 条）。
+         *
+         * ⚠ 这个用例必须让"就诊时间序"与"updated_at 序"**相反**才有效：
+         *   否则旧实现（`updated_at DESC`）也能通过 —— 那就等于没测到这次的修复。
+         *   a14 = 更早就诊（改写成 2026-11-01）但**最后**才被锁定（updated_at 最大）；
+         *   a15 = 更晚就诊（改写成 2026-12-25）但先被锁定。
+         *   ⇒ 正确顺序 = [a15, …(12-20 的 a12/a10)…, a14]；
+         *     按 updated_at 排会得到 [a14, a15, …]（正好反了）。
+         */
+        let a14 = hSeedAppointmentForDoctor(db, 14, 9610, VISIT_VISITING, asDoctorId: 900010)
+        let a15 = hSeedAppointmentForDoctor(db, 15, 9610, VISIT_VISITING, asDoctorId: 900010)
+        db.exec("UPDATE appointment SET visit_date = ? WHERE id = ?", [DbStr("2026-11-01"), DbInt(a14)])
+        db.exec("UPDATE appointment SET visit_date = ? WHERE id = ?", [DbStr("2026-12-25"), DbInt(a15)])
+        runner.check("★ ⑧ 排序夹具：a15（更晚就诊）填满并锁定",
+                     hFillAllSections(emr, a15, 900010, now + 40, 9901).ok &&
+                     emr.lock(a15, now + 41, 9901, "doctor").ok)
+        runner.check("★ ⑧ 排序夹具：a14（更早就诊）**最后**填满并锁定（它的 updated_at 最大）",
+                     hFillAllSections(emr, a14, 900010, now + 400, 9901).ok &&
+                     emr.lock(a14, now + 401, 9901, "doctor").ok)
+        let ordered = emr.listLockedForDoctorPatient(900010, 9610, 10)
+        var head2 = "无"
+        var tail1 = "无"
+        if (ordered.size >= 1) {
+            tail1 = ordered[ordered.size - 1].appointmentId.toString()
+        }
+        if (ordered.size >= 2) {
+            head2 = "${ordered[0].appointmentId},${ordered[1].appointmentId}"
+        }
+        runner.check("★★ ⑧ 更晚就诊的 a15 排在最前（实得前两条 ${head2}）",
+                     ordered.size >= 2 && ordered[0].appointmentId == a15 &&
+                     ordered[1].appointmentId == a12)
+        runner.check("★★ ⑧ 且**不是**按 updated_at 排：最后锁定的 a14 排在**最后**（实得末条 ${tail1}）",
+                     ordered.size >= 4 && ordered[ordered.size - 1].appointmentId == a14)
+
+        /*
+         * ★★ ⑨ 患者基本标识批量读（2026-10-16 增，复核 ★★★ 第 2 条）。
+         *
+         * 医生端三个端点的 `patient_name` / `patient_gender` 都由它供数，
+         * 所以这里钉住四件事：去重、未知 id 不返回、空输入不查库、性别原样带出。
+         */
+        /*
+         * ⚠ 批量读在 `VisitRepo` 上（见 domain_emr.cj 的注释：医生侧三个端点都在
+         *   `visit` 的作用域里，所以不新建 PatientRepo）。验收里 `emr` 是病历 repo，
+         *   这里单独持一个 `VisitRepo` 只用来调它。
+         */
+        let vrepo = VisitRepo(db)
+        let briefs = vrepo.patientBriefs([9610, 9610, 999998, 0, -5])
+        runner.check("★★ ⑨ 去重 + 丢掉未知/非法 id 后只剩 1 条（实得 ${briefs.size}）", briefs.size == 1)
+        var bName = "无"
+        var bGender = "无"
+        match (briefs.get(9610)) {
+            case Some(b) =>
+                bName = b.name
+                bGender = b.gender
+            case None => ()
+        }
+        runner.check("★★ ⑨ 姓名/性别与库一致（实得「${bName}」/「${bGender}」）",
+                     bName == "P4测试患者9610" && bGender == "M")
+        runner.check("★ ⑨ 未知 id 不在结果里（不给「猜 id」留 oracle）", !briefs.contains(999998))
+        runner.check("★ ⑨ 空输入 / 全非法输入 ⇒ 空表（不查库、不报错）",
+                     vrepo.patientBriefs(Array<Int64>()).size == 0 &&
+                     vrepo.patientBriefs([0, -1]).size == 0)
+
+        /*
+         * ★★ ⑩ 异常分类：只有**已确认的唯一键冲突**才算冲突（2026-10-16 增，复核 ★★★ 第 1 条）。
+         *
+         * ⚠ `saveDraft` 的 INSERT catch 用来把"并发撞唯一键"翻译成冲突；它此前
+         *   `catch (e: Exception)` 吞掉**所有**异常。真正那条路径只有真并发才走得到
+         *   （验收里造不出确定性竞态），所以这里直接钉住它依赖的判据函数：
+         *   库故障/空消息 ⇒ None（原样上抛），重复键 ⇒ Some（转成冲突）。
+         */
+        runner.check("★★ ⑩ 重复键异常被识别（`Duplicate entry` 前缀）",
+                     baseDuplicateMessage(Exception("Duplicate entry '7001' for key 'uk_medical_record_appointment'")).isSome())
+        runner.check("★★ ⑩ 别的库故障**不**被当成冲突（原样上抛）",
+                     baseDuplicateMessage(Exception("Table 'hospital.medical_record' doesn't exist")).isNone())
+        runner.check("★ ⑩ 空消息也不算冲突（不凭空消息猜）",
+                     baseDuplicateMessage(Exception("")).isNone())
 
         /* ========== ⑦ 乐观锁（本项的核心） ========== */
         let a13 = hSeedAppointmentForDoctor(db, 13, 9613, VISIT_VISITING)

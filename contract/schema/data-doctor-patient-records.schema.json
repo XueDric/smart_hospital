@@ -1,6 +1,6 @@
 {
   "title": "data：医生工作台取某患者的既往病历（改进 2）",
-  "description": "GET /api/v1/doctor/patients/:patientId/records 的 data。⚠ 三个不变式由这张 Schema 钉住：① 只可能回**已定稿**（status 只有 locked 一种取值、locked 恒为 true）—— 草稿属于“正在写的那一份”，不能从别人那儿漏出去；② 每份记录**带正文**（sections 恰好七段），因为工作台正是要拿它对照着写本次的病历；③ 每份都带就诊上下文（科室/医生/日期），否则前端要再发一轮请求去凑显示。patient_id 回显是为了让客户端不必再拼自己的入参。",
+  "description": "GET /api/v1/doctor/patients/:patientId/records 的 data。⚠ 三个不变式由这张 Schema 钉住：① 只可能回**已定稿**（status 只有 locked 一种取值、locked 恒为 true）—— 草稿属于“正在写的那一份”，不能从别人那儿漏出去；② 每份记录**带正文**（sections 恰好七段），因为工作台正是要拿它对照着写本次的病历；③ 每份都带就诊上下文（科室/医生/日期），否则前端要再发一轮请求去凑显示。patient_id 回显是为了让客户端不必再拼自己的入参。2026-10-16（医生端复核 ★★ 第 3 条 + ★★★ 第 2 条）：④ **排序是契约**——按就诊时间倒序（`visit_date DESC, period DESC, id DESC`），服务端负责排，客户端按序渲染、**不要自己再排**（此前按 `updated_at DESC` 排，而 `updated_at` 会被「解锁后重写」刷新，于是排序会随无关动作变动）；⑤ 每份都带 `patient_name`/`patient_gender`。",
   "type": "object",
   "required": ["items", "count", "patient_id"],
   "additionalProperties": false,
@@ -10,7 +10,7 @@
       "items": {
         "type": "object",
         "required": [
-          "id", "appointment_id", "patient_id", "doctor_id", "department_id",
+          "id", "appointment_id", "patient_id", "patient_name", "patient_gender", "doctor_id", "department_id",
           "status", "locked", "filled", "total_sections", "complete",
           "updated_by", "updated_at", "created_at", "missing_required",
           "sections", "department_name", "doctor_name", "doctor_title",
@@ -21,6 +21,8 @@
           "id": { "type": "integer" },
           "appointment_id": { "type": "integer" },
           "patient_id": { "type": "integer" },
+          "patient_name": { "type": "string", "minLength": 1, "description": "★ 2026-10-16 增：患者姓名（工作台左栏要显示「给谁看病」）。查不到时服务端给空串。" },
+          "patient_gender": { "type": "string", "description": "★ 2026-10-16 增：患者性别，可为空串" },
           "doctor_id": { "type": "integer" },
           "department_id": { "type": "integer" },
           "status": {

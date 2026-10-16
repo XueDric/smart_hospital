@@ -432,6 +432,38 @@ func putVisitContext(o: JsonObject, m: MedicalRecord, booking: BookingRepo, name
 }
 
 /*
+ * ★ 患者基本标识（2026-10-16 增，医生端复核 ★★★ 第 2 条）。
+ *
+ * 写 `patient_name` / `patient_gender`；查不到时写**空串**而不是省略字段
+ * （与 `NameIndex.putInto` 同一条纪律：客户端少写一个判空分支。
+ * 省略字段会让"字段不存在"与"名字为空"无法区分）。
+ *
+ * ⚠ 只有**医生侧**三个端点调用它：接诊队列（`/doctor/visits`）、
+ *   单份病历（`/doctor/visits/:id/record`）、既往病历
+ *   （`/doctor/patients/:patientId/records`）。
+ *   理由：医生手里只有"挂号单 + 患者编号"，叫号/问诊/写病历都得先确认
+ *   "是不是这个人"；看不到姓名时医生只能凭编号猜测。
+ * ⚠ 患者侧端点**不加**：那些响应里的患者恒等于令牌持有者本人，
+ *   多给一个姓名只增加泄露面、不增加能力（同 `visitPrevisitJson` 的纪律）。
+ * ⚠ 管理端看板/队列**不加**：`acceptance_p4.cj` 把 `patient_name` 列为看板禁词
+ *   （看板只出聚合）；医生的接诊队列不在那条禁令里 —— 它本来就是"我 today 要给谁看"。
+ * ⚠ 只给姓名 + 性别两列，不给 phone / birth_date：
+ *   核对身份不需要手机号；出生日期由医生问诊时自己问（进病历正文）。
+ */
+func putPatientInto(o: JsonObject, patientId: Int64, briefs: HashMap<Int64, PatientBrief>): Unit {
+    var name = ""
+    var gender = ""
+    match (briefs.get(patientId)) {
+        case Some(b) =>
+            name = b.name
+            gender = b.gender
+        case None => ()
+    }
+    o.put("patient_name", JsonString(name))
+    o.put("patient_gender", JsonString(gender))
+}
+
+/*
  * 注册 P4 的全部端点。
  *
  * ⚠ `can(role, action)` 是**唯一**的权限判据；本文件里不出现任何
@@ -460,10 +492,22 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
         }
         let limit = parseInt64Or(ctx.queryParamOr("limit", "100"), 100)
         let rows = visit.queueForDoctor(p.doctorId, if (limit > 0 && limit <= 500) { limit } else { 100 })
+        /*
+         * 患者姓名：**一次**批量读，不在循环里逐条查（见 VisitRepo.patientBriefs 的注释）。
+         * ⚠ 这一段是 2026-10-16 复核 ★★★ 第 2 条补的：此前医生端**没有任何端点**
+         *   能拿到患者姓名，队列里只有"患者 #101"。
+         */
+        let pids = ArrayList<Int64>()
+        for (a in rows) {
+            pids.add(a.patientId)
+        }
+        let briefs = visit.patientBriefs(pids.toArray())
         let arr = ArrayList<JsonValue>()
         for (a in rows) {
-            arr.add(visitQueueItemJson(a, emr.findByAppointment(a.appointmentId),
-                                       previsit.findByAppointment(a.appointmentId, a.patientId).isSome()))
+            let item = visitQueueItemJson(a, emr.findByAppointment(a.appointmentId),
+                                          previsit.findByAppointment(a.appointmentId, a.patientId).isSome())
+            putPatientInto(item, a.patientId, briefs)
+            arr.add(item)
         }
         let o = JsonObject()
         o.put("items", JsonArray(arr.toArray()))
@@ -597,15 +641,27 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
             throw apiErrorMsg("VALIDATION_FAILED", "挂号单 id 必须是正整数")
         }
         /* 先确认这张单是**我的**（不匹配 ⇒ 404，不当成 403） */
-        if (visit.findForDoctor(id, p.doctorId).isNone()) {
-            throw apiErrorMsg("APPOINTMENT_NOT_FOUND", "挂号单不存在或不属于你")
-        }
-        match (emr.findByAppointment(id)) {
-            case Some(m) => sendOk(ctx, medicalRecordJson(m, true))
-            case None =>
-                let empty = MedicalRecord()
-                empty.appointmentId = id
-                sendOk(ctx, medicalRecordJson(empty, true))
+        let mine = visit.findForDoctor(id, p.doctorId)
+        match (mine) {
+            case None => throw apiErrorMsg("APPOINTMENT_NOT_FOUND", "挂号单不存在或不属于你")
+            case Some(a) =>
+                /*
+                 * 患者姓名从**挂号单**的 patient_id 取（不是从病历行 ——
+                 * 空病历骨架的 patientId 是 0，那条路也要能显示姓名）。
+                 */
+                let briefs = visit.patientBriefs([a.patientId])
+                match (emr.findByAppointment(id)) {
+                    case Some(m) =>
+                        let o = medicalRecordJson(m, true)
+                        putPatientInto(o, a.patientId, briefs)
+                        sendOk(ctx, o)
+                    case None =>
+                        let empty = MedicalRecord()
+                        empty.appointmentId = id
+                        let o = medicalRecordJson(empty, true)
+                        putPatientInto(o, a.patientId, briefs)
+                        sendOk(ctx, o)
+                }
         }
     })
 
@@ -939,10 +995,13 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
                                                  excludeAppointmentId: exclude)
         /* 名称/就诊上下文：与患者侧同一条纪律 —— 一次读全科室+医生，不在循环里查。 */
         let names = nameIndexOf(dept, doc)
+        /* 患者姓名：单患者端点也走同一套（见 putPatientInto 的注释）。 */
+        let briefs = visit.patientBriefs([patientId])
         let arr = ArrayList<JsonValue>()
         for (m in rows) {
             let item = medicalRecordJson(m, true)
             putVisitContext(item, m, booking, names)
+            putPatientInto(item, patientId, briefs)
             arr.add(item)
         }
         let o = JsonObject()

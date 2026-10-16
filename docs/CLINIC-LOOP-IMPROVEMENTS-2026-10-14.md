@@ -740,6 +740,29 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 
 ---
 
+### 8.7 医生端同学复核的 4 条（2026-10-16 深夜，`DOCTOR-BACKEND-ISSUES-2026-10-16.md`）
+
+基线 `3655143`。4 条全部实修，**两条是契约级**（改了响应形状 ⇒ 样例 + Schema + CHANGELOG 一起动）。
+
+| # | 复核结论 | 实修 |
+| --- | --- | --- |
+| ★★★ 1 | `EMR_CHANGED` 的**第二条出口**（两条请求同时首次保存撞唯一键）不填 `updated_at`/`updated_by` ⇒ 409 没有 `error.fields`，与 `envelope-error-fields` 契约不符 | `domain_emr.cj` 的 INSERT `catch` 收窄为**只处理唯一键冲突**（复用 `domain_base.cj:633 baseDuplicateMessage`：先看 `Duplicate entry ` 前缀、再看 `SqlException.errorCode == 1062`；驱动会把消息吞成空串，两个判据都要看），命中后回读刚建的行并**回填同一组值** ⇒ 两条出口都满足 `fields.required = [updated_at, updated_by]`；`record_id` 收窄为**可选** |
+| ★★★ 2 | **医生端任何接口都拿不到患者姓名**（全仓没有一处读 `patient.name`；而改进 2 的设计本来要求患者栏显示姓名/性别 ⇒ 是**遗漏**不是刻意） | 新增 `VisitRepo.patientBriefs(ids)`（`IN (...)` 一次批量查回，查不到给空串）+ `http_p4.cj:putPatientInto(...)`，落在三条**医生侧读**接口：队列、读病历（**含空骨架**，姓名取自挂号单）、既往病历列表。患者侧与 `/admin/dashboard` 仍然不给（看板禁用词表里就有 `patient_name`） |
+| ★★ 3 | 既往病历列表按 `updated_at DESC` 排 —— 而 `updated_at` 会被「解锁→重写→再锁定」刷新，排序会随无关动作变动 | 改成**就诊时间倒序**：`visit_date DESC, period DESC, id DESC`（用相关子查询取挂号单的 `visit_date`/`period`，避免 JOIN 的列名歧义 —— `domain_booking.cj:99` 有前车之鉴），并把「排序是契约、客户端不要自己再排」写进 Schema 与 `FRONTEND-INTEGRATION.md` §5.30.1 |
+| ★ 4 | `error.fields.record_id` 在 Schema 里必填、实现里 `if (recordId > 0)` 才给 | 契约与实现统一到「**可选**」：缺字段比假字段好（`http_p4.cj:316-318` 的既有纪律） |
+
+**验收（新增 11 条断言，`hospital-server.exe accept`）**：`通过 761 / 失败 0`（此前 750）。新增覆盖：
+就诊时间排序（造一条 `visit_date=2026-11-01` 的旧单，断言它**排在最后**而不是被 `updated_at` 顶到最前）、
+`patientBriefs` 的批量/去重/非法 id（`0`、`-5`、不存在的 id 一律不进结果）、
+`baseDuplicateMessage` 的真值表（`Duplicate entry` ⇒ Some、其它异常 ⇒ None、**空消息 ⇒ None**）。
+
+**实机门禁（`hospital_test` + 实例 18092）**：`emr-check` **64/0**（61 → +3，含"空骨架也带姓名"）、
+`workbench-check` **31/0**（29 → +2）、`visit-timeline-check` **47/0**（回归）、
+契约门禁 **PASS 68 / FAIL 0**（`export-contract` 重新导出 3 条样例：`visits-queue-200` / `record-get-200` /
+`doctor-patient-records-200`，共 67 条样例 / 27 个 Schema 不变）、`doc-counts` 全 OK（accept 750 → **761**）。
+
+---
+
 ## 附：本篇引用的关键位置索引
 
 **服务端**
@@ -749,7 +772,7 @@ android-patient/app/src/main/java/com/smart/hospital/patient/   MainActivity(721
 - `server/src/domain_emr.cj:655-722`（**预问诊→病历预填桥**：`intakePrefill` / `saveDraftWithIntake`）、`:738-742`（就诊状态常量）
 - `server/src/domain_emr.cj`（**改进 3**：`lock`/`reopen` 签名与落版、`writeRevision`/`ensureLockRevision`/`revisions`/`revisionAt`/`backfillRevisions`）、`server/src/schema.cj`（`medical_record_revision` DDL + 迁移第 ⑩ 步）、`server/src/http_p4.cj:688-775`（修订历史三条端点）
 - `server/src/ai_call.cj:125-158`（`source`/`reason`/`elapsedMs`）、`server/src/triage_stat.cj:57`（落库写入点）
-- `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1`、`server/tests/admin-web-smoke.mjs`、`server/tests/emr-check.ps1:280-291`（`use_intake_session` 用例）、`server/tests/revision-check.ps1`（改进 3 的 46 条 live 断言，2026-10-16 补 ⑪ 自清后 **47** 条）、`server/tests/workbench-check.ps1`（改进 2 的 29 条 live 断言）、`server/tests/visit-timeline-check.ps1`（改进 6 的 **47** 条 live 断言）、`server/tests/ai-telemetry-check.ps1`（改进 7 的 **53** 条 live 断言）、`server/tests/ai-eval/`（改进 7 评测：`cases.jsonl` + `run-ai-eval.ps1` + `recorded/`）、`server/tests/export-contract.ps1` / `contract-check.ps1`（改进 5 契约门禁）
+- `server/tests/final-verify.ps1`、`server/tests/doc-counts.ps1`、`server/tests/admin-web-smoke.mjs`、`server/tests/emr-check.ps1:280-291`（`use_intake_session` 用例）、`server/tests/revision-check.ps1`（改进 3 的 46 条 live 断言，2026-10-16 补 ⑪ 自清后 **47** 条）、`server/tests/workbench-check.ps1`（改进 2 的 **31** 条 live 断言，2026-10-16 补患者姓名后 29 → 31）、`server/tests/emr-check.ps1`（**64** 条 live 断言，同日 61 → 64）、`server/tests/visit-timeline-check.ps1`（改进 6 的 **47** 条 live 断言）、`server/tests/ai-telemetry-check.ps1`（改进 7 的 **53** 条 live 断言）、`server/tests/ai-eval/`（改进 7 评测：`cases.jsonl` + `run-ai-eval.ps1` + `recorded/`）、`server/tests/export-contract.ps1` / `contract-check.ps1`（改进 5 契约门禁）
 
 **客户端**
 - `common-core/src/main/ets/config/ApiConfig.ets:6-51`（LIVE/MOCK 与 baseUrl）、`.../network/ApiError.ets:1-16`（`ErrorCode` 清单）

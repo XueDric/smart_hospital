@@ -306,6 +306,56 @@
 
 ---
 
+## 2026-10-16 —— 医生端复核整改：患者姓名上出站、既往病历排序变成契约、EMR_CHANGED 的 fields 不再缺失（仍是 67 条样例 / 27 个 Schema）
+
+来源：医生端同学提的 `DOCTOR-BACKEND-ISSUES-2026-10-16.md`（基线 `3655143`）里的 4 条，
+本条目对应其中 3 条形状/语义变更（第 4 条只是收紧 Schema 的 required，见下）。
+
+### 变更
+
+- **`GET /api/v1/doctor/visits`（`visits-queue-200`）**：每个 `items[]` **新增**
+  `patient_name`（String，必填，查不到患者时是**空串**而不是省字段）与 `patient_gender`（String，可空串）。
+- **`GET /api/v1/doctor/visits/:id/record`（`record-get-200`）**：新增同样两个字段，**可选**
+  （Schema 里不进 `required`）—— 因为同一张 `data-record` Schema 还被 PUT / 锁定 / 解锁的响应共用，
+  那些响应不带姓名。⚠ **空病历骨架也带**（那时姓名取自**挂号单**，骨架自己的 `patient_id` 是 0）。
+- **`GET /api/v1/doctor/patients/:patientId/records`（`doctor-patient-records-200`）**：每份既往病历
+  都带 `patient_name` / `patient_gender`（必填，同样空串兜底）。
+- **同一条端点的排序变成契约**：由 `updated_at DESC, id DESC` 改为
+  **`visit_date DESC, period DESC, id DESC`**（就诊时间倒序）。Schema 与本文都写明了这一点。
+- **`envelope-error-fields`**：`error.fields.required` 由 `[updated_at, updated_by, record_id]`
+  收窄为 **`[updated_at, updated_by]`** —— `record_id` 变成**可选**（只有确实存在记录行时才给）。
+
+### 为什么
+
+- **姓名（★★★）**：在此之前，`patient.name` **全仓没有任何地方读过** —— 医生端三条接口都只回
+  `patient_id`，工作台的「患者栏」只能写「患者 #700001」，医生在诊室里认不出人。
+  而改进 2 的设计（`docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md:186`）本来就要求患者栏显示**姓名/性别**
+  ⇒ 这是**遗漏**，不是刻意的最小化。边界保持不变：患者侧端点与 `/admin/dashboard` 仍然不出姓名
+  （看板的禁用词表 `acceptance_p4.cj:428` 里就有 `patient_name`），姓名只给「本人 + 接诊医生」。
+- **排序（★★）**：`updated_at` 是「这份记录最后一次被写」的时间。解锁 → 重写 → 再锁定会刷新它，
+  于是一份**旧就诊**的病历会被顶到既往列表最前面 —— 医生看到的顺序取决于「管理员今天解锁了哪一份」，
+  与就诊先后无关。改用就诊时间后，顺序只随就诊事实变化。
+- **`fields` 缺失（★★★）**：`PUT …/record` 的冲突有**两条出口**。流行的乐观锁那条
+  （`expected_updated_at` 与库里不符）一直会填 `updated_at`/`updated_by`；但「两条请求同时首次保存」
+  撞唯一键 `uk_medical_record_appointment` 的那条，此前只回读 `recordId`/`locked`，
+  **不回填** `updated_at`/`updated_by` ⇒ 它吐出的 409 没有 `error.fields`，
+  而它的契约（`envelope-error-fields`）说 `fields` 必填 —— 客户端读 `fields.updated_at` 会拿到 `undefined`。
+  现在两条出口填**同一组值**（来自「当前库里那一版」或「刚建出来的那一版」）。
+- **`record_id` 为什么改成可选（★）**：它不是「一定有」的东西 —— 真正读到了那一行才有。
+  契约要么说「一定有」（那就得在拿不到时编一个假值），要么说「可能有」。选后者：
+  **缺字段比假字段好**（`http_p4.cj:316-318` 的既有纪律）。
+
+### 客户端要不要动
+
+- **医生端（必须改）**：① 队列行 / 工作台患者栏改用 `patient_name`（`patient_gender` 可空）；
+  ② 既往病历列表**不要再自己排序** —— 服务端已按就诊时间倒序，客户端重排会把它排回去；
+  ③ 收到 409 `EMR_CHANGED` 时 `fields.updated_at` / `fields.updated_by` **一定在**，
+  `fields.record_id` **可能不在** ⇒ 解析时要按可选处理（否则会出现"打不开的冲突弹窗"）。
+- **患者端 / 管理台**：不用动（本次没有改它们的任何形状；看板口径没变）。
+- 兼容性：三个新增字段都是**纯增量**，旧客户端忽略即可；**唯一需要重新理解的是既往列表的顺序**。
+
+---
+
 ## 模板（新增条目照抄）
 
 ```markdown

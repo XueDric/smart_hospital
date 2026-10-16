@@ -1,6 +1,6 @@
 {
   "title": "病历 data（医生视角，含 sections 与来源痕迹）",
-  "description": "应用于 response.body.data。sections 的**顺序与 label 由服务端给**，客户端不要自己写死七段的中文名（服务端改文案时前端不该跟着发版）。previsit_ref 是**初值来源快照**：它说明「这几段的值最初来自患者的预问诊单」，医生之后改写这些段**不会**改变它 —— 所以角标文案要写「预填来源」，不能写「这段是患者写的」。sections[].max_len 是服务端承认的上限。",
+  "description": "应用于 response.body.data。sections 的**顺序与 label 由服务端给**，客户端不要自己写死七段的中文名（服务端改文案时前端不该跟着发版）。previsit_ref 是**初值来源快照**：它说明「这几段的值最初来自患者的预问诊单」，医生之后改写这些段**不会**改变它 —— 所以角标文案要写「预填来源」，不能写「这段是患者写的」。sections[].max_len 是服务端承认的上限。2026-10-16（医生端复核 ★★★ 第 2 条）：`patient_name`/`patient_gender` 是**可选**字段 —— 只有医生侧**读**病历（`GET /api/v1/doctor/visits/:id/record`）才带（含尚无病历的空骨架：那时姓名取自**挂号单**，因为骨架的 patient_id 是 0）；PUT / 锁定 / 解锁的响应不带它们，故不进 required。",
   "type": "object",
   "required": ["id", "appointment_id", "patient_id", "doctor_id", "status", "locked", "filled", "total_sections", "complete", "updated_by", "created_at", "updated_at", "missing_required", "sections", "previsit_ref"],
   "additionalProperties": false,
@@ -8,6 +8,8 @@
     "id": { "type": "integer" },
     "appointment_id": { "type": "integer" },
     "patient_id": { "type": "integer" },
+    "patient_name": { "type": "string", "description": "★ 2026-10-16 增（可选）：只在医生侧**读**病历的响应里出现；查不到患者时是空串。空骨架上也有值（取自挂号单）。" },
+    "patient_gender": { "type": "string", "description": "★ 2026-10-16 增（可选）：同上，可为空串。" },
     "doctor_id": { "type": "integer" },
     "status": { "type": "string", "enum": ["draft", "locked"] },
     "locked": { "type": "boolean" },

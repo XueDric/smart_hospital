@@ -93,7 +93,9 @@
             "period": "AM",
             "department_name": "<dept>",
             "doctor_name": "<doctor>",
-            "doctor_title": "主任医师"
+            "doctor_title": "主任医师",
+            "patient_name": "<patient>",
+            "patient_gender": "M"
           }
         ],
         "count": 1,

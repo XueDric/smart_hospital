@@ -159,6 +159,9 @@ Check "★ ② 只有已定稿：草稿单 703006 不在内" (@($r.Json.data.ite
 Check "② count 与 items 条数一致" ($r.Json.data.count -eq @($r.Json.data.items).Count) "count=$($r.Json.data.count) items=$(@($r.Json.data.items).Count)"
 Check "② 带就診上下文（科室名/医生名）" ($r.Json.data.items[0].department_name -eq '改进2验证科') "dept=$($r.Json.data.items[0].department_name)"
 Check "② 回显 patient_id（前端不必再拼）" ($r.Json.data.patient_id -eq 703001)
+# ★★ 2026-10-16（医生端复核 ★★★ 第 2 条）：既往病历每一份也要能认人。
+Check "★★ ② 既往病历项带 patient_name（实得「$($r.Json.data.items[0].patient_name)」）" ($r.Json.data.items[0].patient_name -eq '改进2患者甲')
+Check "★★ ② 既往病历项带 patient_gender（实得「$($r.Json.data.items[0].patient_gender)」）" ($r.Json.data.items[0].patient_gender -eq 'M')
 $r = Req "wbHist2" 'GET' '/api/v1/doctor/patients/703001/records?exclude_appointment_id=703004' @("Authorization: Bearer $docTok") $null
 Check "★ ② exclude_appointment_id 排除本次 ⇒ 已定稿的它就只剩 0 条" ($r.Http -eq 200 -and $r.Json.data.count -eq 0) "HTTP $($r.Http) count=$($r.Json.data.count)"
 $r = Req "wbHist3" 'GET' '/api/v1/doctor/patients/703001/records?limit=1' @("Authorization: Bearer $docTok") $null

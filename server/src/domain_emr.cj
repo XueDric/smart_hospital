@@ -718,8 +718,24 @@ public class MedicalRecordRepo {
      *      给另一个医生看等于把"未定稿当结论"（口径同 http_p4.cj 的 473-474 行）；
      *   ③ `excludeAppointmentId` 用于"本次就诊"：工作台显示既往记录时
      *      不能把正在写的这一份也算进"既往"。
-     * 排序：`updated_at DESC`（最近改过的在前）+ `id DESC` 兜底（同秒时顺序稳定，
-     *   否则同一秒内两次保存会让列表顺序抖动，前端"最近一次"的提示会跳）。
+     * 排序：**就诊时间倒序**（`appointment.visit_date DESC, appointment.period DESC`）
+     *   + `id DESC` 兜底（并列时顺序稳定，否则同一秒内的行会让列表顺序抖动）。
+     *
+     * ⚠ 2026-10-16 改（医生端复核 ★★ 第 3 条，原为 `updated_at DESC, id DESC`）：
+     *   `updated_at` 是"这一行最后一次被写"的时刻，**不是**就诊时间 ——
+     *   医生把一份三个月前的老病历打开、改一个字再锁定，它就会跳到
+     *   "既往记录"的最前面，医生读到的顺序与真实就诊顺序**相反**。
+     *   而 `medical_record` 表里**没有** visit_date/period（只有 appointment_id），
+     *   就诊时间只能从挂号单取 ⇒ 用只取一列的相关子查询带出来。
+     *
+     * ⚠ 为什么不用 JOIN：`medical_record` 与 `appointment` 有同名列
+     *   （`id` / `patient_id` / `doctor_id`），本仓因 JOIN 的列名歧义栽过
+     *   （见 `domain_booking.cj` 的注释：那时改成了 EXISTS）。子查询只读一列、
+     *   列名全部带表前缀，不引入歧义，也不用改 `selectCols`/`rowToRecord`
+     *   的列顺序（那是本仓"只有一处定义"的纪律）。
+     *   📌 代价：每行两次子查询。`(doctor_id, patient_id, status)` 上的行数是个位数
+     *      到几十条（"某医生某患者的既往"），可以接受；若将来要上量，
+     *      正确做法是把它做成 `medical_record` 的冗余列，而不是在 HTTP 层加排序。
      */
     public func listLockedForDoctorPatient(doctorId: Int64, patientId: Int64,
                                            limit: Int64,
@@ -735,7 +751,10 @@ public class MedicalRecordRepo {
             sql = sql + " AND appointment_id <> ?"
             params.add(DbInt(excludeAppointmentId))
         }
-        sql = sql + " ORDER BY updated_at DESC, id DESC LIMIT ?"
+        sql = sql + " ORDER BY " +
+                    "(SELECT a.visit_date FROM appointment a WHERE a.id = medical_record.appointment_id) DESC, " +
+                    "(SELECT a.period FROM appointment a WHERE a.id = medical_record.appointment_id) DESC, " +
+                    "id DESC LIMIT ?"
         params.add(DbInt(limit))
         let rs = db.query(sql, params.toArray())
         var i: Int64 = 0
@@ -939,14 +958,39 @@ public class MedicalRecordRepo {
                  DbStr(rec.treatment), DbStr(EMR_DRAFT), DbInt(rec.updatedBy),
                  DbInt(rec.createdAt), DbInt(rec.updatedAt), DbStr(rec.previsitRef)])
         } catch (e: Exception) {
-            // 同预约首次保存并发撞唯一键时明确冲突，不自动重放过时的预填内容。
-            match (findByAppointment(appointmentId)) {
-                case Some(latest) =>
-                    out.recordId = latest.id
-                    out.locked = latest.isLocked()
-                    out.conflict = !out.locked
-                    return out
+            /*
+             * 同预约首次保存并发撞唯一键时明确冲突，不自动重放过时的预填内容。
+             *
+             * ⚠ 2026-10-16（医生端复核 ★★★ 第 1 条）：这里原先 `catch (e: Exception)`
+             *   把**所有**异常都当成"并发撞单" —— 连接断、超时、SQL 写错全都会被
+             *   翻译成 409 冲突，调用方拿着 `EMR_CHANGED` 去刷新重试，而真相是库故障
+             *   （错误码把运维引到完全错的方向）。改成先确认唯一键冲突：
+             *   复用 `domain_base.cj` 的 `baseDuplicateMessage`（同 `baseExecTolerant`
+             *   的判据：只有 `Duplicate entry` 前缀或 `SqlException.errorCode == 1062`），
+             *   其余异常**原样上抛**。
+             *
+             * ⚠ 冲突时还必须带回"服务端现在是哪一版"（`currentUpdatedAt` /
+             *   `currentUpdatedBy`）：`http_p4.cj` 靠 `if (out.currentUpdatedAt > 0)`
+             *   决定走**带 `fields`** 的那条出口；不填就退化成 `apiErrorMsg`，
+             *   响应里没有 `error.fields`，与
+             *   `contract/schema/envelope-error-fields.schema.json` 的必填直接冲突
+             *   （医生端按 `error.fields.updated_at` 重新拉取的做法会拿到 undefined）。
+             *   上方 `n == 0` 分支（887-899 行）本来就填了这两个字段，
+             *   这条出口是**漏掉的另一半**（同一件事只做了一半）。
+             */
+            match (baseDuplicateMessage(e)) {
                 case None => throw e
+                case Some(_) =>
+                    match (findByAppointment(appointmentId)) {
+                        case Some(latest) =>
+                            out.recordId = latest.id
+                            out.locked = latest.isLocked()
+                            out.conflict = !out.locked
+                            out.currentUpdatedAt = latest.updatedAt
+                            out.currentUpdatedBy = latest.updatedBy
+                            return out
+                        case None => throw e
+                    }
             }
         }
         rec.patientId = derivedPatientId
@@ -1490,6 +1534,19 @@ public class VisitOutcome {
     public var toStatus: String = ""
 }
 
+/*
+ * ★ 患者基本标识（2026-10-16 增，医生端复核 ★★★ 第 2 条）。
+ *
+ * 只承载"认出一个人"所需的两列：`name` / `gender`。
+ * ⚠ 刻意**不带** phone / birth_date：医生核对身份不需要手机号；
+ *   出生日期由医生问诊时自己问（进病历正文），不靠接口悄悄带出来。
+ */
+public class PatientBrief {
+    public var id: Int64 = 0
+    public var name: String = ""
+    public var gender: String = ""
+}
+
 public class VisitRepo {
     private let db: DbBackend
     /*
@@ -1504,6 +1561,54 @@ public class VisitRepo {
     public init(db: DbBackend) {
         this.db = db
         this.booking = BookingRepo(db)
+    }
+
+    /*
+     * ★ 患者基本标识的**批量**读（2026-10-16 增，医生端复核 ★★★ 第 2 条）。
+     *
+     * ⚠ 为什么放在 VisitRepo（而不是新建 PatientRepo）：`registerP4Routes` 已经拿到
+     *   `visit`，医生侧三个端点都在它的作用域里；新增一个 repo 要同时改
+     *   `http_p4.cj` / `http_app.cj` / acceptance 三处装配签名，收益只是"名字更好看"。
+     *   `patient` 表的**列映射在本仓只此一处**（同 BookingRepo 的纪律：
+     *   列顺序与下标不许有第二份，否则迟早错位）。
+     *
+     * ⚠ 一定是批量读（`WHERE id IN (…)`），不在循环里逐条查：
+     *   接诊队列一次最多 100 条，逐条查就是 N+1（同 http_base.cj 的 NameIndex 纪律）。
+     * ⚠ 占位符个数按**去重后**的 id 数给，且只拼 `?`（绝不把 id 文本拼进 SQL）。
+     */
+    public func patientBriefs(ids: Array<Int64>): HashMap<Int64, PatientBrief> {
+        let out = HashMap<Int64, PatientBrief>()
+        let uniq = ArrayList<Int64>()
+        for (id in ids) {
+            if (id <= 0) { continue }
+            var dup = false
+            for (u in uniq) {
+                if (u == id) { dup = true }
+            }
+            if (!dup) { uniq.add(id) }
+        }
+        if (uniq.size == 0) { return out }
+        var marks = ""
+        let params = ArrayList<DbValue>()
+        var i: Int64 = 0
+        for (id in uniq) {
+            if (i > 0) { marks = marks + ", " }
+            marks = marks + "?"
+            params.add(DbInt(id))
+            i = i + 1
+        }
+        let rs = db.query("SELECT id, name, gender FROM patient WHERE id IN (" + marks + ")",
+                          params.toArray())
+        var r: Int64 = 0
+        while (r < rs.rowCount()) {
+            let b = PatientBrief()
+            b.id = rs.getInt(r, 0)
+            b.name = rs.getString(r, 1)
+            b.gender = rs.getString(r, 2)
+            out[b.id] = b
+            r = r + 1
+        }
+        return out
     }
 
     /*

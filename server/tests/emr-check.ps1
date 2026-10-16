@@ -184,6 +184,10 @@ $ids = @($q.data.items | ForEach-Object { $_.appointment_id })
 Check "★ 队列含未退号的 700001" ($ids -contains 700001) ("ids=$($ids -join ',')")
 Check "★★ 队列**不含**已退号的 700002" (-not ($ids -contains 700002)) ("ids=$($ids -join ',')")
 Check "队列项带病历进度（record_status）" ($null -ne ($q.data.items | Where-Object { $_.appointment_id -eq 700001 } | Select-Object -First 1).record_status)
+# ★★ 2026-10-16（医生端复核 ★★★ 第 2 条）：队列此前只有「患者 #700001」，医生认不出人。
+$qItem = $q.data.items | Where-Object { $_.appointment_id -eq 700001 } | Select-Object -First 1
+Check "★★ 队列项带 patient_name（实得「$($qItem.patient_name)」）" ($qItem.patient_name -eq 'P4端到端患者')
+Check "★★ 队列项带 patient_gender（实得「$($qItem.patient_gender)」）" ($qItem.patient_gender -eq 'M')
 
 # ── [3] 状态机
 Write-Host ""
@@ -212,6 +216,9 @@ Write-Host ""
 Write-Host "[4] 病历：草稿 → 必填校验 → 锁定 → 锁定后不可改"
 $r = Req 'rec0' 'GET' '/api/v1/doctor/visits/700001/record' @("Authorization: Bearer $docTok") $null
 Check "读病历（尚无）→ 200 且给出七段骨架" ($r.Http -eq 200 -and (($r.Body | ConvertFrom-Json).data.sections).Count -eq 7) ("段数 $((($r.Body | ConvertFrom-Json).data.sections).Count)")
+# ★★ 2026-10-16：**空病历骨架**这条也要带姓名 —— 姓名取自挂号单而不是病历行
+#   （骨架的 patient_id 是 0；从病历行取就会在这条路上显示成空）。
+Check "★★ 空病历骨架也带 patient_name（实得「$(($r.Body | ConvertFrom-Json).data.patient_name)」）" ((($r.Body | ConvertFrom-Json).data.patient_name) -eq 'P4端到端患者')
 $r = Req 'draft1' 'PUT' '/api/v1/doctor/visits/700001/record' @("Authorization: Bearer $docTok") '{"chief_complaint":"咳嗽三天"}'
 Check "★ 只写一段就能存草稿（草稿允许半成品）" ($r.Http -eq 200) ("HTTP $($r.Http)")
 Check "★ filled = 1" (($r.Body | ConvertFrom-Json).data.filled -eq 1)
