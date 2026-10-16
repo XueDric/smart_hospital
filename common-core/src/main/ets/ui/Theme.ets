@@ -119,13 +119,16 @@ export function periodText(period: string): string {
 }
 
 /*
- * 就诊状态 → 中文。⚠ 2026-10-16（复核 D3）：服务端在改进 6 里把状态机扩到 7 个值
- * （新增 arrived/waiting），这里必须同步 —— 否则已到院/候诊中的单在界面上会显示成
- * 英文机器码（`arrived` / `waiting`），比不显示更让人困惑。
+ * 就诊状态 → 中文（**兜底表**，不是权威）。
+ * ⚠ 权威只有一份：服务端 `visitStatusLabel`（server/src/domain_emr.cj:1455）。
+ *   页面请统一调用 `appointmentDisplayText(status, statusLabel)` —— 它会优先用服务端下发的
+ *   `status_label`，只在字段缺失时才落到本函数。**不要直接调本函数**。
+ * ⚠ 2026-10-16（复核 D3）：服务端在改进 6 里把状态机扩到 7 个值（新增 arrived/waiting），
+ *   文案已同步；但**判定逻辑**当时没同步，导致 arrived/waiting 的单被错排进历史记录（缺陷 C1）。
+ *   判定已收敛到 `common-core/src/main/ets/model/VisitStatus.ets`。
  * ⚠ 2026-10-16 晚（DevEco 模拟器实测发现）：此前 7 个值里有 4 个与服务端对不上 ——
- * booked「待就诊」/「已挂号」、visiting「就诊中」/「接诊中」、cancelled「已取消」/「已退号」、
- * no_show「爽约」/「已爽约」。现已按 `server/src/domain_emr.cj` 的 `visitStatusLabel` **逐字对齐**。
- * 状态码是机器判据，中文名只应该有一份权威实现；服务端下发了 `status_label` 时一律以它为准。
+ *   booked「待就诊」/「已挂号」、visiting「就诊中」/「接诊中」、cancelled「已取消」/「已退号」、
+ *   no_show「爽约」/「已爽约」。现已按服务端 `visitStatusLabel` **逐字对齐**。
  */
 export function appointmentStatusText(status: string): string {
   if (status === 'booked') {
@@ -150,6 +153,18 @@ export function appointmentStatusText(status: string): string {
     return '已爽约';
   }
   return status.length > 0 ? status : '未知状态';
+}
+
+/*
+ * 就诊状态 → 展示用中文。**页面统一走这个函数。**
+ * 服务端下发了 `status_label` 就以它为准（唯一权威，见 server/src/http_app.cj:631-636），
+ * 缺失时才回落到本地兜底表 —— 本地表永远不该是首选。
+ */
+export function appointmentDisplayText(status: string, statusLabel: string): string {
+  if (statusLabel.length > 0) {
+    return statusLabel;
+  }
+  return appointmentStatusText(status);
 }
 
 export function appointmentStatusColor(status: string): string {

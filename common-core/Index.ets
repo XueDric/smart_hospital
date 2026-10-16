@@ -8,6 +8,7 @@ export { KeyValueStore } from './src/main/ets/storage/KeyValueStore';
 export { FileStore } from './src/main/ets/storage/FileStore';
 export { HttpClient, HttpMethod } from './src/main/ets/network/HttpClient';
 export { SseClient, SseHandlers } from './src/main/ets/network/SseClient';
+export { VisitStatus } from './src/main/ets/model/VisitStatus';
 export { ThemeManager, ThemeMode, ThemePalette } from './src/main/ets/ui/ThemeManager';
 export {
   AppColor,
@@ -16,6 +17,7 @@ export {
   periodText,
   appointmentStatusText,
   appointmentStatusColor,
+  appointmentDisplayText,
   recordStatusText,
   recordStatusColor,
   sourceText,
