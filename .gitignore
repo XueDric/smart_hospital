@@ -28,6 +28,18 @@ server/devdb/*.log
 # ── 分发制品（二进制，每次重签都会变）──────────────────────────────────
 .tools/
 
+# ── 本机联调装出来的工具链与「被重定向的家目录」（不入库）──────────────────
+# 来由：AGP 拒绝含中文的工程路径，安卓端构建改走 `subst X: <仓库>`；而 DSH 文件
+#   沙箱把 java.exe 的写入限制在会话工作区内（写 C:\Users\<user>\.gradle 一律
+#   「拒绝访问」），于是把 Gradle / Android / Kotlin 的落点全部重定向进仓库。
+#   ⚠ 三者都是**可重新生成本机态**，与 server/build/ 同理，入库只会让仓库膨胀：
+#     .build-tools/   Temurin JDK 17 解压件（约 300 MB）
+#     .gradle-home/   Gradle 8.7 发行包 + 依赖缓存（数百 MB）
+#     .android-home/  debug.keystore 与 analytics.settings（AGP 需要可写）
+.build-tools/
+.gradle-home/
+.android-home/
+
 # ── 构建产物（可重新生成，**不入库**）──────────────────────────────────────
 # ⚠ 尤其 server/build/：里面有 12 MB 的 exe + 5.7 MB 的 OpenSSL DLL + 编译好的
 #   MariaDB 驱动 .cjo/.a（约 1.5 MB）。这些都能由 build.ps1 / build-mysql-driver.ps1
