@@ -25,8 +25,8 @@
 | 项 | 值 |
 | --- | --- |
 | Base URL 形态 | `http://<host>:<port>` 或 `https://<host>:<port>`；**业务接口全部带前缀 `/api/v1`**（`http_app.cj:433`） |
-| 默认端口 | **8080**（`main.cj:556` `var port: UInt16 = 8080`）；联调常用 `--port 8091`（明文）/ `8443`（TLS），**都只是启动参数约定，不是默认值** |
-| 默认监听地址 | `127.0.0.1`（`main.cj:557`）。要局域网联调必须显式 `--bind 0.0.0.0`（`main.cj:581-583`） |
+| 默认端口 | **8091**（`main.cj:707` `var port: UInt16 = 8091`）；2026-10-17 由 8080 改为 8091，**与服务端对齐了客户端的默认值**，所以服务端裸启动即可被默认客户端直接连上。要改端口用 `--port N` |
+| 默认监听地址 | `127.0.0.1`（`main.cj:708`）。要局域网联调必须显式 `--bind 0.0.0.0`（`main.cj:581-583`） |
 | 鉴权头 | `Authorization: Bearer <token>`；头名大小写不敏感，`Bearer` 前缀大小写不敏感，token 前后空白会被 trim（`http_app.cj:350-363`） |
 | 成功信封 | `{"ok":true,"data":{…}}`，HTTP 200 / 201（`http_common.cj:225-238`） |
 | 失败信封 | `{"ok":false,"error":{"code","message","fields"?}}`（`http_common.cj:241-253`） |
@@ -103,7 +103,7 @@ hospital-server.exe serve <dsn> [--port N] [--bind IP] [--dev-auth] [--prod]
                            [--tls-cert <pem> --tls-key <pem>] [--tls-files <env>]
 ```
 
-* `--port` **严格解析**：非数字或 `0` 直接拒绝启动（`main.cj:565-580`）——不会静默回退 8080。
+* `--port` **严格解析**：非数字或 `0` 直接拒绝启动（`main.cj:738-756`）——不会静默回退到默认端口。
 * `--bind` 默认 `127.0.0.1`；`0.0.0.0` 时启动日志会警告明文 HTTP 不要暴露公网（`main.cj:748-751`）。
 * `--dev-auth` 与 `--prod` **互斥**，同时传直接拒绝启动（`http_app.cj:279-286`）。
 * 未知参数直接拒绝启动（`main.cj:667-670`）——不是"忽略看不懂的选项"。
@@ -152,7 +152,8 @@ Invoke-RestMethod http://127.0.0.1:8091/health
 * **绝不静默降级**：给了 TLS 参数但证书读不到 / PEM 解析失败 / 只给了一个 → **直接退出**，不回退明文
   （`main.cj:786-836`）。所以前端**不能靠探测**判断 http/https，必须由构建配置写死。
 * ⚠ `--tls-cert` 走命令行 argv，而本工具链的仓颉运行时**无法接受含非 ASCII 的 argv**（`main.cj:594-599`）。
-  本仓库路径含中文（`智能医院客户端`），所以直接传仓库内路径**必然启动失败**；要么把证书拷到纯 ASCII 路径，
+  本仓库已改名为 `E:\harmonyOS\smart_hospital`（纯 ASCII），**仓内证书路径可以直接传**；
+  但 exe 或证书若放在含中文的目录下仍会启动失败，那时要么把证书拷到纯 ASCII 路径，
   要么用 `--tls-files`（文件内容可以是中文，文件路径必须 ASCII）。
 * 仓库自带 `server/certs/{cert.pem,key.pem,tls.env}` 与 `server/new-tls-cert.ps1`（生成带 SAN 的自签证书）可参考。
 * 联调自签证书时客户端需要临时信任策略；**发布版必须走受信 HTTPS**（见 §10.1）。
@@ -1775,10 +1776,14 @@ POST /api/v1/doctor/visits/:id/record/reopen
 环境：DevEco Studio `DS-261.23567.138.36.2600821`（装在 `D:\DevEco Studio`）、SDK `HarmonyOS 26.0.0`（apiVersion 26）、
 模拟器 `Pura 90`（HarmonyOS 6.1.1 / API 24 / x86_64 / 1320x2856）、服务端 `hospital-server.exe serve --dev-auth`。
 
-**① 构建（先解决工程路径）**：`hvigor` **拒绝含中文的工程路径**
-（`ERROR: 00306003 Specification Limit Violation / Invalid project path. Current path does not match: E:\harmonyOS\智能医院客户端`），
-`subst` 映射盘符也绕不过（hvigor 会 realpath 回真实路径）。做法是 `robocopy` 一份**字节等价的 ASCII 副本**
-（排除 `.git`/`server`/`docs`/`contract`/`build`/`oh_modules` 等），在副本里构建：
+**① 构建（当时的工程路径问题，现已消除）**：`hvigor` **拒绝含中文的工程路径**
+（当时报 `ERROR: 00306003 Specification Limit Violation / Invalid project path`，栈指向 `project-inspection.js`），
+`subst` 映射盘符也绕不过（hvigor 会 realpath 回真实路径）。
+> **后续更正（2026-10-17）**：仓库已由中文名改名为 `E:\harmonyOS\smart_hospital`（纯 ASCII），
+> 该报错不再出现，**可以直接在仓库内构建**，不再需要 ASCII 副本。下面保留当时的实测配方与产物数据，
+> 作为「若把仓库克隆到中文目录」时的处置参考。
+
+当时的做法是 `robocopy` 一份**字节等价的 ASCII 副本**（排除 `.git`/`server`/`docs`/`contract`/`build`/`oh_modules` 等），在副本里构建：
 
 ```powershell
 $env:DEVECO_SDK_HOME = 'D:\DevEco Studio\sdk'
@@ -1788,8 +1793,8 @@ $env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Stud
 ```
 
 `BUILD SUCCESSFUL`（65 个任务，`:entry:default@CompileArkTS` 干净通过），产物 `entry/build/default/outputs/default/entry-default-unsigned.hap`（≈1.4 MB）。
-本仓 `signingConfigs` 是空数组，副本里去掉 `products` 的 `"signingConfig": "default"` 后 hvigor 只发一条
-`WARN: No signingConfig found for product default`。
+`signingConfigs` 为空数组时不能引用不存在的签名配置：当时是在副本里去掉 `products` 的 `"signingConfig": "default"`；
+**仓库里的 `build-profile.json5` 已同样去掉该悬空引用**，现在只发一条 `WARN: No signingConfig found for product default`。
 
 **② 安装与运行（未签名也能装）**：模拟器**接受未签名 HAP**，签名不是模拟器验证的前置条件：
 
@@ -2138,7 +2143,7 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 
 | # | 文档说法 | 实现事实 | 本文口径 |
 | --- | --- | --- | --- |
-| 1 | `server/README.md` 的启动示例用 `--port 8091` / `8443`，容易让人以为这是默认端口 | **默认端口是 8080**（`main.cj:556`）；8091/8443 只是启动参数约定 | §1、§2.2 明确写"默认 8080，8091/8443 只是约定" |
+| 1 | `server/README.md` 的启动示例用 `--port 8091` / `8443`，容易让人以为这是默认端口 | **默认端口已于 2026-10-17 改为 8091**（`main.cj:707`，原先 8080 与客户端不一致，评审 P2-15）；`8443` 只是 TLS 启动参数约定 | §1、§2.2 明确写"默认 8091；8443 只是约定" |
 | 2 | 一般文档措辞会让人以为"患者可搜知识库" | `GET /api/v1/kb/search` 需要 `query_knowledge_base`（admin\|doctor）⇒ **患者 403**（`http_app.cj:206-218` 有明确设计说明） | §6.3 |
 | 3 | `docs/P4-HANDOFF.md` 未提 `record/reopen` 的实际鉴权 | 原为 `http_p4.cj:363` 借 `requireCan(p.role, Action.ManageSchedule)`；**2026-10-15（改进 3）改为语义动作 `Action.ManageRecordRevision`**（`http_p4.cj:633`）⇒ **reopen 仍是管理员动作、医生仍 403**（授权结果不变，只是动作名不再含混） | §6.2、§5.29.7 |
 | 4 | 登录响应里的 `patient_id` 容易被读成"患者 id" | 实现是 `u.refId` 且**不判角色**（`http_app.cj:774`）⇒ 医生/管理员登录时它只是各自的档案 id | §4.2（含实测） |
@@ -2514,7 +2519,7 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 ## 15. 一页速查（贴到工位上）
 
 ```
-base        http://127.0.0.1:8091                     （默认端口其实是 8080）
+base        http://127.0.0.1:8091                     （就是服务端默认端口，无需 --port）
 前缀        /api/v1            例外：/health 在根路径、不鉴权、不走信封
 鉴权        Authorization: Bearer <64hex>             （头名/Bearer 前缀大小写不敏感）
 成功        {"ok":true,"data":{…}}         200 / 201

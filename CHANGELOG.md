@@ -2,12 +2,95 @@
 
 > **仓库**：<https://github.com/XueDric/smart_hospital.git>（默认分支 `main`）
 > **版本口径**：服务端 `SERVER_VERSION = 0.2.0-p1`（`server/src/main.cj:34`）；`-p<N>` 表示 P0–P5 六阶段全部交付后的维护批次。
-> **提交跨度**：2026-10-07 → 2026-10-17，101 个提交，6 位贡献者。完整历史见 `git log`，本文件只记录**对外可见的能力变化**与**关键缺陷修复**。
+> **提交跨度**：2026-10-07 → 2026-10-17，102 个提交，6 位贡献者。完整历史见 `git log`，本文件只记录**对外可见的能力变化**与**关键缺陷修复**。
 > 格式参考 [Keep a Changelog](https://keepachangelog.com/)，按日期倒序。
 
 ---
 
-## [0.2.0-p1] 2026-10-17 —— 复验修复批次（8 + 1 + 1 条）
+## [0.2.0-p1-rev] 2026-10-17 —— 评审整改批次（可运行证据 / AI 开箱即用 / 功能缺陷修正 / 文档一致）
+
+> 依据 `docs/评审反馈-2026-10-17.md`（72/100）。逐条处置与验收口径见 [docs/整改方案-2026-10-17.md](docs/整改方案-2026-10-17.md)。
+> 本批次**有业务行为变化**三处：服务端默认端口、AI 默认开启（`builtin:demo`）、三端首屏路由。接口契约无破坏性变更（仅新增 `by_source` 等加法字段）。
+
+### 新增
+
+- **`hvigorw.bat`（仓库根）**：自动探测 DevEco 安装位置并推出 `DEVECO_SDK_HOME` / `JAVA_HOME`，
+  使用者不配环境变量即可在仓库根一条命令构建鸿蒙客户端（`assembleHap`）。
+- **鸿蒙构建与运行证据入库** [`release/harmony/`](release/harmony/README.md)：`entry-default-unsigned.hap`
+  （1,742,917 B，SHA256 `312046ACD5E03888F5110D13F1921D0A4595A0C4A3EFC596F2960C56B626B696`）、`pack.info`、
+  剥掉 ANSI 的完整构建日志、**10 张模拟器实跑截图**（管理端登录/看板/AI 能力中心、患者端登录/首页/分诊/选号/挂号/就诊）
+  —— 回应评审「鸿蒙零构建产物、零运行证据」。
+- **AI 开箱即用**：新增 `server/src/ai_builtin.cj` 与第四种密钥引用形式 **`builtin:demo`**
+  （`ai.key_ref` 仍只存引用、库里永不出现裸密钥；`keyRefBuiltinName()` 用整串白名单比对）；
+  默认值改为 `ai.enabled=1` + DeepSeek `deepseek-chat`，装完即可真调。
+- **`server/export-ca-bundle.ps1`**：从 Windows 证书存储导出 PEM 供 `SSL_CERT_FILE` 使用
+  —— 修掉「`curl` 正常但仓颉出站 `134 unknown CA`」的真因（stdx 走 OpenSSL、不读系统证书存储）。
+  分发包只带脚本不带 PEM（PEM 可能含企业内网根证书）。
+- **`tools/check-docs.ps1` + `.github/workflows/repo-hygiene.yml`**：文档相对链接、`.ps1` BOM、
+  `.bat` 纯 ASCII、旧仓库路径残留四项门禁，每次 push/PR 自动跑（回应「无 CI」）。
+- **`docs/整改方案-2026-10-17.md`** 与 **`docs/答辩材料-2026-10-17.md`**：P0/P1/P2 全 27 条处置与验收口径；
+  9 分钟讲稿 + 现场演示脚本 + 12 问 Q&A（回应「答辩材料为零」）。
+- **客户端安全存储**：鸿蒙 `common-core/src/main/ets/storage/SecureStore.ets`（`AssetStoreKit`）、
+  安卓 `android-patient/.../data/SecretStore.kt`（`AndroidKeyStore` AES-256-GCM）—— 令牌不再明文落盘。
+
+### 变更
+
+- **服务端默认端口 8080 → 8091**（`server/src/main.cj:707`），与鸿蒙客户端 `ApiConfig.ets:8` 及
+  安卓 `DEFAULT_BASE_URL` 对齐；文档与 `tools/package-release.ps1` 生成的 `start-dev.cmd` 同步。
+  改动净增 0 行，故全仓对 `main.cj` 的行号引用全部保持有效。
+- **分发包补许可文件**（`tools/package-release.ps1` 5b 步）：`LICENSE.txt`、`NOTICE.txt`、
+  `THIRD-PARTY.md`、`licenses/{qingzhou,mariadb-driver}-LICENSE.txt` —— 回应「分发包零 LICENSE/NOTICE」。
+- **`build-profile.json5`**：删除 `signingConfigs: []` 为空时仍引用 `signingConfig: "default"` 的悬空配置
+  （此前会让构建停在签名阶段；现在产出 `entry-default-unsigned.hap` 并只给一条 WARN）。
+- **分诊规则引擎**（`server/src/triage_redflag.cj`）：否定窗口 4 → 8 字符且不跨分句（`RED_FLAG_NEGATION_WINDOW`）；
+  强度词拆成 `RED_FLAG_URGENT_MODIFIERS`（反复/持续/加剧/突发…）与 `RED_FLAG_CHRONIC_MODIFIERS`（一直/长期/严重/轻微…），
+  要求与模糊词 ≤ `RED_FLAG_COOCCUR_WINDOW`(6) 字共现且修饰词自身未被否定；同义词扩充 22 组（胸口疼/气短憋气/痰中带血…）。
+- **看板不再自证「AI 没被调用」**（`server/src/dashboard.cj`）：`triage.source` 由 `triage_stat.source` 分布推导
+  （`model`/`rules`/`mixed`/`none`），新增 `by_source` 明细；管理台同步展示。
+- **出站调用**（`server/src/ai_call.cj`）：429/5xx/网络异常重试 1 次（退避 200 ms）+ **全链路墙钟上限**
+  （`stdx.net.http` 无 `connectTimeout`，用 `Future.get(timeout)` 等价覆盖）。
+- **鸿蒙主题切换**（`ThemeManager` + `entry/.../Index.ets`）：改 `@ObservedV2` + `@Trace paletteVersion`，
+  删除 `themeTick` 奇偶重建整树的做法，切主题不再丢滚动位置/输入内容。
+- **安卓主题色单源**（`MainActivity.kt`）：17 处 `Color.rgb(...)` 改 `getColor(R.color.*)`，取值逐一核对、视觉零变化。
+
+### 修复
+
+- **三端首屏抢路由**（真缺陷，运行才暴露）：`registerPatientFeature/registerDoctorFeature/registerAdminFeature`
+  原先各自 `AppRouter.replace(该端登录页)`，`EntryAbility.onCreate` 依次调用 ⇒ 最后调用的管理端决定首屏，
+  患者主流程在界面上不可达。改为「注册不导航」，三个登录页互相给显式入口（患者页加「医生登录 · 管理端登录」）。
+- **「同步身份信息」不同步姓名**：`CurrentUser` 缺 `displayName`，`/api/v1/auth/me` 的 `display_name` 被丢弃；
+  已补模型字段 + Repository 解析 + `SessionStore.setDisplayName()`。
+- **患者端公告页改走真实接口**：`PatientRepository.notices()` 由 Mock 改为 `GET /api/v1/notices`（保留 Mock 开关），
+  公告失败不再拖垮首页；页面改三态 + 重试。
+- **`accept` 对脏库敏感**：`server/src/acceptance.cj` 的排班夹具由裸 `INSERT` 改为
+  `INSERT … ON DUPLICATE KEY UPDATE`（不用 `REPLACE INTO`，避免删行副作用）；故意弄脏库后重跑仍 777/0。
+- **模型种子「存量库迁移」判据**：`ai.enabled` 默认改 1 后，全新库被误判为存量库而只播 1 行；
+  新增 `ai_settings.hasRow()`（直查库、绕过缓存）修正判据。
+- `.gitignore` 由整目录忽略 `release/` 改为白名单 `/release/*` + `!/release/harmony/`，
+  使构建证据可入库而体积会变的 zip 仍被忽略。
+- `server/new-tls-cert.ps1`、`tools/package-release.ps1` 补 **UTF-8 BOM**（PS 5.1 下含中文脚本
+  按 ANSI 解析会 `Unexpected token`）。
+- `server/tests/doc-counts.ps1` 先校验退出码与 `[FAIL]` 再数 `[PASS]`：accept 因脏库失败时
+  不再把「实测不成立」误报成「文档数字漂移」；并作为第 18 项接入 `server/tests/final-verify.ps1`。
+- `server/tests/previsit-check.ps1` 的「删两行 ⇒ `enabled=false`」断言随 AI 默认值一起失效（删行＝回内置默认）：
+  拆成「删行 ⇒ 回内置默认且 `enabled=true`」+「显式 `ai.enabled=0` ⇒ `enabled=false` 且理由非空」两段，
+  收尾删行复原。这是 **给配置项加默认值的连带效应**：所有依赖"缺行 = 不可用"的用例都要过一遍。
+- `server/build.ps1:119-120` 过期注释更正（驱动源码已在仓库内 `third_party/mariadb-driver`，
+  47 个 `.cj`；`.cjo` 与静态库是构建期产物）。
+- 四个模块根的 `BuildProfile.ets` 不再入库（hvigor 每次构建重写、只差缩进），实测删除后仍 `BUILD SUCCESSFUL`。
+
+### 文档
+
+- 数字统一为实测值并被门禁绑定：`accept` **777**、`triagetest` **139**、`selftest` 51、`authtest` 17、
+  REST **81**、`final-verify` **18 项**、**102** 个提交、**6** 位贡献者、**26** 个测试文件。
+- 全仓旧仓库路径（原名含中文）与「本仓库路径含中文」的过时论述清理完毕；保留的是
+  「部署到含中文目录时」的条件式说明与评审核查原文存档。
+- `README.md` / `docs/DEPLOYMENT.md` / `docs/HARMONY-INTERFACE-GUIDE.md` 补鸿蒙一条命令构建、
+  改名后 `oh_modules` 软链重连、4 类构建故障排查、模拟器安装未签名 HAP 与 `power-shell wakeup` 细节。
+- `docs/Q6-合规决策记录.md` 登记「演示默认开启 + `builtin:demo`，生产必须轮换密钥或置 0」的口径变更。
+
+---
+## [0.2.0-p1] 2026-10-17 —— 复验修复批次（11 条修复 + 3 条新增 + 1 条清理；另撤回 2 条）
 
 ### 修复（客户端契约无破坏性变更，两处**加法**字段）
 

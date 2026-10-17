@@ -56,9 +56,9 @@ server\new-tls-cert.ps1          # 仅作占位；换成院内 CA 签发的 cert
 
 ### ⚠ 换证书时必须一并注意
 
-- **证书路径必须是纯 ASCII**：仓颉运行时无法接受含非 ASCII 的 argv
-  （本仓库路径含中文 ⇒ 必然失败），所以走 `--tls-files` 指向
-  `%ProgramData%\smart-hospital\tls\tls.env`（见 [P1-HANDOFF.md §5.4](P1-HANDOFF.md)）。
+- **证书路径尽量纯 ASCII**：仓颉运行时无法接受含非 ASCII 的 argv。仓库已改名为
+  `E:\harmonyOS\smart_hospital`（纯 ASCII）后，仓内路径已可用；部署到含中文目录时仍建议走
+  `--tls-files` 指向 `%ProgramData%\smart-hospital\tls\tls.env`（见 [P1-HANDOFF.md §5.4](P1-HANDOFF.md)）。
 - 换证书后**必须重跑** `tests\tls-check.ps1`：新证书的 SAN 未必覆盖你实际用的地址。
 - `serve` 的 fail-closed 行为不要动：证书/私钥缺失或 PEM 非法一律**拒绝启动**，
   绝不静默降级成明文（四条已实测，见 P1-HANDOFF §5.2）。

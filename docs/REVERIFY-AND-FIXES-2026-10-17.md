@@ -164,10 +164,14 @@ hdc rport tcp:18096 tcp:8091      # ⚠ 第二参数是【主机端口】，不�
 #    副本内 ApiConfig/SessionStore 的默认地址已改为 http://127.0.0.1:18096
 
 # 3) 安卓：AGP 也拒绝中文路径，走 subst + 全部家目录重定向进仓库
-subst X: E:\harmonyOS\智能医院客户端
+subst X: E:\harmonyOS\smart_hospital
 #    GRADLE_USER_HOME/JAVA_HOME/ANDROID_HOME/ANDROID_USER_HOME/TEMP 全指到仓库内
 #    X:\android-patient> .\gradlew.bat :app:assembleDebug --no-daemon "-Pkotlin.compiler.execution.strategy=in-process"
 ```
+
+> **后续更正（2026-10-17）**：仓库已由中文名改名为 `E:\harmonyOS\smart_hospital`（纯 ASCII）。
+> 上面第 2/3 步为**当时**（原名时代）的绕行记录，现在两端都能直接在仓库内构建，
+> `robocopy` ASCII 副本与 `subst X:` 都不再需要。本节其余排障结论（hdc rport 参数顺序、8091 残留监听、uitest 输入法坑）与路径无关，仍然有效。
 
 **会伪装成「代码 bug」的 4 个环境坑**（排障前先排除）：
 1. `hdc rport tcp:<设备端口> tcp:<主机端口>` —— 第二个参数是**主机端口**。文档里 `tcp:18096 tcp:18096` 能用是因为当时服务端也在 18096；照抄到「服务端在 8091」的环境必然 `Failed to receive data from the peer`
@@ -181,7 +185,7 @@ subst X: E:\harmonyOS\智能医院客户端
 ## 七、我动过的东西 / 遗留
 
 - **仓库本体**：仅 `.gitignore` 有未提交改动（上一个任务加的 `.build-tools/`、`.gradle-home/`、`.android-home/` 三条本机工具链忽略项，16 插入 4 删除）。**业务代码零改动**，`HEAD = 9bf6a39`（**复验当时**；同日动手修复后的业务代码改动清单见 §九）
-- **工作区外/内的一次性产物**（可随时删）：ASCII 构建副本 `E:\harmonyOS\sh_client_live`、`E:\harmonyOS\sh_client_live2`；抓包中继 `E:\harmonyOS\relay.ps1` + `relay.log`；scratch 目录 `%TEMP%\hosp`；截图/日志 `E:\harmonyOS\智能医院客户端\.tmp\`
+- **工作区外/内的一次性产物**（可随时删）：ASCII 构建副本 `E:\harmonyOS\sh_client_live`、`E:\harmonyOS\sh_client_live2`；抓包中继 `E:\harmonyOS\relay.ps1` + `relay.log`；scratch 目录 `%TEMP%\hosp`；截图/日志 `E:\harmonyOS\smart_hospital\.tmp\`
 - **测试数据（都在 `hospital_test`，可随时清空）**：
   - 账号：`hmtest`(id 430, admin)、`hm_pat2`(434, patient ref_id 2)、`hm_doc`(435, doctor ref_id 1)
   - 我把 `13800000001`(id 2) 的口令重置为 `pat2026test`（原为 `patient-pw-1`）——**如需还原请告知**

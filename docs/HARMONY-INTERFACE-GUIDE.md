@@ -241,34 +241,51 @@ SessionStore.setApiConfig(ApiConfig.mode, ApiConfig.baseUrl); // 持久化
 
 ## 10. 本地构建与校验
 
+**一条命令（推荐）**——仓库根自带 `hvigorw.bat`，会自动探测本机 DevEco Studio 的 hvigor / SDK / JDK：
+
 ```powershell
-$env:HVIGOR_USER_HOME='D:\Desktop\smart_hospital-main\.hvigor'
-& 'D:\Program Files\Huawei\DevEco Studio-26\tools\hvigor\bin\hvigorw.bat' `
-    --mode module -p product=default assembleHap --no-daemon
+cd E:\harmonyOS\smart_hospital
+.\hvigorw.bat --mode module -p product=default -p module=entry@default assembleHap --no-daemon
 ```
 
-* 成功标志：`BUILD SUCCESSFUL`，产物在 `entry/build/default/outputs/default/`。
-* 当前仅有 `SessionStore` 的「同步 Preferences 可能抛异常」ArkTS 警告，属预期，不影响构建。
+* 成功标志：`BUILD SUCCESSFUL`（本机 65 tasks，首编约 23 s、增量约 4 s），产物在
+  `entry/build/default/outputs/default/entry-default-unsigned.hap`（约 1.7 MB，未签名）。
+* 当前只剩 ArkTS **警告**：`common-core/.../KeyValueStore.ets:19,27,35,41,48,55,62` 的
+  "Function may throw exceptions"、`ThemeManager.ets:79` 的 `matchMediaSync` 已废弃、
+  `feature-admin/.../KnowledgeBasePage.ets:62` 的 `@Component` 成员名不能叫 `create`。均不影响构建。
 
-### 10.1 本机（2026-10-16）实测可用的配方
+### 10.1 本机（2026-10-17）实测可用的配方
 
-上面那行 `hvigorw.bat` 的路径是**另一台机器**的（`D:\Program Files\Huawei\DevEco Studio-26`）；本机是 `D:\DevEco Studio`。
-实测通过的完整配方：
+仓库已改名为 `E:\harmonyOS\smart_hospital`（**纯 ASCII，可直接在仓库内构建**）。
+旧问题「`00306003 Specification Limit Violation / Invalid project path`」只会在把仓库克隆到含中文的目录时复现，
+那时才需要 robocopy 一份 ASCII 副本再构建（`subst` 映射盘符绕不过，hvigor 会 realpath 回真实路径）。
+
+不想用仓库根的包装脚本时，等价的手工配方（本机路径为 `D:\DevEco Studio`）：
 
 ```powershell
-# ⚠ 工程路径不能含中文：hvigor 报 00306003 Specification Limit Violation / Invalid project path，
-#   subst 映射盘符也绕不过（hvigor 会 realpath 回真实路径）。
-#   做法：robocopy 一份字节等价的 ASCII 副本（排除 .git/oh_modules/build 等），在副本里构建。
 $env:DEVECO_SDK_HOME = 'D:\DevEco Studio\sdk'
 $env:JAVA_HOME       = 'D:\DevEco Studio\jbr'   # 必须：PATH 上的 java 若是 1.7，PackageHap 会 UnsupportedClassVersionError(52.0)
 $env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Studio\tools\ohpm\bin;D:\DevEco Studio\tools\hvigor\bin;$env:Path"
+cd E:\harmonyOS\smart_hospital
 & 'D:\DevEco Studio\tools\hvigor\bin\hvigorw.bat' --mode module -p product=default -p module=entry@default assembleHap --no-daemon
 ```
 
-* `signingConfigs` 为空时，把 `products` 里的 `"signingConfig": "default"` 去掉，只留一条 `WARN: No signingConfig found for product default`，产物是**未签名 HAP**——模拟器可直接 `hdc install -r` 装上。
-* 构建用的 ASCII 副本以 `E:\harmonyOS\sh_client_check` 为例：它在仓库外、一次性、可随时删掉重建；
-  重建命令 `robocopy '<仓库根>' 'E:\harmonyOS\sh_client_check' /E /XD .git server docs contract .hvigor build oh_modules node_modules .idea .vscode _fetch .tools`。
-  副本里可以改 `EntryAbility` 预置会话 / 强制路由做界面验证，但**绝不回写仓库**（改动只属于验证脚手架）。
+* `hvigorw.bat` 的探测顺序：`%HVIGOR_HOME%` → `D:\DevEco Studio\tools\hvigor\bin` →
+  `C:\Program Files\Huawei\DevEco Studio\tools\hvigor\bin` → `%LOCALAPPDATA%\Huawei\DevEcoStudio\...`；
+  找不到时打印明确提示并退 1（可改为直接用 DevEco Studio 的 `Build > Build Hap(s)`）。
+* **为什么不用官方 `hvigorw`**：仓库的 `hvigor/hvigor-wrapper.js` 是 **0 字节**（与 DevEco「New Project」
+  模板的占位文件一致），官方 wrapper 首次运行要联网装 pnpm + `@ohos/hvigor` 到 `%USERPROFILE%\.hvigor`；
+  离线环境会失败。本仓库改为复用本机 DevEco 自带的 hvigor 6.26.4，不下载任何东西。
+* ⚠ **仓库目录改名后要重连一次 `oh_modules` 软链**（绝对路径的 junction 会悬空，症状是
+  `10505001 ArkTS Compiler Error: Cannot find module 'common-core'`）：`ohpm install`，或手工
+  `mklink /J` 重连 7 个链接。详见 [docs/DEPLOYMENT.md](DEPLOYMENT.md) §4。
+* `signingConfigs` 为空时，`build-profile.json5` 的 `products[0]` 已**不再引用** `signingConfig`，
+  只报 `WARN: No signingConfig found for product default`，产物是**未签名 HAP**——要装机得先用
+  DevEco 自动签名或本机调试证书签名。
+* 若需要把 hvigor 的缓存/工具链装到别处（C 盘清理、CI 隔离），设 `HVIGOR_USER_HOME=<绝对路径>` 即可；
+  该目录默认是 `%USERPROFILE%\.hvigor`。
+* 2026-10-17 的构建证据已入库：[release/harmony/](../release/harmony/)
+  （HAP + `pack.info` + 完整日志）。
 * 模拟器安装、UI 自动化、与真实服务端联调的完整命令与实测结论见
   [docs/FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) §5.33。
 * 服务端联调（本机库、建库、起服务）见 [docs/FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) §2。

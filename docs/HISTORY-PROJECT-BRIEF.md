@@ -338,7 +338,7 @@ if (n == 1) { /* 抢到 → 写挂号单 */ } else { /* 号源已变 → 重试�
 | **客户端** | 鸿蒙患者端（ArkTS） | ⏳ **待实现** —— 见 [docs/FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) |
 
 > ⚠️ 启动时给各阶段的**工期粗估**（1–3 周/阶段）是**推断，未实测**，仅供排序参考，不要当承诺。
-> **实际进度**以根 [README.md](README.md) 的进度表为准。
+> **实际进度**以根 [README.md](../README.md) 的进度表为准。
 
 ---
 
@@ -389,9 +389,9 @@ if (n == 1) { /* 抢到 → 写挂号单 */ } else { /* 号源已变 → 重试�
 
 **管理端前端**：⏳ 另立一期（服务端已有运营看板聚合接口）
 
-**测试**：`server/tests/`（13 个 `.ps1` + `common.ps1`；项数以 `doc-counts.ps1` 为准）
+**测试**：`server/tests/`（26 个文件 = 21 个可独立运行的套件 + `common.ps1` + 3 个工具脚本（`json-schema-lite.ps1` / `export-contract.ps1` / `stress-booking.ps1`）+ `final-verify.ps1` 汇总入口；项数以 `doc-counts.ps1` 为准）
 
-**关键文档**：[README.md](README.md)（进度与目录）｜ [docs/FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md)（前端唯一口径）｜ [docs/adr/ADR-0001](adr/ADR-0001-号源与挂号独立MySQL路径.md)（架构决策 rev.7）｜ `docs/P0-HANDOFF.md` … `docs/P5-HANDOFF.md` ｜ [docs/DEV-DB.md](DEV-DB.md)（本机数据库）｜ [docs/Q6-合规决策记录.md](Q6-合规决策记录.md)（出站合规）
+**关键文档**：[README.md](../README.md)（进度与目录）｜ [docs/FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md)（前端唯一口径）｜ [docs/adr/ADR-0001](adr/ADR-0001-号源与挂号独立MySQL路径.md)（架构决策 rev.7）｜ `docs/P0-HANDOFF.md` … `docs/P5-HANDOFF.md` ｜ [docs/DEV-DB.md](DEV-DB.md)（本机数据库）｜ [docs/Q6-合规决策记录.md](Q6-合规决策记录.md)（出站合规）
 
 ---
 

@@ -312,10 +312,13 @@ cd server
 
 **根因：本工具链的仓颉运行时无法接受含非 ASCII 的 argv** ——
 在 `main` 之前就抛 `IllegalArgumentException: Invalid unicode scalar value`，
-连 usage 都打不出来（搬迁前的 API 踩坑记录 坑 6）。而**本仓库路径含中文**（`智能医院客户端`），
-所以 `--tls-cert "E:\...\智能医院客户端\server\certs\cert.pem"` **必然启动失败**（实测确认）。
+连 usage 都打不出来（搬迁前的 API 踩坑记录 坑 6）。当时的仓库路径还叫「智能医院客户端」（含中文），
+所以 `--tls-cert "...\智能医院客户端\server\certs\cert.pem"` **必然启动失败**（实测确认）。
 
-试过的两条"看起来能绕"的路，**实测都不行**（记下来省下次时间）：
+> **后续更正（2026-10-17）**：仓库已改名为 `E:\harmonyOS\smart_hospital`（纯 ASCII），
+> `--tls-cert` 直接传仓内路径**现在可用**；ASCII 运行副本的做法保留为「部署到含中文目录」及「私钥与源码树隔离」的兜底。
+
+试过的两条"看起来能绕"的路，**实测都不行**（记下来省下次时间；前提是路径里确实有中文）：
 
 | 尝试 | 结果 |
 | --- | --- |
@@ -327,7 +330,7 @@ cd server
 `new-tls-cert.ps1` 会自动产出这份副本，并用 `icacls` 把该目录 ACL **收紧到
 当前用户 + Administrators + SYSTEM**（私钥不外泄）。
 
-`--tls-files` 这个参数因此**保留**（它对纯 ASCII 路径的仓库仍有用），只是在本仓库必须指向 ASCII 路径。
+`--tls-files` 这个参数因此**保留**（它把路径从命令行挪进文件，仍能隔离 shell 转义与长路径问题），只是**任何含中文的部署路径下必须指向 ASCII 路径**。
 
 ### 5.5 五个实测踩到的坑（都影响正确性，不是小事）
 
@@ -801,7 +804,7 @@ P0 把 AC-4 的完整回归挂到 P1（写在本 ADR 的"验证边界"里），�
 | --- | --- | --- |
 | schema 自检（无需库） | `hospital-server.exe selftest` | ✅ **51 项** |
 | ★ 口令/令牌原语（含 3 个公开向量） | `hospital-server.exe authtest` | ✅ 17 项 |
-| 验收（AC-1…AC-P4-8） | `hospital-server.exe accept <dsn>` | ✅ **762 项** |
+| 验收（AC-1…AC-P4-8） | `hospital-server.exe accept <dsn>` | ✅ **777 项** |
 | ★ 令牌鉴权端到端 | `tests\auth-check.ps1` | ✅ 全绿（登录/Bearer/三端权限/登出/改口令踢下线/防枚举计时） |
 | ★ 并发压测（AC-9，走令牌） | `tests\stress-booking.ps1` | ✅ 20/30/40/50 抢同数号源**全部卖光**（含最穷工况） |
 | ★ **TLS/HTTPS** | `tests\tls-check.ps1` | ✅ 全绿（1.2/1.3 真校验、旧版被拒、反向验证、HTTPS 业务链路） |

@@ -24,13 +24,13 @@
 | --- | --- |
 | 仓库地址 | <https://github.com/XueDric/smart_hospital.git>（默认分支 `main`） |
 | 版本 | `0.2.0-p1`（`server/src/main.cj:34`）= P0–P5 六阶段交付 + 第 1 个维护批次 |
-| 提交历史 | 101 个提交，2026-10-07 → 2026-10-17；6 位贡献者 |
+| 提交历史 | 102 个提交，2026-10-07 → 2026-10-17；6 位贡献者 |
 | 许可证 / 第三方 | 本项目 [MIT](LICENSE)；第三方组件清单见 [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) |
 
 ```bash
 git clone https://github.com/XueDric/smart_hospital.git
 cd smart_hospital
-git log --oneline --graph | head -30      # 版本历史（101 个提交）
+git log --oneline --graph | head -30      # 版本历史（102 个提交）
 ```
 
 **版本历史摘要**（完整见 [CHANGELOG.md](CHANGELOG.md)）
@@ -56,11 +56,16 @@ git log --oneline --graph | head -30      # 版本历史（101 个提交）
 | **P3** | **AI 能力中心（配置底座）**：`ai_setting` KV + **改配置零重启** + ★★ **密钥不引用不落库**（`env:`/`file:` 引用，机制性拒绝裸密钥）+ 脱敏回显 + Prompt 模板落库 + AI 工具开关落库。⚠ 合规决策见 [Q6-合规决策记录](docs/Q6-合规决策记录.md)。见 [P3-HANDOFF](docs/P3-HANDOFF.md) | ✅ **完成** |
 | **P4** | **电子病历 + 运营看板**：七段式病历（草稿 → **提交锁定，锁定后不可改**）+ 医生**接诊队列**（状态机）+ 患者只读档案 + 看板（只出聚合不出明细）。★ 顺带把 `medical_record` 移出内存 Store 改直接 SQL（[ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) rev.6），并在收尾时**整体拆除内存 Store**（rev.7，全库只剩一种数据访问范式）。见 [P4-HANDOFF](docs/P4-HANDOFF.md) | ✅ **完成** |
 | **P5** | **RAG 知识库（零向量库）**：切块（带重叠、结构性不丢内容）→ 向量存 MySQL JSON（**纯仓颉余弦**）→ 关键词检索为默认路 + 向量路；管理端 CRUD + 检索；RAG 片段接进分诊（过安全层、改不了 `options`）+ 看板知识库规模。⚠ DeepSeek 无 embeddings 端点 ⇒ 向量路未做端到端验证。见 [P5-HANDOFF](docs/P5-HANDOFF.md) | ✅ **完成** |
-| **客户端** | **鸿蒙患者端 / 医生端 / 管理端**（`entry` + `common-core` + `feature-*`）+ **安卓患者端**（`android-patient`）+ **管理台网页**（`server/admin-web`，挂载在 `/admin`） | ✅ 已实现并可构建（鸿蒙端已在 DevEco 模拟器实测通过） |
+| **客户端** | **鸿蒙患者端 / 医生端 / 管理端**（`entry` + `common-core` + `feature-*`）+ **安卓患者端**（`android-patient`）+ **管理台网页**（`server/admin-web`，挂载在 `/admin`） | ✅ 已实现并可构建；**2026-10-17 已在华为模拟器（Pura 90 / HarmonyOS 6.1.1 / API 24）跑通患者全流程与管理端看板**，证据见 [release/harmony/](release/harmony/README.md) |
 | **维护批次** | 2026-10-17 复验修复 10 条（S1/S2/S3/S5/S6/S8/S12/S14/S16 + S4/S13）、契约与文档同步 | ✅ 完成（[复验报告](docs/REVERIFY-AND-FIXES-2026-10-17.md)） |
 
-> **验收口径**：`selftest` 51 + `authtest` 17 + `triagetest` 110 + `accept` **762 条断言** + `server/tests/` 25 个套件 + 契约门禁（24 Schema / 67 样例）+ `final-verify` 17/17 全绿。
+> **验收口径**：`selftest` 51 + `authtest` 17 + `triagetest` 139 + `accept` **777 条断言** + `server/tests/` 26 个测试文件（19 个可独立运行的门禁套件）+ 契约门禁（24 Schema / 67 样例）+ `final-verify` 18/18 全绿。
 > ⚠ 文档里的项数以 **`server/tests/doc-counts.ps1` 的实测输出为准**，不靠人记。
+
+> **自动门禁**：CI（`.github/workflows/repo-hygiene.yml`）每次 push/PR 跑 `tools/check-docs.ps1` ——
+> 查文档相对链接、脚本 UTF-8 BOM、批处理纯 ASCII、旧仓库路径残留。本地等价命令：
+> `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\check-docs.ps1`。
+> 服务端重活（`build.ps1` + `server/tests/` + `final-verify.ps1`）需 cjc 与 MariaDB 实例，仍按 `docs/DEPLOYMENT.md` 手工跑。
 
 ---
 
@@ -69,7 +74,7 @@ git log --oneline --graph | head -30      # 版本历史（101 个提交）
 | 路径 | 是什么 |
 | --- | --- |
 | [docs/](docs/) | **全部文档**：项目说明 / 系统设计 / 部署 / 第三方 / 接口口径 / 架构决策 / 阶段交付记录 |
-| [server/](server/README.md) | **服务端**（自包含）：`src/` **37 个 `.cj`** + `third_party/`（轻舟框架 47 个 `.cj`，其中参与编译 38 个；MariaDB 驱动 47 个 `.cj`，均为使用副本）+ 5 个构建运维脚本 + `tests/` **25 个测试脚本** + `admin-web/` 管理台 |
+| [server/](server/README.md) | **服务端**（自包含）：`src/` **38 个 `.cj`** + `third_party/`（轻舟框架 47 个 `.cj`，其中参与编译 38 个；MariaDB 驱动 47 个 `.cj`，均为使用副本）+ 6 个构建运维脚本 + `tests/` **26 个测试文件**（25 个 `.ps1` + `admin-web-smoke.mjs`） + `admin-web/` 管理台 |
 | [contract/](contract/README.md) | **可执行接口契约**：67 个样例 + 24 个 Schema + 映射表 + 变更日志 |
 | `entry/` + `common-core/` + `feature-patient/` + `feature-doctor/` + `feature-admin/` | **鸿蒙三端**（ArkTS / ArkUI V2）：HAP 壳 + 公共层 + 三个 HAR 业务模块 |
 | [android-patient/](android-patient/README.md) | **安卓患者端**（Kotlin Views，AGP 8.5.2 / Gradle 8.7 / minSdk 26） |
@@ -85,9 +90,35 @@ cd server
 .\setup-runtime.ps1 -Force          # 恢复 OpenSSL 运行时依赖（首次）
 .\devdb.ps1 start                   # 起仓库自管 MariaDB（端口 3317，数据在 devdb\data）
 .\build.ps1                         # 仓颉编译（框架与业务同一次 cjc 调用）
-.\build\hospital-server.exe serve mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital_test --port 8091 --dev-auth
+.\export-ca-bundle.ps1              # 导出 CA 包（供 AI 出站 TLS 校验；换网络后重导一次）
+$env:SSL_CERT_FILE = "$PWD\ca-bundle.pem"
+.\build\hospital-server.exe serve mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital_test --dev-auth
 curl.exe -s http://127.0.0.1:8091/health
 ```
+
+> **AI 开箱即用**：默认 `ai.enabled=1` + 密钥引用 `builtin:demo` + DeepSeek `deepseek-chat`，
+> 装完即可真调模型（启动日志会打印「AI：已启用 … 密钥引用 builtin」）。
+> `builtin:demo` 是演示密钥、随源码分发，**发布前必须轮换**（见 [docs/Q6-合规决策记录.md](docs/Q6-合规决策记录.md)）。
+> 为什么需要 `SSL_CERT_FILE`：仓颉 stdx 走 OpenSSL、不读 Windows 证书存储，缺它会报
+> `TLS handshake failed (client): certificate verify failed (134)`；而 `curl` 访问同一端点正常。
+
+鸿蒙客户端构建（**一条命令**，仓库根自带 `hvigorw.bat`，自动探测本机 DevEco Studio）：
+
+```powershell
+cd smart_hospital
+.\hvigorw.bat --mode module -p product=default -p module=entry@default assembleHap --no-daemon
+# 产物：entry/build/default/outputs/default/entry-default-unsigned.hap（未签名，约 1.7 MB）
+```
+
+> **已入库的构建与运行证据**：[release/harmony/](release/harmony/README.md) 内有 2026-10-17 的
+> `entry-default-unsigned.hap`（1,742,917 B，SHA256 `312046AC…56B626B696`）、`pack.info`、完整构建日志
+> （`BUILD SUCCESSFUL`，65 tasks），以及**模拟器实跑的 10 张截图 + 对应 `dumpLayout` 文本实测**
+> （患者登录 → 首页 → 智能分诊 → 选号 → 挂号成功 → 我的就诊；管理端登录 → 运营看板 → AI 能力中心）。
+> **未签名 HAP 可直接装进模拟器**（`hdc install -r …hap`），签名只在分发给真机时需要。
+>
+> ⚠ **仓库目录改名后必做**：`oh_modules/` 里指向模块的 junction 仍是旧绝对路径，需重新链接一次
+> （`ohpm install` 或按 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) §鸿蒙构建 的 `mklink /J` 重连），
+> 否则会报 `10505001 ArkTS Compiler Error: Cannot find module 'common-core'`。
 
 完整步骤、生产模式（`--prod` + TLS）、鸿蒙/安卓构建、可运行程序包、故障排查见 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**。
 

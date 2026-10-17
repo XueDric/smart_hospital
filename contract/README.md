@@ -34,7 +34,7 @@
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
-cd E:\harmonyOS\智能医院客户端\server
+cd E:\harmonyOS\smart_hospital\server
 
 # ① 只比对（不写盘）：重新导出并与已提交样例逐字节比 —— 门禁用的就是这个
 .\tests\export-contract.ps1 -Base http://127.0.0.1:18092 -AdminPw <管理员口令> -Check

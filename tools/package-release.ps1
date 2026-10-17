@@ -23,7 +23,7 @@
     · 含中文的 .ps1 必须 UTF-8 with BOM（PowerShell 5.1 否则按 ANSI 解析 → Unexpected token）。
     · 仓颉编译器必须是 1.2.0（PATH 上的 1.1.3 会 LLVM ERROR: Broken module found），
       server\build.ps1 会自己挑版本并校验。
-    · 路径含非 ASCII（本仓库路径里有中文）时，**运行** exe 请用 ASCII 路径的副本；
+    · 路径含非 ASCII 时（本仓库已改名为 smart_hospital，纯 ASCII），**运行** exe 仍需用 ASCII 路径的副本；
       证书路径同理（cangjie 运行时无法接受含非 ASCII 的 argv）。
 
 .PARAMETER OutDir
@@ -200,9 +200,11 @@ if (-not (Test-Path -LiteralPath $buildDir)) { Fail "找不到构建输出目录
 $collected = @()   # 每项：@{ Rel = 'hospital-server.exe'; Src = 绝对路径 }
 # 只收 build\ **顶层**文件：exe + 4 个运行时 DLL + SOURCE-MANIFEST.sha256。
 # 排除：① 子目录（如 build\mysql-driver\ 的 .cjo/.a）② 顶层 *.cjo —— 都是**编译/链接中间产物**，
-# 内容已经进 exe，打进包里只会白占容积。
+# 内容已经进 exe，打进包里只会白占容积。③ *.log（跑过一次就有的运行日志）
+# ④ *.pem / *.key —— 信任锚/私钥**绝不能随包分发**（可能含企业内网根），由目标机现场生成。
 $buildFiles = @(Get-ChildItem -LiteralPath $buildDir -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Extension -ne '.cjo' })
+    Where-Object { $_.Extension -ne '.cjo' -and $_.Extension -ne '.log' -and
+                   $_.Extension -ne '.pem' -and $_.Extension -ne '.key' })
 $skippedDirs = @(Get-ChildItem -LiteralPath $buildDir -Directory -ErrorAction SilentlyContinue)
 $skippedCjo = @(Get-ChildItem -LiteralPath $buildDir -File -Filter '*.cjo' -ErrorAction SilentlyContinue)
 if ($buildFiles.Count -eq 0) { Fail "构建输出目录里没有文件：$buildDir" }
@@ -218,6 +220,17 @@ foreach ($f in $buildFiles) {
     $collected += @{ Rel = $rel; Src = $f.FullName }
 }
 Write-Step "从 server\build\ 收集 $($buildFiles.Count) 个文件"
+
+# 出站 HTTPS 的信任锚脚本：仓颉 stdx 走 OpenSSL，不读 Windows 证书存储，
+# 没有信任锚时 AI 出站会报 `certificate verify failed (134), unknown CA`。
+# 包内**带脚本不帶导出的 PEM**（PEM 可能含企业内网根证书，必须目标机现场生成）。
+$caScriptSrc = Join-Path $repoRoot 'server\export-ca-bundle.ps1'
+if (Test-Path -LiteralPath $caScriptSrc) {
+    $collected += @{ Rel = 'export-ca-bundle.ps1'; Src = $caScriptSrc }
+    Write-Step "收集 CA 导出脚本 → export-ca-bundle.ps1"
+} else {
+    Write-Warn2 "没有 server\export-ca-bundle.ps1 —— 包内缺 AI 出站的信任锚工具"
+}
 
 # 管理台静态资源：与 exe 同级放成 admin-web\，`hospital-server serve` 的候选目录之一
 # 就是相对 CWD 的 "admin-web"（server\src\main.cj 的 pickAdminWebDir）。
@@ -249,7 +262,88 @@ foreach ($item in $collected) {
     Copy-Item -LiteralPath $item.Src -Destination $dest -Force
 }
 
-# ── 5b. 双击启动用的 .cmd ───────────────────────────────────────────────
+# ── 5b. 许可证与第三方声明 ──────────────────────────────────────────────
+# 为什么单独一步：评审反馈 P0-5「分发包零 LICENSE/NOTICE」——源码树根有 LICENSE，
+# 但用户拿到的是 zip，解压后看不到任何许可与第三方归属信息，等于交付物不合规。
+# 这里把 ① 本项目许可证 ② 第三方归属（NOTICE）③ 第三方审计文档 ④ 两份 vendored
+# 组件的许可证全文 一起放进包内 licenses\，与 zip 同生命周期。
+$licenseFiles = @()
+
+$rootLicense = Join-Path $repoRoot 'LICENSE'
+if (-not (Test-Path -LiteralPath $rootLicense)) { Fail "找不到 $rootLicense（分发包必须带许可证）" }
+Copy-Item -LiteralPath $rootLicense -Destination (Join-Path $stagingDir 'LICENSE.txt') -Force
+$licenseFiles += 'LICENSE.txt'
+
+$thirdPartyDoc = Join-Path $repoRoot 'docs\THIRD-PARTY.md'
+if (Test-Path -LiteralPath $thirdPartyDoc) {
+    Copy-Item -LiteralPath $thirdPartyDoc -Destination (Join-Path $stagingDir 'THIRD-PARTY.md') -Force
+    $licenseFiles += 'THIRD-PARTY.md'
+} else {
+    Write-Warn2 '没有 docs\THIRD-PARTY.md —— 包内不会有第三方清单'
+}
+
+# vendored 组件的许可证全文（Apache-2.0 要求随分发附带 LICENSE 与 NOTICE）
+$licDir = Join-Path $stagingDir 'licenses'
+New-Item -ItemType Directory -Path $licDir -Force | Out-Null
+$vendored = @(
+    @{ Src = (Join-Path $serverDir 'third_party\qingzhou\LICENSE');       Rel = 'licenses\qingzhou-LICENSE.txt' },
+    @{ Src = (Join-Path $serverDir 'third_party\mariadb-driver\LICENSE'); Rel = 'licenses\mariadb-driver-LICENSE.txt' }
+)
+foreach ($v in $vendored) {
+    if (Test-Path -LiteralPath $v.Src) {
+        Copy-Item -LiteralPath $v.Src -Destination (Join-Path $stagingDir $v.Rel) -Force
+        $licenseFiles += ($v.Rel -replace '\\', '/')
+    } else {
+        Write-Warn2 ("缺 vendored 许可证：" + $v.Src)
+    }
+}
+
+# NOTICE：归属声明 + 每个第三方组件的许可证与「用在哪」一句话，便于合规审查直接引用
+$noticeText = @"
+===============================================================
+ 智慧医院智能导诊就诊系统 (smart_hospital) $versionText · NOTICE
+===============================================================
+
+本项目自身代码以 MIT 许可证发布，全文见包内 LICENSE.txt。
+
+本包内含以下第三方组件（源码或以静态库形式链接进 hospital-server.exe）：
+
+1) 轻舟 QingZhou —— 仓颉 Web 框架（源码副本，构建时编译进 exe）
+   许可证：MIT
+   版权：Copyright (c) 2026 guowei, BIT FSSLab
+   全文：licenses/qingzhou-LICENSE.txt
+   上游：https://gitcode.com/BIT-FSSLab/QingZhou
+
+2) MariaDB 驱动 Cangjie MySQL driver（源码副本，静态链接进 exe）
+   许可证：Apache-2.0
+   上游：https://gitcode.com/Cangjie-SIG/mysql-driver
+   全文：licenses/mariadb-driver-LICENSE.txt
+   ⚠ Apache-2.0 第 4 条：本包随附上述许可证全文；本项目对该源码副本的修改情况
+     记录在仓库 server/third_party/mariadb-driver/PROVENANCE.md。
+
+3) OpenSSL 3 运行时（libcrypto-3-x64.dll / libssl-3-x64.dll，未修改的动态链接库）
+   许可证：Apache-2.0（OpenSSL 3.x）
+   上游：https://www.openssl.org/source/
+   全文需随分发提供：见 https://www.openssl.org/source/license.html
+   （构建机上的副本路径由 server/setup-runtime.ps1 的 -OpenSslDir 决定。）
+
+4) Cangjie 运行时（libcangjie-runtime.dll / libboundscheck.dll）
+   随仓颉 SDK 分发，按仓颉 SDK 的许可条款使用；本包未修改这两个文件。
+
+5) 管理台前端（admin-web/）为原生 HTML/CSS/JS，无前端框架依赖。
+
+完整审计（含鸿蒙/安卓端依赖、外部 API、模型与数据集、合规边界）见 THIRD-PARTY.md。
+
+———————————————————————————————————————————————
+如发现归属遗漏或许可证不符，请按 LICENSE.txt 中的联系方式提出。
+"@
+$noticePath = Join-Path $stagingDir 'NOTICE.txt'
+[System.IO.File]::WriteAllText($noticePath, $noticeText, (New-Object System.Text.UTF8Encoding($true)))
+$licenseFiles += 'NOTICE.txt'
+
+Write-Step ("生成许可证文件 " + $licenseFiles.Count + " 个：" + ($licenseFiles -join '、'))
+
+# ── 5c. 双击启动用的 .cmd ───────────────────────────────────────────────
 # ⚠ .cmd 内容保持**纯 ASCII**：cmd.exe 控制台按本地代码页（GBK）显示，
 #   写中文在 UTF-8 文件里会变乱码。说明文字一律放在 README-运行说明.txt 里。
 $cmdName = 'start-dev.cmd'
@@ -263,7 +357,14 @@ $cmdText = (@(
     'rem  NOTE: keep this folder on an ASCII-only path (e.g. C:\hospital).',
     'rem ============================================================',
     'set "DSN=mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital"',
-    'set "PORT=8080"',
+    'set "PORT=8091"',
+    'rem --- TLS trust for outbound AI calls ---',
+    'rem  Cangjie stdx uses OpenSSL and ignores the Windows cert store.',
+    'rem  Without a trust anchor HTTPS fails: certificate verify failed (134).',
+    'rem  The PEM is generated on THIS machine on first run (never shipped).',
+    'set "CA=%~dp0ca-bundle.pem"',
+    'if not exist "%CA%" if exist "%~dp0export-ca-bundle.ps1" powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0export-ca-bundle.ps1" -Out "%CA%"',
+    'if exist "%CA%" set "SSL_CERT_FILE=%CA%"',
     'echo Starting hospital-server on port %PORT% ...',
     'echo Health check: http://127.0.0.1:%PORT%/health',
     '"%~dp0hospital-server.exe" serve "%DSN%" --port %PORT% --dev-auth',
@@ -278,7 +379,9 @@ Write-Step "生成 $cmdName"
 $readmeName = 'README-运行说明.txt'
 $readmePath = Join-Path $stagingDir $readmeName
 $buildTimeText = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-$fileListText = ((@($collected | ForEach-Object { '    ' + $_.Rel }) + @('    ' + $cmdName)) | Sort-Object) -join "`r`n"
+$fileListText = ((@($collected | ForEach-Object { '    ' + $_.Rel }) +
+                  @($licenseFiles | ForEach-Object { '    ' + $_ }) +
+                  @('    ' + $cmdName)) | Sort-Object) -join "`r`n"
 
 $readme = @"
 ================================================================
@@ -316,30 +419,30 @@ $readme = @"
        start-dev.cmd
   方式 B：命令行（推荐，能看日志）
      cd <解压目录>
-     .\hospital-server.exe serve "mysql://hospital:<口令>@127.0.0.1:3317/hospital" --port 8080 --dev-auth
+     .\hospital-server.exe serve "mysql://hospital:<口令>@127.0.0.1:3317/hospital" --dev-auth
 
   参数口径：
-     --port N        监听端口，默认 8080（客户端默认连 8091，联调时用 --port 8091）
+     --port N        监听端口，默认 8091（与客户端默认值一致，裸启动即可联调）
      --bind IP       绑定地址，默认 127.0.0.1（要局域网联调才 --bind 0.0.0.0）
      --dev-auth      开发模式：绕过全部鉴权（只认本机回环来源）。**生产禁用**，且不能与 --prod 同用
      --prod          生产模式：要求 dev_auth=false，且必须能挂到 admin-web 静态目录
      --tls-cert / --tls-key   给这两个参数就强制 HTTPS，证书读不到会直接退出，绝不静默降级
 
   生产模式（HTTPS）：
-     .\hospital-server.exe serve "mysql://<user>:<pass>@<host>:3317/hospital" --port 8080 --prod `
+     .\hospital-server.exe serve "mysql://<user>:<pass>@<host>:3317/hospital" --port 8091 --prod `
          --tls-cert C:\hospital\tls\server.crt --tls-key C:\hospital\tls\server.key
      自签证书可由仓库里 server\new-tls-cert.ps1 生成；证书与私钥请放在 ASCII 路径下。
 
 四、默认端口
-  · 服务端默认 8080（--port 改），客户端默认连 8091 —— 联调请统一
+  · 服务端默认 8091（--port 改），鸿蒙/安卓客户端默认也连 8091 —— 无需额外参数
   · 管理台与 API 同源同端口：http://127.0.0.1:<port>/admin/
   · 数据库默认 127.0.0.1:3317
 
 五、/health 自检
   PowerShell：
-    Invoke-WebRequest -Uri http://127.0.0.1:8080/health -UseBasicParsing | Select-Object -Expand Content
+    Invoke-WebRequest -Uri http://127.0.0.1:8091/health -UseBasicParsing | Select-Object -Expand Content
   curl：
-    curl.exe -s http://127.0.0.1:8080/health
+    curl.exe -s http://127.0.0.1:8091/health
   语义：HTTP 200 = 进程活着**且**库通；HTTP 503 = 进程活着但库不通（响应体 db.ok=false）。
   响应里 db.reconnects 非 0 说明链路抖过并已自愈。
 
@@ -347,11 +450,25 @@ $readme = @"
   首次部署需要建一个管理员账号（口令由程序随机生成并打印一次，请立刻保存）：
     .\hospital-server.exe create-admin "mysql://hospital:<口令>@127.0.0.1:3317/hospital"
 
-七、升级到已存在的库
+七、AI 出站（TLS 信任锚，必须做一次）
+  仓颉 stdx 的 HTTPS 客户端走 **OpenSSL**，不读 Windows 证书存储。少了信任锚，
+  AI 出站会失败并报：TLS handshake failed (client): certificate verify failed (134), unknown CA(F)
+  —— 此时 curl.exe / PowerShell 访问同一个地址却都是 200，容易误判成"密钥错"。
+
+  start-dev.cmd 会在首次运行时自动执行 export-ca-bundle.ps1 生成 ca-bundle.pem 并设置 SSL_CERT_FILE。
+  手工做一遍（方式 B 走这条）：
+     powershell -NoProfile -ExecutionPolicy Bypass -File .\export-ca-bundle.ps1
+     set "SSL_CERT_FILE=%CD%\ca-bundle.pem"
+     .\hospital-server.exe serve "<DSN>" --dev-auth
+  验证：管理台「模型管理」里对默认对话模型点「测试」，应返回 ok=true / http_status=200。
+  ⚠ ca-bundle.pem 由**本机**证书存储导出（含企业内网根），不要跨机器拷贝；
+    换网络/换代理后要重新导一次。
+
+八、升级到已存在的库
   serve 启动时会自动建表（CREATE TABLE IF NOT EXISTS）并跑幂等迁移；已有数据的库可直接换新 exe，
   重复启动不会重复改结构，也不会清数据。
 
-八、故障排查
+九、故障排查
   1) 编译输出被占用（打包/重新编译时）：还有 hospital-server.exe 在跑
        Get-Process hospital-server | Stop-Process -Force
   2) 端口 3317 已被占用：Get-NetTCPConnection -State Listen | Where-Object LocalPort -eq 3317
@@ -365,7 +482,7 @@ $readme = @"
   6) /admin/ 404：启动时没找到 admin-web 目录（本包已随包提供，请在解压目录里启动）
   7) 服务端日志有 [HEALTH] 库探活失败：先查数据库是否在跑、DSN 口令是否正确
 
-九、包内文件清单
+十、包内文件清单
 $fileListText
     $readmeName  （本文件）
 
