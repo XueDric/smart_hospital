@@ -155,6 +155,7 @@ export class MockPatientRepository {
     result.role = 'patient';
     result.patientId = 7;
     result.deviceId = 'mock-device';
+    result.displayName = '演示患者';
     return result;
   }
 

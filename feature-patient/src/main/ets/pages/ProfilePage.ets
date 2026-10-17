@@ -57,6 +57,11 @@ export struct ProfilePage {
       this.role = user.role;
       this.patientId = user.patientId;
       this.userId = user.userId;
+      // ★ 2026-10-17：姓名也一起刷 —— 否则"同步身份信息"只同步一半，改名后界面还是旧名字。
+      if (user.displayName.length > 0 && user.displayName !== this.displayName) {
+        this.displayName = user.displayName;
+        SessionStore.setDisplayName(user.displayName);
+      }
       this.bannerTone = 'success';
       this.bannerMessage = '身份信息已同步';
     } catch (error) {
@@ -99,7 +104,7 @@ export struct ProfilePage {
     } catch (error) {
       // 登出失败也需要清掉本地登录态，避免用户被卡在已登录页面。
     }
-    SessionStore.clearLogin();
+    await SessionStore.clearLogin();
     this.loading = false;
     AppRouter.getInstance().reset(RouteName.LOGIN);
   }

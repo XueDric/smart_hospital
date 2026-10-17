@@ -14,6 +14,8 @@ export class CurrentUser {
   patientId: number = 0;
   doctorId: number = 0;
   deviceId: string = '';
+  /** ★ 2026-10-17：服务端 `/api/v1/auth/me` 一直返回 `display_name`，此前客户端没解析 ⇒ "同步身份"刷不到姓名。 */
+  displayName: string = '';
 }
 
 export class TriageOption {

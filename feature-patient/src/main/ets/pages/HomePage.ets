@@ -54,7 +54,16 @@ export struct HomePage {
   async load(): Promise<void> {
     this.loading = true;
     this.errorMessage = '';
-    this.notices = this.repository.notices();
+    /*
+     * ★ 2026-10-17（评审 P2-9）：公告改为读服务端，且**单独 try**。
+     *   理由：公告是首页的附加卡片，「下一次就诊」才是主信息 ——
+     *   公告接口失败（或该角色无 ViewNotice 权限）不该把整页变成错误页。
+     */
+    try {
+      this.notices = await this.repository.notices();
+    } catch (error) {
+      this.notices = [];
+    }
     try {
       const appointments = await this.repository.appointments(false);
       for (const appointment of appointments) {

@@ -1,4 +1,4 @@
-import { AppRouter, RouteName, SessionStore, ThemeManager } from 'common-core';
+import { AppRouter, RouteName, SessionStore } from 'common-core';
 import { PatientRoot } from 'feature-patient';
 import { DoctorRoot } from 'feature-doctor';
 import { AdminRoot } from 'feature-admin';
@@ -7,16 +7,10 @@ import { AdminRoot } from 'feature-admin';
 @ComponentV2
 struct Index {
   @Local route: string = RouteName.LOGIN;
-  // AppColor 是静态 getter，不是响应式数据。主题切换后只能靠重建页面树让所有颜色重新取值，
-  // 这里用奇偶分支配合 themeTick，保证每次切换都落到另一个分支上。
-  @Local themeTick: number = 0;
 
   aboutToAppear(): void {
     AppRouter.getInstance().setObserver((name: string) => {
       this.route = name;
-    });
-    ThemeManager.getInstance().setOnChange(() => {
-      this.themeTick = this.themeTick + 1;
     });
     // 已登录会话重启后按角色回到对应端首页，避免被统一踢回患者登录页。
     const role: string = SessionStore.getRole();
@@ -46,21 +40,19 @@ struct Index {
     }
   }
 
+  /*
+   * ★ 2026-10-17（评审 P2-11）：这里原来是靠 `themeTick % 2` 在两个分支
+   * （`Column` / `Row`）之间来回切，**借"重建整棵页面树"逼所有颜色重新取值**。
+   * 那等于每切一次主题就重启一次界面：滚动位置、输入框内容、在途请求的回调
+   * 全部丢失，还会闪一下。
+   *
+   * 现在由 `ThemeManager`（`@ObservedV2` + `@Trace paletteVersion`）负责通知，
+   * `AppColor.*` 在 build 里一读就自动建立依赖，**只有颜色属性被重新求值**，
+   * 页面树与状态原地保留。所以这里不需要任何主题相关代码。
+   */
   build() {
     Stack() {
-      if (this.themeTick % 2 === 0) {
-        Column() {
-          this.renderRoot()
-        }
-        .width('100%')
-        .height('100%')
-      } else {
-        Row() {
-          this.renderRoot()
-        }
-        .width('100%')
-        .height('100%')
-      }
+      this.renderRoot()
     }
     .width('100%')
     .height('100%')

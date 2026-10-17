@@ -46,7 +46,8 @@ export struct DoctorLoginPage {
       if (result.role !== 'doctor') {
         throw new ApiError(ErrorCode.FORBIDDEN_ROLE, '当前账号不是医生账号', 403);
       }
-      SessionStore.saveLogin(result.token, result.expiresAt, result.userId, result.role,
+      // ★ 2026-10-17（评审 P2-14）：令牌改存系统安全存储（异步），必须先 await 再跳转。
+      await SessionStore.saveLogin(result.token, result.expiresAt, result.userId, result.role,
         result.refId, 0, result.displayName);
       AppRouter.getInstance().reset(RouteName.DOCTOR_QUEUE);
     } catch (error) {
@@ -166,7 +167,16 @@ export struct DoctorLoginPage {
           .backgroundColor(AppColor.INFO_SOFT)
           .padding(12)
           .borderRadius(AppSize.CARD_RADIUS)
-          .margin({ top: AppSize.SECTION_GAP, bottom: 32 })
+          .margin({ top: AppSize.SECTION_GAP })
+
+        /* ★ 2026-10-17：回患者端的显式入口（原先三个端的注册函数抢首屏，只能进不能出）。 */
+        Text('返回患者端')
+          .fontSize(AppText.CAPTION)
+          .fontColor(AppColor.PRIMARY_DARK)
+          .margin({ top: AppSize.GAP, bottom: 32 })
+          .onClick(() => {
+            AppRouter.getInstance().replace(RouteName.LOGIN);
+          })
       }
       .width('100%')
       .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING })

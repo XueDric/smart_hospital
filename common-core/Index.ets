@@ -4,6 +4,7 @@ export { AuthGuard } from './src/main/ets/router/AuthGuard';
 export { ApiError, ErrorCode } from './src/main/ets/network/ApiError';
 export { ApiConfig, ApiMode } from './src/main/ets/config/ApiConfig';
 export { SessionStore } from './src/main/ets/storage/SessionStore';
+export { SecureStore } from './src/main/ets/storage/SecureStore';
 export { KeyValueStore } from './src/main/ets/storage/KeyValueStore';
 export { FileStore } from './src/main/ets/storage/FileStore';
 export { HttpClient, HttpMethod } from './src/main/ets/network/HttpClient';

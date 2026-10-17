@@ -36,9 +36,18 @@ export struct AdminRoot {
     return this.route === RouteName.ADMIN_LOGIN;
   }
 
+  /*
+   * ★ 2026-10-17（评审 P2-14）：`clearLogin()` 现在是异步的（要删系统安全存储里的令牌），
+   * 而 `.onClick(() => this.logout())` 需要 `void` 返回 —— 所以保持 `void` 签名，
+   * 用 `.then` 串起"删干净再跳登录页"。顺序很重要：先删后跳，
+   * 否则令牌删除还在飞的时候页面已经跳走，用户若立刻杀掉进程，
+   * 旧令牌仍可能留在安全存储里（登出等于没登出）。
+   */
   private logout(): void {
-    SessionStore.clearLogin();
-    AppRouter.getInstance().reset(RouteName.ADMIN_LOGIN);
+    SessionStore.clearLogin().catch(() => {
+    }).then(() => {
+      AppRouter.getInstance().reset(RouteName.ADMIN_LOGIN);
+    });
   }
 
   build() {

@@ -38,7 +38,9 @@ export struct LoginPage {
       if (result.role !== 'patient') {
         throw new ApiError(ErrorCode.FORBIDDEN_ROLE, '当前账号不是患者账号', 403);
       }
-      SessionStore.saveLogin(result.token, result.expiresAt, result.userId, result.role,
+      // ★ 2026-10-17（评审 P2-14）：令牌写进系统安全存储是异步的，**必须先 await 再跳转** ——
+      // 否则用户登录后立刻退出应用，令牌可能还没落地（下次打开又要重登）。
+      await SessionStore.saveLogin(result.token, result.expiresAt, result.userId, result.role,
         result.refId, result.patientId, result.displayName);
       AppRouter.getInstance().reset(RouteName.HOME);
     } catch (error) {
@@ -158,7 +160,32 @@ export struct LoginPage {
           .backgroundColor(AppColor.WARNING_SOFT)
           .padding(12)
           .borderRadius(AppSize.CARD_RADIUS)
-          .margin({ top: AppSize.SECTION_GAP, bottom: 32 })
+          .margin({ top: AppSize.SECTION_GAP })
+
+        /*
+         * ★ 2026-10-17（评审实测缺陷）：三个端的注册函数原先用 `replace` 抢首屏，
+         * 结果首屏固定成管理端、患者登录页不可达。修好注册之后，跨端入口要显式给出来，
+         * 否则医生端/管理端又变成"打包了但点不到"。
+         */
+        Row() {
+          Text('医生登录')
+            .fontSize(AppText.CAPTION)
+            .fontColor(AppColor.PRIMARY_DARK)
+            .onClick(() => {
+              AppRouter.getInstance().replace(RouteName.DOCTOR_LOGIN);
+            })
+          Text('·')
+            .fontSize(AppText.CAPTION)
+            .fontColor(AppColor.TEXT_SECONDARY)
+            .margin({ left: 10, right: 10 })
+          Text('管理端登录')
+            .fontSize(AppText.CAPTION)
+            .fontColor(AppColor.PRIMARY_DARK)
+            .onClick(() => {
+              AppRouter.getInstance().replace(RouteName.ADMIN_LOGIN);
+            })
+        }
+        .margin({ top: AppSize.GAP, bottom: 32 })
       }
       .width('100%')
       .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING })

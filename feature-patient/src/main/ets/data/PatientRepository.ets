@@ -65,6 +65,7 @@ export class PatientRepository {
     result.patientId = asNumber(response['patient_id']);
     result.doctorId = asNumber(response['doctor_id']);
     result.deviceId = asString(response['device_id']);
+    result.displayName = asString(response['display_name']);
     return result;
   }
 
@@ -222,8 +223,38 @@ export class PatientRepository {
     return result;
   }
 
-  notices(): PatientNotice[] {
-    return MockPatientRepository.notices();
+  /*
+   * ★ 2026-10-17（评审 P2-9）：公告**改为读服务端**。
+   *
+   * 评审原话是"公告页本地 Mock（`PatientRepository.ets:225-227`）"—— 改之前这里
+   * 无论 ApiConfig 如何都直接返回 `MockPatientRepository.notices()`，于是：
+   * ① 管理端在后台发一条公告，患者端**永远看不到**（最典型的"功能看起来有、
+   *    实际是死的"）；② 页面副标题还写着"服务端暂无消息接口"，把缺陷固化成文案。
+   * 而服务端其实早就有 `GET /api/v1/notices`（`server/src/http_notice.cj:160`，
+   * 只回 enabled 且已到发布时刻的公告，按 sort/published_at 排序），
+   * 字段与 `PatientNotice` 一一对应（`noticeJson`：id/title/body/category/date）。
+   *
+   * ⚠ 返回 `Promise` 后**调用方必须 await**：公告读失败不能拖垮首页 ——
+   *   首页的"下一次就诊"才是主信息，公告只是附加卡片（见 HomePage.load 的分开 try）。
+   */
+  async notices(): Promise<PatientNotice[]> {
+    if (ApiConfig.isMock()) {
+      return MockPatientRepository.notices();
+    }
+    const response = asRecord(await HttpClient.getInstance().get('/api/v1/notices?limit=20'));
+    const result: PatientNotice[] = [];
+    for (const item of asArray(response['items'])) {
+      const source = asRecord(item);
+      const notice = new PatientNotice();
+      notice.id = asNumber(source['id']);
+      notice.title = asString(source['title']);
+      notice.body = asString(source['body']);
+      notice.category = asString(source['category']);
+      // 服务端下发的 date 已经是 yyyy-MM-dd 字符串（hDateStringOf），不再二次格式化。
+      notice.date = asString(source['date']);
+      result.push(notice);
+    }
+    return result;
   }
 
   private parseTriage(response: Record<string, Object>): TriageResult {

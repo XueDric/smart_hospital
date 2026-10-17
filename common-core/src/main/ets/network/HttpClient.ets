@@ -156,14 +156,21 @@ export class HttpClient {
   private handleAuthStatus(code: string, status: number): void {
     if (status === 401 || code === ErrorCode.AUTH_REQUIRED || code === ErrorCode.AUTH_TOKEN_EXPIRED) {
       const role = SessionStore.getRole();
-      SessionStore.clearLogin();
-      if (role === 'doctor') {
-        AppRouter.getInstance().replace(RouteName.DOCTOR_LOGIN);
-      } else if (role === 'admin') {
-        AppRouter.getInstance().replace(RouteName.ADMIN_LOGIN);
-      } else {
-        AppRouter.getInstance().replace(RouteName.LOGIN);
-      }
+      /*
+       * ★ 2026-10-17（评审 P2-14）：`clearLogin()` 变异步了（要清系统安全存储里的令牌）。
+       * 这里在**响应处理路径**上（不能 await），所以用 `.then` 把"清干净 → 回登录页"串起来；
+       * 失败也照样跳转（本地内存里的令牌已经清空，界面必须跟着走）。
+       */
+      SessionStore.clearLogin().catch(() => {
+      }).then(() => {
+        if (role === 'doctor') {
+          AppRouter.getInstance().replace(RouteName.DOCTOR_LOGIN);
+        } else if (role === 'admin') {
+          AppRouter.getInstance().replace(RouteName.ADMIN_LOGIN);
+        } else {
+          AppRouter.getInstance().replace(RouteName.LOGIN);
+        }
+      });
     }
   }
 

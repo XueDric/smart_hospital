@@ -60,6 +60,26 @@ export class ThemePalette {
   }
 }
 
+/**
+ * 主题状态（评审 P2-11：切换主题不再"整树重建"）。
+ *
+ * ## 改之前
+ * `AppColor.*` 是**静态 getter**：读一次拿一个颜色字符串，ArkUI 不知道它跟任何状态有关，
+ * 于是切主题只能靠 `entry/src/main/ets/pages/Index.ets` 里 `themeTick % 2` 的奇偶分支
+ * （`Column` ↔ `Row` 交替）**把整棵页面树拆了重建**，靠"build 重新执行一遍"重新取色。代价：
+ * 页面状态全丢（滚动位置、输入框内容、在途请求的回调）、重建瞬间闪烁、路由栈被重置 ——
+ * 切一次主题约等于"重启一次界面"。
+ *
+ * ## 改之后
+ * `ThemeManager` 标成 `@ObservedV2`，并加一个 `@Trace` 的 `paletteVersion`；`palette()`
+ * 读它一下。任何在 `build()` 里读过 `AppColor.xxx` 的组件，构建期就与该状态建立了依赖；
+ * 版本号一变，**只有真正引用到颜色的属性**被重新求值，页面树、状态、路由都不动。
+ *
+ * 前提：颜色必须在 `build()` 里读。若有组件把颜色缓进成员变量、或在 `aboutToAppear`
+ * 里算好再用，它不会跟着变 —— 这也是本仓 `AppColor` 坚持 getter 形态、1312 处调用
+ * 全部内联读（无一处赋值给字段）的原因。改这些调用点前先想清楚这一点。
+ */
+@ObservedV2
 export class ThemeManager {
   private static instance: ThemeManager = new ThemeManager();
   private static readonly lightPalette: ThemePalette = ThemePalette.light();
@@ -68,6 +88,8 @@ export class ThemeManager {
   private systemDark: boolean = false;
   private onChange?: () => void;
   private mediaListener?: mediaquery.MediaQueryListener;
+  /** 主题版本号：唯一被 ArkUI 追踪的响应式字段，见类注释。 */
+  @Trace private paletteVersion: number = 0;
 
   static getInstance(): ThemeManager {
     return ThemeManager.instance;
@@ -111,6 +133,9 @@ export class ThemeManager {
   }
 
   palette(): ThemePalette {
+    // ⚠ 这一行是响应式的**唯一入口**，删掉它主题就退回"不重建就不刷新"。
+    //   先读版本号（等价于声明依赖），再取值。
+    this.paletteVersion;
     return this.isDark() ? ThemeManager.darkPalette : ThemeManager.lightPalette;
   }
 
@@ -119,6 +144,8 @@ export class ThemeManager {
   }
 
   private notify(): void {
+    // 先推进响应式版本，再回调非 UI 监听（导出、埋点等）。
+    this.paletteVersion = this.paletteVersion + 1;
     if (this.onChange !== undefined) {
       this.onChange();
     }
