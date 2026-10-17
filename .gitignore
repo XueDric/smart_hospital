@@ -39,6 +39,8 @@ server/devdb/*.log
 .build-tools/
 .gradle-home/
 .android-home/
+# hvigor 的工具链/缓存家目录：默认在 %USERPROFILE%\.hvigor，可用 HVIGOR_USER_HOME 重定向到仓库内
+.hvigor-user-home/
 
 # ── 构建产物（可重新生成，**不入库**）──────────────────────────────────────
 # ⚠ 尤其 server/build/：里面有 12 MB 的 exe + 5.7 MB 的 OpenSSL DLL + 编译好的
@@ -78,5 +80,14 @@ build/
 oh_modules/
 .hvigor/
 
+# ★ hvigor 每次构建都会**重写**各模块根下的 BuildProfile.ets（常量导出 + 空壳 class）。
+#   源码里没有任何 `import ... BuildProfile`，它是纯构建产物 —— 入库只会让每次构建
+#   都产生「只有缩进/换行不同」的假改动（实测：feature-admin / feature-doctor 两个文件
+#   每次 assembleHap 都被改成 tab 缩进 + 去掉文件末尾换行）。
+BuildProfile.ets
+
 # ── 可运行程序包（由 tools\package-release.ps1 生成，不入库）────────────────
-release/
+# 例外：release/harmony/ 下是**鸿蒙构建产物**（未签名 HAP + 构建日志），作为
+#   "客户端可构建"的验收证据入库；其余 release/ 内容（服务端 zip 等）仍不入库。
+/release/*
+!/release/harmony/
