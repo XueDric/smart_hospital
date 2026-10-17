@@ -327,7 +327,7 @@ subst X: E:\harmonyOS\智能医院客户端
 | `server/tests/export-contract.ps1:5-11` | 仅注释：第三方复查那段与今天实测已不同 → 注明「2026-10-17 起框架层三种平铺体已全部改写信封」 |
 | `server/tests/stress-booking.ps1:141` | 仅注释：`Invalid JSON body` → 400 `VALIDATION_FAILED` |
 | `server/admin-web/js/api.js:109-113` | 仅注释：旧「没有统一信封」的举例改为 408 等未被应用接管的出口 |
-| `docs/SERVER-REVIEW-2026-10-14.md:306`、`docs/SERVER-REVIEW-FIXES-2026-10-14.md:103`、`docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md:398` | 各**追加一行** 2026-10-17 更新说明（正文按"带日期报告不改写"的纪律保留原样） |
+| `docs/SERVER-REVIEW-2026-10-14.md:306`、`docs/SERVER-REVIEW-FIXES-2026-10-14.md:103`、`docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md:398` | 各**追加一行** 2026-10-17 更新说明（正文按"带日期报告不改写"的纪律保留原样）。<br>⚠ 这三份带日期的历史报告已于 2026-10-17 整理仓库时移除（内容见 git 历史），本节记录的是它们被删之前的最后状态 |
 
 - **刻意保留的「旧说法」**：① `/health` 系（`docs/FRONTEND-INTEGRATION.md:33/:2146/:2233/:2415`、`docs/ADMIN-WEB.md:70` 等）—— 那是**成功**形状，不是错误形状，至今真实；② 明确标注「历史 / 已作废 / 可选回退」的段落与对照表"改前"列（保日期证据）；③ 框架 `router.cj:91-94/:104`、`static.cj:51-60` 的**默认平铺值**（框架自测仍走它以证"默认行为不变"）。
 - **两个 `.ps1` 的 BOM**：`export-contract.ps1`、`stress-booking.ps1` 经 edit 工具保存后丢了 UTF-8 BOM（PS 5.1 会把中文注释解析成乱码甚至语法错），已用 `New-Object System.Text.UTF8Encoding($true)` 重写并实测首三字节 `EF BB BF`。

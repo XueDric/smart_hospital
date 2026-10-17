@@ -1667,7 +1667,7 @@ POST /api/v1/doctor/visits/:id/record/reopen
 
 ### 5.32 2026-10-15 新增：就诊时间线（到院 / 候诊 / 显式状态机）
 
-> 面向**医生端（鸿蒙）**与**患者端**。对应 `docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md` §改进 6。
+> 面向**医生端（鸿蒙）**与**患者端**。对应门诊闭环改进方案的「改进 6」（该方案文档已于 2026-10-17 整理仓库时移除，内容见 git 历史 `docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md`）。
 > 一句话：就诊状态从「挂号 → 接诊中 → 完成」三步，扩成**七态**，并把"人几点到、几点开始看、
 > 几点看完"落成三个时间戳。**医生端必须改流程**，否则会卡在 `booked → visiting` 已经不被允许。
 
@@ -1824,10 +1824,9 @@ $env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Stud
 | 1 | 医生端**演示夹具**漏给 `booked` 那单设 `statusLabel`，队列页兜底成本地文案「待就诊」，而服务端 `visitStatusLabel(booked)` 是「已挂号」⇒ 演示与线上文案对不上 | 已修：`feature-doctor/.../MockDoctorRepository.ets` 给 603 补 `statusLabel = '已挂号'`，并在模拟器上复验 |
 | 2 | 客户端本地兜底 `appointmentStatusText`（`common-core` 与 `feature-patient` 各一份、逐字相同）与服务端权威 `visitStatusLabel` **7 态里有 4 态不一致**：`booked` 待就诊/已挂号、`visiting` 就诊中/接诊中、`cancelled` 已取消/已退号、`no_show` 爽约/已爽约 | ✅ **已按服务端术语对齐（2026-10-16 晚）**：`common-core/.../ui/Theme.ets` 把那 4 个值改成 `已挂号` / `接诊中` / `已退号` / `已爽约`；`feature-patient/.../ui/Theme.ets` 的 `appointmentStatusText` / `appointmentStatusColor` 改为**直接转调 `common-core`**（第二份词汇表已删），`HomePage.ets:143` 空态文案同步改为「目前没有已挂号的预约」。设备复验：就诊列表里 `2026-11-20 上午` 那张单的胶囊由「待就诊」变为「已挂号」 |
 
-服务端侧复核修正（D1/D2/D4/D5…）见 `docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md` §八；本节对应的构建/联调命令也在该文 §8.4 有摘要。
+服务端侧复核修正（D1/D2/D4/D5…）见门诊闭环改进方案的「§八」（该文档已于 2026-10-17 移除，见 git 历史）；本节对应的构建/联调命令也在其 §8.4 有摘要。
 
-**证据留存**：本轮 7 张模拟器截图暂存在本机 `.scratch-evidence-2026-10-16/`（仓库根的 `.scratch-*` 已被 `.gitignore` 忽略，
-所以截图不入库、仓库保持纯文本）；文件名与内容见该目录的 `README.md`：`01-patient-home.jpeg`（患者首页）、
+**证据留存**（历史）：本轮 7 张模拟器截图曾暂存在本机 `.scratch-evidence-2026-10-16/`（`.scratch-*` 被 `.gitignore` 忽略 ⇒ 从未入库；2026-10-17 整理仓库时已连同构建产物清理）。文件名：`01-patient-home.jpeg`（患者首页）、
 `02-doctor-queue-mock.jpeg`（医生队列四态）、`03-doctor-arrived.jpeg`（点「到院登记」后 `已到院` + 「转入候诊」）、
 `04-live-queue.jpeg`（联调：真实队列与 `已挂号`）、`05-live-visiting.jpeg`（联调走完 `booked→arrived→waiting→visiting`）、
 `06-mock-label-fixed.jpeg`（夹具补 `statusLabel` 后复验）、`07-patient-appointments-aligned.jpeg`（文案对齐后就诊列表 `已挂号`）。

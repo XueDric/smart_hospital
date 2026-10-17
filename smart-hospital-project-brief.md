@@ -387,7 +387,7 @@ if (n == 1) { /* 抢到 → 写挂号单 */ } else { /* 号源已变 → 重试�
 
 **测试**：`server/tests/`（13 个 `.ps1` + `common.ps1`；项数以 `doc-counts.ps1` 为准）
 
-**关键文档**：[README.md](README.md)（进度与目录）｜ [docs/FRONTEND-INTEGRATION.md](docs/FRONTEND-INTEGRATION.md)（前端唯一口径）｜ [docs/adr/ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md)（架构决策 rev.7）｜ `docs/P0-HANDOFF.md` … `docs/P5-HANDOFF.md` ｜ [docs/DEV-DB.md](docs/DEV-DB.md)（本机数据库）｜ [docs/Q6-合规决策记录.md](docs/Q6-合规决策记录.md)（出站合规）｜ [docs/PUSH-NOTES.md](docs/PUSH-NOTES.md)（推送备忘）
+**关键文档**：[README.md](README.md)（进度与目录）｜ [docs/FRONTEND-INTEGRATION.md](docs/FRONTEND-INTEGRATION.md)（前端唯一口径）｜ [docs/adr/ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md)（架构决策 rev.7）｜ `docs/P0-HANDOFF.md` … `docs/P5-HANDOFF.md` ｜ [docs/DEV-DB.md](docs/DEV-DB.md)（本机数据库）｜ [docs/Q6-合规决策记录.md](docs/Q6-合规决策记录.md)（出站合规）
 
 ---
 

@@ -36,7 +36,6 @@
 | [docs/adr/](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) | **架构决策记录** —— ADR-0001 号源/挂号独立 MySQL 路径（P0 唯一架构级决策） | ✏️ 本项目文档 |
 | [docs/P0-HANDOFF.md](docs/P0-HANDOFF.md) | P0 收尾说明：交付物、验收结果与边界、本机联调环境、P0 踩过的 12 个坑 | ✏️ 本项目文档 |
 | [docs/P1-HANDOFF.md](docs/P1-HANDOFF.md) | **P1 说明**：HTTP 接口清单、权限矩阵、令牌鉴权口径与公开测试向量、并发压测结果、抓出的缺陷、未完成项 | ✏️ 本项目文档 |
-| [docs/PUSH-NOTES.md](docs/PUSH-NOTES.md) | 推送备忘：本机 DNS 返回了一个连不通的 GitHub IP，以及绕过办法（实测有效） | ✏️ 本项目文档 |
 | [docs/DEV-DB.md](docs/DEV-DB.md) | **仓库自管开发数据库**（端口 3317，与本机其它项目隔离）：启停、连接、DSN、重置 | ✏️ 本项目文档 |
 | [docs/P1-OPS-HANDOFF.md](docs/P1-OPS-HANDOFF.md) | **P1 运维交接**：证书信任分发 / 轮换与到期监控 —— 两项**本机不可验证**，含判据与具体命令 | ✏️ 本项目文档 |
 | [docs/P2-HANDOFF.md](docs/P2-HANDOFF.md) | **P2 AI 分诊交付**：边界（未接模型及原因）、核心不变式、变异测试、三个"字节/字符混用"缺陷 | ✏️ 本项目文档 |
@@ -45,7 +44,7 @@
 | [docs/P4-HANDOFF.md](docs/P4-HANDOFF.md) | **P4 电子病历 + 运营看板**：★ 范式迁移 rev.6（病历为何移出内存 Store）+ ★★ **rev.7（内存 Store 整体拆除）**、看板隐私红线、八处真问题与教训、诚实的边界 | ✏️ 本项目文档 |
 | [docs/P5-HANDOFF.md](docs/P5-HANDOFF.md) | **P5 RAG 知识库**：零向量库做法、三条硬约束、片段上限、踩坑与验证记录 | ✏️ 本项目文档 |
 | [docs/FRONTEND-INTEGRATION.md](docs/FRONTEND-INTEGRATION.md) | ★ **前端对接说明**（唯一口径）：起服务 / 鉴权 / 信封与错误码 / 18 个端点逐字段 / SSE 原始帧 / 幂等挂号与退号语义 / 服务端缺口 / 前端工程纪律 | ✏️ 本项目文档 |
-| [server/](server/README.md) | **智慧医院服务端**（仓颉 + 轻舟，自包含）：`src/` **33 个 `.cj`**（业务）+ `third_party/`（轻舟框架 + MariaDB 驱动，**使用副本**）+ 5 个构建/运维脚本 + `tests/` **13 个测试脚本** + `common.ps1` + README | ✏️ 本项目代码 |
+| [server/](server/README.md) | **智慧医院服务端**（仓颉 + 轻舟，自包含）：`src/` **37 个 `.cj`**（业务）+ `third_party/`（轻舟框架 47 个 `.cj` + MariaDB 驱动 47 个 `.cj`，**使用副本**）+ 5 个构建/运维脚本 + `tests/` **25 个测试脚本**（含 `common.ps1`）+ README | ✏️ 本项目代码 |
 | `entry/` + `common-core/` + `feature-patient/` | **鸿蒙患者端**（ArkTS）：`entry` 壳工程 + `common-core` 公共层 + `feature-patient` 患者端；构建方式与开发口径见 [鸿蒙端对接说明](docs/HARMONY-INTERFACE-GUIDE.md) | ✏️ 鸿蒙端代码 |
 
 > 🔴 **关键约定**：本仓库目前**只有服务端**（`server/`，自包含：框架与数据库驱动都是使用副本，框架快照由 `MANIFEST.sha256` 锚定）。
