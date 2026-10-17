@@ -282,7 +282,7 @@ subst X: E:\harmonyOS\智能医院客户端
 |---|---|---|
 | **S10** 登录锁定 | 「知道手机号即可把患者锁死 900 秒」= 中危缺陷 | **不是缺陷，是刻意的权衡，已回退**。`server/tests/rate-limit-check.ps1:6,87-88,111-113,117-121` 明确断言「锁定期内**不跑 PBKDF2**（`Sec < 0.2`，否则限流反成攻击者的 CPU 放大器）」与「锁定期内**正确口令也被拒**（防"换个大小写就是新预算"）」，并写了理由。我原先的实现（锁定期间照常校对口令）会让每次被拒请求都烧 ~0.5s PBKDF2 **并推翻这 4 条断言** ⇒ 已 `git checkout -- server/src/auth_repo.cj` 回退，改动集里该文件为 0。真要在"锁不死患者"与"不放大 CPU"之间取平衡，该改的是**限流维度**（账号+IP / 指数退避 / 只延迟不拒绝），属策略变更，需 owner 拍板 |
 | **S7** `--dev-auth` 取不到 IP 时放行 | 提权风险 | **生产不可达，不改**。`http_app.cj:495-534`：只有 `--dev-auth` **且** 来自回环才认 `X-Role`；`remoteIp` 为空只在「无 http ctx」时出现，而那条路径**只有进程内调用者**（测试/自检），外部请求不可能构造。已在本报告留档，不引入无人能复现行为的改动 |
-| **S16** 静态 404 平铺体 | 列为缺陷 | **本来就不是缺陷（但已顺手修掉）**：`static.cj` 的 `StaticOptions` 一直有 `notFoundBody`/`forbiddenBody`，是**应用没配**。本轮把它连同 `rangeNotSatisfiableBody` 一起配成信封 |
+| **S16** 重复退号仍回 `slot_restored=true` | 「字段不反映本次是否真的归还」 | **第二轮已修**（见 §十二 12.1）：没有动 `slot_restored` 的口径 —— 它本来就该是「落库状态」；改为**加法字段** `already_cancelled` 区分「本次真的退了」与「本来就已经退了」。<br>⚠ **本行原先写的是「静态 404 平铺体」** —— 那是 S14 的**静态层部分**，编号张冠李戴，已更正 |
 
 **S9 撤回**（§八 第 3 条已同此更正）：原报告称 `GET /api/v1/admin/users` 的 `limit/offset` 未 clamp —— 读源码后确认**已经 clamp**（`http_app.cj:1471-1478`，响应体里还会如实回 `limit`），`contract/examples/admin-users-page-clamped-200.json` 正是这条契约的样例。原结论作废，**未改一行代码**。
 > ⚠ **编号勘误**：本轮早先的修改说明里把这条写成了「S8 撤回」—— **S8 是另一条缺陷**（文档与实现不符），处置见 9.8。
@@ -422,3 +422,74 @@ C 证明「已配置」确实会**真的发出去**（此前连发都不发）�
 | S13 三条路径 | 见 11.2 表 |
 
 > ⚠ `accept` 会**清空业务表**。跑完已复原环境：`create-admin` 重置 `admin` 口令（本机为 `EE9XLGLU9HDT`）、四个演示账号口令复位并逐个登录实测通过；库内保留 科室「内科」(1)、医生「张医生」(1)、患者「测试患者」(1)、排班 `9501`（2026-12-24 AM，总号 2）。
+
+## 十二、同日续修（其三）：S16 落地、三条复核定性、回归守卫
+
+> 起因：用户一句「继续修补服务端」。先把 §四 里**还没处置**的项过一遍，再挑能明确判定的做。
+> 结论先行：**修 1 条（S16）、定性 3 条（S11 / S15 / S17，都不改代码）、补 1 处回归守卫和 1 处测试脆弱性**。
+
+### 12.0 改动集（6 个文件，行为只改 1 个加法字段）
+
+| 文件 | 改了什么 |
+|---|---|
+| `server/src/http_app.cj` | 退号响应新增 `already_cancelled`（口径取**取消前**快照） |
+| `contract/examples/booking-cancel-200.json` | 重新导出，含 `"already_cancelled": false` |
+| `contract/schema/data-booking-cancelled.schema.json` | `required` 与 `properties` 加该字段（`boolean`） |
+| `contract/CHANGELOG.md` | 新增「2026-10-17（其三）」条目 |
+| `docs/FRONTEND-INTEGRATION.md` | 退号一节补两个布尔字段的判读表 |
+| `server/tests/p1-extra-check.ps1` | 新增 `[3c]` 8 条回归断言 + **夹具自清**（见 12.3） |
+
+### 12.1 S16：重复退号仍回 `slot_restored: true` —— 改「加法字段」而不是改口径
+
+**症状**（§四 S16 原文）：对一张已经退过的单再退一次，仍 `200` 且 `slot_restored: true`，客户端会以为**这一次**又归还了一个号，于是自己把余号 +1、把「已退号」的按钮状态改错。
+
+**为什么不直接把 `slot_restored` 改成 `false`**：那个字段的语义从 P3 起就是「**这张单的号当下是否已归还**」（落库事实，`appointment.slot_restored`），退号路径、`SlotNotRestored` 告警、前后端对账都建在这个语义上。改成「本次是否归还」会让**同一字段在不同响应里含义不同** —— 那是比原 bug 更难查的一类问题。
+
+**实际改法**（加法，零破坏）：`http_app.cj` 的退号 handler 在调 `repo.cancel()` **之前**先拍一张状态快照，响应里多给一个布尔：
+
+```cangjie
+let wasCancelled = appt.status == "cancelled"          // 取消前就是「已取消」
+...
+o.put("already_cancelled", JsonBool(wasCancelled))     // 两个分支（Cancelled / SlotNotRestored）都带
+```
+
+于是客户端判读变成一句话：
+- `already_cancelled: false` ⇒ 这是**本次**真的退掉的，可以放心把余号 +1；
+- `already_cancelled: true` ⇒ 这是**重复退号**，服务端没再动余号，**别**改本地余号。
+
+**运行期实测**（新二进制，`[3c]` 断言原文）：
+- `[PASS] ★ S16 重复退号仍 200（幂等），且 already_cancelled=true`
+- `[PASS] ★ S16 重复退号不再动余号（5 → 5），slot_restored 仍如实为 true`
+
+### 12.2 三条「复核后不是缺陷 / 不是本层缺陷」的（都不改代码）
+
+| 编号 | 报告原说法 | 复核结论与证据 |
+|---|---|---|
+| **S15** | 「`/kb/search` 对患者 403 —— 患者端也用知识库」 | **不是缺陷，是报告写错了归属**：全仓只有管理台 `server/admin-web/js/pages.js:1143` 调 `/kb/search`；患者端/医生端 ArkTS 里没有任何入口（患者端 `KnowledgeBasePage` 走的是 `/admin/kb/*`，本来就不该给患者）。**知识库是医生/管理员的工具，患者 403 是按设计**。若要给患者开放，那是产品决策 + 需要新的患者视角接口（只返回已发布条目），不是修 bug |
+| **S17** | 「`/previsit/:id` 传非数字 id 回 404 而不是 400，与 `/schedules/:id` 不一致」 | **两条路径的 id 类型本来就不同**，强行统一是倒退：`/schedules/:id` 是**数值主键** ⇒ 非数字必须 400；`/previsit/:id` 是**不透明会话 id（字符串）**，`http_app.cj:2354-2358` 直接 `ctx.paramOr("id", "")` 丢给 `previsit.find`，查不到就 404 `PREVISIT_NOT_FOUND`（`previsit-check.ps1:204-208` 正是用 64 字符 id 断言 404 的）。把「会话不存在」说成「参数非法」会误导客户端 |
+| **S11** | 「同一患者可对同一排班挂多个号」 | **政策缺口，不是代码缺陷**（本轮不改）：`stress-booking.ps1:180` **就是**用同一患者 + 10 个不同 token 打同一排班，验「超卖时恰好 2 个成功、8 个 `SLOT_GONE`」。加「同一患者同一排班只能一个有效号」会把这套压测的前提整个打掉（那 8 个会变成 409 重复挂号），**需要 owner 先定业务口径 + 重写压测**，不能顺手改 |
+
+### 12.3 顺带修掉的一处**测试脆弱性**（S5 修复的副作用，值得记一笔）
+
+`p1-extra-check.ps1` 第 ③ 节原来隐含假设「每次跑都能新建同医生同时段的排班」。S5 修好之后**重复排班回 409 `SCHEDULE_EXISTS`**，于是第二次跑 `$r.Json.data.schedule_id` 是空的，紧接着 `SELECT remain_num FROM schedule WHERE id =` 拼出**非法 SQL**、脚本中途炸掉 —— 我第一次重跑就是这样炸的。
+
+这不是产品的错，是夹具「指望每次新建都成功」。已补：脚本开头先删**自己用的那几个排班**（只限 医生 1 / 科室 1 / `2026-12-20`~`23` 以及 `2026-12-24` 的 **PM**；AM 那条 `9501` 是演示数据，不碰），并连带删掉挂在这些排班上的单。实测**连跑两次都绿**（两次都是 `✅ P1 收尾项验证全部通过`）。
+
+### 12.4 本轮门禁
+
+| 门禁 | 结果 |
+|---|---|
+| `build.ps1` | **EXIT=0**，0 warning（框架 38 + 业务 37 个 `.cj`） |
+| `hospital-server.exe selftest` | **EXIT=0** |
+| `hospital-server.exe accept <dsn>` | **762 项通过 / 0 失败** |
+| `server/tests/export-contract.ps1` | 更新 1 / 未变 66（只有 `booking-cancel-200` 变了） |
+| `server/tests/contract-check.ps1` | **PASS 69 / FAIL 0**（Schema 24 个、样例 67 条） |
+| `server/tests/final-verify.ps1` | **17/17 全绿** |
+| `server/tests/p1-extra-check.ps1 -Base :8091` | **`[3c]` 8/8 PASS**，且**连跑两次**都 EXIT=0 |
+
+### 12.5 仍未修的（与 §11.3 合并看）
+
+- **S11**：政策缺口，等 owner 定口径（见 12.2）。
+- **S4 的其余部分**：单连接/无连池、in-flight 事务不重放（§11.3）。
+- **S13 的其余部分**：`ai.ca_bundle_path` 不支持、只允许 `https://`（§11.3）。
+- **S7**（dev-auth 在取不到 `remoteIp` 时 fail-open）：生产不可达，且不是本轮范围。

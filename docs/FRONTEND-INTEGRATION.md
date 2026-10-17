@@ -872,6 +872,18 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 **成功 `200`** —— `bookingJson`（**退号后重新读库的快照**，不是取消前的旧值，`http_app.cj:1491-1500`）。
 
+**两个字段决定「这次到底干了什么」**（2026-10-17 增 `already_cancelled`，复验报告 S16）：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `slot_restored` | Bool | 号源**现在**是否已归还（落库的真实状态，不是"本次有没有归还"） |
+| `already_cancelled` | Bool | 本次调用**之前**这单是否已经是取消态：`false` = 本次真的退了；`true` = 幂等重放（号**之前就**归还过了，本次没有动余号） |
+
+> 组合判读：`already_cancelled:false` + `slot_restored:true` = 本次退号成功；
+> `already_cancelled:true` + `slot_restored:true` = 重复退号，**不要再提示"号已归还"**；
+> 任一 + `slot_restored:false` = 号源没归还，见下面的 `warning`。
+> 实测：重复退号时 `remain_num` 不再变化，而 `already_cancelled:true` 让客户端能分辨这一点。
+
 **特例：号源归还失败时仍是 `200`**，但 body 额外带（`http_app.cj:1501-1512`）：
 
 | 字段 | 类型 | 值 |

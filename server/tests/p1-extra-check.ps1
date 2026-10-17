@@ -49,6 +49,26 @@ $null = Invoke-MySqlScalar -My $My -Sql "DELETE FROM schedule WHERE department_i
 #   正解：按 (patient_id, schedule_id) 删测试用排班上的单。
 $null = Invoke-MySqlScalar -My $My -Sql "DELETE FROM appointment WHERE schedule_id IN (SELECT id FROM schedule WHERE department_id IN (7,8) AND work_date IN ('2026-12-25','2026-12-26'))" -Label "清测试挂号"
 
+# ★ 2026-10-17 增：本脚本**自己造的那几个排班**也要先清掉（否则第二次跑就红）。
+#
+# 为什么以前不需要：那时候 `POST /admin/schedules` 对"同医生同时段重复"是**静默新增**
+#   —— 每次跑都多一条新排班，`$sid` 总能拿到一个新 id，脚本也就"能重复跑"。
+#   而现在重复排班按设计回 409 `SCHEDULE_EXISTS`（复验报告 S5 的修复），
+#   于是第二次跑 `$r.Json.data.schedule_id` 是**空**的，紧接着
+#   `SELECT remain_num FROM schedule WHERE id =` 拼出非法 SQL —— 脚本中途炸掉。
+#   📌 这是**修好产品之后反过来暴露的测试脆弱性**：夹具必须自己清，
+#     不能指望"每次都能新建成功"。
+#   ⚠ 只删本脚本自己用的 (医生 1, 科室 1, 这几个日期/时段) —— 尤其是
+#     2026-12-24 只删 **PM**（AM 那个 9501 是演示数据，别动）。
+$null = Invoke-MySqlScalar -My $My -Label "清 3c 夹具(排班+单)" -Sql (
+    "DELETE a FROM appointment a JOIN schedule s ON a.schedule_id = s.id " +
+    "WHERE s.department_id = 1 AND s.doctor_id = 1 AND (" +
+    "s.work_date IN ('2026-12-20','2026-12-21','2026-12-22','2026-12-23') OR " +
+    "(s.work_date = '2026-12-24' AND s.period = 'PM')); " +
+    "DELETE FROM schedule WHERE department_id = 1 AND doctor_id = 1 AND (" +
+    "work_date IN ('2026-12-20','2026-12-21','2026-12-22','2026-12-23') OR " +
+    "(work_date = '2026-12-24' AND period = 'PM'));")
+
 # ★ 依赖的科室**自己建**（2026-10-14，第十一份复查发现）。
 #
 # ⚠ 原来这里假定 id 7/8 的科室"库里已经有"（来自 create-db 的种子数据）。
@@ -290,6 +310,95 @@ if ($pl.Http -ne 200) {
     $has2 = $false
     if ($r.Json -and $r.Json.data) { $has2 = @($r.Json.data.appointments | Where-Object { $_.appointment_id -eq $aid }).Count -gt 0 }
     Check "include_cancelled=true 时**能**看到已取消的单" $has2
+
+    # ===================== ③-c 2026-10-17 复验修复的回归断言 =====================
+    # 这一组把 2026-10-17 修掉的 S1 / S3 / S5 / S6 / S16 钉住。
+    #
+    # 📌 为什么放在这里：这些修复当时只有**一次性手工实测**（在报告里留了证据），
+    #    没有自动化守卫 —— 任何人把校验删掉都不会有红灯。而它们都在 HTTP 层
+    #    （`accept` 是进程内的仓储级套件，抓不到 handler 里的校验）。
+    #
+    # ⚠ 纪律：只用**自己造的排班/单**，跑完自己清掉；不删别人留下的数据。
+    Write-Host ""
+    Write-Host "[3c] 复验修复回归：token 长度 / 病历定稿退号 / 重复排班 / 大小写 / 重复退号"
+
+    # --- S1：建单端点也要做 client_token 长度校验（修复前直接 500）---
+    $s1 = DoReq 's1_len' 'POST' '/api/v1/appointments' @("Authorization: Bearer $pTok") `
+          ('{"schedule_id":' + $sid + ',"client_token":"' + ('y' * 65) + '"}')
+    $s1code = if ($s1.Json -and $s1.Json.error) { $s1.Json.error.code } else { "" }
+    Check "★ S1 建单时 65 字符 client_token → 400 VALIDATION_FAILED（不是 500）" `
+          ($s1.Http -eq 400 -and $s1code -eq 'VALIDATION_FAILED') ("HTTP $($s1.Http) code=$s1code")
+
+    # --- S16：对**已取消**的单重复退号，要能看出"本次没退什么" ---
+    # `$aid` 在上一步刚退过（此时库里的 slot_restored 是 true）。
+    $remainBefore = Invoke-MySqlScalar -My $My -Sql "SELECT remain_num FROM schedule WHERE id = $sid" -Label "退号前余号"
+    $cx2 = DoReq 's16_again' 'POST' "/api/v1/appointments/$aid/cancel" @("Authorization: Bearer $pTok") $null
+    $remainAfter = Invoke-MySqlScalar -My $My -Sql "SELECT remain_num FROM schedule WHERE id = $sid" -Label "重复退号后余号"
+    Check "★ S16 重复退号仍 200（幂等），且 already_cancelled=true" `
+          ($cx2.Http -eq 200 -and "$($cx2.Json.data.already_cancelled)" -eq 'True') `
+          ("HTTP $($cx2.Http) already_cancelled=$($cx2.Json.data.already_cancelled)")
+    Check "★ S16 重复退号不再动余号（$remainBefore → $remainAfter），slot_restored 仍如实为 true" `
+          ("$remainBefore" -eq "$remainAfter" -and "$($cx2.Json.data.slot_restored)" -eq 'True') `
+          ("slot_restored=$($cx2.Json.data.slot_restored)")
+
+    # --- S5：同一医生同一时段重复建排班 → 409 SCHEDULE_EXISTS（不是静默新增）---
+    $s5a = DoReq 's5_a' 'POST' '/api/v1/admin/schedules' @("Authorization: Bearer $admTok") `
+           '{"doctor_id":1,"department_id":1,"work_date":"2026-12-23","period":"AM","total_num":2}'
+    $s5sid = $s5a.Json.data.schedule_id
+    $s5b = DoReq 's5_b' 'POST' '/api/v1/admin/schedules' @("Authorization: Bearer $admTok") `
+           '{"doctor_id":1,"department_id":1,"work_date":"2026-12-23","period":"AM","total_num":4}'
+    $s5code = if ($s5b.Json -and $s5b.Json.error) { $s5b.Json.error.code } else { "" }
+    Check "★ S5 重复排班 → 409 SCHEDULE_EXISTS，且不动已存在的那个" `
+          ($s5b.Http -eq 409 -and $s5code -eq 'SCHEDULE_EXISTS') `
+          ("HTTP $($s5b.Http) code=$s5code 原有 schedule_id=$s5sid")
+
+    # --- S6：只差大小写的两个 client_token 必须是**两张单**（列 COLLATE utf8mb4_bin）---
+    # 用两个不同排班，把"S6 大小写"与"S11 同排班多号"两件事分开。
+    $s6x = DoReq 's6_mk1' 'POST' '/api/v1/admin/schedules' @("Authorization: Bearer $admTok") `
+           '{"doctor_id":1,"department_id":1,"work_date":"2026-12-21","period":"AM","total_num":2}'
+    $s6y = DoReq 's6_mk2' 'POST' '/api/v1/admin/schedules' @("Authorization: Bearer $admTok") `
+           '{"doctor_id":1,"department_id":1,"work_date":"2026-12-22","period":"AM","total_num":2}'
+    $s6xid = $s6x.Json.data.schedule_id
+    $s6yid = $s6y.Json.data.schedule_id
+    $c1 = DoReq 's6_upper' 'POST' '/api/v1/appointments' @("Authorization: Bearer $pTok") `
+          ('{"schedule_id":' + $s6xid + ',"client_token":"Case-Tok-A"}')
+    $c2 = DoReq 's6_lower' 'POST' '/api/v1/appointments' @("Authorization: Bearer $pTok") `
+          ('{"schedule_id":' + $s6yid + ',"client_token":"case-tok-a"}')
+    $c1id = "$($c1.Json.data.appointment_id)"
+    $c2id = "$($c2.Json.data.appointment_id)"
+    Check "★ S6 只差大小写的两个 token 各自成单（不互相幂等）" `
+          ($c1.Http -eq 201 -and $c2.Http -eq 201 -and $c1id -ne $c2id) `
+          ("HTTP $($c1.Http)/$($c2.Http) id=$c1id/$c2id")
+
+    # --- S3：病历已定稿（locked）的单不能退号 → 409 APPOINTMENT_RECORD_LOCKED ---
+    # 直接写一条 locked 病历（省掉医生登录+锁定那串步骤；要验的是**退号侧**的护栏）。
+    $s3mk = DoReq 's3_mk' 'POST' '/api/v1/admin/schedules' @("Authorization: Bearer $admTok") `
+            '{"doctor_id":1,"department_id":1,"work_date":"2026-12-24","period":"PM","total_num":2}'
+    $s3sid = $s3mk.Json.data.schedule_id
+    $s3b = DoReq 's3_book' 'POST' '/api/v1/appointments' @("Authorization: Bearer $pTok") `
+           ('{"schedule_id":' + $s3sid + ',"client_token":"s3-locked-1"}')
+    $s3aid = [int]$s3b.Json.data.appointment_id
+    $null = Invoke-MySqlScalar -My $My -Label "写一条 locked 病历" -Sql (
+        "INSERT INTO medical_record (appointment_id, patient_id, doctor_id, chief_complaint, " +
+        "present_illness, past_history, allergy_history, physical_exam, diagnosis, treatment, " +
+        "status, updated_by, created_at, updated_at, previsit_ref) VALUES " +
+        "($s3aid, $myPat, 1, '', '', '', '', '', '', '', 'locked', 1, 0, 0, '')")
+    $s3c = DoReq 's3_cancel' 'POST' "/api/v1/appointments/$s3aid/cancel" @("Authorization: Bearer $pTok") $null
+    $s3code = if ($s3c.Json -and $s3c.Json.error) { $s3c.Json.error.code } else { "" }
+    Check "★ S3 病历已定稿的单退号 → 409 APPOINTMENT_RECORD_LOCKED" `
+          ($s3c.Http -eq 409 -and $s3code -eq 'APPOINTMENT_RECORD_LOCKED') ("HTTP $($s3c.Http) code=$s3code")
+    $s3state = Invoke-MySqlScalar -My $My -Sql "SELECT status FROM appointment WHERE id = $s3aid" -Label "看单状态"
+    Check "★ S3 被拒后单仍是 booked（没有被改掉）" ("$s3state" -eq 'booked') ("status=$s3state")
+    # 反证：把病历删掉（回到"草稿都没有"的状态）后应能正常退号 —— 证明护栏不是一律堵死
+    $null = Invoke-MySqlScalar -My $My -Sql "DELETE FROM medical_record WHERE appointment_id = $s3aid" -Label "删掉测试病历"
+    $s3c2 = DoReq 's3_cancel2' 'POST' "/api/v1/appointments/$s3aid/cancel" @("Authorization: Bearer $pTok") $null
+    Check "★ S3 反证：没有定稿病历时同一张单仍可正常退号（200）" ($s3c2.Http -eq 200) ("HTTP $($s3c2.Http)")
+
+    # --- 清掉本节造的数据（排班 + 单）---
+    $null = Invoke-MySqlScalar -My $My -Label "清 3c 夹具(单)" -Sql (
+        "DELETE FROM medical_record WHERE appointment_id IN ($s3aid); " +
+        "DELETE FROM appointment WHERE schedule_id IN ($s5sid, $s6xid, $s6yid, $s3sid); " +
+        "DELETE FROM schedule WHERE id IN ($s5sid, $s6xid, $s6yid, $s3sid)")
 }
 
 # ===================== ④ 排班列表 =====================

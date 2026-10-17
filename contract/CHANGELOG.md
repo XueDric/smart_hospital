@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-10-17（其三）—— 退号响应新增 `already_cancelled`（仍是 67 条样例 / 24 个 Schema）
+
+**客户端要不要动**：**建议动，不动也不会崩**。纯加法字段，旧客户端忽略即可；但它修掉的是一个会
+**误导用户**的地方 —— 重复退同一单时 `slot_restored` 一直如实为 `true`（号**确实**早就还回去了），
+而客户端会把它读成"这一次又把号还了一次"，于是重复弹一次"号源已归还"。
+
+### 变更
+
+- `contract/examples/booking-cancel-200.json`：`data` 新增 `"already_cancelled": false`（导出机重新导出）。
+- `contract/schema/data-booking-cancelled.schema.json`：`required` 与 `properties` 加 `already_cancelled`（布尔）。
+- 服务端实现：`http_app.cj` 的退号 handler —— 口径取**取消前**那份快照（取消后重读永远是 `cancelled`，
+  问不出"之前是什么"）。
+- 判读口径：`already_cancelled` 与 `slot_restored` 的组合见 `docs/FRONTEND-INTEGRATION.md` 的「退号」一节。
+- 回归守卫：`server/tests/p1-extra-check.ps1` 第 `[3c]` 节。
+
+---
+
 ## 2026-10-17（其二）—— `/health` 新增 `db` 块，`ok` 口径变为「进程活着**且库通**」（仍是 67 条样例 / 24 个 Schema）
 
 **客户端要不要动**：**建议动，但不动也不会崩**。`/health` 是**唯一不走信封**的接口，新增的是

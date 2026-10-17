@@ -2674,6 +2674,23 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
             throw apiErrorMsg("FORBIDDEN_ROLE",
                               "无权取消该挂号单（管理员可退任意单；患者只能退自己的）")
         }
+        /*
+         * ★★ 2026-10-17 增（复验报告 S16）：**区分"本次真的退了"与"本来就已经退了"**。
+         *
+         * 修复前：对一张已取消的单重复退号，响应里的 `slot_restored` 仍是落库的真实值
+         * （`true`）—— 字段本身没错（号**确实**已经回到池子），但客户端会把它读成
+         * "这一次又把号还了一次"，于是重复弹一次"号源已归还"。运维看日志也分不清
+         * 到底发生了几次归还。
+         *
+         * 现在多带一个 `already_cancelled`：**这一调用之前**单是否已是取消态。
+         *   - `false` + `slot_restored:true`  ⇒ 本次退号成功，且号已归还
+         *   - `true`  + `slot_restored:true`  ⇒ 本次是幂等重放，号**之前就**归还过了
+         *   - `true`/`false` + `slot_restored:false` ⇒ 号源未归还，需人工处理（见 warning）
+         *
+         * ⚠ 口径来自**取消前**那份快照（`appt`，上面为鉴权读的），不是取消后重读的
+         *   那一份 —— 后者状态永远是 `cancelled`，问了也答不出"之前是什么"。
+         */
+        let wasCancelled = appt.status == "cancelled"
         match (repo.cancel(id, hNowEpoch())) {
             /*
              * ★ 2026-10-12：退号响应同样带 `remain_num`。
@@ -2689,7 +2706,10 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
                  *   自相矛盾的响应比不返回还糟。
                  */
                 match (repo.findAppointment(id)) {
-                    case Some(after) => sendOk(ctx, bookingJsonFull(repo, after, nameIndexOf(dept, doc), ctx))
+                    case Some(after) =>
+                        let o = bookingJsonFull(repo, after, nameIndexOf(dept, doc), ctx)
+                        o.put("already_cancelled", JsonBool(wasCancelled))
+                        sendOk(ctx, o)
                     case None => throw apiError("APPOINTMENT_NOT_FOUND")
                 }
             case SlotNotRestored =>
@@ -2700,6 +2720,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
                         let o = bookingJsonFull(repo, after, nameIndexOf(dept, doc), ctx)
                         o.put("status", JsonString("cancelled"))
                         o.put("slot_restored", JsonBool(false))
+                        o.put("already_cancelled", JsonBool(wasCancelled))
                         o.put("warning", JsonString("号源归还异常，请联系人工处理"))
                         sendOk(ctx, o)
                     case None => throw apiError("APPOINTMENT_NOT_FOUND")
