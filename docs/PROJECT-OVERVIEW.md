@@ -128,18 +128,18 @@
 
 ## 6. 项目团队
 
-按 `git shortlog -sne` 实测（2026-10-07 → 10-17，102 个提交）：
+按 `git shortlog -sne` 实测（2026-10-07 → 10-17，截至 tag `v0.2.0-p1-rev` 共 107 个提交）：
 
 | 贡献者 | 提交数 |
 | --- | --- |
-| XueDric | 79 |
+| XueDric | 84 |
 | Haocheng Sun | 8 |
 | fallensp | 6 |
 | lyz1679 | 4 |
 | FallenSP78 | 3 |
 | pyf | 2 |
 
-> 合计 **102** 个提交。`fallensp` 与 `FallenSP78` 是两个不同的提交身份（不同邮箱），未合并统计。
+> 合计 **107** 个提交（截至 tag `v0.2.0-p1-rev`）。`fallensp` 与 `FallenSP78` 是两个不同的提交身份（不同邮箱），未合并统计。
 
 协作方式：服务端（仓颉）与三端客户端（鸿蒙 ArkTS / 安卓 Kotlin / 管理台）并行推进，接口以 [contract/](../contract/) 的可执行契约 + [FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) 为唯一口径，跨端分歧以契约门禁红/绿判定。
 

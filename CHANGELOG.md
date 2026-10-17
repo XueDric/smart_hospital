@@ -2,7 +2,7 @@
 
 > **仓库**：<https://github.com/XueDric/smart_hospital.git>（默认分支 `main`）
 > **版本口径**：服务端 `SERVER_VERSION = 0.2.0-p1`（`server/src/main.cj:34`）；`-p<N>` 表示 P0–P5 六阶段全部交付后的维护批次。
-> **提交跨度**：2026-10-07 → 2026-10-17，102 个提交，6 位贡献者。完整历史见 `git log`，本文件只记录**对外可见的能力变化**与**关键缺陷修复**。
+> **提交跨度**：2026-10-07 → 2026-10-17，107 个提交（截至 tag `v0.2.0-p1-rev`），6 位贡献者。完整历史见 `git log`，本文件只记录**对外可见的能力变化**与**关键缺陷修复**。
 > 格式参考 [Keep a Changelog](https://keepachangelog.com/)，按日期倒序。
 
 ---
@@ -82,7 +82,7 @@
 ### 文档
 
 - 数字统一为实测值并被门禁绑定：`accept` **777**、`triagetest` **139**、`selftest` 51、`authtest` 17、
-  REST **81**、`final-verify` **18 项**、**102** 个提交、**6** 位贡献者、**26** 个测试文件。
+  REST **81**、`final-verify` **18 项**、**107** 个提交（截至 tag `v0.2.0-p1-rev`）、**6** 位贡献者、**26** 个测试文件。
 - 全仓旧仓库路径（原名含中文）与「本仓库路径含中文」的过时论述清理完毕；保留的是
   「部署到含中文目录时」的条件式说明与评审核查原文存档。
 - `README.md` / `docs/DEPLOYMENT.md` / `docs/HARMONY-INTERFACE-GUIDE.md` 补鸿蒙一条命令构建、

@@ -70,6 +70,16 @@ $actual['triagetest'] = $triPass
 #   （2026-10-17 把 doc-counts 接进去，17 → 18 就是这一项）。
 $fvSrc = [System.IO.File]::ReadAllText((Join-Path $serverDir "tests\final-verify.ps1"), [System.Text.UTF8Encoding]::new($false))
 $actual['finalverify'] = ([regex]::Matches($fvSrc, "@\{\s*n = '")).Count
+# ★ 提交数：文档写"107 个提交（截至 tag v0.2.0-p1-rev）"，就用 **tag 指向的提交数**核对 ——
+#   不能拿 HEAD 核：文档一旦这么写，每加一个提交都会假红（评审 P1-2 漂的就是这个数字）。
+#   tag 不存在时退回 HEAD 并告警（否则本地没取 tag 的人会看到一个无法解释的红）。
+$tagName = 'v0.2.0-p1-rev'
+$tagCount = (& git -C (Split-Path -Parent $serverDir) rev-list --count "$tagName" 2>$null)
+if (-not $tagCount -or $LASTEXITCODE -ne 0) {
+    Write-Warning "  提交数：取不到 tag $tagName（改用 HEAD），文档里的提交数请按 HEAD 核对"
+    $tagCount = (& git -C (Split-Path -Parent $serverDir) rev-list --count HEAD 2>$null)
+}
+$actual['commits'] = [int]$tagCount
 # accept 用例的最大编号（AC-1…AC-N 里的 N）——由源码里 runner.acN() 的调用推导
 $accSrc = [System.IO.File]::ReadAllText((Join-Path $serverDir "src\acceptance.cj"), [System.Text.UTF8Encoding]::new($false))
 # ★ AC 编号上限：既数 `runner.acN()`（AC-1…AC-12），也认 P2 的用例（AC-P2-N）。
@@ -164,7 +174,10 @@ $checks = @(
     @{ File = "docs\DEPLOYMENT.md";       Pattern = '全量验收（(?<n>\d+) 项）'; Want = 'accept' },
     @{ File = "docs\DEPLOYMENT.md";       Pattern = '一次跑完 \*\*(?<n>\d+) 项\*\*'; Want = 'finalverify' },
     # 2026-10-17：DEPLOYMENT 的耗时/项数表曾漏改 triagetest（110 → 139），加一条对账点钉住
-    @{ File = "docs\DEPLOYMENT.md";       Pattern = '`通过 (?<n>\d+) 项，失败 0 项`'; Want = 'triagetest' }
+    @{ File = "docs\DEPLOYMENT.md";       Pattern = '`通过 (?<n>\d+) 项，失败 0 项`'; Want = 'triagetest' },
+    # ── 提交数：三处都锚在 tag 上，用 tag 指向的提交数核对（见 $actual['commits'] 的注释）──
+    @{ File = "README.md";                Pattern = '\| 提交历史 \| (?<n>\d+) 个提交'; Want = 'commits' },
+    @{ File = "docs\PROJECT-OVERVIEW.md"; Pattern = '共 (?<n>\d+) 个提交）'; Want = 'commits' }
 )
 
 # ── 3) 对账 ───────────────────────────────────────────────────────────────

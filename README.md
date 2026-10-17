@@ -24,13 +24,13 @@
 | --- | --- |
 | 仓库地址 | <https://github.com/XueDric/smart_hospital.git>（默认分支 `main`） |
 | 版本 | `0.2.0-p1`（`server/src/main.cj:34`）= P0–P5 六阶段交付 + 第 1 个维护批次 |
-| 提交历史 | 102 个提交，2026-10-07 → 2026-10-17；6 位贡献者 |
+| 提交历史 | 107 个提交（截至 tag `v0.2.0-p1-rev`），2026-10-07 → 2026-10-17；6 位贡献者 |
 | 许可证 / 第三方 | 本项目 [MIT](LICENSE)；第三方组件清单见 [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) |
 
 ```bash
 git clone https://github.com/XueDric/smart_hospital.git
 cd smart_hospital
-git log --oneline --graph | head -30      # 版本历史（102 个提交）
+git log --oneline --graph | head -30      # 版本历史（截至 v0.2.0-p1-rev 共 107 个提交）
 ```
 
 **版本历史摘要**（完整见 [CHANGELOG.md](CHANGELOG.md)）
