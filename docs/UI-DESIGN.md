@@ -1,4 +1,4 @@
-# 智慧医院客户端设计规范（DESIGN-SPEC）
+# 智慧医院客户端 UI 设计规范（UI-DESIGN）
 
 > 适用范围：鸿蒙端（`common-core` / `feature-patient` / `feature-doctor` / `feature-admin` / `entry`）与 Android 患者端（`android-patient`）。
 > 维护者：角色 C（公共模块与设计规范）。最后更新：2026-10-14。

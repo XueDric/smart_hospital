@@ -49,7 +49,7 @@ $env:DSN = "mysql://hospital:hospital_dev_2026@127.0.0.1:3307/hospital"
 | 6 | 验收测试 AC-1…AC-6 | [server/src/acceptance.cj](../server/src/acceptance.cj) | ✅ 21/21 通过 |
 | 7 | 服务端说明与踩坑清单 | [server/README.md](../server/README.md) | ✅ |
 
-### 最小表集（`smart-hospital-project-brief.md` §10 Q2 的建议最小集）
+### 最小表集（`HISTORY-PROJECT-BRIEF.md` §10 Q2 的建议最小集）
 
 | 表 | 归属 | 数据访问范式 |
 | --- | --- | --- |
@@ -171,7 +171,7 @@ AC-1 当场报 **3 条 `[FAIL]`**；恢复源码后重新全绿。
 
 ## 5. P1 的入口（下一步）
 
-按 `smart-hospital-project-brief.md` §8：
+按 `HISTORY-PROJECT-BRIEF.md` §8：
 
 > **P1 挂号闭环**：排班 → 号源 → 乐观锁扣号 → 幂等 → 退号归还（**全项目风险最高，必须最先做**）
 
@@ -189,7 +189,7 @@ P0 已经把 P1 最难的**数据层**做完并验过了。P1 剩下的主要是
 
 ## 6. 参考
 
-- 项目上下文入口：[../smart-hospital-project-brief.md](../smart-hospital-project-brief.md)
+- 项目上下文入口：[HISTORY-PROJECT-BRIEF.md](HISTORY-PROJECT-BRIEF.md)
 - 服务端接口现状：`server/src/http_app.cj` 与 [FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md)
 - 架构决策：[adr/ADR-0001-号源与挂号独立MySQL路径.md](adr/ADR-0001-号源与挂号独立MySQL路径.md)
 - 本机数据库：[DEV-DB.md](DEV-DB.md)

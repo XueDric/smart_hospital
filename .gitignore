@@ -77,3 +77,6 @@ Desktop.ini
 build/
 oh_modules/
 .hvigor/
+
+# ── 可运行程序包（由 tools\package-release.ps1 生成，不入库）────────────────
+release/

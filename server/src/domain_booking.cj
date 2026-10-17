@@ -31,7 +31,7 @@
  * ⚠ 也**没有** `booking_idem` 登记表：它已于同日连同实现删除（ADR §7 第 7 条）——
  *   幂等的**唯一**保证就是上面这两层。
  *
- * ⚠ 仓颉语言约束（本项目已知坑，见 smart-hospital-project-brief.md §6.3）：
+ * ⚠ 仓颉语言约束（本项目已知坑，见 docs/HISTORY-PROJECT-BRIEF.md §6.3）：
  *   **闭包不能捕获外部可变 `var`**（捕获的是值与 `let` 引用）。
  *   所以 withTransaction 里要回传的结果一律装在 class 的 `var` 字段里 ——
  *   见 TxSlot / TxOutcome，不要图省事去改外部 var。
