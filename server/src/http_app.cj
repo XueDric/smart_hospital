@@ -1142,23 +1142,68 @@ func previsitSessionJson(s: PrevisitSession): JsonObject {
  *   ⇒ 服务端把**权威日期**直接发出来，客户端只需读它，不必自己算时区。
  *   `hTodayDate()` 是纯计算（无库查询），所以探活接口仍然不碰数据库。
  */
-func healthJson(gate: DevAuthGate): String {
+/*
+ * ★ 2026-10-17（S4 修）：`/health` 从"只回静态字段"改成"**当场探一次库**"。
+ *
+ * 改之前它完全不碰数据库 —— 库连不上时 `/health` 依旧 200，而所有业务接口 500
+ * （实测：`KILL <连接 id>` 之后进程活着、探活全绿、每个请求 500，只能重启）。
+ * 探针/负载均衡器于是把"全站不可用"判成健康，值班的人先看到"接口 500"而不是
+ * "库挂了"，把一个 DBA 问题伪装成代码 bug —— 这一半比"连接不重连"更容易误诊。
+ *
+ * 现在：
+ *   · `db.ok` 来自一次**真实往返**（`SELECT 1`，经 `DbBackend.probe()`，不碰业务表）；
+ *   · 库不通 ⇒ 响应码 **503**（探针据此摘流量）+ `db.ok=false` + 固定短句原因；
+ *   · `db.reconnects` 是累计重连次数 —— 非 0 说明链路抖过（S4 自愈生效的证据）。
+ *
+ * ⚠ `ok` 的口径随之收紧：以前恒为 `true`（= "进程活着"），现在 = "进程活着**且**库通"。
+ *   客户端若拿 `ok` 判断"能不能用"，这正是它想要的语义。
+ * ⚠ 失败原因**不回驱动原文**：本端点不鉴权，而驱动文案可能含用户名/主机名。
+ *   细节只进服务端日志（`[HEALTH]` 前缀）。
+ */
+func healthBody(gate: DevAuthGate, dbProbe: ?DbProbe): (Bool, String) {
+    var dbOk = true
+    var dbReconnects: Int64 = 0
+    match (dbProbe) {
+        case Some(f) =>
+            let (ok, n, reason) = f()
+            dbOk = ok
+            dbReconnects = n
+            if (!ok) {
+                println("[HEALTH] 库探活失败：${reason}")
+            }
+        case None => ()
+    }
     let o = JsonObject()
-    o.put("ok", JsonBool(true))
+    o.put("ok", JsonBool(dbOk))
     o.put("service", JsonString("hospital-server"))
     o.put("version", JsonString(SERVER_VERSION))
     o.put("data_backend", JsonString("mysql"))
     o.put("dev_auth", JsonBool(gate.enabled))
     o.put("today", JsonString(hTodayDate()))
     o.put("timezone", JsonString("Asia/Shanghai"))
-    return o.toString()
+    let d = JsonObject()
+    d.put("ok", JsonBool(dbOk))
+    d.put("reconnects", JsonInt(dbReconnects))
+    if (!dbOk) {
+        d.put("reason", JsonString("数据库暂不可用（详见服务端日志）"))
+    }
+    o.put("db", d)
+    return (dbOk, o.toString())
+}
+
+/* 两个 `/health` 路径共用的 responder：**只探一次库**，按结果给 200 / 503。 */
+func sendHealth(ctx: Context, gate: DevAuthGate, dbProbe: ?DbProbe): Unit {
+    let (dbOk, body) = healthBody(gate, dbProbe)
+    let code: Int64 = if (dbOk) { 200 } else { 503 }
+    ctx.status(code).json(body)
 }
 
 public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGate, triage: TriageRepo, previsit: PrevisitRepo, aiSettings: AiSettingsRepo, aiModels: AiModelRepo, prompts: PromptRepo,
                            emr: MedicalRecordRepo, visit: VisitRepo,
                            dash: DashboardRepo, triageStat: TriageStatRepo,
                            dept: DepartmentRepo, doc: DoctorRepo, kb: KbRepo,
-                           notices: NoticeRepo): Router {
+                           notices: NoticeRepo,
+                           dbProbe!: ?DbProbe): Router {
     let r = Router()
 
     /* ---------- 健康检查（无需认证，供压测与探活）---------- */
@@ -1172,10 +1217,10 @@ public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuth
      *   两个 handler 都调同一个 `healthJson`，**不存在两份实现**。
      */
     r.get("/health", { ctx: Context, _: () -> Unit =>
-        ctx.status(200).json(healthJson(gate))
+        sendHealth(ctx, gate, dbProbe)
     })
     r.get("/api/v1/health", { ctx: Context, _: () -> Unit =>
-        ctx.status(200).json(healthJson(gate))
+        sendHealth(ctx, gate, dbProbe)
     })
     /*
      * ★ 这里**曾经**有一条 `GET /admin → 302 /admin/` 的路由，2026-10-14 删除。
@@ -2890,9 +2935,15 @@ public func buildHospitalApp(repo: BookingRepo, auth: AuthRepo, gate: DevAuthGat
                              emr: MedicalRecordRepo, visit: VisitRepo,
                              dash: DashboardRepo, triageStat: TriageStatRepo,
                              dept: DepartmentRepo, doc: DoctorRepo, kb: KbRepo,
-                             notices: NoticeRepo, adminWebDir!: String = ""): QingZhouApp {
+                             notices: NoticeRepo, adminWebDir!: String = "",
+                             // ★ 2026-10-17（S4 修）：`/health` 的库探针由**调用方**注入 ——
+                             //   本函数刻意不持有 db（见上方注释），但 health 要问"库还通吗"，
+                             //   所以让持有 db 的那一侧（main.cj）把探针传进来，与本函数
+                             //   "谁持有 db、谁决定暴露什么"的既有约定一致。
+                             dbProbe!: ?DbProbe): QingZhouApp {
     let router = buildHospitalRouter(repo, auth, gate, triage, previsit, aiSettings, aiModels, prompts,
-                                     emr, visit, dash, triageStat, dept, doc, kb, notices)
+                                     emr, visit, dash, triageStat, dept, doc, kb, notices,
+                                     dbProbe: dbProbe)
     /*
      * ★★ 2026-10-14（第三方复查 D6 修）：让 router **透传未命中的路径**，
      * 改由本函数末尾自己关的中间件回统一信封（原因见那里的注释）。

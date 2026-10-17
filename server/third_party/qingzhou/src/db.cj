@@ -93,6 +93,17 @@ public class DbResultSet {
 }
 
 /*
+ * ★ 2026-10-17（S4 修）：**探针函数类型**的别名。
+ *
+ * `?(Bool, Int64, String)` 这种"可空的函数类型"在仓颉里不能写成 `?() -> (...)`——
+ * 编译器把 `?(` 当成别的东西，报 `expected ',' or ')'`。用别名写一次，
+ * 应用侧的 `dbProbe: ?DbProbe = None` 就干净了。
+ *
+ * 语义：调用一次 = 探一次库，返回 (是否可用, 累计重连次数, 失败详情)。
+ */
+public type DbProbe = () -> (Bool, Int64, String)
+
+/*
  * 数据库后端抽象接口：框架数据访问层（RbacStore 等）只依赖此接口，
  * 不感知具体数据库。新增后端（PostgreSQL、SQLite 等）实现本接口即可接入。
  * 传入的 SQL 须为各数据库兼容的最小公共子集（约定见 src/store.cj 顶部）。
@@ -180,6 +191,34 @@ public interface DbBackend {
      */
     func dialect(): DbDialect {
         DbDialect.Common
+    }
+
+    /*
+     * ★ 2026-10-17（S4 修）：**连接自检** —— 返回 (是否可用, 累计重连次数, 失败详情)。
+     *
+     * 为什么放进接口而不是让调用方自己 `query("SELECT 1")`：
+     *   `/health` 要回答"库还通吗"，而它手上只有 `DbBackend` 这个抽象
+     *   （应用侧 `buildHospitalApp` 刻意不持有 db，见那里的注释）。放进接口后，
+     *   任何后端都能被探活，不必为 MySQL 开一个特殊通道。
+     *
+     * 默认实现 = 一条最便宜的往返（`SELECT 1`）；MySQL 后端覆盖它，
+     * 额外把**累计重连次数**带出来 —— 重连过说明链路抖过，排障要看得到。
+     *
+     * ⚠ 这里**必须自己 catch**：探活失败是"答案"，不是异常。
+     *   让异常冒出去，`/health` 就会变成 500 —— 而 500 既不是"健康"也不是
+     *   "库不可用"的准确表达，探针与客户端会把它当成**服务端 bug**，
+     *   于是"库挂了"被误诊成"应用挂了"，正是本缺陷（S4）最坏的后果。
+     *
+     * ⚠ `detail` 只给**服务端日志/排障**用；`/health` 是不鉴权端点，
+     *   不能把驱动原文（可能含用户名/主机名）回给任意访问者。
+     */
+    func probe(): (Bool, Int64, String) {
+        try {
+            query("SELECT 1")
+            return (true, 0, "")
+        } catch (e: Exception) {
+            return (false, 0, e.message)
+        }
     }
 
     /*

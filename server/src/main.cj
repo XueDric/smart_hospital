@@ -972,6 +972,53 @@ func serve(args: Array<String>): Int64 {
         println("AI 模型配置：播种 ${seeded} 条默认配置（管理台「AI 模型配置」页可改）")
     }
     /*
+     * ★★ 2026-10-17（S13 修）：**启动时就把 AI 的真实状态打出来**。
+     *
+     * 改之前：AI 没配好（没总开关 / 密钥引用解析不到）时启动日志**一个字都不说**，
+     *   分诊默默走规则兜底，界面上看起来一切正常 —— 复查时正是这样：
+     *   `ai_setting` 表里连 `ai.enabled` 都没有，`ai.key_ref` 为空，
+     *   而管理台显示"已设置"，没人发现 AI 从未被调用过。
+     *
+     * ⇒ 启动即打印"能不能调用 + 为什么不能"：
+     *   · 可用：模型名 + endpoint（脱敏到路径）+ 密钥引用类型；
+     *   · 不可用：`disabledReason`（它由 `aiRuntimeValidate` 给出，逐项说明缺什么）。
+     *
+     * ⚠ 只是**打印**，不改变任何行为；读配置失败也只告警不拦启动
+     *   （AI 是旁路能力，不该因为它起不来）。
+     * ⚠ 密钥**本体与引用名**都不打：只打 `env` / `file` 这种类型。
+     */
+    try {
+        let aiOpt = aiSettings.options(hNowEpoch())
+        if (aiOpt.enabled) {
+            var refKind = "未配置"
+            if (keyRefEnvName(aiOpt.keyRef).isSome()) {
+                refKind = "env"
+            } else if (keyRefFilePath(aiOpt.keyRef).isSome()) {
+                refKind = "file"
+            }
+            eprintln("AI：**已启用** — 模型「${aiOpt.modelName}」，endpoint ${aiSafeHost(aiOpt.endpoint)}，密钥引用 ${refKind}")
+            /*
+             * ★ 2026-10-17（S13 修·续）：**"已启用"不等于"能调用"**。
+             *
+             * `aiRuntimeValidate` 只校验 key_ref 的**形状**（`env:` / `file:` 前缀），
+             * 不校验它此刻能不能解析出来 —— 于是 `env:NO_SUCH_VAR` 这种**拼错的变量名**
+             * 会让总开关显示"已启用"、而每次调用都失败（只能从分诊的 ai_reason 里看出来）。
+             *
+             * ⇒ 这里再解析一次，解析不到就明确告警。**只打印**，不改变任何行为。
+             * ⚠ refKind 已经是 `env`/`file` 这种类型词，不含变量名与路径。
+             */
+            if (aiOpt.keyRef.size > 0 && aiResolveKey(aiOpt.keyRef).isNone()) {
+                eprintln("    ⚠ 但**密钥引用解析不到**（${refKind}）：调用会失败并回落规则兜底；请检查该环境变量/文件是否存在")
+            }
+        } else {
+            eprintln("AI：**未启用**（分诊将只走规则兜底，患者仍能拿到结论）")
+            eprintln("    原因：${aiOpt.disabledReason}")
+            eprintln("    启用：管理台「AI 配置」设 ai.enabled=1 + ai.key_ref（env:变量名 或 file:路径），或见 docs/FRONTEND-INTEGRATION.md")
+        }
+    } catch (e: Exception) {
+        eprintln("[WARN] 检查 AI 状态失败（不影响启动）：${e.message}")
+    }
+    /*
      * 管理台静态目录：按 **相对进程工作目录** 的候选依次找（文档里的启动命令都在
      * `server/` 下执行）。⚠ 找不到时**不挂载**并明确告警，而不是挂上去再每个请求 404
      * —— 后者看起来像"后台坏了"，真因却只是启动目录不对。
@@ -989,9 +1036,18 @@ func serve(args: Array<String>): Int64 {
         printAdminWebMissingHint()
         return 1
     }
+    /*
+     * ★ 2026-10-17（S4 修）：把库探针交给 `/health`。
+     * ⚠ 闭包**不能**直接捕获 `var db`（仓颉报 `lambda capturing mutable variables
+     *   needs to be called directly`，与 db_mysql.cj 里那只观测钩子同一个坑）——
+     *   所以先落一个 `let` 别名再捕获。`db` 本身仍是 `var`（`openDatabase` 会抛，
+     *   赋值必须在 try 里）。
+     */
+    let dbProbeRef: DbBackend = db
     let app = buildHospitalApp(repo, auth, gate, triage, previsit, aiSettings, aiModels, prompts,
                                emr, visit, dash, triageStat, dept, doc, kb, notices,
-                               adminWebDir: adminWebDir)
+                               adminWebDir: adminWebDir,
+                               dbProbe: { => dbProbeRef.probe() })
     let box = HandleBox()
 
     println("")

@@ -1,8 +1,8 @@
 {
   "title": "/health 存活探针",
-  "description": "**没有 data 包裹**：ok 与各字段平铺。部署脚本/客户端启动自检按这个形状判活。version 是版本号；today 是**服务器口径的今天**（Asia/Shanghai，样例里已归一化成 <date>）。",
+  "description": "**没有 data 包裹**：ok 与各字段平铺。部署脚本/客户端启动自检按这个形状判活。version 是版本号；today 是**服务器口径的今天**（Asia/Shanghai，样例里已归一化成 <date>）。★ 2026-10-17 起 `ok` 的口径是「**进程活着且库通**」，并且新增 `db` 块：库不通时响应码为 **503**、`ok=false`、`db.ok=false` 且 `db.reason` 是固定短句（不暴露驱动原文）。`db.reconnects` 为累计重连次数，非 0 说明链路抖过。健康态见本样例（200 + ok=true + db.ok=true）。",
   "type": "object",
-  "required": ["ok", "service", "version", "data_backend", "dev_auth", "today", "timezone"],
+  "required": ["ok", "service", "version", "data_backend", "dev_auth", "today", "timezone", "db"],
   "additionalProperties": false,
   "properties": {
     "ok": { "const": true },
@@ -11,6 +11,17 @@
     "data_backend": { "type": "string", "enum": ["mysql"] },
     "dev_auth": { "type": "boolean" },
     "today": { "type": "string", "minLength": 6 },
-    "timezone": { "type": "string", "enum": ["Asia/Shanghai"] }
+    "timezone": { "type": "string", "enum": ["Asia/Shanghai"] },
+    "db": {
+      "type": "object",
+      "description": "2026-10-17 新增。库探活结果（每次健康检查跑一次轻量查询，带超时）。",
+      "required": ["ok", "reconnects"],
+      "additionalProperties": false,
+      "properties": {
+        "ok": { "const": true },
+        "reconnects": { "type": "integer", "minimum": 0 },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    }
   }
 }

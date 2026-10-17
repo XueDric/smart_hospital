@@ -823,10 +823,27 @@ page({
       try {
         const data = await API.get('/admin/ai/settings');
         clear(listBox);
+        /*
+         * ★ 2026-10-17（S13 修）：**"已启用"不等于"能调用"**。
+         *
+         * 服务端 `aiRuntimeValidate` 只校验 key_ref 的形状（`env:` / `file:` 前缀），
+         * 不管它此刻解析不解析得出来。于是拼错的环境变量名 ⇒ 总开关显示"已启用"、
+         * 每次调用都失败，而这一页以前**一句提示都没有**。
+         *
+         * ⇒ 服务端新给了 `key_resolvable`（此刻真去解析一次的结论）；这里在
+         *   "已设置但解析不到"时直接报警。`key_ref` 本体与变量名永远不显示。
+         */
+        const keyItem = (data.items || []).find((i) => i.key === 'ai.key_ref');
+        const keyBroken = !!(keyItem && keyItem.set && data.enabled && data.key_resolvable === false);
         listBox.appendChild(h('div', { class: 'note' + (data.enabled ? '' : ' warn') },
           h('b', null, data.enabled ? 'AI 总开关：已启用' : 'AI 总开关：未启用'),
           data.disabled_reason ? ' —— ' + data.disabled_reason : '',
           data.endpoint_host ? h('div', { class: 'mono', style: 'margin-top:4px' }, '生效地址：' + data.endpoint_host) : null));
+        if (keyBroken) {
+          listBox.appendChild(h('div', { class: 'note warn', style: 'margin-top:6px' },
+            h('b', null, '⚠ 密钥引用解析不到'),
+            ' —— 调用大模型会失败并回落规则兜底。请检查 `ai.key_ref` 指向的环境变量或文件是否存在（本次生效来源：' + (data.key_ref_kind || '未配置') + '）。'));
+        }
         listBox.appendChild(table([
           { key: 'key', label: '配置项', className: 'mono' },
           { key: 'label', label: '说明' },

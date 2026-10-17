@@ -759,21 +759,40 @@ public class TestRunner {
     public func ac15(): Unit {
         println("=== AC-15 ★ 探活响应给出医院日期与时间口径（F14）===")
         section("AC-15", { =>
-            let body = healthJson(DevAuthGate(false, false))
+            /*
+             * ⚠ 2026-10-17（S4 修）：原来叫 `healthJson(gate)`，现在叫 `healthBody(gate, dbProbe)`
+             *   —— 探活要**当场探一次库**，探针由调用方注入。
+             *   这里传 `None`（没有库句柄）＝ 沿用"不接库"的语义，行为与改前一致。
+             */
+            let (dbOk, body) = healthBody(DevAuthGate(false, false), None)
             check("★ /health 带 today，且等于服务端口径的今天",
                   body.contains("\"today\":\"" + hTodayDate() + "\""))
             check("★ /health 带 timezone = Asia/Shanghai",
                   body.contains("\"timezone\":\"Asia/Shanghai\""))
             /*
-             * ★★ 探活接口**不能**因为多了日期而开始查库
-             *   （库慢必须表现成库慢，不能表现成服务挂了）。
-             *   这里能证明的是"不碰库也能算出这个字段"——`hTodayDate()` 是纯计算，
-             *   且与日期格式化同一口径（后者已有固定 epoch 的断言守着）。
+             * ★ 2026-10-17（S4 修）：探活**从"不碰库"改成了"当场探一次库"**，
+             *   所以这段注释原来的说法（"库慢必须表现成库慢，不能表现成服务挂了"）
+             *   已经**不成立**，如实改写：
+             *
+             *   改之前：库连不上时 `/health` 依旧 200、探针继续送流量，
+             *   而每个业务接口都 500 —— 把 DBA 问题伪装成代码 bug（实测过）。
+             *   改之后：`db.ok=false` + HTTP 503，探针据此摘流量。
+             *   代价是"库慢"会表现成"探活慢"，但那仍然**指向同一件事**（库有问题），
+             *   而旧行为指向的是错误的东西（服务挂了/一切正常）。
+             *
+             * ⚠ `today` / `timezone` 仍是**纯计算**（`hTodayDate()` 不查库），
+             *   这一点没变——下面两条断言仍在钉它。
              */
             check("★★ 该字段是纯计算：与日期格式化同口径（hTodayDate == hDateStringOf(now)）",
                   hTodayDate() == hDateStringOf(hNowEpoch()))
             check("★ 且探活仍如实报告 dev_auth（没被日期字段挤掉）",
                   body.contains("\"dev_auth\":false"))
+            /*
+             * ★ S4：没有库句柄时 `db.ok` 仍为 true（"未接库"不是"库挂了"），
+             *   且 `db.reconnects` 字段一定在 —— 运维靠它判断链路抖过没抖过。
+             */
+            check("★ S4 探活带 db.ok / db.reconnects（探针结果不再被吞掉）",
+                  dbOk && body.contains("\"db\":{\"ok\":true,\"reconnects\":0"))
         })
     }
 

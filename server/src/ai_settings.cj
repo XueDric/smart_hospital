@@ -1057,6 +1057,33 @@ public func aiSettingsJson(repo: AiSettingsRepo, now: Int64): JsonObject {
     o.put("enabled", JsonBool(opt.enabled))
     o.put("disabled_reason", JsonString(opt.disabledReason))
     o.put("endpoint_host", JsonString(aiSafeHost(opt.endpoint)))
+    /*
+     * ★★ 2026-10-17（S13 修）：把"**真的能调用吗**"拆成可判定的字段。
+     *
+     * 现场症状：管理台「AI 配置」页显示"已设置"，分诊却每次都静默走规则兜底 ——
+     *   因为 `enabled` 只回答"**配置是否自洽**"，不回答"**密钥此刻取不取得到**"。
+     *   两者混为一谈时，排查方向会指向"模型不回答"，而真因是"进程里没有那个环境变量"
+     *   ——这才是本仓最忌的那类失败（症状与真因对不上）。
+     *
+     * ⇒ 这里补三个字段：
+     *   · `key_ref_kind`   —— `env` / `file` / 空（**不回变量名与路径**，见上方 secret 项的口径）
+     *   · `key_resolvable` —— 此刻真去解析一次（读环境变量/读文件）能不能取到
+     *   · `model` / `model_id` —— 生效的模型名与模型行 id（排障要知道"到底发给了谁"）
+     *
+     * ⚠ `key_resolvable` 只在 `enabled` 为真时才有意义（总开关关掉时本就不该调用），
+     *   但这里仍然如实给出：运维改完环境变量后**不必重启**就能在页面上看到它变 true，
+     *   而 `enabled` 的重算与 `--prod` 校验走的是同一套 `options()`。
+     */
+    var refKind = ""
+    if (keyRefEnvName(opt.keyRef).isSome()) {
+        refKind = "env"
+    } else if (keyRefFilePath(opt.keyRef).isSome()) {
+        refKind = "file"
+    }
+    o.put("key_ref_kind", JsonString(refKind))
+    o.put("key_resolvable", JsonBool(refKind.size > 0 && aiResolveKey(opt.keyRef).isSome()))
+    o.put("model", JsonString(opt.modelName))
+    o.put("model_id", JsonInt(opt.modelId))
     return o
 }
 

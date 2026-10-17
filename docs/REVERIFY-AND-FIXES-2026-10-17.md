@@ -331,3 +331,94 @@ subst X: E:\harmonyOS\智能医院客户端
 
 - **刻意保留的「旧说法」**：① `/health` 系（`docs/FRONTEND-INTEGRATION.md:33/:2146/:2233/:2415`、`docs/ADMIN-WEB.md:70` 等）—— 那是**成功**形状，不是错误形状，至今真实；② 明确标注「历史 / 已作废 / 可选回退」的段落与对照表"改前"列（保日期证据）；③ 框架 `router.cj:91-94/:104`、`static.cj:51-60` 的**默认平铺值**（框架自测仍走它以证"默认行为不变"）。
 - **两个 `.ps1` 的 BOM**：`export-contract.ps1`、`stress-booking.ps1` 经 edit 工具保存后丢了 UTF-8 BOM（PS 5.1 会把中文注释解析成乱码甚至语法错），已用 `New-Object System.Text.UTF8Encoding($true)` 重写并实测首三字节 `EF BB BF`。
+
+## 十一、同日续修：S4（DB 单连接不自愈）与 S13（AI 配置静默失效）
+
+> 承接 §九/§十。§四 里这两条原本标「**未修**」与「**配置缺口**」，本轮都落到了代码与运行期证据上。
+
+### 11.0 改动集（本轮新增，均无契约破坏）
+
+| 文件 | 改了什么 |
+|---|---|
+| `server/third_party/qingzhou/src/db.cj` | 新增 `public type DbProbe = () -> (Bool, Int64, String)`（仓颉不接受 `?() -> …` 写法，见 11.1 坑 0）与 `DbBackend.probe()` 默认实现（自己 catch，探活失败是「答案」不是异常） |
+| `server/third_party/qingzhou/src/db_mysql.cj` | **自愈核心**：`conn`/`tx` 改 `var`、新增 `drv`/`reopenUrl`/`reopenOptions`/`closed`/`reconnects`/`lastFailure`；`requireUsable()` → `ensureUsable()`（锁内重建连接）；`noteFailure()` + `isBrokenConnectionError()`；`probe()` 覆盖；`commitTransaction`/`rollbackTransaction` 的连接失效分支 |
+| `server/src/http_app.cj` | `healthJson` → `healthBody` + `sendHealth`：`/health` 真的探库，库不通 ⇒ **503** + `ok:false` + `db:{ok:false,reason}`；`dbProbe` 作为可选参数从 `main` 穿到路由 |
+| `server/src/main.cj` | 传 `dbProbe: { => dbProbeRef.probe() }`（闭包不能捕获 `var`，见坑 3）；AI 启动提示改走 **stderr** 并补「密钥引用解析不到」告警 |
+| `server/src/ai_settings.cj` | `aiSettingsJson()` 新增 `key_ref_kind` / `key_resolvable` / `model` / `model_id` 四个字段（后两个此前只有模型行 id，排障看不出「发给了谁」） |
+| `server/admin-web/js/pages.js` | AI 配置页新增告警条：`enabled && key_ref.set && key_resolvable===false` ⇒ 显式提示「密钥引用解析不到」 |
+| `contract/examples/health-200.json`、`contract/schema/health.schema.json` | `/health` 增 `db` 块（`ok`/`reconnects`/可选 `reason`），`ok` 由常量改为布尔 |
+| `server/tests/health-check.ps1` | 断言 `db.ok === true`（探库通了才算健康） |
+| `docs/FRONTEND-INTEGRATION.md`、`contract/CHANGELOG.md` | `/health` 新形状与 503 语义、AI 启用步骤、变更记录 |
+
+### 11.1 S4：一次连接闪断 ⇒ 全站 500 到重启
+
+**症状**（§四 原文）：`DbMysql` 单连接，任何一次断链把 `usable` 打成 `false` 且**永不复位** ⇒ 之后每个请求都 500，只能重启进程。
+
+**根因分三层**：① 没有重连路径（`requireUsable` 只会抛）；② 「是否废了」的判断只看 6 个英文子串，Windows 上的真实文案一条都不匹配；③ `/health` 根本不碰库，所以「进程活着 / 库已死」在监控上是同一个 200。
+
+**实现**：
+
+1. **连接可换**：`ensureUsable()` 在 `connectionLock` 内做「关旧 → 新建 → 重做会话口径 → 复位 `usable`、`reconnects++`」。只在两种情况下拒绝重连：已显式 `close()`（优雅关闭后不许诈尸）、`transactionActive`（事务没结束而连接坏了，重连会**静默吞掉**未提交写入 ⇒ 宁可这一个请求 500）。
+2. **失效判定**：`noteFailure(msg)` 只在**链路级**文案上打 `usable=false`（`server has gone away` / `lost connection` / `broken pipe` / `connection reset` / `commands out of sync` / `error 2006/2013` / `eof` + 实测补的 `failed to read/write data`、`forcibly closed`、`connection aborted`、`10053/10054/10060`、`error 1927`）。**不**把重复键/语法错/死锁当失效 —— 否则一个重复键风暴能把库打爆。
+3. **提交/回滚不假装成功**：`commitTransaction` 遇连接失效直接抛「本次事务未确认提交」（COMMIT 成没成只有服务端知道）；`rollbackTransaction` 遇失效**跳过** ROLLBACK 并返回 —— 那里一抛会盖掉 `withTransaction` 的原始异常。
+4. **`/health` 探库**：真跑一次 `SELECT 1`，通了 `200`、不通 `503`；`db.reconnects` 就是「这进程自愈过几次」。失败原因**不回**驱动原文（端点不鉴权），只写日志。
+
+**运行期证据**（真实演练，`max_connections=1` + `KILL` 掉服务端那条连接来造「库不可连」）：
+
+| 阶段 | `/health` | `GET /api/v1/departments` |
+|---|---|---|
+| 基线 | `200`，`db:{ok:true,reconnects:0}` | `200` |
+| 断链中 | `503`，`db:{ok:false,reconnects:0,reason:"数据库暂不可用（详见服务端日志）"}` | 触发重连，恢复后 `200` |
+| 恢复额度后（**未重启进程**） | `200`，`db:{ok:true,reconnects:1}` | `200` |
+
+**三个实测坑（都不是设计问题，是"以为写对了"）**：
+
+- **坑 0（编译）**：`?() -> (Bool, Int64, String)` 在仓颉里解析成别的东西 ⇒ `expected ',' or ')', found '='`。只能给函数类型起别名 `DbProbe`。
+- **坑 1（判定漏词）**：第一版重连**一次都没触发** —— 杀连接后驱动抛 `Failed to write data 10053: An established connection was aborted by the software in your host machine.`，六个老关键词全不匹配，`usable` 一直是 `true`。补词后 `reconnects` 才从 0 动起来。**教训**：靠文案匹配判定链路故障，必须拿真实故障的文案来校准，不能凭记忆写。
+- **坑 2（池被污染）**：补词后 `reconnects` 涨到 1，但紧接着 `SELECT 1` 抛 `SqlException("closed")`，此后**再也不重连**（`closed` 不在关键词表里，`usable` 保持 `true`）。根因是复用了 `ds` —— 那是 std 的连接池，坏过一次的连接被标记 closed，`ds.connect()` 交给你的「新」连接一执行就报 closed。⇒ 改成 `drv.open(reopenUrl, reopenOptions)` **重建数据源**（新池），旧池整体丢弃。这一条不实测根本发现不了：日志上「重连成功」的假象很完整。
+- **坑 3（闭包捕获）**：`main` 里 `var db` 不能被闭包直接捕获（`lambda capturing mutable variables needs to be called directly`），要先 `let dbProbeRef: DbBackend = db` 再捕获。
+- **坑 4（日志看不见）**：`println` 走 stdout，在管道里是块缓冲 ⇒ 排障时「一个字都没有」。DB 诊断与 AI 启动提示全部改 `eprintln`（与 `create-admin` 打印口令同一口径）。
+
+### 11.2 S13：AI 配好了却不生效，且没有任何提示
+
+**症状**（§四 原文）：`ai.key_ref` 没配 / 总开关 0；分诊静默走规则兜底，页面上看不出为什么。
+
+**为什么**不改成「解析不到就拒绝保存」：`acceptance.cj:847`、`acceptance_ai.cj:43/45/202/299/387`、`ai-live-check.ps1:118` 共 6 处夹具写的是**假引用**（`env:AC16_GLOBAL_KEY`、`file:/etc/smart-hospital/ai.key` …），硬拒会把现有套件全打红。⇒ 改走**可观测**路线（配置仍可存，但"此刻到底能不能调"必须能看见）：
+
+1. **接口字段**：`GET /admin/ai/settings` 增 `key_ref_kind`（`env`/`file`/空，**不回变量名与路径**）、`key_resolvable`（**真去解析一次**，改完环境变量不必重启就能看到它翻 true）、`model` / `model_id`（生效的模型名与行 id）。
+2. **启动日志（stderr）**：已启用时打印模型/endpoint/引用类型；**解析不到就多打一行告警**；未启用时打印原因与启用方法。
+3. **管理台**：`pages.js` 在「已启用但引用解析不到」时挂告警条，直说"调用会失败并回落规则兜底"。
+4. **失败可见**：分诊响应的 `ai_reason` 必须给出**人能读**的原因，而不是空着。
+
+**运行期证据（三条路径，全部实测）**：
+
+| 场景 | `/admin/ai/settings` | 分诊 `ai_reason` |
+|---|---|---|
+| A 默认（总开关 0、无 key_ref） | `enabled:false`，`disabled_reason:"未配置 ai.key_ref（必须是 env:名 或 file:路径）"` | `未配置 ai.key_ref（必须是 env:名 或 file:路径）` |
+| B 已启用 + `key_ref=env:S13_TEST_KEY_UNSET`（变量不存在） | `enabled:true`，`key_ref_kind:"env"`，`key_resolvable:false` | `环境变量 S13_TEST_KEY_UNSET 未设置或为空（注意：要设在**服务进程**的环境里，不是设在你敲命令的那个窗口）` |
+| C 已启用 + 变量已设 + endpoint 指向死端口 | `key_resolvable:true` | `出站调用异常：Failed to read data 10054: An existing connection was forcibly closed by the remote host.` |
+
+B 的启动日志同时出现：`AI：**已启用** — 模型「默认对话模型」，endpoint https://…/chat/completions，密钥引用 env` + `    ⚠ 但**密钥引用解析不到**（env）：调用会失败并回落规则兜底；请检查该环境变量/文件是否存在`。
+
+C 证明「已配置」确实会**真的发出去**（此前连发都不发），失败也能落到 `ai_reason` 上；三条路径 `source` 始终是 `rules` —— 降级不阻塞患者拿结论。
+
+### 11.3 边界与**未做**（写清楚，免得被当成已修）
+
+- **S4 不还原 in-flight 事务**：连接在事务中途坏掉时，只保证「不假装提交成功」，不保证重放。要重放得有业务级幂等键，那是另一件事。
+- **S4 靠文案判定失效**：`isBrokenConnectionError` 是子串匹配，没有可移植错误码通道。抓不到的形态仍会走「下一次真正失败时重来一遍」的兜底路径 —— 代价是多一次失败请求，不是永久卡死。
+- **单连接仍是单连接**：本轮治的是「断了能自愈」，不是「并发连池」。串行化仍是刻意设计（见 `db_mysql.cj` 顶部注释），高并发要换连接池是 P2 的事。
+- **S13 的 `ai.ca_bundle_path` 仍不支持**：框架未暴露信任锚配置 ⇒ 只能自签 CA 之外的环境直连。已在配置页明示「本版本不支持」。
+- **S13 只支持 `https://`**：实测 `--dev-auth` 环境下把 endpoint 指向本地 http 桩会被强制规则挡掉（这是有意的，避免把密钥发到明文通道）。
+- **`hm_pat2` 的绑定**：`accept` 会清业务表，patient 2 被清掉后该账号成了孤儿（登录报 `AUTH_BAD_CREDENTIALS`）⇒ 已把 `auth_user.ref_id` rebind 到 patient 1。**这是环境修复，不是代码修复**，下次跑 `accept` 后仍需重做。
+
+### 11.4 门禁
+
+| 门禁 | 结果 |
+|---|---|
+| `hospital-server.exe selftest` | **EXIT=0**（自检全部通过） |
+| `hospital-server.exe accept <dsn>` | **762 项通过 / 0 失败**，EXIT=0 |
+| `server/tests/final-verify.ps1` | **17/17 全绿**（含 `contract-check`，Schema 24 个、样例 67 条 PASS 69 / FAIL 0） |
+| `/health` 探库 / 503 语义 | 演练见 11.1 表 |
+| S13 三条路径 | 见 11.2 表 |
+
+> ⚠ `accept` 会**清空业务表**。跑完已复原环境：`create-admin` 重置 `admin` 口令（本机为 `EE9XLGLU9HDT`）、四个演示账号口令复位并逐个登录实测通过；库内保留 科室「内科」(1)、医生「张医生」(1)、患者「测试患者」(1)、排班 `9501`（2026-12-24 AM，总号 2）。

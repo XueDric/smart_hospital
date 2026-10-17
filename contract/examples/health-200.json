@@ -16,7 +16,11 @@
       "data_backend": "mysql",
       "dev_auth": true,
       "today": "<date>",
-      "timezone": "Asia/Shanghai"
+      "timezone": "Asia/Shanghai",
+      "db": {
+        "ok": true,
+        "reconnects": 0
+      }
     }
   }
 }

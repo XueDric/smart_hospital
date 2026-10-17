@@ -24,12 +24,45 @@ import std.sync.*
  *   let store = RbacStore(MySqlBackend("127.0.0.1", 3306, "root", "pass", "app_db"))
  */
 public class MySqlBackend <: DbBackend {
-    private let conn: Connection
-    private let tx: Transaction
+    /*
+     * ★★ 2026-10-17（S4 修）：`conn` / `tx` 由 `let` 改成 `var`，并留下 `ds`（数据源）。
+     *
+     * 改之前这两个字段是 `let`，于是"连接坏了"只能用 `usable = false` 表达，
+     * 而 `requireUsable()` 一抛就是**永久报废**：进程活着、`/health` 绿着、
+     * 每个业务请求 500，唯一的出路是重启进程。实测触发方式很平常 ——
+     * `KILL <连接 id>`、库重启、闲置被服务端踢掉、网络闪断。
+     *
+     * 现在：`usable = false` 只表示"**这条连接**不能用了"，下一次调用在锁内
+     * 重建（`ensureUsable`），进程自愈。`ds` 存的是 URL + 选项，可以反复
+     * `connect()`；重连不需要重新解析 DSN，也不会丢 `noBackslashEscapes` 口径。
+     */
+    private var ds: Datasource
+    /*
+     * 重连用的原始参数。
+     *
+     * ★ 2026-10-17（S4 实测）：**不能**复用 `ds` 去重连。`ds` 是 std 的连接池，
+     *   连接坏过一次之后池里那条被标记 closed，`ds.connect()` 交给你的新连接
+     *   一执行就抛 `SqlException("closed")`（实测：重连成功计数 +1，但紧跟着
+     *   `SELECT 1` 失败，此后**永不重连**）。⇒ 出故障时直接 `drv.open(...)`
+     *   重建一个全新数据源（= 新池），旧的连池一起丢掉。
+     */
+    private let drv: Driver
+    private let reopenUrl: String
+    private let reopenOptions: Array<(String, String)>
+    private var conn: Connection
+    private var tx: Transaction
     // std.sync.Mutex 是可重入锁：事务持锁后，其内部 query/exec 可再次入锁。
     private let connectionLock = Mutex()
     private var transactionActive: Bool = false
     private var usable: Bool = true
+    /* 已显式 close()：此后**不再**重连（否则优雅关闭后还会诈尸）。 */
+    private var closed: Bool = false
+    /* 累计重连次数（排障与 `/health` 用：非 0 说明链路抖过）。 */
+    private var reconnects: Int64 = 0
+    /* 最近一次失效/重连失败的原始描述（只进日志，不回给未鉴权的 /health）。 */
+    private var lastFailure: String = ""
+    /* 日志用标签 `host:port/db`（**不含口令**）。 */
+    private let dbLabel: String
 
     /*
      * ★★ 绑定值转义口径（2026-10-10，被 `PUT ai.endpoint` 的实测缺陷逼出来的）。
@@ -93,28 +126,44 @@ public class MySqlBackend <: DbBackend {
                     case None => throw Exception("未注册 mysql/mariadb 驱动：请引入 mysqlclient4cj 或 Cangjie-SIG mysql-driver，并 import 其 cdbc 包以触发驱动注册")
                 }
         }
-        let ds = driver.open(
-            urlScheme + "://" + host + ":" + port.toString(),
-            // 【本仓改动】原为 prepare.mode=client，实测会把数据里出现的 `?` 替换成字面量 NULL。
-            // 只保留 username/password/database —— 不设 prepare.mode 时驱动回落到 **server**
-            // （见 connection.cj 的 prepareStatement：options 里没有该键就 return ServerPrepareStatement）。
-            // 判定依据与回归见下方长注释「prepare.mode 的选择」。
-            [("username", user), ("password", password), ("database", database)]
-        )
+        // 【本仓改动】原为 prepare.mode=client，实测会把数据里出现的 `?` 替换成字面量 NULL。
+        // 只保留 username/password/database —— 不设 prepare.mode 时驱动回落到 **server**
+        // （见 connection.cj 的 prepareStatement：options 里没有该键就 return ServerPrepareStatement）。
+        // 判定依据与回归见下方长注释「prepare.mode 的选择」。
+        let opts: Array<(String, String)> = [("username", user), ("password", password), ("database", database)]
+        let url = urlScheme + "://" + host + ":" + port.toString()
+        let ds = driver.open(url, opts)
+        this.drv = driver
+        this.reopenUrl = url
+        this.reopenOptions = opts
+        this.ds = ds
         conn = ds.connect()
         tx = conn.createTransaction()
         this.noBackslashEscapes = noBackslashEscapes
+        this.dbLabel = host + ":" + port.toString() + "/" + database
         if (noBackslashEscapes) {
             // sql_mode 是 SET 类型，已含该项时会自动去重，故可幂等重复设置
             synchronized(connectionLock) {
-                let stmt = conn.prepareStatement(
-                    "SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',NO_BACKSLASH_ESCAPES')")
-                try {
-                    stmt.update()
-                } finally {
-                    stmt.close()
-                }
+                applySessionModeLocked(conn)
             }
+        }
+    }
+
+    /*
+     * 把会话 sql_mode 固定为 `NO_BACKSLASH_ESCAPES`（可重复执行）。
+     * ★ 2026-10-17（S4 修）：从构造函数里抽出来 —— **重连后必须重做一遍**，
+     *   否则新连接会回到服务端默认的"反斜杠即转义符"口径，而本类的 `mysqlBindEscape`
+     *   仍是按 `NO_BACKSLASH_ESCAPES` 写的（见 `noBackslashEscapes` 字段上方的长注释）。
+     *   漏了这一步的表现极其隐蔽：**平时全对，只有值里含 `\` 的请求在重连之后开始写坏**
+     *   （`a\b` 被吞成 `ab`、以 `\` 结尾的值逃逸收尾引号）。
+     */
+    private func applySessionModeLocked(c: Connection): Unit {
+        let stmt = c.prepareStatement(
+            "SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',NO_BACKSLASH_ESCAPES')")
+        try {
+            stmt.update()
+        } finally {
+            stmt.close()
         }
     }
 
@@ -128,8 +177,13 @@ public class MySqlBackend <: DbBackend {
        注意：std.database.sql 的 get<T>(index) 列索引从 1 开始（1-based）。 */
     public func query(sql: String): DbResultSet {
         synchronized(connectionLock) {
-            requireUsable()
-            return queryLocked(sql)
+            ensureUsable()
+            try {
+                return queryLocked(sql)
+            } catch (e: Exception) {
+                noteFailure(e.message)
+                throw e
+            }
         }
     }
 
@@ -166,13 +220,18 @@ public class MySqlBackend <: DbBackend {
     /* 执行写操作，返回受影响行数（UpdateResult.rowCount）。 */
     public func exec(sql: String): Int64 {
         synchronized(connectionLock) {
-            requireUsable()
-            let stmt = conn.prepareStatement(sql)
+            ensureUsable()
             try {
-                let ur = stmt.update()
-                return ur.rowCount
-            } finally {
-                stmt.close()
+                let stmt = conn.prepareStatement(sql)
+                try {
+                    let ur = stmt.update()
+                    return ur.rowCount
+                } finally {
+                    stmt.close()
+                }
+            } catch (e: Exception) {
+                noteFailure(e.message)
+                throw e
             }
         }
     }
@@ -232,15 +291,109 @@ public class MySqlBackend <: DbBackend {
         }
     }
 
-    private func requireUsable(): Unit {
-        if (!usable) {
-            throw Exception("数据库连接已关闭或事务回滚失败")
+    /*
+     * ★★ 2026-10-17（S4 修）：`requireUsable()` → `ensureUsable()`。
+     *
+     * 语义从"不可用就抛"变成"不可用就**在锁内重连**"，只在两种情况下才抛：
+     *   ① 已显式 `close()`（优雅关闭后不允许诈尸）；
+     *   ② `transactionActive` —— 事务没结束而连接坏了，此时重连会**静默吞掉**
+     *      未提交的写入（服务器那头可能已经生效也可能没有），宁可让这一个请求
+     *      500，也不许"看起来成功"。
+     *
+     * ⚠ 调用点各自都持着 `connectionLock`（`query`/`exec` 在 `synchronized` 里，
+     *   `beginTransaction` 在 `lock()` 之后），所以重连天然是串行的：
+     *   同一时刻不可能有两条线程各建一条连接、或者一条在建一条在用。
+     */
+    private func ensureUsable(): Unit {
+        if (closed) {
+            throw Exception("数据库后端已关闭，不再重连")
+        }
+        if (usable) { return }
+        if (transactionActive) {
+            throw Exception("连接不可用但事务未结束：拒绝自动重连（避免吞掉未提交的写入）")
+        }
+        // 旧连接先尽力关掉（已经坏了的话 close() 也可能抛，吞掉即可）
+        try { conn.close() } catch (_: Exception) { () }
+        try {
+            // 重建数据源（新池）：复用旧 `ds` 会把"已标记 closed"的池中连接带回来，
+            // 表现为重连成功但下一条 SQL 立刻抛 `closed`（实测，见字段处注释）。
+            let freshDs = drv.open(reopenUrl, reopenOptions)
+            let c = freshDs.connect()
+            let t = c.createTransaction()
+            // 新连接必须重做会话口径，否则反斜杠转义会退回服务端默认（见 applySessionModeLocked）
+            if (noBackslashEscapes) {
+                applySessionModeLocked(c)
+            }
+            ds = freshDs
+            conn = c
+            tx = t
+            usable = true
+            reconnects = reconnects + 1
+            eprintln("[DB] 连接已重建（第 ${reconnects} 次）：${dbLabel}" +
+                    (if (lastFailure.size > 0) { "，上次失效原因：${lastFailure}" } else { "" }))
+        } catch (e: Exception) {
+            lastFailure = e.message
+            eprintln("[DB] ❌ 重连失败：${e.message}（${dbLabel}）")
+            throw Exception("数据库重连失败：${e.message}")
+        }
+    }
+
+    /*
+     * 出错时判断"是不是这条连接本身废了"，是则打上 `usable = false`，
+     * 让**下一次**调用去重连（而不是永远抛）。
+     *
+     * ⚠ 只认**链路级**错误，不认业务级错误（重复键、语法错、锁等待）：
+     *   后者重连也没用，而每来一个重复键就重连一次会把库打爆。
+     *   判断方式是驱动/服务端文案的子串匹配 —— 没有可移植的错误码通道，
+     *   这里的取舍是"抓明显的那几种，抓不到的靠下次真正失败时的同一条路径兜底"。
+     */
+    private func noteFailure(msg: String): Unit {
+        if (!isBrokenConnectionError(msg)) { return }
+        lastFailure = msg
+        usable = false
+        // 这里**不** `conn.close()`：这条连接已经废了，关它只会把旧池的状态搅浑，
+        // 重连时整个池都会被换掉（见 ensureUsable），不值得多这一步。
+        eprintln("[DB] 连接已失效：${msg}（下次调用将重连）")
+    }
+
+    /* 链路级失效的文案特征（大小写不敏感）。 */
+    private func isBrokenConnectionError(msg: String): Bool {
+        let m = msg.toAsciiLower()
+        for (k in ["server has gone away", "lost connection", "broken pipe", "connection reset",
+                   "not connected", "connection is closed", "commands out of sync",
+                   "error 2006", "error 2013", "no connection", "eof",
+                   // ★ 2026-10-17（S4 实测补）：**本机/Windows 上的链路断开不长上面那样**。
+                   //   实测「杀掉服务端那条连接」后，stdx 网络层抛的是
+                   //   `Failed to read data 10054: An existing connection was forcibly closed by the remote host.`
+                   //   —— 一条都没命中，于是 `usable` 一直是 `true`，此后每个请求都在
+                   //   死 socket 上失败、**永远不重连**（正是 S4 要治的那个形态）。
+                   //   这几条是 Winsock 的措辞与 MariaDB 的 KILL 文案，命中不了业务错误
+                   //   （重复键/语法错/死锁的文案里不会出现这些词）。
+                   "forcibly closed", "failed to read data", "failed to write data",
+                   "connection aborted", "connection was killed", "error 1927",
+                   "10053", "10054", "10060"]) {
+            if (m.contains(k)) { return true }
+        }
+        return false
+    }
+
+    /* ★ 2026-10-17（S4 修）：接口 `probe()` 的 MySQL 覆盖 —— 多带一个重连次数。 */
+    public func probe(): (Bool, Int64, String) {
+        try {
+            query("SELECT 1")
+            return (true, reconnects, "")
+        } catch (e: Exception) {
+            // 探活失败也留痕：`/health` 对外只说"暂不可用"，驱动原文只有日志里有。
+            eprintln("[DB] 探活失败：${e.message}")
+            return (false, reconnects, e.message)
         }
     }
 
     /* 关闭连接，归还驱动连接资源。 */
     public func close(): Unit {
         synchronized(connectionLock) {
+            // ★ 2026-10-17（S4 修）：显式关闭之后**不许**再自动重连（否则优雅关闭会"诈尸"）。
+            closed = true
             if (!usable) { return }
             usable = false
             try {
@@ -259,7 +412,7 @@ public class MySqlBackend <: DbBackend {
         // 成功后保留本次 lock，直到同一线程提交/回滚；失败则立即归还。
         connectionLock.lock()
         try {
-            requireUsable()
+            ensureUsable()
             if (transactionActive) {
                 throw Exception("同一连接不支持嵌套事务")
             }
@@ -269,6 +422,7 @@ public class MySqlBackend <: DbBackend {
                 // BEGIN 可能已在服务器生效但响应丢失，禁止复用未知事务连接。
                 // 仅处理真正发送 BEGIN 的异常；嵌套事务拒绝不会关闭原事务。
                 usable = false
+                lastFailure = e.message
                 try { conn.close() } catch (_: Exception) { () }
                 throw e
             }
@@ -282,7 +436,17 @@ public class MySqlBackend <: DbBackend {
     /* 提交事务：COMMIT。 */
     public func commitTransaction(): Unit {
         synchronized(connectionLock) {
-            requireUsable()
+            /*
+             * ★ 2026-10-17（S4 修）：连接已废时**不能**走 `ensureUsable()` 重连 ——
+             *   `ensureUsable` 在"事务未结束"时拒绝重连（正确），但这里更需要的是
+             *   一条**准确的失败**：COMMIT 到底成没成，只有服务器知道，而链路已经断了。
+             *   假装成功是最坏的结果（调用方会以为号已扣/已退），所以必须抛。
+             */
+            if (!usable) {
+                transactionActive = false
+                connectionLock.unlock()
+                throw Exception("提交失败：数据库连接已失效，本次事务未确认提交")
+            }
             if (!transactionActive) { throw Exception("没有可提交的事务") }
             // 提交失败仍保留 begin 的锁，让 withTransaction 先回滚再放行。
             tx.commit()
@@ -294,13 +458,28 @@ public class MySqlBackend <: DbBackend {
     /* 回滚事务：ROLLBACK。 */
     public func rollbackTransaction(): Unit {
         synchronized(connectionLock) {
-            requireUsable()
             if (!transactionActive) { throw Exception("没有可回滚的事务") }
+            /*
+             * ★ 2026-10-17（S4 修）：连接已废时**跳过** ROLLBACK 而不是抛。
+             *
+             * 两个理由：
+             *   ① MySQL 语义：连接断开时服务端对未提交事务自动回滚，这里再发也没用；
+             *   ② 这里是 `withTransaction` 的 catch 路径，`rollback` 一抛就会把**原始
+             *      异常**（真正的病因，比如超卖时那条 409 的依据）盖掉 —— 排障会被带偏。
+             *   ⚠ 所以**不能**在这条路径上调 `ensureUsable()`（它会在事务未结束时抛）。
+             */
+            if (!usable) {
+                transactionActive = false
+                connectionLock.unlock()
+                eprintln("[DB] 连接已失效，跳过 ROLLBACK（未提交写入随连接关闭由服务端丢弃）")
+                return
+            }
             try {
                 tx.rollback()
             } catch (e: Exception) {
                 // 未确认回滚的连接不可复用，防止下个请求进入未知事务。
                 usable = false
+                lastFailure = e.message
                 try { conn.close() } catch (_: Exception) { () }
                 throw e
             } finally {

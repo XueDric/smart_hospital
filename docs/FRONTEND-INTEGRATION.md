@@ -30,7 +30,7 @@
 | 鉴权头 | `Authorization: Bearer <token>`；头名大小写不敏感，`Bearer` 前缀大小写不敏感，token 前后空白会被 trim（`http_app.cj:350-363`） |
 | 成功信封 | `{"ok":true,"data":{…}}`，HTTP 200 / 201（`http_common.cj:225-238`） |
 | 失败信封 | `{"ok":false,"error":{"code","message","fields"?}}`（`http_common.cj:241-253`） |
-| 唯一例外 | `GET /health`：**在根路径、不在 `/api/v1` 下、不鉴权、不走信封**，返回平铺 `{ok,service,version,data_backend,dev_auth,today,timezone}`（`http_app.cj` 的 `healthJson`；`/api/v1/health` 是**同一份实现**的别名，见 §5.19） |
+| 唯一例外 | `GET /health`：**在根路径、不在 `/api/v1` 下、不鉴权、不走信封**，返回平铺 `{ok,service,version,data_backend,dev_auth,today,timezone,db}`（`http_app.cj` 的 `healthBody`；`/api/v1/health` 是**同一份实现**的别名，见 §5.19）。★ 2026-10-17 起会探库：库不通 → **503** + `ok:false` |
 | SSE | `GET /api/v1/previsit/stream?chief_complaint=…`；线格式 `data: {"event":"meta"\|"delta"\|"done","data":{…}}\n\n`（`previsit.cj:611-616`） |
 | TLS | **只在显式给 `--tls-cert/--tls-key`（或 `--tls-files`）时才启用；绝不静默降级**（`main.cj:786-836`） |
 | ID 类型 | 除预问诊 `session_id` 是 64 位 hex **字符串**外，所有 id 都是 **JSON number**（Int64） |
@@ -116,18 +116,21 @@ Invoke-RestMethod http://127.0.0.1:8091/health
 ```
 
 ```json
-{"ok":true,"service":"hospital-server","version":"0.2.0-p1","data_backend":"mysql","dev_auth":false,"today":"2026-10-14","timezone":"Asia/Shanghai"}
+{"ok":true,"service":"hospital-server","version":"0.2.0-p1","data_backend":"mysql","dev_auth":false,"today":"2026-10-14","timezone":"Asia/Shanghai","db":{"ok":true,"reconnects":0}}
 ```
 
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
-| `ok` | Bool | 恒 `true`（**注意：这个 `ok` 与信封里的 `ok` 同级，但它没有 `data` 包装层**） |
+| `ok` | Bool | ★ **2026-10-17 起口径变了**：以前恒 `true`（= "进程活着"），现在 = "进程活着**且库通**"。库不通时为 `false`、响应码 **503**。（仍**没有 `data` 包装层**） |
 | `service` | String | 恒 `"hospital-server"` |
 | `version` | String | `SERVER_VERSION`，当前 `"0.2.0-p1"`（`main.cj:31`）。**当成不透明字符串**，不要按版本号做能力判断 |
 | `data_backend` | String | 恒 `"mysql"` |
 | `dev_auth` | Bool | `true` = 服务端以 `--dev-auth` 启动，**开发鉴权模式已开**：`X-Role`/`X-Patient-Id`/`X-Doctor-Id` 头可绕过全部认证。**正式联调必须为 `false`**，前端可在设置页把 `dev_auth:true` 显示成红色告警 |
 | `today` | String | ★ **医院今天的日期**（`YYYY-MM-DD`，口径 = Asia/Shanghai）。客户端**不要**用设备本地日期去算"今天"（见 §10.4），拿这个字段即可 |
 | `timezone` | String | 恒 `"Asia/Shanghai"`，与 `today` 配套；**展示用**，不要拿它自己再换算一遍 |
+| `db` | Object | ★ **2026-10-17 新增**：`{ok, reconnects[, reason]}`。`ok=false` 时 `reason` 是固定短句「数据库暂不可用（详见服务端日志）」（**不回驱动原文**：本端点不鉴权）；`reconnects` 是累计重连次数，**非 0 说明链路抖过**（连接自愈生效的证据） |
+
+> ⚠ 探活语义：**200 + `ok:true`** = 能服务；**503 + `ok:false`** = 进程活着但库不通（探针应据此摘流量）。客户端若拿 `ok` 判断"能不能用"，这正是它想要的语义。
 
 > ⚠ `GET /api/v1/health` 自 2026-10-12 起**存在**（是 `/health` 的别名、同一份实现，见 §5.19）。
 > 早期文档与手工探测记录的"`/api/v1/health` → 404"**已过时**；客户端可以统一走 `/api/v1` 前缀，
@@ -570,7 +573,10 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 ### 5.1 `GET /health` —— 探活与版本
 
-见 §2.3。**唯一不走信封的接口**，实现在 `http_app.cj:737-745`。
+见 §2.3。**唯一不走信封的接口**，实现在 `http_app.cj` 的 `healthBody` / `sendHealth`（`/api/v1/health` 是同一份实现的别名）。
+
+★ **2026-10-17 起它会探库**：`ok` = "进程活着**且库通**"，库不通 → **503** + `ok:false` + `db.ok:false`。
+`db.reconnects` 是累计重连次数（S4 连接自愈的证据）。契约样例：`contract/examples/health-200.json`。
 
 ### 5.2 `POST /api/v1/auth/login`
 
@@ -1004,17 +1010,21 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 ### 5.19 `GET /api/v1/health` —— 探活（`/api/v1` 别名）
 
-与 `GET /health` **同一份实现**（`http_app.cj` 的 `healthJson`），响应体一字不差：
+与 `GET /health` **同一份实现**（`http_app.cj` 的 `healthBody` / `sendHealth`），响应体一字不差：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `ok` | Bool | 恒 `true`（能回就是活着） |
+| `ok` | Bool | ★ 2026-10-17 起 = "进程活着**且库通**"（以前恒 `true`） |
 | `service` | String | `hospital-server` |
 | `version` | String | 如 `0.2.0-p1` |
 | `data_backend` | String | `mysql` |
 | `dev_auth` | Bool | 服务端是否开着 `--dev-auth` |
+| `today` / `timezone` | String | 医院口径的今天 / `Asia/Shanghai` |
+| `db` | Object | ★ 2026-10-17 新增：`{ok, reconnects[, reason]}`；库不通时 `ok:false` + 响应码 **503** |
 
-⚠ 它**刻意不查库**：探活接口查询库会让"库慢"表现成"服务挂了"，而两者的处置完全不同。
+⚠ **早期版本刻意不查库**（理由是"库慢不该表现成服务挂了"）。2026-10-17 改成**探库但区分表达**：
+库不通给 **503** + `ok:false` + `db.ok:false`，探针据此摘流量；而"进程活着"由**能不能连上**表达。
+⇒ 探针请按状态码分流：`200` 收流量、`503` 摘流量（不必解析 body）。
 ⚠ 客户端此前定义了 `HttpClient.getRoot()` 却**没有调用方** ⇒ 建议在启动/保存服务地址时探活一次。
 
 ### 5.20 `GET /api/v1/departments` —— 科室字典（三端可读）
@@ -2145,12 +2155,14 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 ### 12.1 `GET /health` 原始返回
 
 ```json
-{"ok":true,"service":"hospital-server","version":"0.2.0-p1","data_backend":"mysql","dev_auth":false,"today":"2026-10-14","timezone":"Asia/Shanghai"}
+{"ok":true,"service":"hospital-server","version":"0.2.0-p1","data_backend":"mysql","dev_auth":false,"today":"2026-10-14","timezone":"Asia/Shanghai","db":{"ok":true,"reconnects":0}}
 ```
 
 * 平铺、**无信封**；`/api/v1/health` 是**同一份实现**的别名（见 §5.19）。
   ▲ 本节此前写的"实测 `GET /api/v1/health` → 404"是 **2026-10-12 之前**的记录，**已作废**
   （2026-10-14 由 `tests\health-check.ps1` 实测两个路径均为 200 且字段一致）。
+* ★ **2026-10-17 起多一个 `db` 块，且 `ok` 变成"进程活着且库通"**：库不通 → **503** + `ok:false` + `db.ok:false`。
+  实测见 `docs/REVERIFY-AND-FIXES-2026-10-17.md` §十一（S4：拔库 → 503，恢复后自动重连且 `reconnects` 递增）。
 * 是普通 `content-length` JSON，**不是 chunked**（只有 `/previsit/stream` 是 chunked）。
 * ★ `today` 的口径由脚本钉住：`tests\health-check.ps1` 断言它等于 **UTC+8 当天**（不是设备本地日期）。
 
@@ -2417,10 +2429,11 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 ### 14.4 响应示例汇总（可直接做 mock）
 
 ```jsonc
-// GET /health（平铺，无 data 包装）
+// GET /health（平铺，无 data 包装；2026-10-17 起含 db 块，库不通 → 503 + ok:false）
 { "ok": true, "service": "hospital-server", "version": "0.2.0-p1",
   "data_backend": "mysql", "dev_auth": false,
-  "today": "2026-10-14", "timezone": "Asia/Shanghai" }
+  "today": "2026-10-14", "timezone": "Asia/Shanghai",
+  "db": { "ok": true, "reconnects": 0 } }
 
 // POST /api/v1/auth/login
 { "ok": true, "data": { "token": "9f2c…(64 hex)…", "expires_at": 1790000000,
