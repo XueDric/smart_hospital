@@ -22,6 +22,21 @@ class SessionStore(context: Context) {
     private val demoCompletedBookings = mutableMapOf<Long, Long>()
     private val demoCancelledBookings = mutableMapOf<Long, MutableSet<Long>>()
 
+    /**
+     * 进程内令牌缓存（评审 P2-14）。
+     *
+     * 令牌现在**只以密文**落在 SharedPreferences 里，读它要过一次 Keystore 解密。
+     * `token` 属性会被 HTTP 拦截器、每次界面刷新反复读，把解密结果缓存下来，
+     * 既省掉重复解密的开销，也保证"内存里那份"和"能用的那份"永远一致。
+     */
+    private var tokenCache: String? = null
+
+    private companion object {
+        /** 密文键；旧的明文键是 `token`，只在升级迁移时读一次。 */
+        const val KEY_TOKEN_SECURE = "token_enc"
+        const val KEY_TOKEN_LEGACY = "token"
+    }
+
     init {
         // Remove identities created by the former persisted demonstration mode.
         if (prefs.getBoolean("mock_mode", false)) clearLogin()
@@ -30,6 +45,13 @@ class SessionStore(context: Context) {
         if (savedUrl != null && runCatching { validateBaseUrl(savedUrl) }.isFailure) {
             clearLogin()
             prefs.edit().remove("base_url").apply()
+        }
+        // 升级迁移：老版本把令牌明文写在 `token` 里。读到就加密搬家，然后删掉明文；
+        // 这一步不能省 —— 否则"新版本已加密"只对全新安装成立，存量设备上明文还在。
+        val legacyToken = prefs.getString(KEY_TOKEN_LEGACY, null)
+        if (!legacyToken.isNullOrBlank()) {
+            SecretStore.put(prefs, KEY_TOKEN_SECURE, legacyToken)
+            prefs.edit().remove(KEY_TOKEN_LEGACY).commit()
         }
     }
 
@@ -61,7 +83,21 @@ class SessionStore(context: Context) {
         }
     }
 
-    val token: String get() = if (mockMode) demoLogin?.token.orEmpty() else prefs.getString("token", "").orEmpty()
+    val token: String get() = if (mockMode) demoLogin?.token.orEmpty() else persistedToken()
+
+    /** 首次读取时解密一次，之后走内存缓存。解不开/没有明文残留 ⇒ 空串（按未登录处理）。 */
+    @Synchronized private fun persistedToken(): String {
+        tokenCache?.let { return it }
+        val decrypted = SecretStore.get(prefs, KEY_TOKEN_SECURE).orEmpty()
+        if (decrypted.isNotEmpty()) tokenCache = decrypted
+        return decrypted
+    }
+
+    /** 令牌落盘失败时**不**退回明文：只留内存，代价是重启要重新登录。 */
+    private fun storeTokenSecurely(value: String) {
+        tokenCache = value
+        SecretStore.put(prefs, KEY_TOKEN_SECURE, value)
+    }
     val expiresAt: Long get() = if (mockMode) demoLogin?.expiresAt ?: 0 else prefs.getLong("expires_at", 0)
     val userId: Long get() = if (mockMode) demoLogin?.userId ?: 0 else prefs.getLong("user_id", 0)
     val role: String get() = if (mockMode) demoLogin?.role.orEmpty() else prefs.getString("role", "").orEmpty()
@@ -98,7 +134,8 @@ class SessionStore(context: Context) {
             return
         }
         if (patientId != result.patientId || userId != result.userId) clearPrevisitSession()
-        prefs.edit().putString("token", result.token).putLong("expires_at", result.expiresAt)
+        storeTokenSecurely(result.token)
+        prefs.edit().remove(KEY_TOKEN_LEGACY).putLong("expires_at", result.expiresAt)
             .putLong("user_id", result.userId).putString("role", result.role).putLong("ref_id", result.refId)
             .putLong("patient_id", result.patientId).putString("display_name", result.displayName).apply()
     }
@@ -113,10 +150,12 @@ class SessionStore(context: Context) {
         demoMode = false
         demoLogin = null
         demoPrevisitId = ""
+        tokenCache = null
         demoBookingTokens.clear()
         demoCompletedBookings.clear()
         demoCancelledBookings.clear()
-        prefs.edit().remove("token").remove("expires_at").remove("user_id").remove("role")
+        SecretStore.remove(prefs, KEY_TOKEN_SECURE)
+        prefs.edit().remove(KEY_TOKEN_LEGACY).remove("expires_at").remove("user_id").remove("role")
             .remove("ref_id").remove("patient_id").remove("display_name")
             .remove("previsit_session_id").remove("mock_mode").apply()
         // Online keys survive logout/401: an uncertain request must keep its idempotency key.

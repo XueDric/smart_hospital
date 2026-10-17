@@ -26,22 +26,39 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
-    private val bg = Color.rgb(243, 248, 247)
-    private val surface = Color.WHITE
-    private val primary = Color.rgb(0, 169, 167)
-    private val primaryDark = Color.rgb(0, 127, 125)
-    private val primarySoft = Color.rgb(223, 245, 243)
-    private val ink = Color.rgb(25, 51, 49)
-    private val secondary = Color.rgb(95, 115, 113)
-    private val border = Color.rgb(214, 228, 226)
-    private val danger = Color.rgb(200, 59, 59)
-    private val dangerSoft = Color.rgb(252, 232, 232)
-    private val warning = Color.rgb(163, 90, 0)
-    private val warningSoft = Color.rgb(255, 241, 217)
-    private val success = Color.rgb(20, 122, 85)
-    private val successSoft = Color.rgb(223, 243, 233)
-    private val info = Color.rgb(49, 91, 150)
-    private val infoSoft = Color.rgb(231, 239, 251)
+    /*
+     * ★ 2026-10-17（评审 P2-13）：**主题色单一来源**。
+     *
+     * 改之前：这套颜色在 `res/values/colors.xml` 里有一份，这里又用
+     * `Color.rgb(...)` 硬编码了**同一套**值 —— 于是"改主色"要改两处，
+     * 迟早会出现"状态栏是旧绿色、按钮是新绿色"这种没人发现的不一致
+     * （评审原话：`MainActivity.kt:29-44` + `colors.xml` 双源）。
+     *
+     * ⇒ 现在 Kotlin 侧**全部从资源取**（`R.color.*`），与 `themes.xml` 里的
+     *   `colorAccent` / `statusBarColor` 读的是同一份定义，物理上不可能再不一致。
+     *   取值与原硬编码逐一核对过，**视觉零变化**（纯去重）。
+     *
+     * ⚠ 必须 `by lazy`：字段初始化在 Activity **构造期**执行，那时还没 attach，
+     *   `getColor()` 会因为没有 Resources 而崩（与本类 `ui` Handler 是同一个坑，
+     *   见下方注释）。lazy 把取值推迟到真正第一次画界面时。
+     * `getColor(int)` 自 API 23 起可用，本模块 minSdk = 26，安全。
+     */
+    private val bg: Int by lazy { getColor(R.color.background) }
+    private val surface: Int by lazy { getColor(R.color.surface) }
+    private val primary: Int by lazy { getColor(R.color.primary) }
+    private val primaryDark: Int by lazy { getColor(R.color.primary_dark) }
+    private val primarySoft: Int by lazy { getColor(R.color.primary_soft) }
+    private val ink: Int by lazy { getColor(R.color.text) }
+    private val secondary: Int by lazy { getColor(R.color.text_secondary) }
+    private val border: Int by lazy { getColor(R.color.border) }
+    private val danger: Int by lazy { getColor(R.color.danger) }
+    private val dangerSoft: Int by lazy { getColor(R.color.danger_soft) }
+    private val warning: Int by lazy { getColor(R.color.warning) }
+    private val warningSoft: Int by lazy { getColor(R.color.warning_soft) }
+    private val success: Int by lazy { getColor(R.color.success) }
+    private val successSoft: Int by lazy { getColor(R.color.success_soft) }
+    private val info: Int by lazy { getColor(R.color.info) }
+    private val infoSoft: Int by lazy { getColor(R.color.info_soft) }
     private val main = FrameLayout.LayoutParams(-1, -1)
     private lateinit var session: SessionStore
     private lateinit var repo: PatientRepository
@@ -717,5 +734,6 @@ class MainActivity : Activity() {
     }
     private fun banner(value: String, background: Int, foreground: Int) = TextView(this).apply { text = value; contentDescription = value; textSize = 14f; setTextColor(foreground); setPadding(dp(12), dp(12), dp(12), dp(12)); this.background = rounded(background, Color.TRANSPARENT, 8) }
     private fun rounded(fill: Int, stroke: Int, radius: Int) = GradientDrawable().apply { setColor(fill); if (stroke != Color.TRANSPARENT) setStroke(dp(1), stroke); cornerRadius = dp(radius).toFloat() }
-    private fun surface_alt() = Color.rgb(234, 243, 242)
+    // 同上：取自 R.color.surface_alt，不再硬编码（原 Color.rgb(234,243,242) 与 colors.xml 重复）。
+    private fun surface_alt() = getColor(R.color.surface_alt)
 }
