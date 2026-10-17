@@ -32,7 +32,21 @@ if (-not (Test-Path $exe)) { throw "找不到 $exe，先跑 build.ps1" }
 # ── 1) 跑出实测值 ─────────────────────────────────────────────────────────
 function Get-PassCount([string]$args_) {
     $out = & $exe @($args_.Split(' ')) 2>&1
-    return ([regex]::Matches(($out -join "`n"), '\[PASS\]')).Count
+    $text = ($out -join "`n")
+    # ★ 2026-10-17 评审 P1-6：**先看退出码，再看 PASS 数**。
+    #   原实现只数 `[PASS]` 行：库里夹具被前次运行污染（或连不上库）时 accept 会失败，
+    #   PASS 数随之变小，脚本却把它当成"文档写错了"报 DRIFT —— 会把人引去改文档。
+    #   现在：非 0 退出或出现 `[FAIL]` ⇒ 判定"实测不成立"，不产出可对账的数字。
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host $text
+        throw "『$args_』退出码 $LASTEXITCODE（非 0）—— 实测不成立，先修环境/换干净库，别改文档。"
+    }
+    $fails = ([regex]::Matches($text, '\[FAIL\]')).Count
+    if ($fails -gt 0) {
+        Write-Host $text
+        throw "『$args_』有 $fails 项 [FAIL] —— 实测不成立，先修失败项，别改文档。"
+    }
+    return ([regex]::Matches($text, '\[PASS\]')).Count
 }
 
 Write-Host "=== 实测（这是唯一的权威来源）==="
@@ -51,6 +65,11 @@ $triPass = ([regex]::Matches($triOut, '\[PASS\]')).Count
 $triFail = ([regex]::Matches($triOut, '\[FAIL\]')).Count
 if ($triFail -gt 0) { Write-Warning "  triagetest 有 $triFail 项失败（对账仍继续，但请先修）" }
 $actual['triagetest'] = $triPass
+# ★ final-verify 的"项数"= 它 `$specs` 里的条目数，即"一条命令跑多少道门禁"。
+#   同样从源码数：加了门禁却忘了改文档，正是本脚本存在的理由
+#   （2026-10-17 把 doc-counts 接进去，17 → 18 就是这一项）。
+$fvSrc = [System.IO.File]::ReadAllText((Join-Path $serverDir "tests\final-verify.ps1"), [System.Text.UTF8Encoding]::new($false))
+$actual['finalverify'] = ([regex]::Matches($fvSrc, "@\{\s*n = '")).Count
 # accept 用例的最大编号（AC-1…AC-N 里的 N）——由源码里 runner.acN() 的调用推导
 $accSrc = [System.IO.File]::ReadAllText((Join-Path $serverDir "src\acceptance.cj"), [System.Text.UTF8Encoding]::new($false))
 # ★ AC 编号上限：既数 `runner.acN()`（AC-1…AC-12），也认 P2 的用例（AC-P2-N）。
@@ -130,7 +149,22 @@ $checks = @(
     @{ File = "docs\P1-HANDOFF.md";   Pattern = '验收（AC-1…AC-(?:P[234]-)?(?<ac>\d+)） \| `hospital-server\.exe accept <dsn>` \| ✅ \*\*(?<n>\d+) 项\*\*'; Want = 'accept' },
     @{ File = "docs\adr\ADR-0001-号源与挂号独立MySQL路径.md"; Pattern = '`hospital-server\.exe selftest` \| ✅ \*\*(?<n>\d+) 项\*\*'; Want = 'selftest' },
     @{ File = "docs\adr\ADR-0001-号源与挂号独立MySQL路径.md"; Pattern = '`hospital-server\.exe accept <dsn>` \| ✅ \*\*(?<n>\d+) 项 / 失败 0\*\*'; Want = 'accept' },
-    @{ File = "server\README.md";     Pattern = '`src/acceptance_notice\.cj` \| AC-NOTICE-1…AC-NOTICE-(?<ac>\d+)'; Want = 'accept' }
+    @{ File = "server\README.md";     Pattern = '`src/acceptance_notice\.cj` \| AC-NOTICE-1…AC-NOTICE-(?<ac>\d+)'; Want = 'accept' },
+    # ── 2026-10-17 补的对账点：README / 总览 / 系统设计 / 部署 里"跑出来的数字" ──
+    #    加这些的理由：这几处原先靠人抄，triagetest 110→139、accept 762→777 都漂过一次。
+    @{ File = "README.md";            Pattern = '`accept` \*\*(?<n>\d+) 条断言\*\*'; Want = 'accept' },
+    @{ File = "README.md";            Pattern = '`triagetest` (?<n>\d+) \+'; Want = 'triagetest' },
+    @{ File = "README.md";            Pattern = '`final-verify` (?<n>\d+)/\d+ 全绿'; Want = 'finalverify' },
+    @{ File = "docs\PROJECT-OVERVIEW.md"; Pattern = '`triagetest` (?<n>\d+) \+'; Want = 'triagetest' },
+    @{ File = "docs\PROJECT-OVERVIEW.md"; Pattern = '`accept` (?<n>\d+) 断言'; Want = 'accept' },
+    @{ File = "docs\PROJECT-OVERVIEW.md"; Pattern = '`final-verify` (?<n>\d+) 项门禁'; Want = 'finalverify' },
+    @{ File = "docs\SYSTEM-DESIGN.md";    Pattern = '(?<n>\d+) 条断言的验收套件'; Want = 'accept' },
+    @{ File = "docs\SYSTEM-DESIGN.md";    Pattern = '\| \*\*(?<n>\d+) 条断言\*\* \|'; Want = 'accept' },
+    @{ File = "docs\SYSTEM-DESIGN.md";    Pattern = '\| 全量门禁 \| `final-verify\.ps1` \| (?<n>\d+)/\d+ 全绿 \|'; Want = 'finalverify' },
+    @{ File = "docs\DEPLOYMENT.md";       Pattern = '全量验收（(?<n>\d+) 项）'; Want = 'accept' },
+    @{ File = "docs\DEPLOYMENT.md";       Pattern = '一次跑完 \*\*(?<n>\d+) 项\*\*'; Want = 'finalverify' },
+    # 2026-10-17：DEPLOYMENT 的耗时/项数表曾漏改 triagetest（110 → 139），加一条对账点钉住
+    @{ File = "docs\DEPLOYMENT.md";       Pattern = '`通过 (?<n>\d+) 项，失败 0 项`'; Want = 'triagetest' }
 )
 
 # ── 3) 对账 ───────────────────────────────────────────────────────────────

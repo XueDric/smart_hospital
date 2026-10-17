@@ -97,14 +97,22 @@ Write-Host "  库  : $($My.Db)@$($My.DbHost):$($My.Port)"
 # ── [0] 密钥
 Write-Host ""
 Write-Host "[0] 密钥与前置"
-$key = if (-not [string]::IsNullOrEmpty($ApiKey)) { $ApiKey } else { [Environment]::GetEnvironmentVariable($KeyEnv) }
-if ([string]::IsNullOrEmpty($key)) {
-    Write-Host "  [SKIP] 既没给 -ApiKey，环境变量 $KeyEnv 也没设 ⇒ 无法做真模型验证。" -ForegroundColor Yellow
-    Write-Host "         这不是失败：缺密钥不是缺陷。补上后重跑。" -ForegroundColor Yellow
-    exit 0
+# ★ 2026-10-17：默认改走**内置引用** `builtin:demo`（密钥常量在 server/src/ai_builtin.cj）。
+#   理由：本脚本原来"没密钥就 SKIP"，于是一直没人跑过 —— 评审把它记成
+#   「默认配置下模型一次都不调」。现在开箱即用：不传 -ApiKey 也能真调一次。
+$envKey = if (-not [string]::IsNullOrEmpty($ApiKey)) { $ApiKey } else { [Environment]::GetEnvironmentVariable($KeyEnv) }
+$keyRef = "builtin:demo"
+$key = $envKey
+if (-not [string]::IsNullOrEmpty($envKey)) {
+    $keyRef = "env:" + $KeyEnv
+    Check "拿到密钥（长度 $($envKey.Length)，不回显内容）" ($envKey.Length -ge 16)
+    Check "形态像密钥（sk- 前缀）" ($envKey.StartsWith("sk-")) ("前缀 " + $envKey.Substring(0,3))
+    Write-Host "  密钥来源：环境变量 $KeyEnv（引用 $keyRef）" -ForegroundColor DarkGray
+} else {
+    Write-Host "  密钥来源：内置常量（引用 builtin:demo）—— 见 server/src/ai_builtin.cj" -ForegroundColor DarkGray
+    Write-Host "  想改用你自己的密钥：-ApiKey sk-... 或先设环境变量 $KeyEnv" -ForegroundColor DarkGray
+    # 形状合法性由下面 [1] 的 PUT 结果证明（validateKeyRef 不认就写不进去）。
 }
-Check "拿到密钥（长度 $($key.Length)，不回显内容）" ($key.Length -ge 16)
-Check "形态像密钥（sk- 前缀）" ($key.StartsWith("sk-")) ("前缀 " + $key.Substring(0,3))
 
 $admTok = Tok "admin" $AdminPw
 
@@ -115,7 +123,7 @@ $pairs = @(
     @('ai.enabled', '1'),
     @('ai.endpoint', 'https://api.deepseek.com/chat/completions'),
     @('ai.model', 'deepseek-chat'),
-    @('ai.key_ref', ("env:" + $KeyEnv)),
+    @('ai.key_ref', $keyRef),
     @('ai.timeout_secs', '30'),
     @('ai.max_tokens', '512')
 )
@@ -134,7 +142,40 @@ Write-Host "[2] 密钥不落库（P3 的机制性纪律）"
 $rows = One "SELECT COUNT(*) FROM ai_setting WHERE v LIKE '%sk-%'"
 Check "ai_setting 里没有任何一行含 sk-（实得 $rows）" ("$rows" -eq '0')
 $kv = One "SELECT v FROM ai_setting WHERE k = 'ai.key_ref'"
-Check "库里存的是引用而不是密钥本体（实得 $kv）" ($kv -eq ("env:" + $KeyEnv))
+Check "库里存的是引用而不是密钥本体（实得 $kv）" ($kv -eq $keyRef)
+
+# ── [1b] 让「默认对话模型」那一行指向 DeepSeek
+#
+# ★ 为什么必须有这一步：`ai_setting.options()` 的口径是 **`ai_model` 里"默认对话模型"
+#   那一行整体覆盖 KV**。存量库里那一行可能还指着别的提供方（本机实测：百练
+#   `dashscope.aliyuncs.com`）⇒ 光配 KV 是没用的，分诊会拿着 DeepSeek 的 key
+#   去连阿里云，症状是 401/404 而"配置看起来全对"。
+Write-Host ""
+Write-Host "[1b] 同步「默认对话模型」行到 DeepSeek"
+$ml = Req 'models' 'GET' '/api/v1/admin/ai/models' @("Authorization: Bearer $admTok") $null
+$allModels = @(($ml.Body | ConvertFrom-Json).data.items)
+$chatRow = @($allModels | Where-Object { $_.kind -eq 'chat' -and $_.is_default })[0]
+if ($null -eq $chatRow) {
+    $chatRow = @($allModels | Where-Object { $_.kind -eq 'chat' })[0]
+}
+if ($null -eq $chatRow) {
+    # 一条都没有：建一条默认对话模型
+    $mk = Req 'mkchat' 'POST' '/api/v1/admin/ai/models' @("Authorization: Bearer $admTok") `
+        '{"name":"默认对话模型","kind":"chat","provider":"DeepSeek","base_url":"https://api.deepseek.com","model":"deepseek-chat","temperature":0.3,"max_tokens":512,"key_ref":"","enabled":true,"is_default":true}'
+    $chatRow = ($mk.Body | ConvertFrom-Json).data.model
+    Check "新建默认对话模型（HTTP $($mk.Http)）" ($mk.Http -eq 200 -or $mk.Http -eq 201) ("id=" + $chatRow.id)
+} else {
+    $upd = '{"provider":"DeepSeek","base_url":"https://api.deepseek.com","model":"deepseek-chat","temperature":0.3,"max_tokens":512,"key_ref":"","enabled":true,"is_default":true}'
+    $u = Req 'upchat' 'PUT' ("/api/v1/admin/ai/models/" + $chatRow.id) @("Authorization: Bearer $admTok") $upd
+    Check "默认对话模型行已指向 DeepSeek（PUT HTTP $($u.Http)）" ($u.Http -eq 200) ("id=" + $chatRow.id)
+}
+# 连通性测试：真的发一次请求（管理台那个"测试"按钮走的是同一段代码）
+$t = Req 'mtest' 'POST' ("/api/v1/admin/ai/models/" + $chatRow.id + "/test") @("Authorization: Bearer $admTok") '{}'
+$tj = $t.Body | ConvertFrom-Json
+$probe = $tj.data.probe
+Check "★ 模型连通性测试成功（HTTP $($t.Http)，request_url=$($probe.request_url)）" `
+      ($t.Http -eq 200 -and $probe.ok -eq $true) `
+      ("elapsed=" + $probe.elapsed_ms + "ms http=" + $probe.http_status + " sample=" + $probe.sample + " reason=" + $probe.reason)
 
 # ── [3] 夹具
 Write-Host ""
@@ -166,6 +207,11 @@ Check "科室「AILive呼吸科」+ 医生 + 有号排班就绪（schedule=$sc�
 #   它红的原因是"库里没有呼吸内科"，与"模型有没有改 options"毫无关系。
 #   📌 纪律（本仓 AK/AM 同源）：**断言必须建立在自己制造的前提上**，
 #   不能建立在"上一轮测试碰巧留下的残留"上 —— 那正是 `base-check` 假红的成因。
+# ⚠ 幂等：先清掉上一轮（可能中途崩掉、没走到 [6] 清理）留下的同名夹具，
+#   否则 `department.code` 的唯一键会让整段 SQL 失败（实测 1062 Duplicate entry 'AILIVERESP'）。
+$null = SqlFile "DELETE FROM schedule WHERE department_id IN (SELECT id FROM department WHERE name LIKE 'AILive%');
+DELETE FROM doctor     WHERE name LIKE 'AILive%';
+DELETE FROM department WHERE name LIKE 'AILive%';"
 $null = SqlFile "DELETE FROM schedule WHERE department_id IN (SELECT id FROM department WHERE name = 'AILive呼吸内科');
 INSERT INTO department (name, code, enabled, created_at)
   VALUES ('AILive呼吸内科', 'AILIVERESP', 1, 0);
@@ -178,6 +224,15 @@ $wantDept = [int](One "SELECT id FROM department WHERE name = 'AILive呼吸内�
 $wantSch = [int](One "SELECT COUNT(*) FROM schedule WHERE department_id = $wantDept AND remain_num > 0 AND enabled = 1 AND work_date >= '2026-10-10'")
 Check "★ 前提就绪：规则命中的「AILive呼吸内科」确实有号（dept=$wantDept schedule=$wantSch）" `
       ($wantDept -gt 0 -and $wantSch -ge 1)
+
+# ★ 患者档案必须**自己造**（同上方 ① 的纪律）：`ref_id` 指向 `patient.id`，
+#   服务端会校验"账号绑定的业务档案存在"（`VALIDATION_FAILED 账号绑定的业务档案不存在`）。
+#   原来写死 950001，而那个 id 是别的套件留下的 —— 换库/清库后必然 400。
+$null = SqlFile "INSERT INTO patient (id, phone, name, gender, birth_date, created_at)
+  VALUES (950001, '13500009500', 'AILive患者', 'M', '1990-01-01', 0)
+  ON DUPLICATE KEY UPDATE name = 'AILive患者';"
+$patRef = [int](One "SELECT id FROM patient WHERE id = 950001")
+Check "★ 前提就绪：患者档案 950001 存在（实得 $patRef）" ($patRef -eq 950001)
 
 $uid = 0
 $r = Req 'mkpat' 'POST' '/api/v1/admin/users' @("Authorization: Bearer $admTok") '{"login_name":"ailivepat","password":"Zq4nRw8t","role":"patient","ref_id":950001}'
@@ -235,7 +290,7 @@ $denyPat = 'mg|毫克|剂量|服用|口服|处方|注射|输液|诊断为|确诊
 Check "ai_note 不含疑似诊断/用药词汇（安全清理层生效）" (-not ($note -match $denyPat))
 Check "ai_note 是单行纯文本（无换行、无 Markdown 标记）" `
       ((-not ($note -match "[\r\n]")) -and (-not ($note -match '\*\*|##')))
-Check "响应体里不含密钥" (-not ($r.Body -match [regex]::Escape($key)))
+Check "响应体里不含密钥（任何 sk- 形态的串都不出现）" (-not ($r.Body -match 'sk-[0-9a-fA-F]{8,}'))
 
 # ── [5] 真实调用计数
 Write-Host ""

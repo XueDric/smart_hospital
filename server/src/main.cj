@@ -704,7 +704,7 @@ func serve(args: Array<String>): Int64 {
         return 2
     }
     let dsn = args[0]
-    var port: UInt16 = 8080
+    var port: UInt16 = 8091  // ★ 2026-10-17 评审 P2-15：8080→8091，与客户端默认值对齐（理由见 docs/整改方案-2026-10-17.md）
     var bindAddr = "127.0.0.1"
     var devAuth = false
     var prod = false
@@ -784,8 +784,8 @@ func serve(args: Array<String>): Int64 {
              * 为什么需要这条：本工具链的仓颉运行时**无法接受含非 ASCII 的 argv** ——
              *   在 main 之前就抛 `IllegalArgumentException: Invalid unicode scalar value`，
              *   连 usage 都打不出来（搬迁前的 API 踩坑记录 坑 6 记过同一件事）。
-             *   而本仓库路径就含中文（`智能医院客户端`），于是
-             *   `--tls-cert "E:\...\智能医院客户端\server\certs\cert.pem"` **必然启动失败**。
+             *   仓库已改名为 `E:\harmonyOS\smart_hospital`（纯 ASCII），仓内路径现在可以直接用；
+             *   但部署目录仍可能含中文（历史根因：旧仓库名「智能医院客户端」），那时 `--tls-cert` 仍必然失败。
              *   （实测：把同一份证书拷到 `C:\Temp\...` 纯 ASCII 路径就能起来。）
              *
              * 这个参数文件本身用 ASCII 路径，内容（可含中文）用 UTF-8 读 —— 绕开 argv 限制。
@@ -995,7 +995,7 @@ func serve(args: Array<String>): Int64 {
                 refKind = "env"
             } else if (keyRefFilePath(aiOpt.keyRef).isSome()) {
                 refKind = "file"
-            }
+            } else if (keyRefBuiltinName(aiOpt.keyRef).isSome()) { refKind = "builtin" }
             eprintln("AI：**已启用** — 模型「${aiOpt.modelName}」，endpoint ${aiSafeHost(aiOpt.endpoint)}，密钥引用 ${refKind}")
             /*
              * ★ 2026-10-17（S13 修·续）：**"已启用"不等于"能调用"**。

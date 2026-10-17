@@ -13,7 +13,7 @@
 # ⚠ 原生命令写 stderr + `2>&1` 在 EAP=Stop 下会抛 NativeCommandError ⇒ 读 create-admin 口令时局部放宽。
 
 $ErrorActionPreference = 'Stop'
-$server = 'E:\harmonyOS\智能医院客户端\server'
+$server = 'E:\harmonyOS\smart_hospital\server'
 $exe = "$server\build\hospital-server.exe"
 $dsn = 'mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital_test'
 $log = "$env:TEMP\final-verify.log"
@@ -89,12 +89,18 @@ try {
         # 它要 DB 直连（common.ps1 的 MySql 客户端）与管理员口令，故排在 ai-model-check 之后。
         @{ n = 'ai-telemetry-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'rate-limit-check'; p = @{ Base = $dev; AdminPw = $pw } },
-        @{ n = 'p1-extra-check'; p = @{ Base = $dev; AdminPw = $pw } }
+        @{ n = 'p1-extra-check'; p = @{ Base = $dev; AdminPw = $pw } },
+        # doc-counts（评审 P1-6）：**文档里的数字必须是实测出来的**。它自己会跑 accept 与
+        # triagetest 数 [PASS] 行，再和 README/CHANGELOG/PROJECT-OVERVIEW 里的数字对账；
+        # 数字对不上就 exit 1。原先它只"能手动跑"、没进任何门禁 —— 所以文档能一直烂着。
+        @{ n = 'doc-counts'; p = @{ Dsn = $dsn } }
     )
 
     $results = @()
     foreach ($s in $specs) {
-        $label = "$($s.n)$(if ($s.p.Mode) { " -Mode $($s.p.Mode)" } elseif ($s.p.Base -ne $dev) { " @$($s.p.Base)" })"
+        $label = $s.n
+        if ($s.p.Mode) { $label = "$label -Mode $($s.p.Mode)" }
+        elseif ($s.p.Base -and $s.p.Base -ne $dev) { $label = "$label @$($s.p.Base)" }
         Log "===== $label ====="
         $code = -99
         try {

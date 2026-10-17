@@ -86,12 +86,22 @@ let AI_MODEL_C_CREATED_AT: Int64 = 11
 let AI_MODEL_C_UPDATED_AT: Int64 = 12
 let AI_MODEL_C_UPDATED_BY: Int64 = 13
 
-/* 播种用的默认两行（与产品截图上的两行一致；只在表**完全为空**时写入）。 */
+/*
+ * 播种用的默认两行（只在表**完全为空**时写入）。
+ *
+ * ★ 2026-10-17 评审整改：对话模型默认改成 **DeepSeek**（与 `ai_builtin.cj` 里
+ *   内置的演示凭据配套 —— 开箱即用必须"默认行指向那把 key 能用的服务"）。
+ *   向量模型**不跟着改**：DeepSeek 没有 `/embeddings` 端点，硬指过去只会 404，
+ *   所以向量行仍指百练（需要时由运维填它自己的 `key_ref`）。
+ *   ⚠ 这一行"不假装能用"是刻意的：向量检索的真实 provider 未接入（评审 P2-6）。
+ */
 public let AI_MODEL_SEED_CHAT_NAME: String = "默认对话模型"
 public let AI_MODEL_SEED_EMBEDDING_NAME: String = "默认向量模型"
-public let AI_MODEL_SEED_PROVIDER: String = "百练"
-public let AI_MODEL_SEED_BASE_URL: String = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-public let AI_MODEL_SEED_CHAT_MODEL: String = "qwen-plus"
+public let AI_MODEL_SEED_PROVIDER: String = "DeepSeek"
+public let AI_MODEL_SEED_BASE_URL: String = "https://api.deepseek.com"
+public let AI_MODEL_SEED_CHAT_MODEL: String = "deepseek-chat"
+public let AI_MODEL_SEED_EMBEDDING_PROVIDER: String = "百练"
+public let AI_MODEL_SEED_EMBEDDING_BASE_URL: String = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 public let AI_MODEL_SEED_EMBEDDING_MODEL: String = "text-embedding-v3"
 public let AI_MODEL_SEED_CHAT_TEMPERATURE: Float64 = 0.3
 public let AI_MODEL_SEED_MAX_TOKENS: Int64 = 2048
@@ -293,13 +303,16 @@ public func aiModelValidate(name: String, kind: String, provider: String, baseUr
     return ""
 }
 
-/* 密钥引用的类型（env / file / ""），**不回显引用本体**（同 aiSettingsJson 的纪律）。 */
+/* 密钥引用的类型（env / file / builtin / ""），**不回显引用本体**（同 aiSettingsJson 的纪律）。 */
 public func aiModelKeyRefKind(keyRef: String): String {
     if (keyRefEnvName(keyRef).isSome()) {
         return "env"
     }
     if (keyRefFilePath(keyRef).isSome()) {
         return "file"
+    }
+    if (keyRefBuiltinName(keyRef).isSome()) {
+        return "builtin"
     }
     return ""
 }
@@ -744,9 +757,12 @@ public class AiModelRepo {
  *      为什么：升级后 AI 必须**继续能用**。若这时什么都不建，
  *      解析逻辑虽然会回退旧 KV（所以也不会坏），但管理台上会**一条都没有** ——
  *      运维会以为"配置丢了"（体验问题，也是可解释性问题）。
- *   ② 全新库 ⇒ 写入与产品截图一致的两行示例（对话 + 向量），
- *      `enabled = 1` 但 `key_ref` 为空 ⇒ AI **仍然不可用**，
- *      直到运维填好密钥引用。这一步只是"给一个可编辑的起点"。
+ *   ② 全新库 ⇒ 写入与产品截图一致的两行示例（对话 + 向量），`enabled = 1`。
+ *      ★ 2026-10-17（评审整改）：密钥引用现在**默认就有**（`ai.key_ref` 默认
+ *      `builtin:demo`，见 `server/src/ai_builtin.cj`），所以全新库装完即能真调模型
+ *      —— 评审原话是"默认零模型调用，智能深度无法现场证明"。两行里的 `key_ref`
+ *      仍留空（= 用全局那把内置引用），换真实密钥时只改 KV 一处即可。
+ *      要停用 AI，把 `ai.enabled` 置 0（`docs/Q6-合规决策记录.md` 的口径不变）。
  *
  * ⚠ 只判"表空不空"，**不覆盖任何已有行**（幂等，可重复调用）。
  */
@@ -757,7 +773,15 @@ public func aiModelSeedDefaults(repo: AiModelRepo, settings: AiSettingsRepo, now
     var n: Int64 = 0
     let ep = settings.get(SET_AI_ENDPOINT, now).trimAscii()
     let md = settings.get(SET_AI_MODEL, now).trimAscii()
-    if (ep.size > 0 && md.size > 0) {
+    /*
+     * ★ 2026-10-17（评审整改）：**必须同时要求"库里有这一行"**。
+     *   原来只判 `ep.size > 0 && md.size > 0` —— 在默认值为空串的年代这恰好等价于
+     *   "存量库配过"；现在默认值是内置 DeepSeek 端点/模型，全新库也会落到这个分支，
+     *   于是只播 1 行、provider 还写"（继承自旧配置）"，向量模型直接缺失。
+     *   判据改成"真有行 + 非空"，两个条件都满足才算存量配置。
+     */
+    if (ep.size > 0 && md.size > 0 && settings.hasRow(SET_AI_ENDPOINT) &&
+        settings.hasRow(SET_AI_MODEL)) {
         let m = AiModel()
         m.name = AI_MODEL_SEED_CHAT_NAME
         m.kind = AI_MODEL_KIND_CHAT
@@ -791,8 +815,8 @@ public func aiModelSeedDefaults(repo: AiModelRepo, settings: AiSettingsRepo, now
     let emb = AiModel()
     emb.name = AI_MODEL_SEED_EMBEDDING_NAME
     emb.kind = AI_MODEL_KIND_EMBEDDING
-    emb.provider = AI_MODEL_SEED_PROVIDER
-    emb.baseUrl = AI_MODEL_SEED_BASE_URL
+    emb.provider = AI_MODEL_SEED_EMBEDDING_PROVIDER
+    emb.baseUrl = AI_MODEL_SEED_EMBEDDING_BASE_URL
     emb.model = AI_MODEL_SEED_EMBEDDING_MODEL
     /* 向量模型没有温度语义 ⇒ 存 0（并在页面上不展示温度列，见 admin-web）。 */
     emb.temperature = 0.0

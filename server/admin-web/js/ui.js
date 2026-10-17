@@ -116,6 +116,19 @@ function fmtPermille(v) {
 
 function fmtNum(v) { return (v === undefined || v === null) ? '—' : String(v); }
 
+/*
+ * 分诊来源的展示名。
+ * 2026-10-17（评审 P2-7）：后端 `triage.source` 不再写死 "rules"，
+ * 而是由 triage_stat.source 的分布推导，取值集合见 dashboard.cj：
+ *   model / rules / mixed / none
+ * 这里只做**展示映射**，不做任何兜底猜测 —— 未知值原样显示，免得又把话说圆。
+ */
+const TRIAGE_SOURCE_LABEL = { model: '模型', rules: '规则', mixed: '混合', none: '无记录' };
+function srcLabelOf(s) {
+  if (!s) { return '—'; }
+  return TRIAGE_SOURCE_LABEL[s] || String(s);
+}
+
 /* --------------------------------- 弹窗 -------------------------------- */
 
 /*

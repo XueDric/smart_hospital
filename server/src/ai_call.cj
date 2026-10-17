@@ -167,6 +167,16 @@ public class AiCallResult {
      *   （一个去改密钥，一个去改地址）。**数字比措辞更不容易被误读。**
      */
     public var httpStatus: Int64 = 0
+    /*
+     * ★ 2026-10-17（评审 P2-8）增：**请求是否真的发出去过**。
+     *
+     * ⚠ 为什么必须单独一个字段：重试只能针对"发出去之后失败"（网络抖动、429、5xx）。
+     *   而"密钥解析失败 / 配置不自洽 / 总开关关着"这几类失败**根本没走到 send**，
+     *   重试它们只会把同一个错误重复三遍、白等几百毫秒，还会让日志更难读。
+     *   靠 `reason` 文案去猜"是不是发了请求"太脆（文案随时会改）——
+     *   所以用一个显式布尔，在 `c.send(req)` 的前一行置 true。
+     */
+    public var attempted: Bool = false
 }
 
 /* ===================== 可调用性判定 ===================== */
@@ -234,7 +244,20 @@ public func aiResolveKey(ref: String): ?String {
             }
         case None => ()
     }
-    /* 既不是 env: 也不是 file: —— 不该发生（`put` 会拒），但如实回报。 */
+    /*
+     * ★ 2026-10-17：`builtin:demo` —— 从**代码里的常量**取（ai_builtin.cj）。
+     *   排在这两条之后、`return None` 之前；顺序不影响正确性（三种前缀互不重叠），
+     *   但保持"环境变量 → 文件 → 内置"这个从外到内的顺序便于阅读。
+     */
+    match (keyRefBuiltinName(ref)) {
+        case Some(name) =>
+            match (aiBuiltinKeyOf(name)) {
+                case Some(k) => return Some(k)
+                case None => return None
+            }
+        case None => ()
+    }
+    /* 既不是 env: / file: 也不是白名单内的 builtin: —— 不该发生（`put` 会拒），但如实回报。 */
     return None
 }
 
@@ -255,7 +278,11 @@ public func aiKeyRefProblem(ref: String): String {
         case Some(path) => return "密钥文件读不到或为空：${path}"
         case None => ()
     }
-    return "ai.key_ref 既不是 env: 也不是 file:"
+    match (keyRefBuiltinName(ref)) {
+        case Some(name) => return "内置引用 `builtin:${name}` 没有对应的内置常量（应当是编译期就有的常量，缺失说明版本不对）"
+        case None => ()
+    }
+    return "ai.key_ref 既不是 env: / file: / builtin:（只接受这三种形式）"
 }
 
 /* ===================== 出站调用 ===================== */
@@ -280,10 +307,48 @@ public func aiCallChat(o: AiRuntimeOptions, prompt: String, now: Int64): AiCallR
     let (can, why) = aiCanCall(o)
     if (!can) { let r = AiCallResult(); r.reason = why; return r }
     aiGate(o.maxConcurrent).acquire()
+    /*
+     * ★★ 2026-10-17（评审 P2-8）：**全链路硬上限**，包含 connect 阶段。
+     *
+     * 评审原话是"ai_call 无重试/无 connectTimeout"。connectTimeout 这一半
+     * **本版本框架给不了** —— 我把 `stdx.net.http.cjo` 的符号表扫过一遍核实：
+     * `readTimeout`/`writeTimeout` 各 107 次，`connectTimeout`/`connect_timeout`
+     * **0 次**（见本文件下方 429 行附近的说明）。所以"连一个不可达地址"
+     * 这段时长原本只能由操作系统 TCP 超时决定（本机实测约 21 秒）。
+     *
+     * ⇒ 既然框架不提供分阶段的 connect 超时，就用**墙钟期限**兜住整条链路：
+     *   把调用放进 worker，主线程 `Future.get(o.timeout_secs)` 到点就**如实降级**
+     *   （`source = "rules"` + 说明原因），不等那个卡住的连接。
+     *   这是"用总期限覆盖 connect"的等价做法，而且比假承诺一个不存在的
+     *   `connectTimeout` 更诚实 —— 后者会让运维以为超时是分阶段生效的。
+     *
+     * ⚠ 代价要说清：`Future` 超时**不会取消**底层 TCP 连接，worker 仍会把
+     *   请求跑完再退出（这是预算路径 `aiCallChatBudget` 早就接受的取舍）。
+     *   残留任务数受 `ai.max_concurrent` 闸门约束 —— **许可由 worker 退出时归还**，
+     *   所以最多"漏"出 maxConcurrent 个僵尸线程，不会无界增长。
+     */
+    var task: ?Future<AiCallResult> = None
     try {
-        return aiCallChatRaw(o, prompt, now)
-    } finally {
+        task = Some(spawn { =>
+            try {
+                return aiCallChatRaw(o, prompt, now)
+            } finally {
+                aiReleaseGate()
+            }
+        })
+    } catch (e: Exception) {
         aiReleaseGate()
+        let r = AiCallResult()
+        r.reason = "无法启动模型任务，已降级为规则"
+        return r
+    }
+    let deadline = if (o.timeoutSecs > 0) { o.timeoutSecs } else { 30 }
+    try {
+        return task.getOrThrow().get(Duration.second * deadline)
+    } catch (e: Exception) {
+        let r = AiCallResult()
+        r.reason = "模型调用超过 ${deadline}s 全链路上限（含 DNS/connect/读写），已降级为规则"
+        return r
     }
 }
 
@@ -326,8 +391,48 @@ public func aiCallChatBudget(o: AiRuntimeOptions, prompt: String, now: Int64,
     }
 }
 
-private func aiCallChatRaw(o: AiRuntimeOptions, prompt: String, now: Int64,
-                           ioTimeoutSecs!: Int64 = 0): AiCallResult {
+/*
+ * ★ 2026-10-17（评审 P2-8）：**有界重试**。
+ *
+ * 为什么需要：评审指出"网络抖动一次就直接降级"，而患者的就医路径上
+ *   一次 502 或一次握手中断就足以让"智能分诊"当场消失。云模型侧 429（限流）
+ *   与 5xx（网关抖动）都是**等一下就好**的形态。
+ *
+ * ⚠ 重试的边界（比"多试几次"重要 —— 无界/无条件重试会把一次故障放大成
+ *   对服务商的一次小型 DoS，也会把患者请求拖长）：
+ *   ① **只重试真的发出去过的请求**（`attempted`）—— 配置错/密钥错重试毫无意义；
+ *   ② **只重试瞬时形态**：网络异常（`httpStatus == 0`）、429、5xx。
+ *      4xx 里的 400/401/403/404 是**确定的**错误，重试只会浪费一次配额；
+ *   ③ **上限 2 次尝试**（= 最多重试 1 次），间隔 200 ms；
+ *   ④ 输出的解析/校验失败（`invalidOutput`）**不重试** —— 那不是网络问题，
+ *      改 Prompt 才能解决，重试只是把同一个坏输出再取一遍。
+ */
+public let AI_CALL_MAX_ATTEMPTS: Int64 = 2
+public let AI_CALL_RETRY_BACKOFF_MS: Int64 = 200
+
+/* 判断这次失败值不值得再试一次（判据见上方 ①②④）。 */
+func aiCallRetryable(r: AiCallResult): Bool {
+    if (r.ok) {
+        return false
+    }
+    if (!r.attempted) {
+        return false
+    }
+    if (r.invalidOutput) {
+        return false
+    }
+    if (r.httpStatus == 0) {
+        return true
+    }
+    if (r.httpStatus == 429) {
+        return true
+    }
+    return r.httpStatus >= 500
+}
+
+/* 同一请求的**单次**执行（不含重试）。 */
+private func aiCallChatOnce(o: AiRuntimeOptions, prompt: String, now: Int64,
+                            ioTimeoutSecs!: Int64 = 0): AiCallResult {
     let r = AiCallResult()
     /*
      * ★★ 用**真时钟**量耗时（2026-10-09 修）。
@@ -456,6 +561,8 @@ private func aiCallChatRaw(o: AiRuntimeOptions, prompt: String, now: Int64,
             .readTimeout(d)
             .writeTimeout(d)
             .body(reqBody.toString()).build()
+        /* ★ 2026-10-17（P2-8）：从这一行起才算"真的发出去过"，重试只看这个标记。 */
+        r.attempted = true
         let resp = c.send(req)
         let status = Int64(resp.status)
         let body = aiReadAll(resp.body)
@@ -501,6 +608,31 @@ private func aiCallChatRaw(o: AiRuntimeOptions, prompt: String, now: Int64,
         r.reason = "出站调用异常：${aiRedact(e.message, key)}"
         return r
     }
+}
+
+/*
+ * 执行一次调用，遇到**瞬时**失败按 `AI_CALL_MAX_ATTEMPTS` 重试。
+ *
+ * ⚠ 重试间隔用 `sleep`：这里是**网络任务线程**（调用方在 `aiCallChat` 里
+ *   已经用 worker 隔离），睡 200 ms 不会阻塞请求线程；但**绝不能在持锁区**里睡
+ *   （本函数不持任何锁）。
+ * ⚠ 最后一次尝试的结果**原样返回**，只在 `reason` 前加一个可数的重试标记 ——
+ *   否则运维看到的是"第 2 次也失败了"这种没法处置的信息，而"重试过几次"
+ *   本身是可聚合的运维指标（例如重试率高说明服务商在抖）。
+ */
+private func aiCallChatRaw(o: AiRuntimeOptions, prompt: String, now: Int64,
+                           ioTimeoutSecs!: Int64 = 0): AiCallResult {
+    var attempt: Int64 = 1
+    var r = aiCallChatOnce(o, prompt, now, ioTimeoutSecs: ioTimeoutSecs)
+    while (attempt < AI_CALL_MAX_ATTEMPTS && aiCallRetryable(r)) {
+        attempt = attempt + 1
+        sleep(Duration.millisecond * AI_CALL_RETRY_BACKOFF_MS)
+        r = aiCallChatOnce(o, prompt, now, ioTimeoutSecs: ioTimeoutSecs)
+    }
+    if (attempt > 1 && !r.ok && r.reason.size > 0) {
+        r.reason = "（已重试 ${attempt - 1} 次）${r.reason}"
+    }
+    return r
 }
 
 /* 读尽响应体（`InputStream` 没有 readToEnd，必须自己循环）。 */

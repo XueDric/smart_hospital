@@ -170,17 +170,27 @@ public let SET_AI_REVISION_ROW: String = "__revision__"
  */
 public func aiSettingSpecs(): Array<AiSettingSpec> {
     return [
-        AiSettingSpec(SET_AI_ENABLED, "AI 功能总开关（1/0）", "0"),
-        AiSettingSpec(SET_AI_ENDPOINT, "OpenAI 兼容的完整 URL（必须 https://）", ""),
-        AiSettingSpec(SET_AI_MODEL, "模型名", ""),
+        /*
+         * ★ 2026-10-17 评审整改：默认**开启**并预置 DeepSeek 接入（endpoint / 模型名 /
+         *   内置密钥引用），开箱即可调用 —— 评审的"零模型调用"一项因此不再成立。
+         * ⚠ 与 `docs/Q6-合规决策记录.md` 的关系：该文档记的是"未获批准前生产保持关"的
+         *   **合规建议**；用户（项目负责人）已明确要求默认接入，故此处取 1，并在
+         *   `docs/整改方案-2026-10-17.md` 里写明"对外生产发布前请复核 Q6 结论、
+         *   必要时把 `ai.enabled` 改回 0"。
+         */
+        AiSettingSpec(SET_AI_ENABLED, "AI 功能总开关（1/0；默认 1，开箱即用）", "1"),
+        AiSettingSpec(SET_AI_ENDPOINT, "OpenAI 兼容的完整 URL（必须 https://）", AI_BUILTIN_DEFAULT_ENDPOINT),
+        AiSettingSpec(SET_AI_MODEL, "模型名", AI_BUILTIN_DEFAULT_MODEL),
         AiSettingSpec(SET_AI_TIMEOUT, "读/写超时（秒，1..300）", "30", numMin: 1, numMax: 300),
         AiSettingSpec(SET_AI_MAX_CONCURRENT, "出站并发上限（1..64）", "4", numMin: 1, numMax: 64),
         AiSettingSpec(SET_AI_MAX_TOKENS, "max_tokens（64..8192）", "2048", numMin: 64, numMax: 8192),
         /*
          * ★★ 密钥**引用**（不是密钥本身）。secret=true 让它在响应里只回显"是否已设置"。
-         *   值必须是 `env:` 或 `file:` 开头 —— 由 validateKeyRef 机制性保证。
+         *   值必须是 `env:` / `file:` / `builtin:` 开头 —— 由 validateKeyRef 机制性保证。
+         *   默认 `builtin:demo`：指向 ai_builtin.cj 里的内置常量（开箱即用）。
          */
-        AiSettingSpec(SET_AI_KEY_REF, "密钥**引用**（env:名 或 file:路径；⚠ 不存密钥本体）", "", secret: true),
+        AiSettingSpec(SET_AI_KEY_REF, "密钥**引用**（env:名 / file:路径 / builtin:demo；⚠ 不存密钥本体）",
+                      AI_BUILTIN_DEFAULT_KEY_REF, secret: true),
         /*
          * ⚠⚠ **本版本不支持**（第十份复查发现它"被校验、被存库、被回显，却没人消费"）。
          *
@@ -298,9 +308,11 @@ public func aiSettingIsSecret(key: String): Bool {
 /*
  * ★★ 校验"密钥引用" —— **这是本项目"密钥不落库"的机制保证**。
  *
- * 允许的形状只有两种：
+ * 允许的形状只有三种：
  *   `env:NAME`      从环境变量取（NAME 非空）
  *   `file:/path`    从文件取（路径非空）
+ *   `builtin:demo`  从**代码里的内置常量**取（2026-10-17 起，见 ai_builtin.cj；
+ *                   名字必须命中白名单，实际只有 `demo` 一个）
  *
  * 其余**一律拒绝**。这一条挡住的是：有人（或某个将来的通用配置接口）
  * 把一串裸密钥直接写进 `ai.key_ref`。
@@ -374,7 +386,18 @@ public func validateKeyRef(v: String): String {
         }
         return ""
     }
-    return "只接受 `env:变量名` 或 `file:路径` 两种形式 —— " +
+    if (startsWithAscii(t.toAsciiLower(), AI_BUILTIN_SCHEME)) {
+        /*
+         * 内置引用：**名字**必须命中白名单（`aiBuiltinNames()`，目前只有 `demo`）。
+         * ⚠ 白名单比对而不是"前缀对不对"，理由与上面 env:/file: 两处相同 ——
+         *   否则 `builtin:sk-xxx` 又能把密钥本体写进库。
+         */
+        match (keyRefBuiltinName(t)) {
+            case Some(_) => return ""
+            case None => return "内置引用只支持 `builtin:demo`（白名单）—— `builtin:` 后面只能是已登记的内置名字"
+        }
+    }
+    return "只接受 `env:变量名` / `file:路径` / `builtin:demo` 三种形式 —— " +
            "**密钥本体绝不入库**（brief §5.3）"
 }
 
@@ -534,7 +557,7 @@ public func aiRuntimeValidate(o: AiRuntimeOptions): Unit {
     }
     if (o.keyRef.size == 0) {
         o.enabled = false
-        o.disabledReason = "未配置 ${SET_AI_KEY_REF}（必须是 env:名 或 file:路径）"
+        o.disabledReason = "未配置 ${SET_AI_KEY_REF}（必须是 env:名 / file:路径 / builtin:demo）"
         return
     }
     let why = validateKeyRef(o.keyRef)
@@ -663,6 +686,25 @@ public class AiSettingsRepo {
             // ⚠ 默认值也 trim：与"写入时 trim"配套，保证任何路径都不带首尾空白
             return aiSettingDefaultOf(key).trimAscii()
         }
+    }
+
+    /*
+     * ★ 2026-10-17（评审整改，配套"开箱即用"默认值）：判断某项是否**在库里有行**。
+     *
+     * 为什么需要它：`get()` 分不清"库里有行"和"用默认值"——两者都会返回非空串。
+     *   2026-10-17 之前默认值是空串，所以"`get()` 返回非空"恰好等价于"库里配过"，
+     *   一些地方（如 `aiModelSeedDefaults` 的**存量库迁移**分支）就偷懒用了这个等价。
+     *   现在默认值变成内置的 DeepSeek 端点/模型（`AI_BUILTIN_DEFAULT_*`），
+     *   那个等价**就断了**：全新库也会"看起来像配过"，于是只播种 1 行、还把
+     *   provider 标成"（继承自旧配置）"。
+     *   ⇒ 需要判"存量"的地方一律改问库（本函数），不要再拿 `get()` 当探针。
+     *
+     * ⚠ 本函数**绕过缓存**直接查库：它服务于"要不要迁移"这种一次性判断，
+     *   缓存 TTL 内的一致性在这里没有价值，查库更不容易被误用。
+     */
+    public func hasRow(key: String): Bool {
+        let rs = db.query("SELECT k FROM ai_setting WHERE k = ?", [DbStr(key)])
+        return rs.rowCount() > 0
     }
 
     /* 重新加载全部配置到缓存。 */
@@ -1005,6 +1047,8 @@ public func aiSettingsJson(repo: AiSettingsRepo, now: Int64): JsonObject {
                 kind = "env"
             } else if (keyRefFilePath(v).isSome()) {
                 kind = "file"
+            } else if (keyRefBuiltinName(v).isSome()) {
+                kind = "builtin"
             }
             e.put("ref_kind", JsonString(kind))
         } else if (s.key == SET_AI_ENDPOINT) {
@@ -1079,6 +1123,8 @@ public func aiSettingsJson(repo: AiSettingsRepo, now: Int64): JsonObject {
         refKind = "env"
     } else if (keyRefFilePath(opt.keyRef).isSome()) {
         refKind = "file"
+    } else if (keyRefBuiltinName(opt.keyRef).isSome()) {
+        refKind = "builtin"
     }
     o.put("key_ref_kind", JsonString(refKind))
     o.put("key_resolvable", JsonBool(refKind.size > 0 && aiResolveKey(opt.keyRef).isSome()))

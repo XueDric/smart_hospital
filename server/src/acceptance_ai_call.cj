@@ -95,6 +95,50 @@ public func acAiCall1(runner: TestRunner, db: DbBackend): Unit {
         case None =>
             println("  [SKIP] ⑤ 环境变量 ${probeName} 未设置 —— 跳过（不是失败）")
     }
+
+    /*
+     * ⑥ ★★ 重试判据（2026-10-17 评审 P2-8 增，网络无关、纯逻辑）。
+     *
+     * ⚠ 为什么要把这四条边界**单独钉住**：重试写错的两个方向都很危险 ——
+     *   · 太宽（连 401/400 也重试）⇒ 白白多打一次服务商接口，配额与延迟双输；
+     *   · 太窄（网络异常也不重试）⇒ 评审要的东西等于没做。
+     *   而这两类错误**在真实环境里都表现为"偶尔失败"**，靠手工测不出来。
+     */
+    let t1 = AiCallResult()
+    t1.reason = "出站调用异常：connect reset"
+    t1.attempted = true
+    runner.check("⑥ 网络异常（httpStatus=0）⇒ 可重试", aiCallRetryable(t1))
+    let t2 = AiCallResult()
+    t2.httpStatus = 429
+    t2.attempted = true
+    runner.check("⑥ 429 限流 ⇒ 可重试（等一下就好）", aiCallRetryable(t2))
+    let t3 = AiCallResult()
+    t3.httpStatus = 503
+    t3.attempted = true
+    runner.check("⑥ 5xx ⇒ 可重试（网关抖动）", aiCallRetryable(t3))
+    let t4 = AiCallResult()
+    t4.httpStatus = 401
+    t4.attempted = true
+    runner.check("★ ⑥ 401（密钥错）⇒ **不重试**（重试只是再错一次）", !aiCallRetryable(t4))
+    let t5 = AiCallResult()
+    t5.httpStatus = 400
+    t5.attempted = true
+    runner.check("★ ⑥ 400（请求不合法）⇒ **不重试**", !aiCallRetryable(t5))
+    let t6 = AiCallResult()
+    t6.reason = "ai.key_ref 既不是 env: / file: / builtin:"
+    runner.check("★ ⑥ 没发出去过的失败（配置/密钥解析前失败）⇒ **不重试**",
+                 !aiCallRetryable(t6))
+    let t7 = AiCallResult()
+    t7.httpStatus = 200
+    t7.invalidOutput = true
+    t7.attempted = true
+    runner.check("★ ⑥ 200 但输出不合格 ⇒ **不重试**（那是 Prompt 问题，不是网络）",
+                 !aiCallRetryable(t7))
+    let t8 = AiCallResult()
+    t8.ok = true
+    runner.check("⑥ 成功 ⇒ 不重试", !aiCallRetryable(t8))
+    runner.check("⑥ 重试上限是一个可审计的常量（${AI_CALL_MAX_ATTEMPTS} 次尝试）",
+                 AI_CALL_MAX_ATTEMPTS == 2)
 }
 
 /* ---------- AC-AICALL-2：★★ 安全清理层（网络无关，CI 稳定）---------- */

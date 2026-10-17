@@ -60,21 +60,75 @@ import std.collection.*
  *
  * ⚠ 词表是**示例级**，不是临床完备集。要更全需临床输入（见文件头边界说明）。
  */
+/*
+ * 急迫性修饰词 —— **可以**把模糊征象升级为红牌。
+ *
+ * ★★ 2026-10-17 评审 P2-2：这一张表原来叫 `RED_FLAG_INTENSIFIERS`，把
+ *   「程度重」和「急迫」混成一张，于是「一直头晕」「严重乏力」这类**慢病主诉**
+ *   被判成红牌 —— 那是**误报伤害**（把不需要急诊的人赶去急诊）。
+ *   现在按**语义**拆成两张：
+ *     · 本表 = 「急性起病 / 进行性加重」，命中才升级；
+ *     · `RED_FLAG_CHRONIC_MODIFIERS` = 「病程长 / 程度重」，**不升级**。
+ *   判据不是"听起来严重"，而是"**延误会不会有不可逆后果**"——
+ *   持续半小时的胸痛会，头晕三个月不会。
+ *
+ * ⚠ 第二道校验（同一处修复）：修饰词必须**紧贴**模糊词（同一分句内、
+ *   相距 ≤ `RED_FLAG_COOCCUR_WINDOW` 个字符），且修饰词本身**未被否定**。
+ *   原来的实现是 `seg.contains(mod)` —— 整段里任意位置出现就算共现，
+ *   于是「头晕，血压一直正常」也会被判红牌。现在不是了。
+ */
+public let RED_FLAG_URGENT_MODIFIERS: Array<String> = [
+    "反复", "持续", "不停", "越来越", "加重", "加剧", "剧烈",
+    "难以忍受", "无法忍受", "受不了", "突然", "突发", "骤发", "急剧"
+]
+
+/*
+ * 病程 / 程度修饰词 —— **单独不足以**升级为红牌（2026-10-17 评审 P2-2 新增）。
+ *
+ * 为什么单列：这些词描述的是"**长期如此**"或"**程度主观_strong**"，
+ * 恰恰说明**不是新发的急症**。「一直头晕」「严重乏力」「多年头痛」
+ * 是慢病随访场景的典型主诉，报红牌会把规则的可信度耗光。
+ * 保留成表（而不是直接删掉）是为了**可解释**：命中时写进 `negated`/审计口径，
+ * 回答"为什么这句话看着严重却没报红牌"。
+ */
+public let RED_FLAG_CHRONIC_MODIFIERS: Array<String> = [
+    "一直", "长期", "多年", "经常", "总是", "严重", "轻微", "轻度", "偶尔"
+]
+
+/* 模糊词与修饰词的**共现窗口**（字符数）：同一分句内、相距不超过这么多字符才算共现。 */
+public let RED_FLAG_COOCCUR_WINDOW: Int64 = 6
+
+/*
+ * 否定词。命中词**前面 `RED_FLAG_NEGATION_WINDOW` 个字符内**出现这些词 ⇒ 本次命中作废。
+ * 覆盖"没有/无/不/未/非"与病历常用的"否认/排除"。
+ *
+ * ★★ 2026-10-17 评审 P2-1：窗口原来是 **4 个字符**，实测漏判 ——
+ *   「我没有出现明显的胸痛」里"没有"距"胸痛"是 6 个字符，
+ *   于是"否认了胸痛"被读成"有胸痛"（假阳性，且方向最危险：给正常人的报告标红）。
+ *   现在放宽到 8，并且**只在同一分句内**数（`redFlagSegments` 已经按标点切过段，
+ *   所以跨分句的"没有"不会误伤，例如「没有发烧，胸痛」里"没有"不在"胸痛"那一句）。
+ */
+public let RED_FLAG_NEGATION_WINDOW: Int64 = 8
+
 public let RED_FLAG_TERMS: Array<String> = [
-    // 心脑血管
+    // 心脑血管 —— 胸痛的各种口语写法（★ 2026-10-17 评审 P2-3：原来只有"胸痛"，
+    //   患者说"胸口疼""心口痛"就漏了。口语同义词是真实用户的第一表达习惯。）
     "胸痛", "胸闷痛", "心前区痛", "压榨性疼痛", "濒死感",
-    "口角歪斜", "言语不清", "说话不清", "半身不遂", "偏瘫", "肢体无力",
-    "突然看不清", "意识不清", "意识模糊", "昏迷", "晕厥", "抽搐", "抽风",
-    // 呼吸
-    "呼吸困难", "喘不上气", "窒息", "咯血", "咳血",
+    "胸口疼", "胸口痛", "胸口闷", "心口疼", "心口痛", "胸前区痛", "胸骨后痛", "胸骨后疼痛",
+    "口角歪斜", "口眼歪斜", "言语不清", "说话不清", "说话含糊", "舌根发硬",
+    "半身不遂", "偏瘫", "肢体无力", "半边身子麻", "一侧无力",
+    "突然看不清", "意识不清", "意识模糊", "意识丧失", "昏迷", "晕厥", "晕倒", "抽搐", "抽风",
+    // 呼吸（"喘不过气/上不来气/憋气"是呼吸困难最常见的口语说法）
+    "呼吸困难", "喘不上气", "喘不过气", "上不来气", "气短憋气", "憋气", "窒息", "咯血", "咳血",
+    "痰中带血",
     // 大出血 / 失血
-    "呕血", "吐血", "便血", "黑便", "血便", "大出血", "阴道大出血",
+    "呕血", "吐血", "便血", "黑便", "血便", "大便发黑", "大出血", "阴道大出血",
     // 急腹症
-    "剧烈腹痛", "腹痛难忍", "板状腹", "腹部剧痛",
+    "剧烈腹痛", "腹痛难忍", "板状腹", "腹部剧痛", "肚子疼得厉害", "腹痛剧烈",
     // 高热 / 感染危象
-    "高热惊厥", "惊厥", "持续高热不退",
+    "高热惊厥", "惊厥", "持续高热不退", "高烧不退",
     // 孕产
-    "胎动减少", "胎动消失", "临产", "见红", "破水", "孕期出血",
+    "胎动减少", "胎动消失", "胎动变少", "临产", "见红", "破水", "孕期出血",
     // 中毒 / 外伤 / 自伤
     "误服", "服毒", "农药", "煤气中毒", "一氧化碳", "自杀", "自伤", "割腕",
     "高处坠落", "车祸", "重物砸伤", "烧烫伤",
@@ -94,19 +148,11 @@ public let RED_FLAG_VAGUE_TERMS: Array<String> = [
 ]
 
 /*
- * 共现判定：模糊词命中**且**文中另有"频次/程度/持续"类修饰时，升级为红牌。
- * 例：「**反复**呕吐」「**持续**头痛」「**越来越**麻」—— 这些不是日常用语。
- */
-public let RED_FLAG_INTENSIFIERS: Array<String> = [
-    "反复", "持续", "不停", "一直", "越来越", "加重", "剧烈", "严重", "难以忍受", "无法"
-]
-
-/*
- * 否定词。命中词**前面 4 个字符内**出现这些词 ⇒ 本次命中作废。
- * 覆盖"没有/无/不/未/非"与病历常用的"否认/排除"。
+ * 否定词 —— 见上方 `RED_FLAG_NEGATION_WINDOW` 的说明（2026-10-17 评审 P2-1：
+ * 窗口 4 → 8 个字符，因为「我没有出现明显的胸痛」这种写法里"没有"距命中词 6 个字符）。
  */
 public let RED_FLAG_NEGATIONS: Array<String> = [
-    "没有", "没", "无", "不", "未", "非", "否认", "排除", "从未", "并无"
+    "没有", "没", "无", "不", "未", "非", "否认", "排除", "从未", "并无", "无任何"
 ]
 
 /* ===================== 结果类型 ===================== */
@@ -262,19 +308,75 @@ func redFlagWindowBefore(chars: Array<Rune>, chat: Int64, width: Int64): String 
 /* ===================== 否定判定（字符空间）===================== */
 
 /*
- * 字符下标 `chat` 处的那次命中，是否被**否定**（往前 `width` 个字符内有否定词）。
+ * 字符下标 `chat` 处的那次命中，是否被**否定**（往前 `RED_FLAG_NEGATION_WINDOW` 个字符内有否定词）。
  *
- * `width` 取 4：够覆盖「我没有」「否认有」「未曾见」这类中文写法。
+ * ★★ 2026-10-17 评审 P2-1：窗口原来写死 4，实测漏判 ——
+ *   「我没有出现明显的胸痛」里"没有"距"胸痛" 6 个字符 ⇒ "否认了"被读成"有"。
+ *   现在取 8（且窗口不跨分句，因为 `redFlagSegments` 已按标点切段）。
+ *   ⚠ 再加长会开始误伤：「三天前没有发烧现在胸痛」这种转折句式里，
+ *     更远的"没有"就真的与本次命中无关了 —— 8 是实测的一个平衡点，不是随手取的。
  * ⚠ 窗口是**按字符**数的，不是按字节 —— 理由见 `redFlagRunes` 的长注释。
  */
 func redFlagIsNegatedAt(chars: Array<Rune>, chat: Int64): Bool {
-    let head = redFlagWindowBefore(chars, chat, 4)
+    let head = redFlagWindowBefore(chars, chat, RED_FLAG_NEGATION_WINDOW)
     if (head.size == 0) {
         return false
     }
     for (nego in RED_FLAG_NEGATIONS) {
         if (head.contains(nego)) {
             return true
+        }
+    }
+    return false
+}
+
+/*
+ * 字符下标 `at` 处是否出现 `term`（纯匹配，不做否定判定）。
+ * 供"共现窗口"这类需要**位置**的判定复用，避免再写一遍 Rune 比较。
+ */
+func redFlagMatchAt(chars: Array<Rune>, at: Int64, termChars: Array<Rune>): Bool {
+    if (termChars.size == 0 || at < 0 || at + termChars.size > chars.size) {
+        return false
+    }
+    var matched: Int64 = 0
+    while (matched < termChars.size && chars[at + matched] == termChars[matched]) {
+        matched = matched + 1
+    }
+    return matched == termChars.size
+}
+
+/*
+ * ★★ 模糊词与**急迫性**修饰词是否构成"共现"（2026-10-17 评审 P2-2 重写）。
+ *
+ * 语义：在模糊词命中位置 `termAt` 的前后 `RED_FLAG_COOCCUR_WINDOW` 个字符内，
+ *   存在一个**未被否定**的急迫性修饰词。
+ *
+ * 与旧实现的差别（三条，缺一条都还是错）：
+ *   ① 修饰词只认 `RED_FLAG_URGENT_MODIFIERS`（"一直/严重"不在里面）；
+ *   ② 要求**距离近**（同分句内 ≤ 窗口），不再 `seg.contains(mod)` 整段命中；
+ *   ③ 修饰词自身**不能是否定** ——「疼痛没有加重」不该升级。
+ */
+func redFlagHasUrgentCooccur(chars: Array<Rune>, termAt: Int64, termLen: Int64): Bool {
+    let termEnd = termAt + termLen
+    for (mod in RED_FLAG_URGENT_MODIFIERS) {
+        let modChars = redFlagRunes(mod)
+        if (modChars.size == 0 || modChars.size > chars.size) {
+            continue
+        }
+        var at: Int64 = 0
+        let last = chars.size - modChars.size
+        while (at <= last) {
+            if (redFlagMatchAt(chars, at, modChars)) {
+                let modEnd = at + modChars.size
+                // 修饰词在模糊词**之前**：`modEnd` 到 `termAt` 之间不超过窗口
+                let before = if (modEnd <= termAt) { termAt - modEnd <= RED_FLAG_COOCCUR_WINDOW } else { false }
+                // 修饰词在模糊词**之后**（"头痛加重"）：`at` 到 `termEnd` 之间不超过窗口
+                let after = if (at >= termEnd) { at - termEnd <= RED_FLAG_COOCCUR_WINDOW } else { false }
+                if ((before || after) && !redFlagIsNegatedAt(chars, at)) {
+                    return true
+                }
+            }
+            at = at + 1
         }
     }
     return false
@@ -334,12 +436,52 @@ func redFlagHitChars(chars: Array<Rune>, term: String, hits: ArrayList<String>,
 }
 
 /*
+ * ★★ 模糊词"升级"判定（2026-10-17 评审 P2-2 新增，取代原来的两段式判定）。
+ *
+ * 一次扫描同时回答三个问题：
+ *   ① 这个模糊词**未被否定**地出现了吗？
+ *   ② 它附近（≤ `RED_FLAG_COOCCUR_WINDOW`）有**急迫性**修饰词吗？
+ *   ③ 那个修饰词本身**没被否定**吗？（"疼痛没有加重"不升级）
+ * 三条全成立 ⇒ 升级为红牌，并把模糊词记进 `hits`；被否定的仍进 `negated` 留档。
+ */
+func redFlagVagueUpgrade(chars: Array<Rune>, term: String, hits: ArrayList<String>,
+                         negated: ?ArrayList<String>): Bool {
+    let termChars = redFlagRunes(term)
+    if (termChars.size == 0 || termChars.size > chars.size) {
+        return false
+    }
+    var at: Int64 = 0
+    let last = chars.size - termChars.size
+    while (at <= last) {
+        if (redFlagMatchAt(chars, at, termChars)) {
+            if (redFlagIsNegatedAt(chars, at)) {
+                match (negated) {
+                    case Some(acc) =>
+                        if (!acc.contains(term)) {
+                            acc.add(term)
+                        }
+                    case None => ()
+                }
+            } else if (redFlagHasUrgentCooccur(chars, at, termChars.size)) {
+                if (!hits.contains(term)) {
+                    hits.add(term)
+                }
+                return true
+            }
+        }
+        at = at + 1
+    }
+    return false
+}
+
+/*
  * ★★ 危急征象判定 —— **纯规则、不碰数据库、不调模型**。
  *
  * 判定顺序（每一步都要能单独解释）：
  *   ① 切段（按标点），让否定判定在同一小句内生效；
  *   ② **高危词**：任一命中且未被否定 ⇒ **立即红牌**（不再看其它）；
- *   ③ **模糊词**：命中且未被否定，**并且**同段落内有程度/频次修饰词 ⇒ 升级红牌；
+ *   ③ **模糊词**：命中且未被否定，**并且**附近（≤ 6 字符）有**急迫性**修饰词 ⇒ 升级红牌
+ *      （2026-10-17 评审 P2-2：修饰词分"急迫 / 慢性"两类，只有前者能升级）；
  *   ④ 什么都没命中 ⇒ 不是红牌（并留下 negated 供审计：说明"为什么该报没报"）。
  */
 public func detectRedFlag(chiefComplaint: String): RedFlagFacts {
@@ -367,21 +509,18 @@ public func detectRedFlag(chiefComplaint: String): RedFlagFacts {
         }
     }
 
-    // ③ 模糊词：必须与"程度/频次"修饰词共现才算
-    for (i in 0..segs.size) {
-        let seg = segs[i]
-        let chars = segmentChars[i]
-        var hasIntensifier = false
-        for (mod in RED_FLAG_INTENSIFIERS) {
-            if (seg.contains(mod)) {
-                hasIntensifier = true
-            }
-        }
-        if (!hasIntensifier) {
-            continue
-        }
+    /*
+     * ③ 模糊词：必须与**急迫性**修饰词**近距离**共现才算（2026-10-17 评审 P2-2）。
+     *
+     * 这一段的旧实现是两步分离的：先 `seg.contains(mod)` 判整段有没有修饰词，
+     * 再 `redFlagHitChars` 判模糊词有没有命中 —— **两者之间没有任何关系**。
+     * 后果是「头晕，血压一直正常」被判红牌（"一直"在另一处），
+     * 以及「一直头晕」「严重乏力」被判红牌（"一直/严重"本来不该升级）。
+     * 现在合成**一个**判定：`redFlagVagueUpgrade`，位置、距离、否定一起看。
+     */
+    for (chars in segmentChars) {
         for (term in RED_FLAG_VAGUE_TERMS) {
-            if (redFlagHitChars(chars, term, vagueHits, Some(negated))) {
+            if (redFlagVagueUpgrade(chars, term, vagueHits, Some(negated))) {
                 f.redFlag = true
             }
         }

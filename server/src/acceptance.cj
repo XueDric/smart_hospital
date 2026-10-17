@@ -84,6 +84,16 @@ let ACC_FIXTURE_DATE_P4: String = "2026-12-24"
  * ⚠ 用 `INSERT IGNORE`：P0 的用例每次都会重建部门/医生/患者（id 固定为 1），
  *   而 P1 的 HTTP 联调也往同一库写——若用裸 INSERT，第二次跑 accept 就会
  *   因主键冲突整段失败。IGNORE 让"基础数据已存在"变成无害的前置条件。
+ *
+ * ★★ 2026-10-17 评审 P1-3（"accept 对脏库敏感，首跑不绿"）：排班这一行原来
+ *   用的是**裸 INSERT**（部门和医生都是 IGNORE，只有它没有），于是只要库里
+ *   残留了一条 id=9002 的排班（上一次跑崩在中途、或用了共享库），AC-1 就会
+ *   抛 duplicate key，而异常被 `section` 捕获后只表现为一条 [FAIL]，
+ *   看上去像"功能坏了"。现在改成 **upsert 且把夹具状态写回**：
+ *   命中已有行时把 total/remain/version/enabled 全部重置成夹具口径，
+ *   于是"库脏"不再影响判定 —— 用例的**输入**由它自己决定。
+ *   ⚠ 不改成 `REPLACE INTO`：那是"先删再插"，会连行上的其它列（如备注）一起丢，
+ *     而且语义上会触发删除副作用；upsert 只改本用例关心的列，更好解释。
  */
 func hSeedSchedule(db: DbBackend, scheduleId: Int64, total: Int64,
                    workDate: String): (Int64, Int64, Int64, Int64) {
@@ -97,7 +107,12 @@ func hSeedSchedule(db: DbBackend, scheduleId: Int64, total: Int64,
             [DbInt(1), DbStr("13800000000"), DbStr("测试患者"), DbInt(now)])
     db.exec("INSERT INTO schedule (id, doctor_id, department_id, work_date, period, " +
             "total_num, remain_num, version, enabled, created_at) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, ?) " +
+            "ON DUPLICATE KEY UPDATE doctor_id = VALUES(doctor_id), " +
+            "department_id = VALUES(department_id), work_date = VALUES(work_date), " +
+            "period = VALUES(period), total_num = VALUES(total_num), " +
+            "remain_num = VALUES(remain_num), version = 0, enabled = 1, " +
+            "created_at = VALUES(created_at)",
             [DbInt(scheduleId), DbInt(1), DbInt(1), DbStr(workDate), DbStr("AM"),
              DbInt(total), DbInt(total), DbInt(now)])
     return (scheduleId, 1, 1, 1)
@@ -846,9 +861,17 @@ public class TestRunner {
             }
             match (models.defaultOf(AI_MODEL_KIND_EMBEDDING, now)) {
                 case Some(m) =>
-                    check("向量模型：请求 URL = base_url + /embeddings",
+                    /*
+                     * ★ 2026-10-17：向量行与对话行**不再共用一个 base_url** ——
+                     *   DeepSeek 没有 `/embeddings` 端点，硬指过去只会 404。
+                     *   所以断言跟着改成"用向量行自己的 base_url 拼 /embeddings"，
+                     *   并顺便钉住"两行确实是不同服务商"（否则以后又会被人合并成一条）。
+                     */
+                    check("向量模型：请求 URL = 向量行 base_url + /embeddings",
                           aiModelRequestUrl(m.baseUrl, AI_MODEL_KIND_EMBEDDING) ==
-                          AI_MODEL_SEED_BASE_URL + "/embeddings")
+                          AI_MODEL_SEED_EMBEDDING_BASE_URL + "/embeddings")
+                    check("向量模型：base_url 与对话行**不同**（DeepSeek 没有 /embeddings，硬指必 404）",
+                          m.baseUrl != AI_MODEL_SEED_BASE_URL)
                 case None =>
                     check("默认向量模型可按类型取到", false)
             }
@@ -860,7 +883,16 @@ public class TestRunner {
             check("★ 运行时温度 = 模型行的 0.3（旧口径根本不发温度，等于把决定性让给服务商默认值）",
                   opts.temperature == AI_MODEL_SEED_CHAT_TEMPERATURE)
             check("运行时最大 Token = 模型行", opts.maxTokens == AI_MODEL_SEED_MAX_TOKENS)
-            check("AI 总开关仍来自 KV（默认 0 ⇒ 不可用；模型行不该绕过总开关）", !opts.enabled)
+            /*
+             * ★ 2026-10-17（评审整改）：默认总开关从 0 改成 1（开箱即用），
+             *   所以"默认不可用"这条断言不再成立 —— 但真正要守的不变量没变：
+             *   **总开关仍然是 KV 说了算，模型行不许绕过它**。
+             *   ⇒ 显式关掉开关，再断言不可用；随后恢复，免得影响后面的用例。
+             */
+            let _off = settings.put("ai.enabled", "0", now)
+            let optsOff = settings.options(now)
+            check("★ AI 总开关仍来自 KV（写 0 ⇒ 不可用；模型行不该绕过总开关）", !optsOff.enabled)
+            let _on = settings.put("ai.enabled", "1", now)
 
             check("全局密钥引用可写入（模型行留空时用它兜底）",
                   settings.put("ai.key_ref", "env:AC16_GLOBAL_KEY", now).ok)

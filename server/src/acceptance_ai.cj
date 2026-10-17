@@ -143,7 +143,14 @@ public func acP3_2(runner: TestRunner, db: DbBackend): Unit {
 
         // ① 先读一次 → 灌满缓存
         let v1 = repo.get(SET_AI_ENDPOINT, now)
-        runner.check("① 未配置时读到默认值（空）", v1.size == 0)
+        /*
+         * ★ 2026-10-17（评审整改）：默认值不再是空串 —— 现在默认就是内置的
+         *   DeepSeek 端点（`AI_BUILTIN_DEFAULT_ENDPOINT`），所以"未配置"读到的
+         *   是**开箱即用**的那个值。断言跟着改口径，但仍然钉住关键点：
+         *   读到的必须恰好是默认值本身（不能是脏值、也不能是空）。
+         */
+        runner.check("① 未配置时读到默认值（内置 DeepSeek 端点，开箱即用）",
+                     v1 == AI_BUILTIN_DEFAULT_ENDPOINT)
         // ② 写 → 同一个 repo 实例再读（★ 缓存必须已失效）
         let w = repo.put(SET_AI_ENDPOINT, "https://api.example.com/v1/chat/completions", now)
         runner.check("② 写入成功", w.ok)
@@ -157,7 +164,17 @@ public func acP3_2(runner: TestRunner, db: DbBackend): Unit {
         runner.check("★★ ③ 改写后立刻生效", afterRewrite == "https://api2.example.com/v1/chat/completions")
         // ④ 删 → 回到默认值
         let _r = repo.remove(SET_AI_ENDPOINT, now)
-        runner.check("④ 删除后回到默认值（空）", repo.get(SET_AI_ENDPOINT, now).size == 0)
+        /*
+         * ★ 2026-10-17：删行 = 回默认（内置端点）；"清空"仍然是另一件事
+         *   （写空串 = 停用 AI）。这两条**口径不同**，见 `AiSettingsRepo.get()` 注释，
+         *   这里把两者都钉住，免得以后有人把"删行"当成"清空"。
+         */
+        runner.check("④ 删除后回到默认值（内置 DeepSeek 端点）",
+                     repo.get(SET_AI_ENDPOINT, now) == AI_BUILTIN_DEFAULT_ENDPOINT)
+        let _z = repo.put(SET_AI_ENDPOINT, "", now)
+        runner.check("④之二 写空串 ≠ 删行：空串是**显式停用**，读到的是空",
+                     repo.get(SET_AI_ENDPOINT, now).size == 0)
+        let _rz = repo.remove(SET_AI_ENDPOINT, now)
 
         // ⑤ ★ 另一个实例也看得到（因为以库为准，不是进程内私货）
         let other = AiSettingsRepo(db)
@@ -191,15 +208,29 @@ public func acP3_3(runner: TestRunner, db: DbBackend): Unit {
         let now = hNowEpoch()
         let repo = AiSettingsRepo(db)
 
-        // ① 全空 ⇒ 不可用，理由提到 endpoint
+        /*
+         * ① 全新库 ⇒ **开箱即用**（2026-10-17 评审整改后的口径）。
+         *   评审批评"默认零模型调用、智能深度无法现场证明"，所以默认值改成了
+         *   内置密钥引用 `builtin:demo` + DeepSeek 端点 + 总开关 1。
+         *   断言要钉住"默认确实可用"，否则"开箱即用"只是文档里的一句话。
+         */
         let o1 = repo.options(now)
-        runner.check("① 未配置时 enabled=false", !o1.enabled)
-        runner.check("① 理由非空且提到 endpoint", o1.disabledReason.contains(SET_AI_ENDPOINT))
+        runner.check("① 未配置时 enabled=true（默认 key_ref = builtin:demo ⇒ 开箱即用）", o1.enabled)
+        runner.check("① 开箱即用用的就是内置 DeepSeek 端点", o1.endpoint == AI_BUILTIN_DEFAULT_ENDPOINT)
+        runner.check("① 开箱即用用的是内置模型名", o1.model == AI_BUILTIN_DEFAULT_MODEL)
+        runner.check("① 开箱即用不留「不可用理由」", o1.disabledReason.size == 0)
+        // ①之二 显式清空 endpoint ⇒ 不可用，理由提到 endpoint
+        let _z = repo.put(SET_AI_ENDPOINT, "", now)
+        let o1b = repo.options(now)
+        runner.check("① 清空 endpoint ⇒ enabled=false", !o1b.enabled)
+        runner.check("① 理由非空且提到 endpoint", o1b.disabledReason.contains(SET_AI_ENDPOINT))
 
         // ② 配齐但**总开关为 0** ⇒ 不可用，且理由说清是开关
         let _a = repo.put(SET_AI_ENDPOINT, "https://api.example.com/v1", now)
         let _b = repo.put(SET_AI_MODEL, "m", now)
         let _c = repo.put(SET_AI_KEY_REF, "env:AIKEY", now)
+        /* ★ 2026-10-17：默认总开关已是 1 ⇒ 这里必须**显式**关掉才谈得上"开关为 0"。 */
+        let _off = repo.put(SET_AI_ENABLED, "0", now)
         let o2 = repo.options(now)
         runner.check("② 配置齐全但总开关 0 ⇒ enabled=false", !o2.enabled)
         runner.check("★ ② 理由指明是**开关**（否则运维会去改配置，而问题在开关）",

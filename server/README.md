@@ -71,10 +71,10 @@ cd server     # ⚠ cwd 必须是 server/，见下
 | 子命令 | 作用 | 需要 MySQL |
 | --- | --- | --- |
 | `selftest` | schema 与 ADR 不变量的**纯本地**自检（**51 项**断言） | ❌ |
-| `triagetest` | P2 分诊 + 预问诊**纯逻辑**自检（**110 项**断言），不碰库不调模型 | ❌ |
+| `triagetest` | P2 分诊 + 预问诊**纯逻辑**自检（**139 项**断言），不碰库不调模型 | ❌ |
 | `authtest` | **口令/令牌原语自检**（含 3 个公开测试向量，**17 项**） | ❌ |
 | `check-db <dsn>` | 连库 + 幂等建表 + 打印表清单（★ 标记号源域） | ✅ |
-| `accept <dsn>` | 验收测试 AC-1…AC-17（**762 项断言**：AC-1…AC-13 + **AC-14/AC-15**（令牌续期回值、`/health` 日期口径）+ **AC-16/AC-17**（`ai_model` 模型配置、账号列表/排班可改）+ AC-P2-1…6 / AC-P3-1…6 / **AC-P4-1…7** / AC-BASE-1…3 / AC-AICALL-1…3 / AC-NOTICE-1…3；⚠ 只允许库名含 `test` 的测试库） | ✅ |
+| `accept <dsn>` | 验收测试 AC-1…AC-17（**777 项断言**：AC-1…AC-13 + **AC-14/AC-15**（令牌续期回值、`/health` 日期口径）+ **AC-16/AC-17**（`ai_model` 模型配置、账号列表/排班可改）+ AC-P2-1…6 / AC-P3-1…6 / **AC-P4-1…7** / AC-BASE-1…3 / AC-AICALL-1…3 / AC-NOTICE-1…3；⚠ 只允许库名含 `test` 的测试库） | ✅ |
 | `create-db <dsn>` | 幂等建库（utf8mb4）—— 测试库靠它 | ✅ |
 | `create-admin <dsn>` | 建/重置管理员并打印口令（**引导入口**） | ✅ |
 | `serve <dsn>` | **P1**：启动 HTTP / HTTPS 服务（默认只绑 `127.0.0.1`） | ✅ |
@@ -101,11 +101,12 @@ cd server     # ⚠ cwd 必须是 server/，见下
 **绝不静默降级**（四条都已实测）：证书/私钥缺失 → FATAL 退出；PEM 非法 → FATAL 退出；
 只给一半参数 → 拒绝启动。这些情况下**端口不会被误起成明文服务**。
 
-> ⚠ **本仓库路径含中文，证书路径必须走 ASCII 运行副本**：
-> 本工具链的仓颉运行时无法接受含非 ASCII 的 argv（在 `main` 之前就抛
+> ⚠ **证书路径尽量纯 ASCII**：本工具链的仓颉运行时无法接受含非 ASCII 的 argv（在 `main` 之前就抛
 > `Invalid unicode scalar value`）。`new-tls-cert.ps1` 会自动把证书复制到
-> `%ProgramData%\smart-hospital\tls`（ACL 已收紧）并生成 `tls.env`。
-> 试过但**不可行**的两条路：`--tls-files` 指向中文路径的配置文件、Windows 8.3 短名（本卷已禁用）。
+> `%ProgramData%\smart-hospital\tls`（ACL 已收紧）并生成 `tls.env`，把私钥与源码树分开。
+> **本仓库已改名为 `E:\harmonyOS\smart_hospital`（纯 ASCII），仓内证书路径已可用**；
+> 但部署到含中文目录的机器上仍必须用这份运行副本（试过但**不可行**的两条兜底路：
+> `--tls-files` 指向中文路径的配置文件、Windows 8.3 短名（本卷已禁用））。
 
 ### P1 接口
 
@@ -275,8 +276,8 @@ start http://127.0.0.1:8091/admin
 ### 验收依据：源码哈希，不是产物哈希
 
 cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构建，exe 的 SHA256 不同，行为一致）。
-所以 `build.ps1` 每次构建都会重写 **`build/SOURCE-MANIFEST.sha256`**（轻舟框架 38 + 业务 37 =
-**75 个参与编译源文件**的 SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是**稳定**的。
+所以 `build.ps1` 每次构建都会重写 **`build/SOURCE-MANIFEST.sha256`**（轻舟框架 38 + 业务 38 =
+**76 个参与编译源文件**的 SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）—— 它的哈希是**稳定**的。
 **验收请比 `SOURCE-MANIFEST.sha256` + 测试结果，不要比 exe 哈希。**
 
 ---

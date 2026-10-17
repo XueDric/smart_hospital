@@ -208,15 +208,45 @@ public class DashboardRepo {
                 JsonInt(count1("SELECT COUNT(*) FROM schedule WHERE enabled = 1", Array<DbValue>())))
         o.put("slots", cap)
 
-        /* ---------- ⑤ 分诊命中（**规则版**，如实标注）---------- */
+        /* ---------- ⑤ 分诊命中（**source 由数据推导**，不写死）---------- */
         /*
-         * ⚠ 本轮分诊**未接真模型**，所以这里能给的只有"规则引擎的结论分布"。
-         *   它是**真实发生**的数据（每次 POST /triage 都记了数与结论），
-         *   但**不能**把它说成"AI 调用概览"。
+         * ★★ 2026-10-17 评审 P2-7：这里原本写死 `source = "rules"`。
+         *   真模型 2026-10-09 就接进来了，写死的值会**一直骗人**：
+         *   看板说"全走规则"，而 triage_stat 里明明躺着 source=model 的行。
+         *   现在 source 由 `triage_stat.source` 的分布**推出来**
+         *   （只有一类报那一类 / 两类都有报 mixed / 无记录报 none），
+         *   并额外给出 `by_source` 逐项计数 —— 数字能自证，不靠一句注释。
          */
         let triage = JsonObject()
-        triage.put("source", JsonString("rules"))
-        triage.put("source_note", JsonString("分诊当前是**规则引擎**（未接真模型），此分布是规则结论"))
+        let srcRows = group2(
+            "SELECT source, COUNT(*) FROM triage_stat GROUP BY source ORDER BY COUNT(*) DESC LIMIT ?",
+            [DbInt(10)])
+        var modelN: Int64 = 0
+        var rulesN: Int64 = 0
+        var otherN: Int64 = 0
+        for (c in srcRows) {
+            if (c.label == "model") {
+                modelN = c.n
+            } else if (c.label == "rules") {
+                rulesN = c.n
+            } else {
+                otherN = otherN + c.n
+            }
+        }
+        var srcLabel = "none"
+        if (modelN > 0 && rulesN == 0 && otherN == 0) {
+            srcLabel = "model"
+        } else if (rulesN > 0 && modelN == 0 && otherN == 0) {
+            srcLabel = "rules"
+        } else if (modelN + rulesN + otherN > 0) {
+            srcLabel = "mixed"
+        }
+        triage.put("source", JsonString(srcLabel))
+        triage.put("by_source", rowsToJson(srcRows))
+        triage.put("source_note", JsonString(
+            "`source` 由 `triage_stat.source` 的分布**推导**（不是写死的）：" +
+            "只有 model / 只有 rules / 两者都有 = mixed / 无记录 = none；" +
+            "`by_source` 是逐项真实计数。"))
         triage.put("total_calls", JsonInt(count1("SELECT COUNT(*) FROM triage_stat", Array<DbValue>())))
         triage.put("red_flag_calls",
                    JsonInt(count1("SELECT COUNT(*) FROM triage_stat WHERE red_flag = 1", Array<DbValue>())))

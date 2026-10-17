@@ -434,7 +434,7 @@ public func hospitalBodyParserError(ctx: Context, status: Int64, message: String
  * ⚠ 为什么要有这个工厂函数：`BodyParserOptions.onError` 是**可变字段**，
  *   给字段赋值需要一个"有名字的落点"（`let o = BodyParserOptions(); o.onError = f`）。
  *   集中在这里也便于以后调 `maxBytes`（当前沿用框架默认 1 MiB）。
- * 📌 本项目 37 个业务文件全部声明 `package qingzhou`（与服务端框架**同包同编**），
+ * 📌 本项目 38 个业务文件全部声明 `package qingzhou`（与服务端框架**同包同编**），
  *   所以这里不需要 import —— `BodyParserOptions` 直接可见。
  */
 public func hospitalBodyParserOptions(): BodyParserOptions {

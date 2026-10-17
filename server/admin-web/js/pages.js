@@ -134,7 +134,14 @@ page({
     el.appendChild(h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('div', { class: 'card-title' }, '分诊与预问诊')),
       h('div', { class: 'stat-row' },
-        stat('分诊调用', fmtNum(tri.total_calls), `规则路 ${tri.source || 'rules'} · 危急 ${fmtNum(tri.red_flag_calls)}`),
+        // 2026-10-17（评审 P2-7）：`triage.source` 过去是后端写死的 "rules"，
+        // 现在由 triage_stat.source 的分布推导（model / rules / mixed / none）。
+        // 所以这里不再写"规则路"——标签跟着真实来源走，并列出逐项计数。
+        stat('分诊调用', fmtNum(tri.total_calls),
+          `来源 ${srcLabelOf(tri.source)} · 危急 ${fmtNum(tri.red_flag_calls)}`
+          + (Array.isArray(tri.by_source) && tri.by_source.length
+            ? '（' + tri.by_source.map((x) => `${x.label} ${fmtNum(x.count)}`).join(' / ') + '）'
+            : '')),
         stat('预问诊完成率', fmtPermille(pre.completion_permille), `会话 ${fmtNum(pre.sessions)} · 完成 ${fmtNum(pre.completed)}`),
         stat('病历', fmtNum(rec.records), `已锁定 ${fmtNum(rec.locked)} · 草稿 ${fmtNum(rec.draft)}`),
         stat('AI 模型', ai.enabled ? '已启用' : '未启用',

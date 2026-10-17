@@ -116,8 +116,8 @@ $app = Get-ChildItem (Join-Path $src "*.cj") | ForEach-Object { $_.FullName }
 if ($app.Count -eq 0) { throw "没有找到服务端源码：$src" }
 
 # ── MariaDB 驱动 ──────────────────────────────────────────────────────────
-# 驱动不在仓库里（54 个文件、只在构建期需要），从**搬迁前的工程**取 .cjo 与静态库。
-# 若搬迁前的工程里没有产物，给出可照做的指引（它有 build-mysql-driver.ps1 可生成）。
+# 驱动的**源码**在仓库里（third_party\mariadb-driver，47 个 .cj），但 .cjo 与静态库是构建期产物、不入库：
+# 先跑 build-mysql-driver.ps1 生成到 build\mysql-driver（本脚本只找产物、不负责编驱动）。
 $drvDir = Join-Path $tp "mariadb-driver-build"
 if (-not (Test-Path $drvDir)) {
     $drvBuild = Join-Path $root "build\mysql-driver"

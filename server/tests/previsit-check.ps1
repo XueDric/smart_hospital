@@ -260,14 +260,37 @@ Check "响应含 items 与 enabled/disabled_reason" `
 #   （看起来像产品坏了，其实是测试间状态泄漏）。
 #
 # ⇒ 正确做法是**自己把前提准备好**（本仓纪律：夹具自备，不依赖别的用例留下的状态）：
-#   显式清掉 AI 总开关与端点，然后再断言「未配置 ⇒ enabled=false」。
+#   显式清掉 AI 总开关与端点，然后再断言。
 #   📌 判据：**断言一个「未配置状态下」的性质，就必须自己制造「未配置」这个状态。**
+#
+# ⚠⚠ 2026-10-17 口径变更（与 `server/src/ai_builtin.cj` 的 `builtin:demo` 同步）：
+#   默认值不再是空串，而是**内置演示端点/模型/密钥引用**（AI 开箱即用）。
+#   于是「删掉这两行」不再等于「未配置」，而是**回内置默认** ⇒ enabled 仍为 true。
+#   这本身就是本批要证明的性质，所以这里的断言分成两段：
+#     ① 删行 ⇒ 回内置默认（enabled=true 且 endpoint 是内置端点）—— 证明开箱即用；
+#     ② 显式把总开关写 0 ⇒ enabled=false 且理由非空 —— 证明闸门仍然有效。
+#   ⚠ 不能拿「写空 endpoint」当第 ② 段：`AiSettingsRepo.options()` 会用 `ai_model`
+#     里默认对话模型那一行的 base_url 覆盖 KV（server/src/ai_settings.cj:662-672 已注明
+#     "被覆盖项的空串与缺行在效果上无法区分"）⇒ 空 endpoint 在有模型行时仍是 enabled=true。
 $null = DoReq 'aiclr1' 'DELETE' '/api/v1/admin/ai/settings/ai.enabled' @("Authorization: Bearer $admTok") $null
 $null = DoReq 'aiclr2' 'DELETE' '/api/v1/admin/ai/settings/ai.endpoint' @("Authorization: Bearer $admTok") $null
 $r = DoReq 'aiadm2' 'GET' '/api/v1/admin/ai/settings' @("Authorization: Bearer $admTok") $null
-Check "清掉配置后 enabled=false 且理由非空" `
+$epItem = @($r.Json.data.items) | Where-Object { $_.key -eq 'ai.endpoint' } | Select-Object -First 1
+Check "删掉 ai.enabled / ai.endpoint 两行 ⇒ 回内置默认（enabled=true）" `
+      ($r.Json.data.enabled -eq $true) `
+      ("enabled=$($r.Json.data.enabled) reason=$($r.Json.data.disabled_reason)")
+Check "★ 回内置默认时 endpoint 就是内置演示端点（删行 ≠ 未配置）" `
+      ($null -ne $epItem -and $epItem.value -eq 'https://api.deepseek.com/chat/completions') `
+      ("endpoint=$($epItem.value) is_default=$($epItem.is_default)")
+
+# ② 闸门仍有效：显式把总开关写 0
+$null = DoReq 'aioff' 'PUT' '/api/v1/admin/ai/settings/ai.enabled' @("Authorization: Bearer $admTok") '{"value":"0"}'
+$r = DoReq 'aiadm3' 'GET' '/api/v1/admin/ai/settings' @("Authorization: Bearer $admTok") $null
+Check "★★ 显式关总开关（ai.enabled=0）⇒ enabled=false 且理由非空" `
       ($r.Json.data.enabled -eq $false -and $r.Json.data.disabled_reason.Length -gt 0) `
       ("enabled=$($r.Json.data.enabled) reason=$($r.Json.data.disabled_reason)")
+#  收尾：删掉总开关那一行 = 回内置默认 1，后续用例与下次运行都从"开箱即用"开始
+$null = DoReq 'aiclr3' 'DELETE' '/api/v1/admin/ai/settings/ai.enabled' @("Authorization: Bearer $admTok") $null
 
 # 8.3 ★★ 密钥不落库：裸密钥必须被拒（HTTP 层）
 foreach ($bad in @('sk-abcdefghijklmnopqrstuvwxyz012345', 'env:sk-abcdefghijklmnopqrstuvwxyz', 'https://api.x/v1?key=sk-xxx')) {

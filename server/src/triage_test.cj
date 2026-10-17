@@ -58,6 +58,7 @@ public func runTriageTests(): Int64 {
     rtRedFlag(r)
     rtNegation(r)
     rtVague(r)
+    rtReviewP2(r)
     rtWidthMix(r)
     rtDept(r)
     rtDeptNegation(r)
@@ -195,6 +196,110 @@ func rtVague(r: TriageRunner): Unit {
         for (c in vagueWithMod) {
             r.check("共现升级为红牌：${c}", detectRedFlag(c).redFlag)
         }
+    })
+}
+
+/* ---------- ★★ 评审 2026-10-17 P2-1 / P2-2 / P2-3 的回归 ---------- */
+/*
+ * 这一组是**评审点名**的三条缺陷的回归用例。写法上刻意分成"必须报"和"必须不报"
+ * 两半成对出现 —— 只测"修好了不报了"会写出一个"一律不报"的假绿（那正是 P2-2
+ * 修过头的典型失败方式）。
+ *
+ * 三条缺陷各自的判据：
+ *   P2-1 否定窗口 4 字符太窄 ⇒ 「我没有出现明显的胸痛」被读成"有胸痛"（假阳性）。
+ *   P2-2 "一直/严重"这类**慢性/程度**修饰词也会升级红牌 ⇒ 「一直头晕」「严重乏力」假阳性。
+ *   P2-3 词表只有"胸痛"，患者说"胸口疼"就漏 ⇒ 危险方向相反（假阴性）。
+ */
+func rtReviewP2(r: TriageRunner): Unit {
+    println("")
+    println("--- ★★ 评审 P2-1 / P2-2 / P2-3 回归 ---")
+    triageSection(r, "rtReviewP2", { =>
+        /*
+         * P2-1：否定词距离命中词 **6 个字符**（超过旧的 4 字符窗口）。
+         * 这些句子在旧实现下全部**误报红牌**，必须全部不报。
+         */
+        let farNegation: Array<String> = [
+            "我没有出现明显的胸痛",
+            "病人否认发生过任何胸痛",
+            "从来没出现过呼吸困难",
+            "不太觉得有胸闷痛",
+            "没有呕吐过血"
+        ]
+        for (c in farNegation) {
+            r.check("P2-1 否定跨 6 字符仍作废：${c}", !detectRedFlag(c).redFlag)
+        }
+
+        /*
+         * P2-1 反向：否定**不能**跨分句吞掉真征象。
+         * 窗口从 4 放宽到 8，最容易引入的回归就是"太贪心"。
+         */
+        let crossClause: Array<String> = [
+            "没有发烧，胸痛",
+            "否认高血压，突然胸口疼",
+            "没有咳嗽，现在喘不过气"
+        ]
+        for (c in crossClause) {
+            r.check("P2-1 反向：跨分句的真征象仍报红牌：${c}", detectRedFlag(c).redFlag)
+        }
+
+        /*
+         * P2-2：**慢性/程度**修饰词 + 模糊词 ⇒ **不得**升级。
+         * 这是评审原文点的两个例子，加上同族写法。
+         */
+        let chronicOnly: Array<String> = [
+            "一直头晕",
+            "严重乏力",
+            "多年头痛",
+            "经常心慌",
+            "长期恶心",
+            "一直有点头晕，睡不好"
+        ]
+        for (c in chronicOnly) {
+            r.check("P2-2 慢性/程度修饰词不升级红牌：${c}", !detectRedFlag(c).redFlag)
+        }
+
+        /*
+         * P2-2 反向：**急迫性**修饰词仍然必须升级（否则等于把共现机制废掉）。
+         */
+        let urgentStill: Array<String> = [
+            "突然头痛",
+            "头晕越来越重",
+            "恶心加重",
+            "恶心剧烈",
+            // ⚠ 这条用例首版写的是「胸闷剧烈」，断言失败 —— 而失败是**对的**：
+            //   `胸闷` 既不在高危词表（那里只有 `胸闷痛`）也不在模糊词表，
+            //   所以"胸闷剧烈"本来就不该报红牌。教训与 rtWidthMix 里那条一样：
+            //   **写断言之前先确认这个词在哪张表里**，否则测的是自己的误记。
+            "乏力突然加重"
+        ]
+        for (c in urgentStill) {
+            r.check("P2-2 反向：急迫修饰词仍升级红牌：${c}", detectRedFlag(c).redFlag)
+        }
+
+        /*
+         * P2-2 第三道：修饰词**被否定**时不升级（"疼痛没有加重"是好转的表述）。
+         */
+        let modNegated: Array<String> = [
+            "头痛没有加重",
+            "头晕未见加重"
+        ]
+        for (c in modNegated) {
+            r.check("P2-2 修饰词被否定则不升级：${c}", !detectRedFlag(c).redFlag)
+        }
+
+        /*
+         * P2-3：口语同义词。这些词**必须**单独命中即红牌（和"胸痛"同级）。
+         */
+        r.check("P2-3 「胸口疼」单独命中即红牌", detectRedFlag("胸口疼").redFlag)
+        r.check("P2-3 「心口痛」单独命中即红牌", detectRedFlag("心口痛").redFlag)
+        r.check("P2-3 「喘不过气」单独命中即红牌", detectRedFlag("喘不过气").redFlag)
+        r.check("P2-3 「上不来气」单独命中即红牌", detectRedFlag("上不来气").redFlag)
+        r.check("P2-3 「痰中带血」单独命中即红牌", detectRedFlag("痰中带血").redFlag)
+        r.check("P2-3 「肚子疼得厉害」单独命中即红牌", detectRedFlag("肚子疼得厉害").redFlag)
+        r.check("P2-3 情绪用语「心情闷得慌」**不**报红牌（同义词不能引入误报）",
+                !detectRedFlag("心情闷得慌").redFlag)
+        r.check("P2-3 反向：否定同义词同样作废（「没有胸口疼」）",
+                !detectRedFlag("没有胸口疼").redFlag)
     })
 }
 
