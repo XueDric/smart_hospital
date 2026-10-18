@@ -2,6 +2,7 @@ package com.smart.hospital.patient.data
 
 import com.smart.hospital.patient.R
 import android.content.Context
+import android.util.Log
 import com.smart.hospital.patient.BuildConfig
 import com.smart.hospital.patient.model.LoginResult
 import com.smart.hospital.patient.model.CurrentUser
@@ -31,7 +32,12 @@ class SessionStore(context: Context) {
      */
     private var tokenCache: String? = null
 
+    /** 令牌是否真的落到了系统安全存储（false = 只在内存里，重启需重新登录）。 */
+    @Volatile var tokenPersisted: Boolean = true
+        private set
+
     private companion object {
+        const val TAG = "SessionStore"
         /** 密文键；旧的明文键是 `token`，只在升级迁移时读一次。 */
         const val KEY_TOKEN_SECURE = "token_enc"
         const val KEY_TOKEN_LEGACY = "token"
@@ -50,8 +56,16 @@ class SessionStore(context: Context) {
         // 这一步不能省 —— 否则"新版本已加密"只对全新安装成立，存量设备上明文还在。
         val legacyToken = prefs.getString(KEY_TOKEN_LEGACY, null)
         if (!legacyToken.isNullOrBlank()) {
-            SecretStore.put(prefs, KEY_TOKEN_SECURE, legacyToken)
-            prefs.edit().remove(KEY_TOKEN_LEGACY).commit()
+            // ✅ 2026-10-17 复查：原来不管 put 成不成功都删明文。
+            //    Keystore 暂时不可用（升级未完成、厂商 ROM 策略）时那等于**把令牌删了**，
+            //    用户下次打开就是静默登出，而日志里什么都没有。
+            //    现在的口径：加密成功才删明文；失败就保留明文再试一次，
+            //    并在 persistedToken() 里作为"只读兜底"继续可用（绝不新写明文）。
+            if (SecretStore.put(prefs, KEY_TOKEN_SECURE, legacyToken)) {
+                prefs.edit().remove(KEY_TOKEN_LEGACY).commit()
+            } else {
+                Log.w(TAG, "旧明文令牌迁移加密失败，保留明文等待下次重试：" + SecretStore.lastErrorText())
+            }
         }
     }
 
@@ -85,18 +99,46 @@ class SessionStore(context: Context) {
 
     val token: String get() = if (mockMode) demoLogin?.token.orEmpty() else persistedToken()
 
-    /** 首次读取时解密一次，之后走内存缓存。解不开/没有明文残留 ⇒ 空串（按未登录处理）。 */
+    /**
+     * 首次读取时解密一次，之后走内存缓存。解不开 ⇒ 空串（按未登录处理）。
+     *
+     * ✅ 2026-10-17 复查：解密失败原来是静默 `orEmpty()`，
+     *    而 `SecretStore.lastErrorText()` 全仓零调用 —— 出了事没人能看出原因。
+     *    这里补一条日志（**不含秘密本体**，只有错误原因）。
+     */
     @Synchronized private fun persistedToken(): String {
         tokenCache?.let { return it }
-        val decrypted = SecretStore.get(prefs, KEY_TOKEN_SECURE).orEmpty()
-        if (decrypted.isNotEmpty()) tokenCache = decrypted
-        return decrypted
+        val encrypted = prefs.getString(KEY_TOKEN_SECURE, null)
+        val decrypted = SecretStore.get(prefs, KEY_TOKEN_SECURE)
+        if (decrypted != null && decrypted.isNotEmpty()) {
+            tokenCache = decrypted
+            return decrypted
+        }
+        if (!encrypted.isNullOrBlank()) {
+            Log.w(TAG, "令牌解密失败，按未登录处理：" + SecretStore.lastErrorText())
+            return ""
+        }
+        // 只读兜底：迁移尚未成功（见 init）的旧明文。成功迁移后会立刻被删掉。
+        val legacy = prefs.getString(KEY_TOKEN_LEGACY, null)
+        if (!legacy.isNullOrBlank()) {
+            tokenCache = legacy
+            return legacy
+        }
+        return ""
     }
 
-    /** 令牌落盘失败时**不**退回明文：只留内存，代价是重启要重新登录。 */
-    private fun storeTokenSecurely(value: String) {
+    /**
+     * 令牌落盘失败时**不**退回明文：只留内存，代价是重启要重新登录。
+     *
+     * ✅ 2026-10-17 复查：原来忽略返回值 ⇒ 内存里说"已登录"、磁盘上其实没有密文，
+     *    重启后静默登出且无任何痕迹。现在记一条日志并暴露 [tokenPersisted] 供界面提示。
+     */
+    private fun storeTokenSecurely(value: String): Boolean {
         tokenCache = value
-        SecretStore.put(prefs, KEY_TOKEN_SECURE, value)
+        val stored = SecretStore.put(prefs, KEY_TOKEN_SECURE, value)
+        tokenPersisted = stored
+        if (!stored) Log.w(TAG, "令牌未能写入系统安全存储，本次仅保留在内存：" + SecretStore.lastErrorText())
+        return stored
     }
     val expiresAt: Long get() = if (mockMode) demoLogin?.expiresAt ?: 0 else prefs.getLong("expires_at", 0)
     val userId: Long get() = if (mockMode) demoLogin?.userId ?: 0 else prefs.getLong("user_id", 0)
@@ -151,6 +193,7 @@ class SessionStore(context: Context) {
         demoLogin = null
         demoPrevisitId = ""
         tokenCache = null
+        tokenPersisted = true
         demoBookingTokens.clear()
         demoCompletedBookings.clear()
         demoCancelledBookings.clear()
