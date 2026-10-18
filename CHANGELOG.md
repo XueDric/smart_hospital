@@ -31,6 +31,7 @@
   分发包只带脚本不带 PEM（PEM 可能含企业内网根证书）。
 - **`tools/check-docs.ps1` + `.github/workflows/repo-hygiene.yml`**：文档相对链接、`.ps1` BOM、
   `.bat` 纯 ASCII、旧仓库路径残留四项门禁，每次 push/PR 自动跑（回应「无 CI」）。
+  2026-10-18 增**第 5 项**：源码注释正文里的 `/*` 未同行闭合（Kotlin/仓颉块注释可嵌套，见下条缺陷）。
 - **`docs/整改方案-2026-10-17.md`** 与 **`docs/答辩材料-2026-10-17.md`**：P0/P1/P2 全 27 条处置与验收口径；
   9 分钟讲稿 + 现场演示脚本 + 12 问 Q&A（回应「答辩材料为零」）。
 - **客户端安全存储**：鸿蒙 `common-core/src/main/ets/storage/SecureStore.ets`（`AssetStoreKit`）、
@@ -107,7 +108,8 @@
   （新增 `@Volatile tokenPersisted`）。**2026-10-18 已在 Temurin 21 下编译通过并装模拟器实测**。
 - **【复查轮】`SecretStore.kt` 注释导致整文件不编译**（真编译错误）：头部文档写了 `shared_prefs/*.xml`，
   Kotlin 块注释可嵌套 ⇒ 多出一层永不闭合的注释，整文件 `Unclosed comment`，并连带 `SessionStore.kt`
-  报 4 处 `Unresolved reference 'SecretStore'`。已改写该句；顺带扫全仓 `.kt/.ets/.cj` 的"注释里的 `/*`"。
+  报 4 处 `Unresolved reference 'SecretStore'`。已改写该句；顺带扫全仓 `.kt/.ets/.cj` 的"注释里的 `/*`"，
+  并把这一类缺陷变成门禁：`tools/check-docs.ps1` 第 5 项（剔除字符串字面量与 `//` 行注释后判定，探针文件实测能抓住）。
 - **【复查轮】启动闸门无超时**：`whenReady()` 一旦挂起就是永久白屏；改 `Promise.race([whenReady(), 1200ms])`。
 - **【复查轮】管理端登出不通知服务端**：补 `AdminRepository.logout()`（网络失败仍清本地）。
 - **【复查轮】分发脚本两处**：`package-release.ps1` 生成包内说明的 here-string 用了 C 风格 `\$p`（PS 不认）
