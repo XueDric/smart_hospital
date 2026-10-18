@@ -218,6 +218,8 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 - release 额外强制：`-PapiBaseUrl=https://…` + `ANDROID_KEYSTORE_PATH/PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`（`app/build.gradle.kts:66-78`；`android-patient/README.md:67`）。
 - 产物：`app/build/outputs/apk/release/app-release.apk`（+ `.aab`，AAB 不能直接 `adb install`）。
 
+**2026-10-18 实测（debug）**：`.\build.ps1 -Variant debug` → `BUILD SUCCESSFUL`，APK 956,718 B；装进 AVD `Medium_Phone_API_37.0` 后 `adb reverse tcp:8091 tcp:8091` + 真实账号登录成功。四个**环境**坑（都与本仓代码无关）：① 本机只有 JDK 25，Gradle 8.7 / AGP 8.5.2 需要 **17–21**；② 写 `%USERPROFILE%\.gradle` 被安全软件拦 ⇒ `$env:GRADLE_USER_HOME` 指到工作区；③ `google()/mavenCentral()` 在本网络无进展 ⇒ 本机 init 脚本加镜像；④ `C:\Users\<用户>\.android\debug.keystore` 与 Kotlin 临时目录同样被拦 ⇒ `$env:ANDROID_SDK_HOME` / `$env:TEMP` 指到工作区。逐步命令与截图见 [release/android/README.md](../release/android/README.md)。
+
 ---
 
 ## 6. 可运行程序包（`tools/package-release.ps1`）

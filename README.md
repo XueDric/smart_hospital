@@ -56,7 +56,7 @@ git log --oneline --graph | head -30      # 版本历史（截至 v0.2.0-p1-rev 
 | **P3** | **AI 能力中心（配置底座）**：`ai_setting` KV + **改配置零重启** + ★★ **密钥不引用不落库**（`env:`/`file:` 引用，机制性拒绝裸密钥）+ 脱敏回显 + Prompt 模板落库 + AI 工具开关落库。⚠ 合规决策见 [Q6-合规决策记录](docs/Q6-合规决策记录.md)。见 [P3-HANDOFF](docs/P3-HANDOFF.md) | ✅ **完成** |
 | **P4** | **电子病历 + 运营看板**：七段式病历（草稿 → **提交锁定，锁定后不可改**）+ 医生**接诊队列**（状态机）+ 患者只读档案 + 看板（只出聚合不出明细）。★ 顺带把 `medical_record` 移出内存 Store 改直接 SQL（[ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) rev.6），并在收尾时**整体拆除内存 Store**（rev.7，全库只剩一种数据访问范式）。见 [P4-HANDOFF](docs/P4-HANDOFF.md) | ✅ **完成** |
 | **P5** | **RAG 知识库（零向量库）**：切块（带重叠、结构性不丢内容）→ 向量存 MySQL JSON（**纯仓颉余弦**）→ 关键词检索为默认路 + 向量路；管理端 CRUD + 检索；RAG 片段接进分诊（过安全层、改不了 `options`）+ 看板知识库规模。⚠ DeepSeek 无 embeddings 端点 ⇒ 向量路未做端到端验证。见 [P5-HANDOFF](docs/P5-HANDOFF.md) | ✅ **完成** |
-| **客户端** | **鸿蒙患者端 / 医生端 / 管理端**（`entry` + `common-core` + `feature-*`）+ **安卓患者端**（`android-patient`）+ **管理台网页**（`server/admin-web`，挂载在 `/admin`） | ✅ 已实现并可构建；**2026-10-17 已在华为模拟器（Pura 90 / HarmonyOS 6.1.1 / API 24）跑通患者全流程与管理端看板**，证据见 [release/harmony/](release/harmony/README.md) |
+| **客户端** | **鸿蒙患者端 / 医生端 / 管理端**（`entry` + `common-core` + `feature-*`）+ **安卓患者端**（`android-patient`）+ **管理台网页**（`server/admin-web`，挂载在 `/admin`） | ✅ 已实现并可构建；**2026-10-17 已在华为模拟器（Pura 90 / HarmonyOS 6.1.1 / API 24）跑通患者全流程与管理端看板**（[证据](release/harmony/README.md)）；**2026-10-18 安卓端已用 JDK 21 编译并装进 Android 模拟器登录成功**（[证据](release/android/README.md)） |
 | **维护批次** | 2026-10-17 复验修复 10 条（S1/S2/S3/S5/S6/S8/S12/S14/S16 + S4/S13）、契约与文档同步 | ✅ 完成（[复验报告](docs/REVERIFY-AND-FIXES-2026-10-17.md)） |
 
 > **验收口径**：`selftest` 51 + `authtest` 17 + `triagetest` 150 + `accept` **782 条断言** + `server/tests/` 26 个测试文件（19 个可独立运行的门禁套件）+ 契约门禁（24 Schema / 67 样例）+ `final-verify` 18/18 全绿。

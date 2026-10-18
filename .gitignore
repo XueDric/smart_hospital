@@ -87,7 +87,9 @@ oh_modules/
 BuildProfile.ets
 
 # ── 可运行程序包（由 tools\package-release.ps1 生成，不入库）────────────────
-# 例外：release/harmony/ 下是**鸿蒙构建产物**（未签名 HAP + 构建日志），作为
-#   "客户端可构建"的验收证据入库；其余 release/ 内容（服务端 zip 等）仍不入库。
+# 例外：release/harmony/ 下是**鸿蒙构建产物**（未签名 HAP + 构建日志），release/android/
+#   下是**安卓 debug APK + 模拟器截图**，两者都是"客户端可构建、能运行"的验收证据，故入库；
+#   其余 release/ 内容（服务端 zip 等体积会变的产物）仍不入库。
 /release/*
 !/release/harmony/
+!/release/android/

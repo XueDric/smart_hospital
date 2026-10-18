@@ -20,6 +20,9 @@
   （1,748,913 B，SHA256 `745D07E08A236EC4205AB9A103899064F6B4D07FA369230F1C40CE7EC664C6A3`）、`pack.info`、
   剥掉 ANSI 的完整构建日志、**11 张模拟器实跑截图**（管理端登录/看板/AI 能力中心、患者端登录/首页/分诊/选号/挂号/就诊）
   —— 回应评审「鸿蒙零构建产物、零运行证据」。
+- **安卓构建与运行证据入库** [`release/android/`](release/android/README.md)：`app-debug.apk`（956,718 B，
+  SHA256 `52EA2F26…E374C77`）+ 4 张模拟器截图（登录 / 首页 / 分诊页 / 就诊页空态）+ 复现命令与四个**环境**坑
+  —— 安卓端从"只有代码审查"变成"能编译、能装、能连真服务端登录"。
 - **AI 开箱即用**：新增 `server/src/ai_builtin.cj` 与第四种密钥引用形式 **`builtin:demo`**
   （`ai.key_ref` 仍只存引用、库里永不出现裸密钥；`keyRefBuiltinName()` 用整串白名单比对）；
   默认值改为 `ai.enabled=1` + DeepSeek `deepseek-chat`，装完即可真调。
@@ -101,7 +104,10 @@
   不再谎报 `true`。
 - **【复查轮】安卓令牌三处**：旧明文迁移不看 `SecretStore.put()` 返回值就删明文（Keystore 不可用 = 静默登出）；
   `storeTokenSecurely` 忽略写失败；解密失败被 `orEmpty()` 吞掉。改为成功才删、失败记 `Log.w` 且按未登录处理
-  （新增 `@Volatile tokenPersisted`）。**本机无 JDK 17–21，未编译验证**。
+  （新增 `@Volatile tokenPersisted`）。**2026-10-18 已在 Temurin 21 下编译通过并装模拟器实测**。
+- **【复查轮】`SecretStore.kt` 注释导致整文件不编译**（真编译错误）：头部文档写了 `shared_prefs/*.xml`，
+  Kotlin 块注释可嵌套 ⇒ 多出一层永不闭合的注释，整文件 `Unclosed comment`，并连带 `SessionStore.kt`
+  报 4 处 `Unresolved reference 'SecretStore'`。已改写该句；顺带扫全仓 `.kt/.ets/.cj` 的"注释里的 `/*`"。
 - **【复查轮】启动闸门无超时**：`whenReady()` 一旦挂起就是永久白屏；改 `Promise.race([whenReady(), 1200ms])`。
 - **【复查轮】管理端登出不通知服务端**：补 `AdminRepository.logout()`（网络失败仍清本地）。
 - **【复查轮】分发脚本两处**：`package-release.ps1` 生成包内说明的 here-string 用了 C 风格 `\$p`（PS 不认）

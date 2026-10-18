@@ -8,7 +8,7 @@ Kotlin 原生 Views 实现的患者端（包名 `com.smart.hospital.patient`）�
 
 | 工具 | 要求 |
 | --- | --- |
-| JDK | 完整 JDK 17（构建脚本接受 17–21，需 `java` / `javac` / `jlink`） |
+| JDK | 完整 JDK 17–21（需 `java` / `javac` / `jlink`；**2026-10-18 实测 Temurin 21 编译通过**，JDK 25 会因 Gradle 8.7 / AGP 8.5.2 不支持而失败） |
 | Gradle | 自带 Wrapper 8.7，不依赖全局 Gradle |
 | AGP / Kotlin | 8.5.2 / 2.0.21 |
 | Android Platform | compileSdk / targetSdk **35**，minSdk **26** |
@@ -60,6 +60,7 @@ Debug 默认 `http://127.0.0.1:8091`。联调三选一：
 
 ## 已知边界
 
+- **2026-10-18 已实测**：`.\build.ps1 -Variant debug` → `BUILD SUCCESSFUL`（APK 956,718 B），装进 Android 模拟器（`Medium_Phone_API_37.0`）后用真实账号登录成功（`您好，演示患者`），服务端地址靠 `adb reverse tcp:8091 tcp:8091` 保留默认值。证据与**本机环境坑**（JDK 25 不可用、`GRADLE_USER_HOME` / `ANDROID_SDK_HOME` / `TEMP` 需重定向、依赖镜像）见 [release/android/README.md](../release/android/README.md)。
 - 演示模式（mock 数据）**仅在 Debug** 可用，Release 中 `BuildConfig.DEBUG=false` 会关闭演示入口与 mock 分支；演示走通不等于真实 API/SSE/鉴权/余量守恒通过。
 - 挂号与退号**必须在线直连**，不进离线队列（排队等于超卖）。
 - 分诊/问诊草稿只保留在当前 Activity 内存，进程被杀后不恢复；幂等 `client_token` 的持久恢复需由测试确认。
