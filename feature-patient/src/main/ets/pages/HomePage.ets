@@ -54,6 +54,9 @@ export struct HomePage {
   async load(): Promise<void> {
     this.loading = true;
     this.errorMessage = '';
+    // 先清掉上一次加载的结果，避免退号后刷新接口返回空列表时仍展示旧卡片（缺陷 C-D）。
+    this.hasNextAppointment = false;
+    this.nextAppointment = new Appointment();
     /*
      * ★ 2026-10-17（评审 P2-9）：公告改为读服务端，且**单独 try**。
      *   理由：公告是首页的附加卡片，「下一次就诊」才是主信息 ——
@@ -66,19 +69,76 @@ export struct HomePage {
     }
     try {
       const appointments = await this.repository.appointments(false);
+      let next = new Appointment();
+      let found = false;
       for (const appointment of appointments) {
-        // 判据收敛到 VisitStatus：非终态即「下一次就诊」，到院/候诊的单不会再被漏掉（缺陷 C1）。
-        if (VisitStatus.isActive(appointment.status)) {
-          this.nextAppointment = appointment;
-          this.hasNextAppointment = true;
-          break;
+        if (!VisitStatus.isActive(appointment.status)) {
+          continue;
+        }
+        /*
+         * 服务端列表按 created_at DESC 返回，不能直接取第一条（缺陷 C-C）。
+         * 当前正在就诊的优先，其次按 visit_date / period / seq_no 取最早的一张。
+         */
+        if (!found || this.isEarlierVisit(appointment, next)) {
+          next = appointment;
+          found = true;
         }
       }
+      this.nextAppointment = next;
+      this.hasNextAppointment = found;
     } catch (error) {
       this.errorMessage = ApiError.from(error as Error).userMessage();
     } finally {
       this.loading = false;
     }
+  }
+
+  private isEarlierVisit(candidate: Appointment, current: Appointment): boolean {
+    const candidatePriority = this.statusPriority(candidate.status);
+    const currentPriority = this.statusPriority(current.status);
+    if (candidatePriority !== currentPriority) {
+      return candidatePriority < currentPriority;
+    }
+    if (candidate.visitDate.length === 0 || current.visitDate.length === 0) {
+      if (candidate.visitDate.length !== current.visitDate.length) {
+        return candidate.visitDate.length > 0;
+      }
+    } else if (candidate.visitDate !== current.visitDate) {
+      return candidate.visitDate < current.visitDate;
+    }
+    const candidatePeriod = this.periodPriority(candidate.period);
+    const currentPeriod = this.periodPriority(current.period);
+    if (candidatePeriod !== currentPeriod) {
+      return candidatePeriod < currentPeriod;
+    }
+    return candidate.seqNo < current.seqNo;
+  }
+
+  private statusPriority(status: string): number {
+    if (status === VisitStatus.VISITING) {
+      return 0;
+    }
+    if (status === VisitStatus.WAITING) {
+      return 1;
+    }
+    if (status === VisitStatus.ARRIVED) {
+      return 2;
+    }
+    if (status === VisitStatus.BOOKED) {
+      return 3;
+    }
+    // 服务端将来新增的活动状态按“需要优先关注”处理，避免被已知状态挤掉。
+    return 0;
+  }
+
+  private periodPriority(period: string): number {
+    if (period === 'AM') {
+      return 0;
+    }
+    if (period === 'PM') {
+      return 1;
+    }
+    return 2;
   }
 
   private navigate(route: string): void {
