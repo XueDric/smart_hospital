@@ -1737,6 +1737,28 @@ public class VisitRepo {
     }
 
     /*
+     * 就诊日期门槛（2026-10-18 补）：**未来日期**的号不能进到院/候诊/接诊。
+     *
+     * ★ 为什么必须有：客户端（鸿蒙 `VisitQueuePage`、安卓 `DoctorActivity`）的日期守卫
+     *   只是"防误操作"，直接调接口仍能把 2026-12-24 的号在今天推进到
+     *   arrived → visiting → done，时间线里就会出现"到院时间早于就诊日两个月"的脏数据。
+     *   真正的门禁必须在服务端 —— 客户端可以被绕过，服务端不行。
+     *
+     * ★ 为什么允许**过去**的号：跨零点的接诊（23:50 开始、00:10 完成）与
+     *   "昨天没处理完的队列今早补录"都是真实业务，拦掉它们只会逼人绕开系统。
+     *   所以判据是"就诊日 > 今天 ⇒ 拒绝"，而不是"必须等于今天"。
+     *
+     * ⚠ 为什么不写进 `transition`：acceptance 的领域层夹具日期是写死的
+     *   （2026-12-20/24/25，确定性要求），把墙上时钟塞进领域层会让 700+ 条断言
+     *   变成"看今天几号"。门槛放在 HTTP 边界（`http_p4.cj`），本函数只做纯判断，可单测。
+     */
+    public func visitIsFuture(visitDate: String, now: Int64): Bool {
+        if (visitDate.size == 0) {
+            return false
+        }
+        return visitDate > hDateStringOf(now)
+    }
+    /*
      * 到院登记：`booked → arrived`，并记 `arrived_at`。
      * 只允许从 `booked`（重复登记 ⇒ badTransition，前端刷新即可看到真相）。
      */

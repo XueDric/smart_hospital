@@ -7,6 +7,27 @@
 
 ---
 
+## [0.2.0-p1-rev.2] 2026-10-18 —— 审查记账项四条全部处置
+
+### 新增
+
+- **服务端就诊日期硬门槛**：`VISIT_DATE_FUTURE` ⇒ 409，未来日期的号不能 `arrive` / `waiting` / `start`（`finish` 与爽约故意不拦 —— 跨零点与事后补录是真实业务）。领域层纯计算 `VisitRepo.visitIsFuture()`，拦截放 HTTP 边界 `p4RequireVisitNotFuture()`，因此 700+ 条固定日期断言不受墙上时钟影响。
+- **安卓契约层单元测试** `android-patient/app/src/test/.../ContractParserTest.kt`（10 个用例）+ `app/src/test/resources/contracts/*.json`（从本机服务端真实抓取的金样本）。只加 `testImplementation("junit:junit:4.13.2")` 与 `org.json:json:20240303`。
+
+### 变更
+
+- `ThemeController.isNight()` 成为**唯一**明暗判定入口，`attachContext()` 与 `refresh()` 共用；两份 `themes.xml` 窗口属性对齐（浅色补 `windowBackground`/`windowLightNavigationBar`，消除启动首帧纯白），`values-night/` 与 `colors.xml` 加注"只提供颜色值，选择权在 ThemeController"。
+
+### 修复
+
+- 安卓 `SessionStore` 的 7 处 `check(commit())` 改为 `persist(editor, what)`：本地存储写失败不再抛 `IllegalStateException`（`commit()` 失败时内存值已生效，抛异常等于把"下次可能要重试"升级成闪退）。
+- `server/tests/emr-check.ps1` / `visit-timeline-check.ps1` 的固定未来日期夹具改为"当天"，否则日期门槛上线即自红；`visit-timeline-check.ps1` 新增 `[5b]` 段 6 条门槛断言（含"被拒后库里仍 `booked`"）。
+- `VISIT_DATE_FUTURE` 原先未在 `server/src/http_common.cj` 登记，实测回落成 `HTTP 500`（正常业务拒绝被报成服务端故障），已登记为 409。
+
+### 文档
+
+- `docs/审查-同事提交-2026-10-18.md` 新增 §七"记账项的处置"：四条逐条写清设计取舍（为什么只拦未来、为什么把门槛放 HTTP 边界、为什么不推倒重写主题机制）与实测数字。
+- 全仓 `accept` 断言数同步 **782 → 786**（README / DEPLOYMENT / PROJECT-OVERVIEW / SYSTEM-DESIGN / 联调记录 / 整改方案 / 答辩材料 / server README / ADR-0001 / P1-HANDOFF）。
 ## [0.2.0-p1-rev.1] 2026-10-18 —— 三端联调与同事提交审查批次
 
 > 本轮做了两件事：① 鸿蒙患者/医生/管理端 + 安卓端同一条服务端上跑全流程（记录见 [docs/联调记录-2026-10-18.md](docs/联调记录-2026-10-18.md)）；

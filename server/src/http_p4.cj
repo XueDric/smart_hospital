@@ -543,7 +543,9 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
         if (id <= 0) {
             throw apiErrorMsg("VALIDATION_FAILED", "挂号单 id 必须是正整数")
         }
-        let out = visit.arriveVisit(id, p.doctorId, hNowEpoch())
+        let now = hNowEpoch()
+        p4RequireVisitNotFuture(visit, id, p.doctorId, now, "到院登记")
+        let out = visit.arriveVisit(id, p.doctorId, now)
         p4ThrowVisit(out, "到院登记")
         sendOk(ctx, p4VisitStateJson(id, p.doctorId, emr, visit))
     })
@@ -562,6 +564,7 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
         if (id <= 0) {
             throw apiErrorMsg("VALIDATION_FAILED", "挂号单 id 必须是正整数")
         }
+        p4RequireVisitNotFuture(visit, id, p.doctorId, hNowEpoch(), "进入候诊")
         let out = visit.waitingVisit(id, p.doctorId)
         p4ThrowVisit(out, "进入候诊")
         sendOk(ctx, p4VisitStateJson(id, p.doctorId, emr, visit))
@@ -580,7 +583,9 @@ public func registerP4Routes(r: Router, auth: AuthRepo, gate: DevAuthGate,
         if (id <= 0) {
             throw apiErrorMsg("VALIDATION_FAILED", "挂号单 id 必须是正整数")
         }
-        let out = visit.startVisit(id, p.doctorId, hNowEpoch())
+        let now = hNowEpoch()
+        p4RequireVisitNotFuture(visit, id, p.doctorId, now, "开始接诊")
+        let out = visit.startVisit(id, p.doctorId, now)
         p4ThrowVisit(out, "开始接诊")
         sendOk(ctx, p4VisitStateJson(id, p.doctorId, emr, visit))
     })
@@ -1140,6 +1145,29 @@ func p4ThrowVisit(out: VisitOutcome, what: String): Unit {
     throw apiErrorMsg("INTERNAL", "${what}：未成功（原因未分类）")
 }
 
+/*
+ * 就诊日期门槛（2026-10-18 补，评审整改 §6 遗留第 1 条）。
+ *
+ * ★ 为什么在 HTTP 层而不是领域层：	ransition() 是纯状态机 + SQL，acceptance
+ *   用写死的日期夹具（2026-12-20/24/25）一口气断言 700+ 条；把墙上时钟塞进
+ *   领域层会让那些断言变成"看今天几号"。而 HTTP 是**信任边界** —— 客户端
+ *   绕不过它，测试脚本可以按需要造今天的号，两边都不别扭。
+ *
+ * ⚠ 只拦**未来**日期：跨零点接诊、次日补录昨天的队列都是真实业务。
+ */
+func p4RequireVisitNotFuture(visit: VisitRepo, appointmentId: Int64, doctorId: Int64,
+                             now: Int64, what: String): Unit {
+    match (visit.findForDoctor(appointmentId, doctorId)) {
+        case Some(a) =>
+            if (visit.visitIsFuture(a.visitDate, now)) {
+                throw apiErrorMsg("VISIT_DATE_FUTURE",
+                                  "${what}：该号的就诊日是 ${a.visitDate}，今天（${hDateStringOf(now)}）不能到院登记/接诊")
+            }
+        case None =>
+            /* 不存在或不属于我 —— 交给下游状态机按 404 统一处理，这里不抢先报错 */
+            return
+    }
+}
 /* 回显该单的最新状态 + 病历状态。 */
 func p4VisitStateJson(appointmentId: Int64, doctorId: Int64,
                       emr: MedicalRecordRepo, visit: VisitRepo): JsonObject {

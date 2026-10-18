@@ -128,14 +128,17 @@ $null = Invoke-MySqlScalar -My $My -Label "清患者" -Sql "DELETE FROM patient 
 $null = Invoke-MySqlScalar -My $My -Label "清会话" -Sql "DELETE FROM previsit_session"
 $null = Invoke-MySqlScalar -My $My -Label "清统计" -Sql "DELETE FROM triage_stat"
 
+# ★ 2026-10-18：就诊日期门槛（server/src/http_p4.cj 的 p4RequireVisitNotFuture）只放行
+#   **非未来**的号，所以夹具里的就诊日必须用「今天」而不是写死的 2026-12-25。
+$emrToday = (Get-Date).ToString('yyyy-MM-dd')
 $seedSql = @"
 INSERT INTO department (id, name, code, created_at) VALUES (700001, 'P4端到端科', 'P4E2E', 0);
 INSERT INTO doctor (id, name, department_id, title, specialty, created_at) VALUES (700001, 'P4端到端医生', 700001, '主任医师', '测试', 0);
-INSERT INTO schedule (id, doctor_id, department_id, work_date, period, total_num, remain_num, version, enabled, created_at) VALUES (700001, 700001, 700001, '2026-12-25', 'AM', 20, 20, 0, 1, 0);
+INSERT INTO schedule (id, doctor_id, department_id, work_date, period, total_num, remain_num, version, enabled, created_at) VALUES (700001, 700001, 700001, '$emrToday', 'AM', 20, 20, 0, 1, 0);
 INSERT INTO patient (id, phone, name, gender, birth_date, created_at) VALUES (700001, '13800070001', 'P4端到端患者', 'M', '1990-01-01', 0);
 INSERT INTO patient (id, phone, name, gender, birth_date, created_at) VALUES (700002, '13800070002', 'P4另一患者', 'F', '1992-02-02', 0);
-INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (700001, 700001, 700001, 700001, 700001, '2026-12-25', 'AM', 1, 'booked', 1, 0);
-INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (700002, 700001, 700002, 700001, 700001, '2026-12-25', 'AM', 2, 'cancelled', 1, 0);
+INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (700001, 700001, 700001, 700001, 700001, '$emrToday', 'AM', 1, 'booked', 1, 0);
+INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (700002, 700001, 700002, 700001, 700001, '$emrToday', 'AM', 2, 'cancelled', 1, 0);
 "@
 # ⚠ `Invoke-MySqlFile` 收的是**文件路径**（不是 SQL 文本）—— 先落盘
 SqlFile 'seed' $seedSql
@@ -187,7 +190,7 @@ Write-Host "[2] 接诊队列"
 #   于是 contract schema 里写 `minLength: 1` 也永远不红（样例是从真库导的，复核 N1 说的就是这个）。
 #   ⚠ 行数必须自己校验：`Invoke-MySqlFile` 只在"SQL 报错"时抛出，"文件没落盘"它不报（见 [7] 的坑）。
 $orphanSql = @"
-INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (700005, 700001, 700999, 700001, 700001, '2026-12-25', 'PM', 5, 'booked', 1, 0);
+INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (700005, 700001, 700999, 700001, 700001, '$emrToday', 'PM', 5, 'booked', 1, 0);
 "@
 SqlFile 'orphan' $orphanSql
 $orphanCnt = RowCount "校验孤儿引用已插入" "SELECT COUNT(*) FROM appointment a LEFT JOIN patient p ON p.id = a.patient_id WHERE a.id = 700005 AND p.id IS NULL"
@@ -294,7 +297,7 @@ Write-Host "[6] 越权：一律 404（不是 403 —— 403 是枚举 oracle）"
 # 造一个"不属于该医生"的单：另一个医生名下（照样走**文件** + 行数校验）
 $otherSql = @"
 INSERT INTO doctor (id, name, department_id, title, specialty, created_at) VALUES (700002, 'P4别的医生', 700001, '医师', '测试', 0);
-INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (700003, 700001, 700001, 700002, 700001, '2026-12-25', 'AM', 3, 'booked', 1, 0);
+INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (700003, 700001, 700001, 700002, 700001, '$emrToday', 'AM', 3, 'booked', 1, 0);
 "@
 SqlFile 'other' $otherSql
 $otherCnt = RowCount "校验别人的单已插入" "SELECT COUNT(*) FROM appointment WHERE id=700003 AND doctor_id=700002"
@@ -310,7 +313,7 @@ Check "★★ 不存在的单 → 404（与「别人的单」**同码**）" ($r.
 Write-Host ""
 Write-Host "[7] 预问诊衔接：问诊单预填病历"
 $intakeSql = @"
-INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (700004, 700001, 700002, 700001, 700001, '2026-12-25', 'AM', 4, 'visiting', 1, 0);
+INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (700004, 700001, 700002, 700001, 700001, '$emrToday', 'AM', 4, 'visiting', 1, 0);
 "@
 SqlFile 'intake' $intakeSql
 $intakeCnt = RowCount "校验预填单已插入" "SELECT COUNT(*) FROM appointment WHERE id=700004 AND status='visiting'"
@@ -377,7 +380,7 @@ $raceRoundsHit = 0
 for ($rd = 1; $rd -le $raceRounds; $rd++) {
     $raceId = 700100 + $rd
     $raceSeq = 100 + $rd
-    $raceSql = "INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES ($raceId, 700001, 700002, 700001, 700001, '2026-12-25', 'AM', $raceSeq, 'visiting', 1, 0);"
+    $raceSql = "INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES ($raceId, 700001, 700002, 700001, 700001, '$emrToday', 'AM', $raceSeq, 'visiting', 1, 0);"
     SqlFile ("race" + $rd) $raceSql
     $racePre = RowCount "竞态单 $raceId 起跑前无病历" "SELECT COUNT(*) FROM medical_record WHERE appointment_id = $raceId"
     if ("$racePre" -ne '0') {

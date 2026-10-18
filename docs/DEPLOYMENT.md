@@ -254,7 +254,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\package-release.ps1
 | `… check-db <dsn>` | 连库 + 幂等建表 + 打印表清单 | `建表：执行 17 条 DDL（IF NOT EXISTS，幂等）` + 表清单 | **1.7 s** |
 | `tests\contract-check.ps1 -Base … -AdminPw …` | ①重新导出契约与 `contract/examples/**` **逐字节**比对 ②用 `contract/schema/*.json` 校验形状与分类 | 全部一致 / 校验通过；`-SkipExport` 只跑校验（`server/tests/contract-check.ps1:3-27`） | 需实例 + 管理员口令；**本机实测全绿**：载入 Schema 24 个、样例 67 条、`PASS 69 / FAIL 0` |
 | `tests\final-verify.ps1` | 一次跑完 **18 项** HTTP 门禁（三种实例：18092 `--dev-auth`、18095 裸、18096 `--prod`；末项 `doc-counts` 对账文档数字）+ 汇总 `EXIT` 表 | 全 `EXIT=0`；脚本自己起停三个实例并生成管理员口令（`server/tests/final-verify.ps1:1-13,63-93`） | 分钟级；**本机实测 18/18 `EXIT=0`**（端口须 ≥15001；`contract-check` 必须排在 `p1-extra-check` 之前，后者会重设管理员口令） |
-| `… accept <dsn>` | AC-1…AC-17 全量验收（782 项），**会清空业务表** | 只允许库名含 `test`；非测试库直接退 2（`server/src/main.cj:274-301`） | 长；**禁止在业务库跑** |
+| `… accept <dsn>` | AC-1…AC-17 全量验收（786 项），**会清空业务表** | 只允许库名含 `test`；非测试库直接退 2（`server/src/main.cj:274-301`） | 长；**禁止在业务库跑** |
 
 > 测试项数以 `server/tests/doc-counts.ps1` 的实测输出为准；上表的 `0.14 s / 4.39 s / 0.08 s / 1.7 s` 是本机 `0.2.0-p1` 包的实测值。
 

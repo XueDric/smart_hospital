@@ -114,21 +114,26 @@ $null = Invoke-MySqlScalar -My $My -Label "清排班" -Sql "DELETE FROM schedule
 $null = Invoke-MySqlScalar -My $My -Label "清医生" -Sql "DELETE FROM doctor WHERE id >= 707000"
 $null = Invoke-MySqlScalar -My $My -Label "清科室" -Sql "DELETE FROM department WHERE id >= 707000"
 $null = Invoke-MySqlScalar -My $My -Label "清患者" -Sql "DELETE FROM patient WHERE id >= 707000"
+# ★ 2026-10-18：就诊日期门槛（server/src/http_p4.cj 的 p4RequireVisitNotFuture）拦的是
+#   **未来**就诊日，所以主夹具用「今天」，另造一张 7 天后的号专门验拦截。
+$vtlToday = (Get-Date).ToString('yyyy-MM-dd')
+$vtlFuture = (Get-Date).AddDays(7).ToString('yyyy-MM-dd')
 $seedSql = @"
 INSERT INTO department (id, name, code, created_at) VALUES (707001, '改进6验证科', 'VT6', 0);
 INSERT INTO doctor (id, name, department_id, title, specialty, created_at) VALUES (707001, '改进6医生甲', 707001, '主任医师', '测试', 0);
 INSERT INTO doctor (id, name, department_id, title, specialty, created_at) VALUES (707002, '改进6医生乙', 707001, '住院医师', '测试', 0);
-INSERT INTO schedule (id, doctor_id, department_id, work_date, period, total_num, remain_num, version, enabled, created_at) VALUES (707001, 707001, 707001, '2026-12-30', 'AM', 20, 20, 0, 1, 0);
+INSERT INTO schedule (id, doctor_id, department_id, work_date, period, total_num, remain_num, version, enabled, created_at) VALUES (707001, 707001, 707001, '$vtlToday', 'AM', 20, 20, 0, 1, 0);
 INSERT INTO patient (id, phone, name, gender, birth_date, created_at) VALUES (707001, '13800070701', '改进6患者甲', 'M', '1990-01-01', 0);
-INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (707004, 707001, 707001, 707001, 707001, '2026-12-30', 'AM', 1, 'booked', 0, 0);
-INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (707005, 707001, 707001, 707001, 707001, '2026-12-30', 'AM', 2, 'booked', 0, 0);
-INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (707006, 707001, 707001, 707001, 707001, '2026-12-30', 'AM', 3, 'booked', 0, 0);
-INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (707007, 707001, 707001, 707002, 707001, '2026-12-30', 'AM', 4, 'booked', 0, 0);
-INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (707008, 707001, 707001, 707001, 707001, '2026-12-30', 'AM', 5, 'cancelled', 1, 0);
-INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (707009, 707001, 707001, 707001, 707001, '2026-12-30', 'AM', 6, 'booked', 0, 0);
+INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (707004, 707001, 707001, 707001, 707001, '$vtlToday', 'AM', 1, 'booked', 0, 0);
+INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (707005, 707001, 707001, 707001, 707001, '$vtlToday', 'AM', 2, 'booked', 0, 0);
+INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (707006, 707001, 707001, 707001, 707001, '$vtlToday', 'AM', 3, 'booked', 0, 0);
+INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (707007, 707001, 707001, 707002, 707001, '$vtlToday', 'AM', 4, 'booked', 0, 0);
+INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (707008, 707001, 707001, 707001, 707001, '$vtlToday', 'AM', 5, 'cancelled', 1, 0);
+INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (707009, 707001, 707001, 707001, 707001, '$vtlToday', 'AM', 6, 'booked', 0, 0);
+INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, visit_date, period, seq_no, status, slot_restored, created_at) VALUES (707010, 707001, 707001, 707001, 707001, '$vtlFuture', 'AM', 7, 'cancelled', 1, 0);
 "@
 SqlFile "vtl_seed" $seedSql
-Check "① 夹具就位：预约 6 张（booked 5 / cancelled 1）" ((RowCount "数夹具" "SELECT COUNT(*) FROM appointment WHERE id >= 707000") -eq '6') `
+Check "① 夹具就位：预约 7 张（booked 6 / cancelled 1；含 1 张 7 天后的号用于验日期门槛）" ((RowCount "数夹具" "SELECT COUNT(*) FROM appointment WHERE id >= 707000") -eq '7') `
       "count=$(RowCount '数夹具' 'SELECT COUNT(*) FROM appointment WHERE id >= 707000')"
 
 $admTok = Tok "admin" $AdminPw
@@ -308,6 +313,36 @@ Check "★★ ⑤ 最终队列顺序：arrived 707004 最前 → done 707005 →
 Check "★ ⑤ 已退号的 707008 与别人的单 707007 都不在队列里" `
       (((QueueIds $r) -notmatch '707008') -and ((QueueIds $r) -notmatch '707007')) "ids=$(QueueIds $r)"
 
+# ── [5b] ★ 就诊日期门槛（2026-10-18 补）────────────────────────────────
+Write-Host ""
+Write-Host "[5b] 就诊日期门槛：未来日期的号不能进接诊流程"
+# 707010 = 7 天后的号（$vtlFuture）。客户端侧有日期守卫，但客户端可以被绕过，
+# 所以服务端必须自己拦 —— 这一段断的就是"绕过客户端直接打接口"这条路。
+# 夹具里 707010 先置 cancelled（免得干扰上面的队列顺序断言）；这里翻成 booked，
+# 因为"日期门槛"要拦的正是**能到院**的那张单。
+$null = Invoke-MySqlScalar -My $My -Label "启用未来号" -Sql "UPDATE appointment SET status = 'booked', slot_restored = 0, arrived_at = 0 WHERE id = 707010"
+$r = Req "f1" 'POST' '/api/v1/doctor/visits/707010/arrive' $DH $null
+Check "★★ 就诊日期门槛：7 天后的号「确认到院」⇒ 409 VISIT_DATE_FUTURE" `
+      ($r.Http -eq 409 -and $r.Json.error.code -eq 'VISIT_DATE_FUTURE') `
+      "HTTP $($r.Http) code=$($r.Json.error.code)"
+Check "★★ 且错误信息里带了就诊日与今天（能让人一眼看懂为什么被拒）" `
+      (("$($r.Json.error.message)" -match $vtlFuture) -and ("$($r.Json.error.message)" -match $vtlToday)) `
+      "msg=$($r.Json.error.message)"
+Check "★★ 且库里这张单**没有被写脏**（status 仍 booked、arrived_at 仍 0）" `
+      (((ApptCol 707010 'status') -eq 'booked') -and ((ApptCol 707010 'arrived_at') -eq '0')) `
+      "status=$(ApptCol 707010 'status') arrived_at=$(ApptCol 707010 'arrived_at')"
+$r = Req "f2" 'POST' '/api/v1/doctor/visits/707010/waiting' $DH $null
+Check "★★ 就诊日期门槛：未来号「进入候诊」同样被拒（409 VISIT_DATE_FUTURE）" `
+      ($r.Http -eq 409 -and $r.Json.error.code -eq 'VISIT_DATE_FUTURE') `
+      "HTTP $($r.Http) code=$($r.Json.error.code)"
+$r = Req "f3" 'POST' '/api/v1/doctor/visits/707010/start' $DH $null
+Check "★★ 就诊日期门槛：未来号「开始接诊」同样被拒（409 VISIT_DATE_FUTURE）" `
+      ($r.Http -eq 409 -and $r.Json.error.code -eq 'VISIT_DATE_FUTURE') `
+      "HTTP $($r.Http) code=$($r.Json.error.code)"
+Check "★★ 三次被拒后状态仍是 booked（一条 UPDATE 都没执行成功）" `
+      ((ApptCol 707010 'status') -eq 'booked') "status=$(ApptCol 707010 'status')"
+# 让这张单不再参与下面的队列顺序断言（它此刻是 booked，会排进队列）
+$null = Invoke-MySqlScalar -My $My -Label "收尾未来号" -Sql "UPDATE appointment SET status = 'cancelled', slot_restored = 1 WHERE id = 707010"
 # ── [6] 夹具自清 ────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "[6] 夹具自清"

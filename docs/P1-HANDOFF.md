@@ -804,7 +804,7 @@ P0 把 AC-4 的完整回归挂到 P1（写在本 ADR 的"验证边界"里），�
 | --- | --- | --- |
 | schema 自检（无需库） | `hospital-server.exe selftest` | ✅ **51 项** |
 | ★ 口令/令牌原语（含 3 个公开向量） | `hospital-server.exe authtest` | ✅ 17 项 |
-| 验收（AC-1…AC-P4-8） | `hospital-server.exe accept <dsn>` | ✅ **782 项** |
+| 验收（AC-1…AC-P4-8） | `hospital-server.exe accept <dsn>` | ✅ **786 项** |
 | ★ 令牌鉴权端到端 | `tests\auth-check.ps1` | ✅ 全绿（登录/Bearer/三端权限/登出/改口令踢下线/防枚举计时） |
 | ★ 并发压测（AC-9，走令牌） | `tests\stress-booking.ps1` | ✅ 20/30/40/50 抢同数号源**全部卖光**（含最穷工况） |
 | ★ **TLS/HTTPS** | `tests\tls-check.ps1` | ✅ 全绿（1.2/1.3 真校验、旧版被拒、反向验证、HTTPS 业务链路） |

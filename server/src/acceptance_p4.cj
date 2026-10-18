@@ -1142,6 +1142,20 @@ public func acP4_8(runner: TestRunner, db: DbBackend): Unit {
                      !view.toString().contains("patient_id") &&
                      !view.toString().contains("doctor_id") &&
                      !view.toString().contains("9620"))
+        /*
+         * ★ 2026-10-18（评审整改 §6 遗留第 1 条）：就诊日期门槛的**纯判断**部分。
+         * 拦未来日期这件事的完整链路在 HTTP 层（p4RequireVisitNotFuture），
+         * 这里只钉住"什么算未来"，因为它是唯一有分支的地方。
+         */
+        let todayStr = hDateStringOf(now)
+        runner.check("★★ ⑧ 日期门槛：今天的号放行",
+                     !visit.visitIsFuture(todayStr, now))
+        runner.check("★★ ⑧ 日期门槛：**过去**的号放行（跨零点/次日补录是真业务）",
+                     !visit.visitIsFuture("2000-01-01", now))
+        runner.check("★★ ⑧ 日期门槛：未来日期的号被拒",
+                     visit.visitIsFuture("2999-12-31", now))
+        runner.check("★★ ⑧ 日期门槛：空日期不拦（历史数据/未排班），交给后续状态机",
+                     !visit.visitIsFuture("", now))
     })
 }
 
