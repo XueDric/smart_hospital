@@ -1,4 +1,4 @@
-# 鸿蒙客户端构建与运行证据（2026-10-17）
+# 鸿蒙客户端构建与运行证据（2026-10-17 建档，2026-10-18 联调后刷新）
 
 > 本目录是为回应评审"鸿蒙三端零构建产物、零可运行证据"而保留的**原始证据**，不是演示素材的拼贴：
 > 每一张截图都对应一次 `hdc install` + `aa start` 真实运行，且关键文本另有 `uitest dumpLayout` 文本实测（登录态、聚合数字、真实模型来源）。
@@ -8,10 +8,11 @@
 
 | 文件 | 大小 | 说明 |
 |---|---|---|
-| `entry-default-unsigned.hap` | 1,752,310 B | 未签名 HAP（SHA256 `0E2E293C3DAB084AA3CF22050782D9B19A58DCEAA2555502AB97C7E14F6675A4`）|
+| `entry-default-unsigned.hap` | 1,758,111 B | 未签名 HAP（SHA256 `841B91854FD9640BB4D334687A5264EB4FCDE85CA7ABAF2F29385F37B946EB0A`）|
 | `pack.info` | 565 B | 打包信息（bundle `com.smart.hospital.patient`、versionCode/versionName、模块列表）|
-| `build-log-2026-10-17.txt` | 4,331 B | `assembleHap` 完整日志（ANSI 转义已剥离，可直接文本比对）|
-| `screenshots/*.jpeg` | 11 张 | 见下表 |
+| `build-log-2026-10-17.txt` | 7,381 B | 2026-10-17 的 `assembleHap` 完整日志（ANSI 已剥离）|
+| `build-log-2026-10-18.txt` | 4,667 B | 2026-10-18 三端联调后重建的日志（ANSI 已剥离，末行 `BUILD SUCCESSFUL`；本轮修复后 29 executed / 36 up-to-date）|
+| `screenshots/*.jpeg` | 14 张 | 见下表 |
 
 ## 二、截图索引
 
@@ -28,6 +29,9 @@
 | 09 | `screenshots/09-patient-booking-success.jpeg` | 患者端 | 挂号结果：**`挂号成功：2026-12-24 上午，序号 1`** + `查看就诊`；号源卡片变 `已预约该号源` |
 | 10 | `screenshots/10-patient-visits.jpeg` | 患者端 | 我的就诊：`当前预约 / 2026-12-24 上午 / 序号 1 · 内科 · 张医生 主任医师 / 已挂号 / 退号` |
 | 11 | `screenshots/11-admin-bad-password.jpeg` | 管理端 | **复查轮新增**：密码输错时停在管理端登录页，页面内红字 `账号或密码错误`。修复前这里会被 401 当成"会话过期"清掉会话、跳回**患者**登录页（医生/管理端输入错密码就被踢走） |
+| 12 | `screenshots/12-admin-dashboard-live.jpeg` | 管理端 | 三端联调时的看板实况（有真实挂号数据后）：指标卡、`近 N 日挂号趋势` 柱状、聚合指标与 AI/知识库计数 |
+| 13 | `screenshots/13-doctor-queue-gated.jpeg` | 医生端 | **三端联调新增**：队列分段改为 `全部 / 上午 / 下午`，副标题 `按状态展示接诊顺序（含历史与未来日期）`；2026-10-18 那张已 `已到院`、2026-12-24 那张仍 `已挂号`（点它的「到院登记」会被日期守卫拦下，红条文案见 [docs/联调记录-2026-10-18.md](../../docs/联调记录-2026-10-18.md) BUG-5）|
+| 14 | `screenshots/14-admin-dashboard-triage-calls.jpeg` | 管理端 | **三端联调新增**：`累计挂号 2`、`号源使用率 40%`、**`分诊调用 0`**（替换原来恒为 0 的"分诊命中率"）、`预问诊完成率 50%`、**`近 14 日挂号趋势`**（标题跟随 `trend_days`，未来日期已不再计入）、`聚合指标 号源 剩余 3 / 共 5（排班 2 条）` |
 
 ## 三、怎么复现（不需要 DevEco 界面）
 

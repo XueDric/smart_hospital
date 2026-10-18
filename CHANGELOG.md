@@ -17,7 +17,7 @@
 - **`hvigorw.bat`（仓库根）**：自动探测 DevEco 安装位置并推出 `DEVECO_SDK_HOME` / `JAVA_HOME`，
   使用者不配环境变量即可在仓库根一条命令构建鸿蒙客户端（`assembleHap`）。
 - **鸿蒙构建与运行证据入库** [`release/harmony/`](release/harmony/README.md)：`entry-default-unsigned.hap`
-  （1,752,310 B，SHA256 `0E2E293C3DAB084AA3CF22050782D9B19A58DCEAA2555502AB97C7E14F6675A4`）、`pack.info`、
+  （1,758,111 B，SHA256 `841B91854FD9640BB4D334687A5264EB4FCDE85CA7ABAF2F29385F37B946EB0A`）、`pack.info`、
   剥掉 ANSI 的完整构建日志、**11 张模拟器实跑截图**（管理端登录/看板/AI 能力中心、患者端登录/首页/分诊/选号/挂号/就诊）
   —— 回应评审「鸿蒙零构建产物、零运行证据」。
 - **安卓构建与运行证据入库** [`release/android/`](release/android/README.md)：`app-debug.apk`（956,718 B，
@@ -119,10 +119,33 @@
   `check-docs.ps1` 遇非 UTF-8 文件抛 `DecoderFallbackException` 整脚本退出（改报文件名后跳过）。
 - **【复查轮】小项**：`StatusChip` 主题色写进 `@Param` 默认值（省略参数的调用点永久停在首帧色）；三端跨端入口
   是裸 `Text`（热区 < 44vp）；`HomePage` 刷新不复位"下一次就诊"；`clearLogin()` 不清 `previsit_session_id`。
+
+### 修复（2026-10-18 三端联调批次，详见 [docs/联调记录-2026-10-18.md](docs/联调记录-2026-10-18.md)）
+
+- **挂号后号源余量不刷新**（患者端 `BookingPage.ets`）：成功路径只弹「挂号成功」，列表卡片仍显示旧余量
+  （只有「号源已被抢」分支才重拉）。`loadSchedules()` 增 `keepMessage` 参数，成功路径补一次刷新。
+- **登录响应 `patient_id` 不分角色**（服务端 `http_app.cj`）：医生登录返回 `patient_id = ref_id`，
+  与 `/auth/me` 的 `patient_id: 0, doctor_id: 1` 自相矛盾；改为按角色给值。
+- **未来日期的号可以到院/接诊**（医生端 `VisitQueuePage.ets`）：就诊日为两个月后的号仍能走完
+  「到院登记 → 候诊 → 接诊」，还显示「候诊 0 分钟」；新增就诊日守卫与红条提示（服务端硬门槛列待办）。
+- **接诊队列「今日」名不副实**（医生端）：分段值 `ALL` 却标成「今日」，而接口无日期参数 ⇒ 未来号混进"今日"；
+  改标「全部」并在副标题写明含历史与未来。
+- **看板「分诊命中率」恒为 0%**（管理端）：`AdminRepository` 直接写死 `triageHitPct = 0`，服务端无该字段
+  （`triage_stat` 无 `patient_id`/`appointment_id`，命中率无法回溯）；指标改为「分诊调用」= 真实 `total_calls`。
+- **看板趋势含未来日期且「7 日」与 `trend_days=14` 矛盾**（服务端 `dashboard.cj` + 管理端）：趋势 SQL 补上界，
+  标题跟随 `trend_days`。
+- **挂号列表忽略号源自带的科室/医生名**（患者端）：从「常用服务 → 预约挂号」进入时显示「科室 #1」「医生 #1」；
+  改为优先用 `department_name` / `doctor_name` / `doctor_title`，路由参数降为兜底。
+- **主题切换当前页不重绘**（鸿蒙 `ThemeManager.palette()`）：裸读 `paletteVersion` 被优化掉，改为让版本号参与取值；
+  插桩证明配色取值已正确，但**页面仍要重进才变色**，故列为留档缺陷并写明真修法（`AppStorageV2` + `@Monitor`
+  或 `AppColor` 改 `@ObservedV2` 实例属性）。
+
 ### 文档
 
 - 数字统一为实测值并被门禁绑定：`accept` **782**、`triagetest` **150**、`selftest` 51、`authtest` 17、
   REST **81**、`final-verify` **18 项**、**107** 个提交（截至 tag `v0.2.0-p1-rev`）、**6** 位贡献者、**26** 个测试文件。
+- 新增 **`docs/联调记录-2026-10-18.md`**：三端联调走查范围、BUG-1…BUG-10 现象/根因/处置、留档 4 条与建议修法、
+  验证门禁、复现命令、以及 6 条会误导判断的工具坑（`uitest inputText` 是追加、输入法候选栏被误读、安装后首启竞态…）。
 - 全仓旧仓库路径（原名含中文）与「本仓库路径含中文」的过时论述清理完毕；保留的是
   「部署到含中文目录时」的条件式说明与评审核查原文存档。
 - `README.md` / `docs/DEPLOYMENT.md` / `docs/HARMONY-INTERFACE-GUIDE.md` 补鸿蒙一条命令构建、

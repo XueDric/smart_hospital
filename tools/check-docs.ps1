@@ -22,7 +22,9 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
-$skip = @('node_modules', 'oh_modules', 'build', 'release', '.git', '.hvigor', '.hvigor-user-home', '.gradle', 'dist')
+# `.build-tools` 是本地一次性工具目录（JDK/Gradle 缓存、联调脚本，已在 .gitignore 里），
+# 不参与仓库卫生检查 —— 否则把本地临时脚本也算成"仓库违规"，红灯指向的不是提交内容。
+$skip = @('node_modules', 'oh_modules', 'build', 'release', '.git', '.hvigor', '.hvigor-user-home', '.gradle', 'dist', '.build-tools')
 $sep  = [System.IO.Path]::DirectorySeparatorChar
 
 function Test-Skipped([string]$full) {
