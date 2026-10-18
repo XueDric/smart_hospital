@@ -125,10 +125,14 @@ $snapCommit = [string]$snap['commit']
 $realCommitStr = [string]$real['commit']
 if ($snapCommit -ne $realCommitStr) {
     # 允许快照是当前 HEAD 的前缀（打完包后又提交文档是常态）
-    if ($realCommitStr.StartsWith($snapCommit) -and $snapCommit.Length -ge 7) {
+    # 允许"快照锚定的提交是 HEAD 的祖先"：交付物打完包之后继续提交文档是常态，
+    # 用 git 的祖先判定而不是字符串前缀（SHA 不是前缀关系）。
+    & git -C $repo merge-base --is-ancestor $snapCommit HEAD 2>$null
+    $isAncestor = ($LASTEXITCODE -eq 0)
+    if ($isAncestor -and $snapCommit.Length -ge 7) {
         Ok ("commit 锚定 " + $snapCommit + "（当前 HEAD " + $realCommitStr + " 是它的后代）")
     } else {
-        Fail ("commit 不一致：快照 " + $snapCommit + "，HEAD " + $realCommitStr)
+        Fail ("commit 不一致：快照 " + $snapCommit + "，HEAD " + $realCommitStr + "（既不是同一个也不是祖先后代）")
     }
 } else { Ok ("commit = " + $realCommitStr) }
 
