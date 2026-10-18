@@ -99,7 +99,14 @@ $oldRe = [regex]'harmonyOS[\\/]+\u667a\u80fd\u533b\u9662'
 # 例外：评审原文存档按"当时现场"保留，不改；本脚本自身要写出被查的路径模式。
 $allowOld = @("docs${sep}评审反馈-2026-10-17.md", "tools${sep}check-docs.ps1")
 foreach ($f in $files | Where-Object { $_.Extension -in '.md', '.ps1', '.cj', '.ets', '.kt', '.json5', '.json', '.bat', '.js', '.mjs' }) {
-    $text = [System.IO.File]::ReadAllText($f.FullName, [System.Text.UTF8Encoding]::new($false))
+    # ✅ 2026-10-17 复查：ReadAllText 遇到非 UTF-8 字节会抛 DecoderFallbackException，
+    #    在 EAP=Stop 下直接堆栈退出 —— 报的是"脚本崩了"，而不是"这个文件不是 UTF-8"。
+    try {
+        $text = [System.IO.File]::ReadAllText($f.FullName, [System.Text.UTF8Encoding]::new($false, $true))
+    } catch {
+        Add-Problem ("编码：{0} 不是合法 UTF-8（请转存为 UTF-8）" -f $f.FullName.Substring($repo.Length + 1))
+        continue
+    }
     $isAllowed = $false
     foreach ($a in $allowOld) { if ($f.FullName.EndsWith($a)) { $isAllowed = $true } }
     if ((-not $isAllowed) -and $oldRe.IsMatch($text)) {

@@ -476,7 +476,7 @@ $readme = @"
   3) CryptoException: Can not load openssl library or function SHA256_Init
        运行时 DLL 没跟 exe 放一起：确认本目录有 libcrypto-3-x64.dll / libssl-3-x64.dll
   4) Unexpected token（跑 .ps1 时）：脚本不是 UTF-8 with BOM
-       用 [System.IO.File]::WriteAllText(\$p, \$text, (New-Object System.Text.UTF8Encoding(\$true))) 重存
+       用 [System.IO.File]::WriteAllText(`$p, `$text, (New-Object System.Text.UTF8Encoding(`$true))) 重存
   5) 客户端 401/403：没开 --dev-auth 却带了 X-Role/X-User-Id 头（这些头只在 --dev-auth 下认），
      或令牌过期；--dev-auth 只认 127.0.0.1 / ::1 来源，绑 0.0.0.0 后远程请求一律 401
   6) /admin/ 404：启动时没找到 admin-web 目录（本包已随包提供，请在解压目录里启动）

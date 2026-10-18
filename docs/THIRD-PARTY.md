@@ -69,12 +69,12 @@
 
 ## 5. 外部 API 与第三方模型（AI 出站）
 
-- 协议为 **OpenAI 兼容**：`/chat/completions` 与 `/embeddings`；provider 是自由文本，任何兼容端点（百炼 / DeepSeek / 自建）都能配（见 `server/src/ai_model.cj:92-97,307-341`、`server/src/ai_call.cj:268`）。
-- 种子厂商 provider `"百练"`、base_url `https://dashscope.aliyuncs.com/compatible-mode/v1`（阿里云百炼）；默认对话 `qwen-plus`（温度 0.3、max_tokens 2048）、默认向量 `text-embedding-v3`（见 `ai_model.cj:92-97,778-804`）。
-- 端点推导：基址或完整端点均可，CHAT 追加 `/chat/completions`、EMBEDDING 追加 `/embeddings`；**强制 `https://`**（见 `ai_model.cj:235-259,307-341`、`ai_call.cj:618`）。
-- 超时 **30s**（1..300）、并发 **4**（1..64），信号量闸门；密钥只存 `env:名` / `file:路径` 引用；探活为 `aiProbeChat`/`aiProbeEmbedding`/`aiExtractEmbeddingDim`（见 `ai_settings.cj:174-183,442-443`、`ai_call.cj:282,302,423-457,682-745,757`）。
+- 协议为 **OpenAI 兼容**：`/chat/completions` 与 `/embeddings`；provider 是自由文本，任何兼容端点（DeepSeek / 百炼 / 自建）都能配（见 `server/src/ai_model.cj:98-107,338-356`、`server/src/ai_call.cj:306`）。
+- 种子默认行（表为空时播种）：**对话** provider `"DeepSeek"`、base_url `https://api.deepseek.com`、模型 `deepseek-chat`（温度 0.3、max_tokens 2048）；**向量** provider `"百练"`、base_url `https://dashscope.aliyuncs.com/compatible-mode/v1`、模型 `text-embedding-v3`。两者**故意不同源**：DeepSeek 没有 `/embeddings`，硬指过去只会 404（见 `ai_model.cj:98-107,786-824`）。
+- 端点推导：基址或完整端点均可，CHAT 追加 `/chat/completions`、EMBEDDING 追加 `/embeddings`；**强制 `https://`**（见 `ai_model.cj:338-356`、`ai_settings.cj:521-560`、`ai_call.cj:627`）。
+- 超时 **30s**（1..300）、并发 **4**（1..64），信号量闸门 + **失败重试（2 次尝试）** + **全链路墙钟硬上限**（含 DNS/connect，因为 stdx 本版本没有 connectTimeout，见 `ai_call.cj:306-420`）；密钥只存 `env:名` / `file:路径` / `builtin:demo` 三种**引用**；探活为 `aiProbeChat` / `aiProbeEmbedding` / `aiExtractEmbeddingDim`（见 `ai_settings.cj:171-186,521-560`、`ai_call.cj:219,814,889`）。
 - **已定型结论：DeepSeek 无 embeddings 端点** —— `/embeddings` 与 `/v1/embeddings` 实测均 404，故向量路未端到端验证、关键词检索为默认路（见 `docs/P5-HANDOFF.md:13-18,20-29`、`README.md:58`、`docs/HISTORY-PROJECT-BRIEF.md:255-257`）；测试里出现 `deepseek-chat` 仅用于协议形状验证（`server/src/acceptance_ai.cj:164-166`）。
-- 出站合规：仅发现主诉 + 科室名 + 提示词 + KB 片段，不含 patient_id；默认 `ai.enabled=0` 零出站；**未完成** DPA/留存删除、知情同意、脱敏预处理、出站审计明细、境内外约束（见 `docs/Q6-合规决策记录.md:16-26,30-39,63-72`，`:85-86` 明示该页不代表 Q6 已获批准）。百炼为**商业 API**，非 OSS，无许可证义务但受条款与数据合规约束。
+- 出站合规：仅发现主诉 + 科室名 + 提示词 + KB 片段，不含 patient_id；**2026-10-17 起演示环境默认开启**（`ai.enabled=1` + `builtin:demo` + DeepSeek），生产发布前必须按 `docs/Q6-合规决策记录.md` §2.1 把密钥换成 `env:`/`file:` 引用并轮换、按 Q6 结论决定是否置回 `0`；**未完成** DPA/留存删除、知情同意、脱敏预处理、出站审计明细、境内外约束（见 `docs/Q6-合规决策记录.md:16-26,30-39,63-72`，`:85-86` 明示该页不代表 Q6 已获批准）。DeepSeek 与百炼均为**商业 API**，非 OSS，无许可证义务但受条款与数据合规约束。
 
 ## 6. 数据集 / 词表 / 样本
 
@@ -102,7 +102,8 @@
 | AGP / Kotlin / Gradle | 8.5.2 / 2.0.21 / 8.7 | 安卓构建链 | Apache-2.0 | 包管理器（构建期，不分发） |
 | AndroidX / Compose | — | — | — | **未使用**（`android.useAndroidX=false`） |
 | Vue / vue-router / Vite | ^3.4 / ^4.3 / ^5.0 | 上游演示件，**本项目未使用** | MIT | 使用副本（不参与构建） |
-| 阿里云百炼（OpenAI 兼容） | qwen-plus / text-embedding-v3 | AI 分诊与向量 | 商业服务条款（非 OSS） | 外部 API 调用 |
+| DeepSeek（OpenAI 兼容） | deepseek-chat | AI 分诊文案与结论（默认对话模型） | 商业服务条款（非 OSS） | 外部 API 调用（演示默认开启） |
+| 阿里云百炼（OpenAI 兼容） | text-embedding-v3 | 向量检索（默认向量行，provider 未接线） | 商业服务条款（非 OSS） | 外部 API 调用（需自填 key_ref） |
 
 **合规结论**：需注意的只有 **MariaDB Server 的 GPLv2**（当前仅自管实例、不分发，风险低；若对外分发便携包须随附 GPLv2 文本）。轻舟 MIT、MariaDB 驱动 Apache-2.0、安卓构建链 Apache-2.0 属宽松许可，义务仅为保留版权与许可声明，均已在仓内保留（`server/third_party/*/LICENSE`）。**最大缺口是 Cangjie 运行时与 OpenSSL 3 的 DLL 随部署包分发却无许可证文本**（见 §9.1）；自研代码在 34 个 `server/src/*.cj` 带 `SPDX-License-Identifier: MIT` 头，现已补**仓级 `LICENSE`（MIT，2026-10-17）**对齐。管理台与两端 UI 零第三方前端依赖，无 JS 许可传染问题。
 

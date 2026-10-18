@@ -17,8 +17,8 @@
 - **`hvigorw.bat`（仓库根）**：自动探测 DevEco 安装位置并推出 `DEVECO_SDK_HOME` / `JAVA_HOME`，
   使用者不配环境变量即可在仓库根一条命令构建鸿蒙客户端（`assembleHap`）。
 - **鸿蒙构建与运行证据入库** [`release/harmony/`](release/harmony/README.md)：`entry-default-unsigned.hap`
-  （1,742,917 B，SHA256 `312046ACD5E03888F5110D13F1921D0A4595A0C4A3EFC596F2960C56B626B696`）、`pack.info`、
-  剥掉 ANSI 的完整构建日志、**10 张模拟器实跑截图**（管理端登录/看板/AI 能力中心、患者端登录/首页/分诊/选号/挂号/就诊）
+  （1,748,913 B，SHA256 `745D07E08A236EC4205AB9A103899064F6B4D07FA369230F1C40CE7EC664C6A3`）、`pack.info`、
+  剥掉 ANSI 的完整构建日志、**11 张模拟器实跑截图**（管理端登录/看板/AI 能力中心、患者端登录/首页/分诊/选号/挂号/就诊）
   —— 回应评审「鸿蒙零构建产物、零运行证据」。
 - **AI 开箱即用**：新增 `server/src/ai_builtin.cj` 与第四种密钥引用形式 **`builtin:demo`**
   （`ai.key_ref` 仍只存引用、库里永不出现裸密钥；`keyRefBuiltinName()` 用整串白名单比对）；
@@ -63,7 +63,7 @@
 - **患者端公告页改走真实接口**：`PatientRepository.notices()` 由 Mock 改为 `GET /api/v1/notices`（保留 Mock 开关），
   公告失败不再拖垮首页；页面改三态 + 重试。
 - **`accept` 对脏库敏感**：`server/src/acceptance.cj` 的排班夹具由裸 `INSERT` 改为
-  `INSERT … ON DUPLICATE KEY UPDATE`（不用 `REPLACE INTO`，避免删行副作用）；故意弄脏库后重跑仍 777/0。
+  `INSERT … ON DUPLICATE KEY UPDATE`（不用 `REPLACE INTO`，避免删行副作用）；故意弄脏库后重跑仍全绿。
 - **模型种子「存量库迁移」判据**：`ai.enabled` 默认改 1 后，全新库被误判为存量库而只播 1 行；
   新增 `ai_settings.hasRow()`（直查库、绕过缓存）修正判据。
 - `.gitignore` 由整目录忽略 `release/` 改为白名单 `/release/*` + `!/release/harmony/`，
@@ -79,9 +79,41 @@
   47 个 `.cj`；`.cjo` 与静态库是构建期产物）。
 - 四个模块根的 `BuildProfile.ets` 不再入库（hvigor 每次构建重写、只差缩进），实测删除后仍 `BUILD SUCCESSFUL`。
 
+- **【复查轮】危急漏报**（本轮自己引入）：否定窗口 4 → 8 后仍用 `head.contains(nego)` 判否定，
+  使 `无法缓解的胸痛`、`无明显诱因突发胸痛`、`没胃口而且胸痛` **不再报红牌**。改三段式判定
+  （直连间隔按否定词字数分档 6/1 + 阻断词、缺席动词链、枚举链），顿号不再当分句边界；
+  新增 11 例回归，`triagetest` 139 → **150**。
+- **【复查轮】内置密钥被发给第三方端点**：`ai.key_ref=builtin:demo` 是全局 KV，而 `ai_model` 每行自带
+  `base_url`，种子向量行指向百炼 ⇒ 会把 DeepSeek 密钥投递给阿里云。新增 `aiBuiltinKeyHostCheck()`，
+  内置密钥只允许 `api.deepseek.com`，其余直接拒绝；`accept` 777 → **782**（+5 条断言）。
+- **【复查轮】出站调用说实话**：`ai_call.cj` 原先一个 `catch` 把所有异常都报成"超过 Ns 全链路上限"，
+  现拆 `TimeoutException` / 一般异常两类文案；重试前判剩余预算（不足即不重试并注明）；`aiProbeEmbedding`
+  早退判据由 `httpStatus == 0` 改 `!r.ok`（401/404 真因不再被覆盖）。
+- **【复查轮】看板 `source` 归类**：`model:invalid` 归入 `other` 会把"只有 model:invalid、无 rules"推成 `mixed`；
+  改按 `model*` / `rules*` 前缀归族。
+- **【复查轮】登录 401 误伤成登出**（鸿蒙）：服务端「账号或密码错误」也是 401，`HttpClient` 见到 401 就清会话
+  ⇒ 医生/管理端输错密码被踢到**患者**登录页。改为仅对带鉴权的请求做会话失效处理；模拟器实测截图为证。
+- **【复查轮】令牌有效期不回写**（鸿蒙）：服务端滑动续期的新 `expires_at` 从不写回客户端 ⇒ 过期即掉登录；
+  新增 `SessionStore.updateExpiresAt()` / `hasValidToken()`，`AuthGuard` 与三个登录页统一使用。
+- **【复查轮】首屏缺患者分支**：`Index.ets` 只判 doctor/admin，患者冷启动先闪一帧登录页；已补分支。
+- **【复查轮】安全存储三处**（鸿蒙）：`remove` + `add` 的覆盖窗口（失败时 prefs 是新账号、asset 是旧令牌 =
+  身份串号）改为 `CONFLICT_RESOLUTION = OVERWRITE`；`24000008`（库未建）按"无记录"处理；空 secret 的 `put`
+  不再谎报 `true`。
+- **【复查轮】安卓令牌三处**：旧明文迁移不看 `SecretStore.put()` 返回值就删明文（Keystore 不可用 = 静默登出）；
+  `storeTokenSecurely` 忽略写失败；解密失败被 `orEmpty()` 吞掉。改为成功才删、失败记 `Log.w` 且按未登录处理
+  （新增 `@Volatile tokenPersisted`）。**本机无 JDK 17–21，未编译验证**。
+- **【复查轮】启动闸门无超时**：`whenReady()` 一旦挂起就是永久白屏；改 `Promise.race([whenReady(), 1200ms])`。
+- **【复查轮】管理端登出不通知服务端**：补 `AdminRepository.logout()`（网络失败仍清本地）。
+- **【复查轮】分发脚本两处**：`package-release.ps1` 生成包内说明的 here-string 用了 C 风格 `\$p`（PS 不认）
+  且 `$p` 已被赋成 Process 对象 ⇒ 包内排查命令乱码；`final-verify.ps1:16` 硬编码 `E:\harmonyOS\smart_hospital\server`
+  ⇒ 换机器/CI 找不到 exe（改 `Split-Path -Parent $PSScriptRoot`，并让健康等待失败时杀掉进程）。
+- **【复查轮】门禁脚本两处**：`doc-counts.ps1` 的 triagetest 段不判退出码（连不上库会算出"实测 0"的假 DRIFT）；
+  `check-docs.ps1` 遇非 UTF-8 文件抛 `DecoderFallbackException` 整脚本退出（改报文件名后跳过）。
+- **【复查轮】小项**：`StatusChip` 主题色写进 `@Param` 默认值（省略参数的调用点永久停在首帧色）；三端跨端入口
+  是裸 `Text`（热区 < 44vp）；`HomePage` 刷新不复位"下一次就诊"；`clearLogin()` 不清 `previsit_session_id`。
 ### 文档
 
-- 数字统一为实测值并被门禁绑定：`accept` **777**、`triagetest` **139**、`selftest` 51、`authtest` 17、
+- 数字统一为实测值并被门禁绑定：`accept` **782**、`triagetest` **150**、`selftest` 51、`authtest` 17、
   REST **81**、`final-verify` **18 项**、**107** 个提交（截至 tag `v0.2.0-p1-rev`）、**6** 位贡献者、**26** 个测试文件。
 - 全仓旧仓库路径（原名含中文）与「本仓库路径含中文」的过时论述清理完毕；保留的是
   「部署到含中文目录时」的条件式说明与评审核查原文存档。

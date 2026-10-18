@@ -143,7 +143,7 @@
 | **分诊编排** + **验证层（绝不给没号的推荐；模型不能改 `options`）** | `server/src/ai_triage.cj`、`server/src/triage.cj` | ✅ |
 | **危急征象兜底**（词表 + 否定 + 共现） | `server/src/triage_redflag.cj` | ✅ |
 | **RAG 片段接进分诊**（过安全层、有界） | `server/src/kb_repo.cj`、`server/src/domain_kb.cj` | ✅ |
-| 三态来源 `rules` / `model` / `model:invalid`（默认关闭，配置后才有 `model`） | `server/src/triage.cj`、`server/src/ai_call.cj` | ✅ |
+| 三态来源 `rules` / `model` / `model:invalid`（2026-10-17 起**默认开启**：`ai.enabled=1` + `builtin:demo`，装完即调模型；未配置时才恒为 `rules`） | `server/src/triage.cj`、`server/src/ai_call.cj` | ✅ |
 | **配置从命令行改成 DB** 的改造点已内化：`aiSettingsFromFlags()` → `ai_setting` 表 | `server/src/ai_settings.cj` | ✅ |
 
 ### 3.5 客户端层（鸿蒙患者端）
