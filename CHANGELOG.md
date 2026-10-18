@@ -7,6 +7,27 @@
 
 ---
 
+## [0.2.0-p1-rev.5] 2026-10-18 —— 按评审第 2–6 条补齐答辩与合规材料
+
+### 新增
+
+- **`docs/AI-工具使用声明.md`**：区分「产品内 AI」（作品功能）与「开发期 AI」（编码助手），登记 DeepSeek 编码代理的使用时间与范围、团队自主决策的部分、以及每条 AI 产出的五道验证链（编译 / 断言 / 文档对账 / 模拟器实跑 / 人工审阅），并留各成员待补栏。
+- **`docs/项目真实性与分工说明.md`**：项目起点（2026-10-07 首个提交 `4e905ca`）、跨度（130 提交 / 12 天）、成员提交数与**按模块**的主作者统计、是否二次开发的边界（仅 vendored 轻舟 MIT 与 MariaDB 驱动 Apache-2.0，业务代码自研）、三条「作品是真的在跑」的可复现证据、以及自算命令。
+- **`docs/向量检索说明.md`**：如实写清「关键词检索是当前默认能力，向量路代码与单测就绪但未接线」的原因（DeepSeek 无 `/embeddings`、向量行的百炼 key 不在演示环境）、直接可念的答辩口径、三条启用路径（百炼 / 自建 bge-m3 或 Ollama / 离线预计算）与接线清单、四条验收判据。
+- **`docs/交付快照.md`** + **`tools/check-snapshot.ps1`**：把版本号、提交、HAP/APK/zip 的体积与 SHA256、zip 条目数集中到一个**机器校验块**；脚本默认严格校验（不符即 exit 1），`-Update` 用磁盘真值刷新。CI 的 `repo-hygiene` 增加一步跑它（全新 clone 里没有 zip 时标 SKIP 而不是假红）。
+- **`server/third_party/openssl/`**（`LICENSE.txt` 11,558 B + `NOTICE.txt` 1,366 B）与 **`server/third_party/cangjie-runtime/`**（`LICENSE.txt` 12,396 B + `NOTICE.txt` 1,304 B）：补齐两个**随包分发**的运行时组件的许可证全文与归属声明。Cangjie 用的是上游 `Apache-2.0 with Runtime Library Exception`，NOTICE 里写明该例外对本项目的意义（用仓颉编译不导致本项目代码受 Apache-2.0 约束）。
+
+### 变更
+
+- **`tools/package-release.ps1`**：`$vendored` 从 2 项扩到 6 项，`NOTICE.txt` 第 3/4 条由外链改为**指向包内全文**，并新增一段「不随包分发但开发期会用到的组件」（MariaDB 服务端 GPL-2.0、仓颉编译器、DevEco/Android SDK、JDK）。分发包由 21 个文件增至 **25 个**，解压 22.32 MB。
+- **`docs/THIRD-PARTY.md`**：§1.3 增「许可证与归属文本已 vendored 入仓并进包」表；§1.4 明确 MariaDB 服务端**不进包故无分发义务**（将来发便携包须附 GPL-2.0）；§8 结论表拆开「Cangjie 运行时 DLL（随包，Apache-2.0+例外）」与「Cangjie 编译器（构建期）」、OpenSSL 行指向仓内全文；新增 **§8.1 不随包分发**；§9 第 1 条标记已修。
+- **`README.md`**：阅读顺序表新增「答辩/评审材料」「作品真实性与 AI 边界」「向量检索到底做了没有」三行；`tools/` 目录行补四个脚本；模拟器截图数 11 → **14**。
+- **`tools/README.md`**：脚本表新增 `check-snapshot.ps1` 一行。
+- **`.github/workflows/repo-hygiene.yml`**：新增 `Run tools/check-snapshot.ps1` 步骤。
+
+### 修复
+
+- **`tools/check-snapshot.ps1` 自身**：初版对"交付物不存在"直接判 FAIL —— 而 `release/*.zip` 被 gitignore，CI 的全新 clone 里必然没有它，会造成假红。改为 `[SKIP]` 计数并在末尾提示，只有**体积/哈希/版本/提交/tag 与实际不符**才 exit 1。
 ## [0.2.0-p1-rev.4] 2026-10-18 —— 仓库瘦身：7 份阶段交接合并成 1 份，删掉过时文档
 
 ### 新增

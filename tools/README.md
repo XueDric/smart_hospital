@@ -7,6 +7,7 @@
 | `package-release.ps1` | 把服务端编译产物打成**可运行程序包**（Windows x64）。解压 → 改配置 → 起库 → 双击/命令行启动，不需要装 .NET、不需要装 OpenSSL。 |
 | `check-docs.ps1` | **仓库卫生门禁**：文档相对链接、`.ps1`/`.bat` 编码、旧仓库路径残留、源码注释里未闭合的 `/*`。CI 每次 push 都跑（`.github/workflows/repo-hygiene.yml`）。 |
 | `set-ai-key.ps1` | **换成你自己的大模型密钥**（一条命令）：写 `server\ai-key.txt`（已 gitignore）→ 把 `ai.key_ref` 改成 `file:<绝对路径>` → 调模型自检回显 `ok=true`。用于内置演示密钥到期后、或评委想用自己的额度时。 |
+| `check-snapshot.ps1` | **交付物一致性校验**：比对 `docs/交付快照.md` 里的版本/提交/HAP/APK/zip 的体积与 SHA256 与磁盘真值；`-Update` 用真值刷新快照。CI 每次 push 都跑（默认严格模式）。 |
 
 部署全流程（环境要求、起库、生产 TLS、探活语义、故障排查）见 **[../docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md)**；
 本文件只讲这三个脚本本身。

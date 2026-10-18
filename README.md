@@ -78,7 +78,7 @@ git log --oneline --graph | head -30      # 版本历史（截至 v0.2.0-p1-rev 
 | [contract/](contract/README.md) | **可执行接口契约**：67 个样例 + 24 个 Schema + 映射表 + 变更日志 |
 | `entry/` + `common-core/` + `feature-patient/` + `feature-doctor/` + `feature-admin/` | **鸿蒙三端**（ArkTS / ArkUI V2）：HAP 壳 + 公共层 + 三个 HAR 业务模块 |
 | [android-patient/](android-patient/README.md) | **安卓患者端**（Kotlin Views，AGP 8.5.2 / Gradle 8.7 / minSdk 26） |
-| [tools/](tools/) | 打包脚本（生成可运行程序包） |
+| [tools/](tools/) | 打包与校验脚本：`package-release.ps1`（出程序包）、`set-ai-key.ps1`（换 AI 密钥）、`check-docs.ps1`（仓库卫生）、`check-snapshot.ps1`（交付物一致性） |
 
 ---
 
@@ -122,7 +122,7 @@ cd smart_hospital
 
 > **已入库的构建与运行证据**：[release/harmony/](release/harmony/README.md) 内有 2026-10-17 的
 > `entry-default-unsigned.hap`（1758339 B，SHA256 `70A7EB53…CC17479D`）、`pack.info`、完整构建日志
-> （`BUILD SUCCESSFUL`，65 tasks），以及**模拟器实跑的 11 张截图 + 对应 `dumpLayout` 文本实测**
+> （`BUILD SUCCESSFUL`，65 tasks），以及**模拟器实跑的 14 张截图 + 对应 `dumpLayout` 文本实测**
 > （患者登录 → 首页 → 智能分诊 → 选号 → 挂号成功 → 我的就诊；管理端登录 → 运营看板 → AI 能力中心）。
 > **未签名 HAP 可直接装进模拟器**（`hdc install -r …hap`），签名只在分发给真机时需要。
 >
@@ -145,6 +145,9 @@ cd smart_hospital
 | 看 UI 规范 | [docs/UI-DESIGN.md](docs/UI-DESIGN.md) |
 | 查历史决策与踩坑 | [docs/PHASE-HANDOFFS.md](docs/PHASE-HANDOFFS.md)（P0–P5 合并稿）· [复验报告](docs/REVERIFY-AND-FIXES-2026-10-17.md) |
 | 确认第三方合规 | [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) · [Q6-合规决策记录](docs/Q6-合规决策记录.md) |
+| 答辩/评审材料 | [docs/答辩材料-2026-10-17.md](docs/答辩材料-2026-10-17.md) · [整改方案](docs/整改方案-2026-10-17.md) · [交付快照](docs/交付快照.md) |
+| 说明作品真实性与 AI 边界 | [docs/项目真实性与分工说明.md](docs/项目真实性与分工说明.md) · [AI 工具使用声明](docs/AI-工具使用声明.md) |
+| 问「向量检索到底做了没有」 | [docs/向量检索说明.md](docs/向量检索说明.md)（关键词为默认，向量未接线） |
 
 ---
 

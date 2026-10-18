@@ -1,0 +1,23 @@
+Cangjie（仓颉）运行时 —— 第三方归属声明
+================================================================================
+
+分发包内含的仓颉运行时文件（随仓颉 SDK 分发，本项目未修改）：
+  libcangjie-runtime.dll
+  libboundscheck.dll
+
+版权：Copyright (c) 2024-2025 Huawei Device Co., Ltd.（仓颉项目及其贡献者）
+许可证：Apache License 2.0 **with Runtime Library Exception**（详见同目录 LICENSE.txt）
+
+Runtime Library Exception 的作用（对本项目很关键）：
+  用仓颉编译器把本项目源码编译成目标码后再分发，**不**因此让本项目自身代码
+  受 Apache-2.0 约束；本项目代码仍按仓库根 LICENSE（MIT）发布。
+  随包分发的运行时 DLL 本身仍受 Apache-2.0 + 例外条款约束。
+
+分发义务：
+  1. 保留本 NOTICE 与 LICENSE.txt 全文（Apache-2.0 §4）。
+  2. 修改运行时 DLL 才需附加修改声明（本项目未修改）。
+  3. 不需要因为"用它编译"而开源本项目代码（见上）。
+
+上游：https://gitcode.com/Cangjie ｜ 许可证文本随仓颉 SDK 分发（SDK 根目录 LICENSE）。
+本仓库把该文本 vendored 到 server/third_party/cangjie-runtime/LICENSE.txt，
+使打包在没装 SDK 的机器上也能产出完整许可证材料。

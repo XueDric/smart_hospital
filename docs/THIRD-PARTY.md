@@ -36,7 +36,16 @@
 | OpenSSL 3 | 不入库；取序 `third_party/qingzhou/deps/openssl` → `-OpenSslDir` → Git for Windows `mingw64\bin`（实测 **3.5.7**） | `server/third_party/qingzhou/deps/openssl/README.md:1-3,12-19` |
 | 产物 / 分发义务 | exe + `libcangjie-runtime.dll` + `libboundscheck.dll` + `libcrypto-3-x64.dll` + `libssl-3-x64.dll`；**部署包必须带这 4 个 DLL**，缺一即退出 1 | `deps/openssl/README.md:29-32`、`server/setup-runtime.ps1:3-5,71-103,132-135` |
 
-⚠ 上述 DLL 随部署包分发，但仓库内**未找到任何许可证文件**，需上游确认（见第 9 节）。
+**✅ 2026-10-18 补：许可证与归属文本已 vendored 入仓并进包。**
+
+| 组件 | 许可证 | 仓内文本 | 包内路径 |
+| --- | --- | --- | --- |
+| OpenSSL 3 运行时（`libcrypto-3-x64.dll` / `libssl-3-x64.dll`） | Apache-2.0（OpenSSL 3.x） | `server/third_party/openssl/LICENSE.txt`（11,558 B）、`NOTICE.txt`（1,366 B） | `licenses/openssl-LICENSE.txt`、`licenses/openssl-NOTICE.txt` |
+| Cangjie 运行时（`libcangjie-runtime.dll` / `libboundscheck.dll`） | Apache-2.0 **with Runtime Library Exception** | `server/third_party/cangjie-runtime/LICENSE.txt`（12,396 B，取自 `$cangjie_home\LICENSE`）、`NOTICE.txt`（1,304 B） | `licenses/cangjie-runtime-LICENSE.txt`、`licenses/cangjie-runtime-NOTICE.txt` |
+
+- OpenSSL NOTICE 保留上游要求的归属句：`This product includes software developed by the OpenSSL Project for use in the OpenSSL Toolkit (http://www.openssl.org/)`。
+- Cangjie 的 **Runtime Library Exception** 对本项目是**利好**：用仓颉编译器编译本项目不使本项目代码受 Apache-2.0 约束，本项目仍按 MIT 发布；受约束的只有随包分发的运行时 DLL 本身（未修改 ⇒ 只需保留许可证与归属）。
+- 打包脚本 `tools/package-release.ps1` 的 `$vendored` 已从 2 项扩到 6 项，`NOTICE.txt` 第 3/4 条改为指向包内全文（不再是外链）。
 
 ### 1.4 数据库：MariaDB 11.4（便携版）
 
@@ -44,7 +53,7 @@
 | --- | --- | --- |
 | 版本 | MariaDB **11.4.13** 便携版，复用本机已有包、不联网下载 | `docs/DEV-DB.md:20`、`server/devdb.ps1:73-76`、`server/README.md:20` |
 | 生产口径 | **未在仓库内找到**生产 DB 版本建议（只有开发/测试口径） | `docs/DEV-DB.md` 全文 |
-| 许可证 | 上游 MariaDB/MySQL 服务端 **GPLv2**；仓库内无许可证副本（便携版不入库） | 需上游确认 |
+| 许可证 | 上游 MariaDB/MySQL 服务端 **GPLv2**；便携版不入库、**不随部署包分发**（`server/devdb.ps1` 只在本机起实例），故当前无分发义务；若将来对外发便携包，须随附 GPLv2 全文 | `server/devdb.ps1:73-76`、`docs/DEV-DB.md:20` |
 
 ## 2. 鸿蒙端（ArkTS / Stage）
 
@@ -94,8 +103,9 @@
 | --- | --- | --- | --- | --- |
 | 轻舟 QingZhou | v0.12.0+HEAD | 服务端 Web 框架 | **MIT** | 使用副本（源码快照） |
 | MariaDB 驱动 | 2.0.2 | 数据库协议驱动 | **Apache-2.0** | 使用副本（静态编译） |
-| Cangjie SDK / stdx | 1.2.0 / 1.1.3.1 | 编译器与标准库 | 华为 SDK 协议（仓库内无文本，需上游确认） | SDK 安装 + 随包分发运行时 DLL |
-| OpenSSL | 3.5.7 | TLS / 加密 | 仓库内无文本，需上游确认（上游 3.x 为 Apache-2.0） | 系统 / Git for Windows 取 DLL |
+| Cangjie 运行时 DLL | 随 SDK 1.2.0 | 运行时（随包分发） | **Apache-2.0 with Runtime Library Exception** | 随包分发；全文 `server/third_party/cangjie-runtime/LICENSE.txt`（进包） |
+| Cangjie 编译器 / stdx | 1.2.0 / 1.1.3.1 | 构建期编译与标准库 | Apache-2.0 with Runtime Library Exception（同上） | SDK 安装（构建期，不分发） |
+| OpenSSL 3 | 3.x（实测 3.5.7 的 DLL） | TLS / 加密（随包分发 DLL） | **Apache-2.0** | 构建机取 DLL；全文 `server/third_party/openssl/LICENSE.txt`（进包） |
 | MariaDB Server | 11.4.13 | 数据库实例 | **GPLv2**（上游，仓库内无文本） | 便携版，不入库、不对外分发 |
 | HarmonyOS 系统 Kit | SDK 内置 | 网络 / 存储 / UI / 日志 | 华为 SDK 协议 | 系统内置 |
 | @ohos/hvigor-ohos-plugin | 随 DevEco | 构建插件 | 华为 SDK 协议 | DevEco 内置（构建期） |
@@ -105,11 +115,23 @@
 | DeepSeek（OpenAI 兼容） | deepseek-chat | AI 分诊文案与结论（默认对话模型） | 商业服务条款（非 OSS） | 外部 API 调用（演示默认开启） |
 | 阿里云百炼（OpenAI 兼容） | text-embedding-v3 | 向量检索（默认向量行，provider 未接线） | 商业服务条款（非 OSS） | 外部 API 调用（需自填 key_ref） |
 
-**合规结论**：需注意的只有 **MariaDB Server 的 GPLv2**（当前仅自管实例、不分发，风险低；若对外分发便携包须随附 GPLv2 文本）。轻舟 MIT、MariaDB 驱动 Apache-2.0、安卓构建链 Apache-2.0 属宽松许可，义务仅为保留版权与许可声明，均已在仓内保留（`server/third_party/*/LICENSE`）。**最大缺口是 Cangjie 运行时与 OpenSSL 3 的 DLL 随部署包分发却无许可证文本**（见 §9.1）；自研代码在 34 个 `server/src/*.cj` 带 `SPDX-License-Identifier: MIT` 头，现已补**仓级 `LICENSE`（MIT，2026-10-17）**对齐。管理台与两端 UI 零第三方前端依赖，无 JS 许可传染问题。
+**合规结论**：需注意的只有 **MariaDB Server 的 GPLv2**（当前仅自管实例、不分发，风险低；若对外分发便携包须随附 GPLv2 文本）。轻舟 MIT、MariaDB 驱动 Apache-2.0、安卓构建链 Apache-2.0 属宽松许可，义务仅为保留版权与许可声明，均已在仓内保留（`server/third_party/*/LICENSE`）。原"最大缺口"（Cangjie 运行时与 OpenSSL 3 的 DLL 随包分发却无许可证文本）**已于 2026-10-18 补齐**：两份全文 + 两份归属声明 vendored 入仓并进包（见 §1.3 表）；自研代码在 34 个 `server/src/*.cj` 带 `SPDX-License-Identifier: MIT` 头，现已补**仓级 `LICENSE`（MIT，2026-10-17）**对齐。管理台与两端 UI 零第三方前端依赖，无 JS 许可传染问题。
 
+### 8.1 不随包分发（仅开发期或构建期使用）
+
+部署包（`release/hospital-server-*.zip`）里**只含** exe + 4 个 DLL + 管理台静态资源 + 文档 + 许可证。下列组件只在开发/构建/联调时用到，**不进包**，因此不产生分发义务：
+
+| 组件 | 许可证 | 用途 | 为什么不分发 |
+| --- | --- | --- | --- |
+| MariaDB Server 11.4（便携版） | **GPL-2.0** | 本地/联调数据库实例 | `server/devdb.ps1` 只在本机解压起实例；接收方自备数据库（DSN 可指任意 MySQL 兼容实例）。若将来对外发便携包，须随附 GPL-2.0 全文与源码获取方式。 |
+| Cangjie 编译器 / cjpm / SDK | Apache-2.0 with Runtime Library Exception | 构建期编译服务端 | 接收方用 exe 即可，无需 SDK；若要自行编译，按 SDK 自带条款安装。 |
+| DevEco Studio / HarmonyOS SDK | 华为 SDK 协议 | 构建鸿蒙 HAP | HAP 构建物见 `release/harmony/`，SDK 本身不随包。 |
+| Android SDK / AGP / Gradle / Kotlin | Apache-2.0 | 构建安卓 APK | APK 构建物见 `release/android/`，构建链不随包。 |
+| JDK（Temurin 21 / JBR 25） | GPL-2.0 + Classpath Exception | 构建安卓 / 运行 Gradle | 只在 `.build-tools/jdk17`（已 gitignore）里，构建期使用。 |
+| DeepSeek / 百炼 API | 商业服务条款 | AI 分诊与向量（出站调用） | 不是可分发的"组件"，见 §5 与 `docs/Q6-合规决策记录.md`。 |
 ## 9. 证据不足 / 需人工确认
 
-1. **Cangjie 运行时 + OpenSSL 3 许可证文本缺失**（随部署包分发，仓内无副本）。
+1. ~~**Cangjie 运行时 + OpenSSL 3 许可证文本缺失**~~ **已修（2026-10-18）**：`server/third_party/cangjie-runtime/` 与 `server/third_party/openssl/` 各含 LICENSE.txt + NOTICE.txt，`tools/package-release.ps1` 打进 `licenses/`，`NOTICE.txt` 指向包内全文。
 2. ~~**无根 `LICENSE`**~~ **已修（2026-10-17）**：新增仓库根 `LICENSE`（标准 MIT 文本，`Copyright (c) 2026 smart_hospital contributors`），与 34 个源文件的 SPDX 头一致。
 3. **MariaDB 生产版本无口径**（`docs/DEV-DB.md` 只有开发/测试 11.4.13）。
 4. **SDK 口径冲突**：`build-profile.json5:8` 的 `5.0.0(12)` vs `docs/FRONTEND-INTEGRATION.md:1775` 的 SDK 26.0.0/API 26。

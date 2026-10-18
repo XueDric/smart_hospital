@@ -25,3 +25,6 @@ jobs:
       - name: Run tools/check-docs.ps1
         shell: pwsh
         run: ./tools/check-docs.ps1
+      - name: Run tools/check-snapshot.ps1
+        shell: pwsh
+        run: ./tools/check-snapshot.ps1

@@ -1,0 +1,24 @@
+OpenSSL 3 —— 第三方归属声明（Apache-2.0 第 4(d) 条要求随分发保留 NOTICE）
+================================================================================
+
+This product includes software developed by the OpenSSL Project
+for use in the OpenSSL Toolkit (http://www.openssl.org/).
+
+本仓库/分发包内含的 OpenSSL 文件（未修改的动态链接库）：
+  libcrypto-3-x64.dll
+  libssl-3-x64.dll
+
+版权：Copyright 1998-2025 The OpenSSL Project Authors.
+      版权所有者为 OpenSSL 项目及其贡献者，详见上游 AUTHORS 文件。
+许可证：Apache License 2.0（OpenSSL 3.0 起；1.0/1.1 时代的 OpenSSL/SSLeay 双许可
+        仅适用于旧版本，本包不含旧版本代码）。全文见同目录 LICENSE.txt。
+上游：https://www.openssl.org/source/
+许可证说明：https://www.openssl.org/source/license.html
+
+分发义务：
+  1. 保留本 NOTICE 与 LICENSE.txt 全文（Apache-2.0 §4）。
+  2. 若修改了上述 DLL，须在修改的文件中附带显著声明（本项目未修改）。
+  3. Apache-2.0 不要求在二进制分发时提供源码，但保留本声明与许可证是强制项。
+
+获取方式（本仓库不跟踪二进制）：由 server/setup-runtime.ps1 从构建机的 OpenSSL 3
+运行目录（-OpenSslDir）复制到 server/build，再由 tools/package-release.ps1 打进分发包。

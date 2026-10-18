@@ -286,8 +286,12 @@ if (Test-Path -LiteralPath $thirdPartyDoc) {
 $licDir = Join-Path $stagingDir 'licenses'
 New-Item -ItemType Directory -Path $licDir -Force | Out-Null
 $vendored = @(
-    @{ Src = (Join-Path $serverDir 'third_party\qingzhou\LICENSE');       Rel = 'licenses\qingzhou-LICENSE.txt' },
-    @{ Src = (Join-Path $serverDir 'third_party\mariadb-driver\LICENSE'); Rel = 'licenses\mariadb-driver-LICENSE.txt' }
+    @{ Src = (Join-Path $serverDir 'third_party\qingzhou\LICENSE');          Rel = 'licenses\qingzhou-LICENSE.txt' },
+    @{ Src = (Join-Path $serverDir 'third_party\mariadb-driver\LICENSE');    Rel = 'licenses\mariadb-driver-LICENSE.txt' },
+    @{ Src = (Join-Path $serverDir 'third_party\openssl\LICENSE.txt');       Rel = 'licenses\openssl-LICENSE.txt' },
+    @{ Src = (Join-Path $serverDir 'third_party\openssl\NOTICE.txt');        Rel = 'licenses\openssl-NOTICE.txt' },
+    @{ Src = (Join-Path $serverDir 'third_party\cangjie-runtime\LICENSE.txt'); Rel = 'licenses\cangjie-runtime-LICENSE.txt' },
+    @{ Src = (Join-Path $serverDir 'third_party\cangjie-runtime\NOTICE.txt'); Rel = 'licenses\cangjie-runtime-NOTICE.txt' }
 )
 foreach ($v in $vendored) {
     if (Test-Path -LiteralPath $v.Src) {
@@ -323,12 +327,21 @@ $noticeText = @"
 
 3) OpenSSL 3 运行时（libcrypto-3-x64.dll / libssl-3-x64.dll，未修改的动态链接库）
    许可证：Apache-2.0（OpenSSL 3.x）
+   版权：Copyright 1998-2025 The OpenSSL Project Authors
    上游：https://www.openssl.org/source/
-   全文需随分发提供：见 https://www.openssl.org/source/license.html
+   全文：licenses/openssl-LICENSE.txt ｜ 归属声明：licenses/openssl-NOTICE.txt
+   本包内含的软件由 OpenSSL Project 开发，用于 OpenSSL Toolkit（http://www.openssl.org/）。
    （构建机上的副本路径由 server/setup-runtime.ps1 的 -OpenSslDir 决定。）
 
-4) Cangjie 运行时（libcangjie-runtime.dll / libboundscheck.dll）
-   随仓颉 SDK 分发，按仓颉 SDK 的许可条款使用；本包未修改这两个文件。
+4) Cangjie（仓颉）运行时（libcangjie-runtime.dll / libboundscheck.dll）
+   许可证：Apache-2.0 **with Runtime Library Exception**
+   版权：Copyright (c) 2024-2025 Huawei Device Co., Ltd.
+   全文：licenses/cangjie-runtime-LICENSE.txt ｜ 归属声明：licenses/cangjie-runtime-NOTICE.txt
+   说明：Runtime Library Exception 使"用仓颉编译器编译本项目"不导致本项目代码受 Apache-2.0
+   约束（本项目代码仍按 MIT 发布）；随包分发的运行时 DLL 未修改。
+
+   ⚠ 不随包分发但开发期会用到的组件见 THIRD-PARTY.md 的「不随包分发」一节：
+     MariaDB 服务端（GPL-2.0，仅本地 devdb 用）、仓颉编译器、DevEco/Android SDK、JDK。
 
 5) 管理台前端（admin-web/）为原生 HTML/CSS/JS，无前端框架依赖。
 
