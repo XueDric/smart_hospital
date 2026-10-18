@@ -21,7 +21,7 @@ object ContractParser {
             o.getLong("ref_id"),o.optString("display_name"),if (role == "patient") o.getLong("patient_id") else 0,
             if (role == "doctor") o.optLong("doctor_id",o.getLong("ref_id")) else 0)
     }
-    fun appointment(o: JSONObject) = Appointment(o.getLong("appointment_id"),o.getLong("schedule_id"),
+    fun appointment(o: JSONObject) = Appointment(o.getLong("appointment_id"),o.optLong("schedule_id"),
         o.getLong("patient_id"),o.getLong("doctor_id"),o.getLong("department_id"),o.getString("visit_date"),
         o.getString("period"),o.getInt("seq_no"),o.optString("visit_status").takeIf { it.isNotBlank() } ?: o.getString("status"),o.optBoolean("slot_restored"),
         o.optString("warning"),departmentName=o.optString("department_name"),doctorName=o.optString("doctor_name"),

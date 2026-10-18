@@ -50,6 +50,13 @@ func medicalRecordJson(m: MedicalRecord, includeSections: Bool): JsonObject {
     o.put("updated_by", JsonInt(m.updatedBy))
     o.put("created_at", JsonInt(m.createdAt))
     o.put("updated_at", JsonInt(m.updatedAt))
+    /*
+     * ★ 2026-10-18（审查同事提交 de47f6f 时发现）：客户端需要一个**版本号**做"这次写的是不是我看到的那一版"。
+     *   服务端没有独立的草稿计数器，乐观锁令牌就是 `updated_at`，所以 `version` 直接取它 ——
+     *   语义：**相等的 version 就是同一版**；严格递增由 `MedicalRecordRepo.emrNextStamp` 保证。
+     *   ⚠ 别再让客户端自己拿 `updated_at` 当版本：契约里没写清时，安卓端就把"缺 version"读成"响应不完整"。
+     */
+    o.put("version", JsonInt(m.updatedAt))
     /* 提交锁定还缺哪几段（空数组 = 可以提交）。让客户端不必猜。 */
     let miss = ArrayList<JsonValue>()
     for (x in m.missingRequired()) {

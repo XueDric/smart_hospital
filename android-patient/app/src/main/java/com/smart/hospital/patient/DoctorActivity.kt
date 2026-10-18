@@ -229,9 +229,13 @@ class DoctorActivity : Activity() {
     }
     private fun patientEntry() { startActivity(Intent(this,MainActivity::class.java));finish() }
     private fun loadQueue() { task({repo.queue()}) { renderQueue(it) } }
+    /* ★ 2026-10-18（对齐鸿蒙侧 BUG-5）：队列里有未来日期的号，点"确认到院"会在今天就把号当今天的接诊处理。
+     *   这里只做"防误操作"的界面守卫，真正的硬门槛应落在服务端（见 docs/联调记录-2026-10-18.md）。 */
+    private fun isToday(visitDate:String):Boolean = try { visitDate==java.time.LocalDate.now().toString() } catch(e:Exception) { false }
+
     private fun renderQueue(rows:List<DoctorVisit>) {
         current=null;record=null;dirty=false;lockNeedsConfirmation=false;pendingSave=null;reviewRecord=null;workspaceIdentity=null;draft.clear()
-        val box=page("今日接诊队列")
+        val box=page("接诊队列")
         add(box,note("${session.displayName} · 仅显示序号与患者编号"))
         button(box,"刷新队列") { loadQueue() }
         restoredVisit(workspaceRestore)?.let { visit ->
@@ -240,7 +244,7 @@ class DoctorActivity : Activity() {
         button(box,"退出医生账号") {
             logout()
         }
-        if(rows.size>=200) add(box,note("当前仅显示今日前 200 条，请结合院内系统核对其余预约"))
+        if(rows.size>=200) add(box,note("当前仅显示前 200 条（含历史与未来日期），请结合院内系统核对其余预约"))
         if(rows.isEmpty()) add(box,card().apply {
             add(this,label("暂无接诊预约",HarmonyUi.HEADING))
             add(this,note(getString(R.string.doctor_queue_empty_hint)))
@@ -315,6 +319,7 @@ class DoctorActivity : Activity() {
         button(box,"读取服务器病历并保留输入") {confirmSave()}
         val next=when(a.status) { "booked"->"arrive";"arrived"->"waiting";"waiting"->"start";"visiting"->if(r.locked) "finish" else null;else->null }
         if(next!=null && pendingSave==null && reviewRecord==null && !lockNeedsConfirmation) button(box,mapOf("arrive" to "确认到院","waiting" to "进入候诊","start" to "开始接诊","finish" to "完成就诊").getValue(next)) {
+                if((next=="arrive" || next=="waiting" || next=="start") && !isToday(a.visitDate)) { message.text="该号的就诊日是 ${a.visitDate}，不是今天，不能到院登记/接诊"; return@button }
             guardDirty { task({repo.action(a.appointmentId,next);repo.queue()}) { renderQueue(it) } }
         }
         if(a.status in setOf("booked","arrived","waiting","visiting") && pendingSave==null && reviewRecord==null && !lockNeedsConfirmation) button(box,"标记爽约") {
@@ -406,7 +411,7 @@ class DoctorActivity : Activity() {
             editor()
             message.text=(if(definitive) "本次保存被拒绝，本地输入已保留。\n" else "保存结果尚未确认，本地输入已保留。请确认服务器结果。\n")+errorText(error)
         }) { saved ->
-            if(saved.appointmentId!=submitted.appointmentId || saved.version!=submitted.version+1 ||
+            if(saved.appointmentId!=submitted.appointmentId || saved.version<=submitted.version ||
                 saved.locked || !sameBody(saved,submitted.values)) {
                 editor();message.text="保存响应与本次提交不一致，请读取服务器结果后核对；不会自动锁定。"
                 return@task
@@ -460,7 +465,7 @@ class DoctorActivity : Activity() {
             editor()
             message.text="草稿已保存（版本 ${saved.version}），锁定结果尚未确认。\n"+errorText(error)
         }) {locked->
-            if(locked.appointmentId==id && locked.locked && locked.version==saved.version+1 && sameBody(locked,saved.sections.associate {it.key to it.value})) accept(locked)
+            if(locked.appointmentId==id && locked.locked && locked.version>saved.version && sameBody(locked,saved.sections.associate {it.key to it.value})) accept(locked)
             else {editor();message.text="锁定响应与本次正文不一致，请确认服务器状态；本地正文已保留。"}
         }
     }

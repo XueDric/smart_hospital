@@ -64,7 +64,9 @@ class DoctorRepository(private val api: ApiClient, private val session: SessionS
                 sections=demoRecord.sections.map { it.copy(value=values[it.key] ?: it.value) })
             return demoRecord
         }
-        val body=JSONObject().put("expected_version",version)
+        // ★ 服务端的乐观锁字段是 expected_updated_at（见 server/src/http_p4.cj 的 emrExpectedUpdatedAt）：
+        //   本地"版本"就取服务端给的 version（= updated_at），带回去才算真的乐观锁。
+        val body=JSONObject().put("expected_updated_at",version)
         values.forEach { (k,v)->body.put(k,v) }
         return ContractParser.record(api.put(path(id)+"/record",body))
     }
@@ -77,7 +79,9 @@ class DoctorRepository(private val api: ApiClient, private val session: SessionS
                 .put("operator_user_id",9).put("operation","lock").put("reason",""))
             return demoRecord
         }
-        return ContractParser.record(api.post(path(id)+"/record/lock",JSONObject().put("expected_version",version)))
+        // ★ /record/lock 不吃版本参数（服务端自己按 draftSnapshotSql 做校验），带过去只会误导：
+        //   这里传空的 body，版本一致性交给上面的 save 与预览流程。
+        return ContractParser.record(api.post(path(id)+"/record/lock",JSONObject()))
     }
     fun action(id: Long, action: String) {
         require(action in setOf("arrive","waiting","start","finish","no-show")) { "当前服务端不支持此接诊操作" }

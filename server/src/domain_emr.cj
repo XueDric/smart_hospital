@@ -871,7 +871,8 @@ public class MedicalRecordRepo {
             let _ = rec.set(k, v)
         }
         rec.updatedBy = actorId
-        rec.updatedAt = now
+        /* ★ 严格递增（见 emrNextStamp）：同一秒内两次保存也要让版本号前进。 */
+        rec.updatedAt = emrNextStamp(rec.updatedAt, now)
         // ④ 落库
         if (exists) {
             let values = ArrayList<DbValue>()
@@ -1018,6 +1019,22 @@ public class MedicalRecordRepo {
      * 条件UPDATE同时约束draft和刚校验的完整内容快照。只约束draft不能阻止
      * “校验完成→另一个保存清空必填→锁定空病历”的交错；失配明确返回409。
      */
+    /*
+     * ★ 2026-10-18（审查同事提交 de47f6f 时发现）：`updated_at` 不只是时间戳 ——
+     *   它同时是病历的**乐观锁令牌**（`expected_updated_at`），也是客户端眼里的**版本号**。
+     *   服务端从来没有独立的"第几版"计数器（`medical_record_revision.version` 只在
+     *   定稿/解锁那一刻才 +1，草稿阶段没有）。
+     *   ⚠ 秒级时间戳在同一秒内连续写两次会**原地不动**：客户端拿"版本必须变大"做判断时，
+     *     就会把"保存成功"读成"响应与提交不一致"（安卓端正中这一枪）。
+     *   所以这里保证严格递增：正常用 `now`，同一秒内再来一次就 `prev + 1`。
+     */
+    private func emrNextStamp(prev: Int64, now: Int64): Int64 {
+        if (now > prev) {
+            return now
+        }
+        return prev + 1
+    }
+
     public func lock(appointmentId: Int64, now: Int64, actorId: Int64,
                      actorRole: String): EmrWriteOutcome {
         let out = EmrWriteOutcome()
@@ -1052,7 +1069,9 @@ public class MedicalRecordRepo {
             return out
         }
         let values = ArrayList<DbValue>()
-        let updates: Array<DbValue> = [DbStr(EMR_LOCKED), DbInt(actorId), DbInt(now), DbInt(appointmentId)]
+        /* ★ 严格递增的版本戳（见 emrNextStamp）：SQL 与内存里的 rec 必须用同一个值。 */
+        let stamped = emrNextStamp(rec.updatedAt, now)
+        let updates: Array<DbValue> = [DbStr(EMR_LOCKED), DbInt(actorId), DbInt(stamped), DbInt(appointmentId)]
         for (x in updates) {
             values.add(x)
         }
@@ -1084,7 +1103,7 @@ public class MedicalRecordRepo {
          */
         rec.status = EMR_LOCKED
         rec.updatedBy = actorId
-        rec.updatedAt = now
+        rec.updatedAt = stamped
         out.revisionVersion = writeRevision(rec, EMR_OP_LOCK, "", actorId, actorRole, now)
         return out
     }
@@ -1133,9 +1152,10 @@ public class MedicalRecordRepo {
             out.noSuchAppointment = true
             return out
         }
+        let reopenStamp = emrNextStamp(before.updatedAt, now)
         let n = db.exec("UPDATE medical_record SET status = ?, updated_by = ?, updated_at = ? " +
                         "WHERE appointment_id = ? AND status = ?",
-                        [DbStr(EMR_DRAFT), DbInt(actorId), DbInt(now),
+                        [DbStr(EMR_DRAFT), DbInt(actorId), DbInt(reopenStamp),
                          DbInt(appointmentId), DbStr(EMR_LOCKED)])
         if (n == 0) {
             out.locked = true      // 语义：没有"已锁定的病历"可解锁（当前是草稿）
