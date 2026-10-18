@@ -1,0 +1,12 @@
+{
+    "ok":  true,
+    "data":  {
+                 "token":  "93129b0e7b8e9577d2e584a1aa02a3b5f20328f8531165615606b34620310267",
+                 "expires_at":  1794917933,
+                 "user_id":  678,
+                 "role":  "doctor",
+                 "ref_id":  1,
+                 "display_name":  "张医生",
+                 "patient_id":  0
+             }
+}

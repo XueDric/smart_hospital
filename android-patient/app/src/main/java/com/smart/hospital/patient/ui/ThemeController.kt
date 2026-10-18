@@ -31,14 +31,33 @@ object ThemeController {
         context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putString(KEY_MODE, mode.value).apply()
     }
 
-    /** The application context retains the system setting even when an Activity overrides it. */
-    fun attachContext(base: Context): Context {
+    /**
+     * 解析后的明暗 —— **唯一的判定入口**。
+     *
+     * 2026-10-18 审查记账项 4：仓库里同时存在两套明暗来源 ——
+     * `res/values-night/colors.xml`（系统暗色）与 `ThemeController.Mode`（应用内选择）。
+     * 它们**不冲突**，但前提是"每个颜色读取前都先过这里"：
+     *   - `HarmonyUi.palette()` 一律经 [attachContext] 把 uiMode 强制成解析结果，
+     *     所以 `values-night` 只在那时才会被资源系统选中；
+     *   - 全仓除 `HarmonyUi` 外没有任何地方直接读 `R.color.*`（已 grep 核对）。
+     * 把判定收敛到这一个函数，避免"状态栏图标用系统色、页面用应用内色"的半暗半亮。
+     */
+    fun isNight(base: Context): Boolean {
         val system = (base.applicationContext ?: base).resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
         val night = when (currentMode(base)) {
             Mode.AUTO -> system
             Mode.LIGHT -> Configuration.UI_MODE_NIGHT_NO
             Mode.DARK -> Configuration.UI_MODE_NIGHT_YES
         }
+        return night == Configuration.UI_MODE_NIGHT_YES
+    }
+
+    /**
+     * 返回一个 uiMode 已被解析结果覆盖的 Context（缓存友好的 `createConfigurationContext`）。
+     * The application context retains the system setting even when an Activity overrides it.
+     */
+    fun attachContext(base: Context): Context {
+        val night = if (isNight(base)) Configuration.UI_MODE_NIGHT_YES else Configuration.UI_MODE_NIGHT_NO
         if ((base.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == night) return base
         val configuration = Configuration(base.resources.configuration)
         configuration.uiMode = (configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or night
@@ -80,7 +99,8 @@ object ThemeController {
         activity.window.statusBarColor = next.bg
         activity.window.navigationBarColor = next.surface
         activity.window.setBackgroundDrawable(ColorDrawable(next.bg))
-        val dark = (attachContext(activity).resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        // 与 palette() 用同一个判定：否则会出现"页面暗、状态栏图标按浅色画"的混合态。
+        val dark = isNight(activity)
         val flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         val current = activity.window.decorView.systemUiVisibility
         activity.window.decorView.systemUiVisibility = if (dark) current and flags.inv() else current or flags

@@ -2,6 +2,7 @@ package com.smart.hospital.patient.data
 
 import com.smart.hospital.patient.R
 import android.content.Context
+import android.content.SharedPreferences
 import android.util.Log
 import com.smart.hospital.patient.BuildConfig
 import com.smart.hospital.patient.model.LoginResult
@@ -227,7 +228,7 @@ class SessionStore(context: Context) {
         val token = prefs.getString(key, null) ?: newBookingToken()
         // A failed commit may already have changed the preferences' in-memory value.
         // Confirm durable storage on every attempt, including a reused in-memory key.
-        check(prefs.edit().putString(key, token).commit()) { text(R.string.data_booking_storage_failed) }
+        persist(prefs.edit().putString(key, token), "booking_token")
         return token
     }
 
@@ -246,9 +247,7 @@ class SessionStore(context: Context) {
         // A cancelled request can finish after a new booking. It must not replace the newer ID.
         if (cancelled || currentToken != clientToken || (completed != null && completed != appointmentId)) return false
         if (mockMode) demoCompletedBookings[scheduleId] = appointmentId
-        else check(prefs.edit().putLong("booking_completed_$namespace", appointmentId).commit()) {
-            text(R.string.data_booking_storage_failed)
-        }
+        else persist(prefs.edit().putLong("booking_completed_$namespace", appointmentId), "booking_completed")
         return true
     }
 
@@ -271,10 +270,8 @@ class SessionStore(context: Context) {
         if (mockMode) {
             demoCancelledBookings.getOrPut(scheduleId) { mutableSetOf() }.add(expectedCompletedId)
             demoCompletedBookings[scheduleId] = appointmentId
-        } else check(prefs.edit().putStringSet("booking_cancelled_$namespace", cancelled)
-            .putLong("booking_completed_$namespace", appointmentId).commit()) {
-            text(R.string.data_booking_storage_failed)
-        }
+        } else persist(prefs.edit().putStringSet("booking_cancelled_$namespace", cancelled)
+            .putLong("booking_completed_$namespace", appointmentId), "booking_replacement")
         return true
     }
 
@@ -301,13 +298,27 @@ class SessionStore(context: Context) {
             cancelled.add(appointmentId.toString())
             val editor = prefs.edit().putStringSet(cancelledKey, cancelled)
             if (matchesCompleted) editor.remove("booking_completed_$namespace")
-            check(editor.commit()) {
-                text(R.string.data_booking_storage_failed)
-            }
+            persist(editor, "booking_cancelled")
         }
         return matchesCompleted
     }
 
+    /**
+     * 提交一次偏好写入，**失败不抛异常**。
+     *
+     * 2026-10-18 审查记账项 2：这里原本是 `check(commit())`。但 `commit()` 返回 false 时
+     * SharedPreferences 的**内存值已经改好**，本次流程仍然走得通，只是没落盘；
+     * 抛 `IllegalStateException` 等于把"下次冷启动可能要重试"升级成"用户现在就闪退"。
+     * 所以改为记日志 + 返回布尔，由调用方决定语义（本类里一律视为"尽力而为"）。
+     */
+    private fun persist(editor: SharedPreferences.Editor, what: String): Boolean {
+        val ok = try { editor.commit() } catch (e: Exception) {
+            Log.w(TAG, "写本地存储抛异常（$what）：${e.message}")
+            false
+        }
+        if (!ok) Log.w(TAG, "写本地存储失败（$what）：进程内仍可用，重启后可能丢失")
+        return ok
+    }
     private fun newBookingToken() = UUID.randomUUID().toString().replace("-", "")
     private fun pendingObject() = JSONObject(prefs.getString("booking_pending_${bookingNamespace(0)}", "{}").orEmpty())
     @Synchronized fun pendingBookings(): List<PendingBooking> {
@@ -323,7 +334,7 @@ class SessionStore(context: Context) {
         if(mockMode) demoPending[scheduleId]=pending
         else {
             val o=pendingObject().put(scheduleId.toString(),JSONObject().put("token",pending.clientToken).put("previsit_id",previsitId))
-            check(prefs.edit().putString("booking_pending_${bookingNamespace(0)}",o.toString()).commit()) { text(R.string.data_booking_storage_failed) }
+            persist(prefs.edit().putString("booking_pending_${bookingNamespace(0)}",o.toString()), "booking_pending")
         }
         return pending
     }
@@ -332,7 +343,7 @@ class SessionStore(context: Context) {
         val o=pendingObject()
         if(o.optJSONObject(scheduleId.toString())?.optString("token")!=token) return
         o.remove(scheduleId.toString())
-        check(prefs.edit().putString("booking_pending_${bookingNamespace(0)}",o.toString()).commit()) {text(R.string.data_booking_storage_failed)}
+        persist(prefs.edit().putString("booking_pending_${bookingNamespace(0)}",o.toString()), "booking_pending_clear")
     }
     private fun bookingNamespace(scheduleId: Long): String = MessageDigest.getInstance("SHA-256")
         .digest("$baseUrl|$patientId|$scheduleId".toByteArray(Charsets.UTF_8))

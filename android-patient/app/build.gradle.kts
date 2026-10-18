@@ -80,3 +80,13 @@ val checkReleaseConfig = tasks.register("checkReleaseConfig") {
 tasks.matching { it.name == "preReleaseBuild" || it.name == "bundleRelease" }.configureEach {
     dependsOn(checkReleaseConfig)
 }
+
+dependencies {
+    // 纯 JVM 单元测试（不跑 Android 运行时）：契约解析是"服务端字段 ↔ 客户端必填"的接缝，
+    // 2026-10-18 有 3 个真缺陷都出在这里（医生队列缺 schedule_id、病历缺 version、
+    // 乐观锁字段名写成 expected_version），见 docs/审查-同事提交-2026-10-18.md。
+    testImplementation("junit:junit:4.13.2")
+    // Android 自带的 org.json 在 JVM 单测里是 stub（调用即 RuntimeException），
+    // 所以显式引入同 API 的实现，让 ContractParser 能在测试里真解析金样本。
+    testImplementation("org.json:json:20240303")
+}

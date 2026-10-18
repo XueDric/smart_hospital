@@ -1,4 +1,5 @@
 <resources>
+    <!-- 暗色基础色板：键名必须与 values/colors.xml 完全一致（HarmonyUi.palette() 按名取）。 -->
     <color name="primary">#00A9A7</color>
     <color name="primary_dark">#4FD8D6</color>
     <color name="primary_soft">#0E3B39</color>

@@ -1,0 +1,30 @@
+{
+    "ok":  true,
+    "data":  {
+                 "items":  [
+                               {
+                                   "appointment_id":  936189,
+                                   "patient_id":  1,
+                                   "doctor_id":  1,
+                                   "department_id":  1,
+                                   "visit_date":  "2026-12-24",
+                                   "period":  "AM",
+                                   "seq_no":  1,
+                                   "status":  "booked",
+                                   "status_label":  "已挂号",
+                                   "arrived_at":  0,
+                                   "started_at":  0,
+                                   "finished_at":  0,
+                                   "previsit_ready":  false,
+                                   "record_id":  0,
+                                   "record_status":  "none",
+                                   "record_filled":  0,
+                                   "record_total":  7,
+                                   "patient_name":  "测试患者",
+                                   "patient_gender":  ""
+                               }
+                           ],
+                 "count":  1,
+                 "doctor_id":  1
+             }
+}

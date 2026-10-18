@@ -1,0 +1,12 @@
+{
+    "ok":  true,
+    "data":  {
+                 "token":  "8eaf89ee9e43d3399e088ddf60ddf186429558ad06094f20873e1d86eae49090",
+                 "expires_at":  1794917898,
+                 "user_id":  556,
+                 "role":  "patient",
+                 "ref_id":  1,
+                 "display_name":  "演示患者",
+                 "patient_id":  1
+             }
+}

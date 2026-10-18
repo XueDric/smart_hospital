@@ -1,0 +1,29 @@
+{
+    "ok":  true,
+    "data":  {
+                 "red_flag":  false,
+                 "reason_code":  "ALTERNATIVES",
+                 "source":  "model",
+                 "patient_note":  "本院暂未开诊「呼吸内科」，建议咨询导诊台确认科室。以下这些科室当前有号，如需尽快就诊可考虑。",
+                 "truncated":  false,
+                 "ai_note":  "建议您到呼吸相关科室就诊，因为咳嗽发烧伴黄痰需要医生进一步评估。就诊前请记录体温变化和症状持续时间，带好既往病历和检查资料。",
+                 "ai_reason":  "",
+                 "options":  [
+                                 {
+                                     "department_id":  700001,
+                                     "department_name":  "P4端到端科",
+                                     "doctor_id":  700001,
+                                     "doctor_name":  "P4端到端医生",
+                                     "doctor_title":  "主任医师",
+                                     "schedule_id":  700001,
+                                     "work_date":  "2026-10-18",
+                                     "period":  "AM",
+                                     "remain_num":  20,
+                                     "total_remain":  20
+                                 }
+                             ],
+                 "count":  1,
+                 "request_id":  "256dcd5ef36fb7c45448b5dabe08876b",
+                 "server_time":  1792325901
+             }
+}

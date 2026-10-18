@@ -1,10 +1,19 @@
 <resources>
+    <!--
+      明暗的**选择**由 ThemeController 决定（attachBaseContext 会把 uiMode 覆盖成解析结果），
+      本文件与 values-night/ 只负责提供两套**颜色值**与相差无几的窗口属性。
+      ⚠ 不要在这里再引入第三套机制（例如按应用内偏好切换 style），
+        否则会出现"页面按应用内选择、控件默认样式按系统设置"的半暗半亮。
+        —— 2026-10-18 审查记账项 4
+    -->
     <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:colorAccent">@color/primary</item>
+        <item name="android:windowBackground">@color/background</item>
         <item name="android:navigationBarColor">@color/surface</item>
         <item name="android:statusBarColor">@color/background</item>
         <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
 </resources>

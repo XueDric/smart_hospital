@@ -1,4 +1,8 @@
 <resources>
+    <!--
+      暗色一组。选择权在 ThemeController.isNight()，本文件只提供颜色值与窗口属性；
+      与 values/themes.xml 的差异只应限于"父主题必须换成暗色 Material"与状态栏图标明暗。
+    -->
     <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:colorAccent">@color/primary</item>

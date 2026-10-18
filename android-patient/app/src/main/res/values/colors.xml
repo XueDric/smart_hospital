@@ -1,4 +1,5 @@
 <resources>
+    <!-- 浅色基础色板：唯一来源是这里，由 HarmonyUi.palette() 按名读取，页面不硬编码颜色。暗色见 values-night/colors.xml。 -->
     <color name="primary">#00A9A7</color>
     <color name="primary_dark">#007F7D</color>
     <color name="primary_soft">#DFF5F3</color>

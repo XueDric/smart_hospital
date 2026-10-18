@@ -1,0 +1,27 @@
+{
+    "ok":  true,
+    "data":  {
+                 "appointments":  [
+                                      {
+                                          "appointment_id":  936188,
+                                          "schedule_id":  700001,
+                                          "patient_id":  1,
+                                          "doctor_id":  700001,
+                                          "department_id":  700001,
+                                          "visit_date":  "2026-10-18",
+                                          "period":  "AM",
+                                          "seq_no":  109,
+                                          "status":  "booked",
+                                          "status_label":  "已挂号",
+                                          "arrived_at":  0,
+                                          "started_at":  0,
+                                          "finished_at":  0,
+                                          "slot_restored":  true,
+                                          "department_name":  "P4端到端科",
+                                          "doctor_name":  "P4端到端医生",
+                                          "doctor_title":  "主任医师"
+                                      }
+                                  ],
+                 "count":  1
+             }
+}

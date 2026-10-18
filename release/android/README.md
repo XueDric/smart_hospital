@@ -13,9 +13,10 @@
 | `03-android-triage.png` | 108,619 B | 智能分诊页：症状输入框、字数计数、`开始分诊` |
 | `04-android-visits.png` | 75,169 B | 我的就诊页空态：`还没有挂号记录` + `刷新预约`（此刻库里确实没有该患者的挂号，见下） |
 | `05-android-doctor-queue.png` | 104,164 B | 医生工作台 · `接诊队列`（同事 `de47f6f` 新增）：`1 号 · 患者 #1 / 2026-12-24 上午 / 已挂号 / 病历：已定稿 / 打开病历`，`刷新队列`、`退出医生账号` |
+| `07-android-doctor-queue-dark.png` | 79,100 B | `接诊队列`在**暗色**下的样子（2026-10-18 夜：`ThemeController.isNight()` 收敛为唯一判定入口后重截）：`1 号 · 患者 #1 / 2026-12-24 上午 / 已挂号 / 病历：草稿` |
 | `06-android-doctor-record.png` | 206,816 B | 医生工作台 · 病历编辑页（暗色主题）：`门诊病历 · 2 号`、`版本 0`、`确认到院 / 标记爽约`、预问诊与既往病历折叠区；顶部红条是**服务端停掉时**的 `网络连接失败，请检查服务地址或网络`（同事 `2cbf080` 的本地化文案，实测生效） |
 
-APK SHA-256：`0835107BAADAF379C89F48407DB57DC30D86E7B6485C51B79A4A9D580306F95E`（2026-10-18 19:55，含同事 `de47f6f` 的医生工作台与本轮 A1/A2/A3 修复）
+APK SHA-256：`0F2AEFAF8096C8770C55F5DBDC1F60BC332CBB83B737C9EFFBEF8160EBDCA9FE`（2026-10-18 23:5x，在 A1/A2/A3 修复之上又合入：`SessionStore` 存储失败不再抛异常、`ThemeController.isNight()` 单一判定、`themes.xml` 窗口属性对齐；**契约层单测 10/10 通过**）
 
 ## 2. 怎么复现（本机实测命令）
 
@@ -55,10 +56,13 @@ $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 
 - `app/src/main/java/com/smart/hospital/patient/data/SecretStore.kt` 头部文档里写了 `shared_prefs/*.xml`，Kotlin 的块注释**可嵌套**，注释里的 `/*` 会再开一层注释且永不闭合 ⇒ 整文件 `Syntax error: Unclosed comment`，连带 `SessionStore.kt` 报 4 处 `Unresolved reference 'SecretStore'`。已改写成不含 `/*` 的表述。
 - `SessionStore.kt` 的令牌路径（P2-14）：迁移失败不再删明文、写失败不再假装成功、解密失败不再静默返回空串（详见 `docs/整改方案-2026-10-17.md` §8 第 7/8 条）。
+- `SessionStore` 的 7 处 `check(commit())` 改为 `persist()`：本地存储写失败不再抛 `IllegalStateException`（`commit()` 失败时内存值其实已生效，抛异常等于把"下次可能要重试"升级成闪退）。
+- `ThemeController.isNight()` 成为唯一明暗判定入口，`attachContext()`/`refresh()` 共用；两份 `themes.xml` 窗口属性对齐（浅色补 `windowBackground`，消除启动首帧纯白）。
+- 新增契约层单测 `app/src/test/java/.../ContractParserTest.kt`（10 个用例，金样本在 `app/src/test/resources/contracts/`，从本机服务端真实抓取）：`.\gradlew.bat testDebugUnitTest` → 10/10 PASS。
 - 同事 `de47f6f` 带入的 3 个契约缺陷（队列缺 `schedule_id`、病历缺 `version`、乐观锁字段名 `expected_version` vs `expected_updated_at`）已修，并顺手对齐鸿蒙侧的队列标题与日期守卫（详见 `docs/审查-同事提交-2026-10-18.md`）。
 
 ## 5. 已知边界
 
 - 本 APK 是 **debug 签名**，只能装模拟器/自测设备；对外分发要走 `-Variant release` + 仓库外 keystore（`android-patient/README.md` §Release 构建）。
-- 安卓侧未跑自动化测试，界面证据是"人工驱动 + 截图"：登录、首页、分诊页、就诊页、医生队列、病历编辑页。分诊的**模型输出**证据在鸿蒙侧（`release/harmony/screenshots/06-patient-triage.jpeg`），两端打的是同一个 `POST /api/v1/triage`。
+- 安卓侧现有**契约层 JVM 单测** 10 个（不需要模拟器），但 UI 层仍是"人工驱动 + 截图"：登录、首页、分诊页、就诊页、医生队列、病历编辑页。分诊的**模型输出**证据在鸿蒙侧（`release/harmony/screenshots/06-patient-triage.jpeg`），两端打的是同一个 `POST /api/v1/triage`。
 - `04-android-visits.png` 显示空态是**当时的真实数据**（库里该账号没有挂号单），不是接口故障。

@@ -42,6 +42,19 @@ adb shell am start -n com.smart.hospital.patient/.MainActivity
 ./gradlew.bat clean :app:assembleDebug --offline --no-daemon
 ```
 
+## 单元测试（纯 JVM，不需要模拟器）
+
+契约解析是"服务端字段 ↔ 客户端必填"的接缝，历史上三个真缺陷（队列缺 `schedule_id`、病历缺 `version`、乐观锁字段名写成 `expected_version`）都出在这里，所以单独做了金样本单测：
+
+```powershell
+Set-Location ./android-patient
+./gradlew.bat testDebugUnitTest        # 需要 JDK 17–21
+```
+
+- 用例：`app/src/test/java/com/smart/hospital/patient/data/ContractParserTest.kt`（10 个，实测 10/10 PASS，0.06 s）。
+- 金样本：`app/src/test/resources/contracts/*.json`，**从本机服务端真实抓取**的完整响应（含 `{"ok":true,"data":…}` 外壳）；服务端字段改了就把样本重抓一遍，测试会立刻告诉你客户端是否还解析得了。
+- 依赖：`testImplementation("junit:junit:4.13.2")` + `testImplementation("org.json:json:20240303")`（Android 自带的 `org.json` 在 JVM 单测里是 stub，调用即 `RuntimeException`）。
+
 ## 服务端地址
 
 Debug 默认 `http://127.0.0.1:8091`。联调三选一：
@@ -66,7 +79,7 @@ Debug 默认 `http://127.0.0.1:8091`。联调三选一：
 
 ## 已知边界
 
-- **2026-10-18 已实测**：`.\build.ps1 -Variant debug` → `BUILD SUCCESSFUL`（APK 956,718 B），装进 Android 模拟器（`Medium_Phone_API_37.0`）后用真实账号登录成功（`您好，演示患者`），服务端地址靠 `adb reverse tcp:8091 tcp:8091` 保留默认值。证据与**本机环境坑**（JDK 25 不可用、`GRADLE_USER_HOME` / `ANDROID_SDK_HOME` / `TEMP` 需重定向、依赖镜像）见 [release/android/README.md](../release/android/README.md)。
+- **2026-10-18 已实测**：`.\build.ps1 -Variant debug` → `BUILD SUCCESSFUL`（APK 1,186,278 B），装进 Android 模拟器（`Medium_Phone_API_37.0`）后用真实账号登录成功（`您好，演示患者`），并跑通患者挂号与医生接诊/病历编辑（含明暗切换）；服务端地址靠 `adb reverse tcp:8091 tcp:8091` 保留默认值。证据与**本机环境坑**（JDK 25 不可用、`GRADLE_USER_HOME` / `ANDROID_SDK_HOME` / `TEMP` 需重定向、依赖镜像）见 [release/android/README.md](../release/android/README.md)。
 - 演示模式（mock 数据）**仅在 Debug** 可用，Release 中 `BuildConfig.DEBUG=false` 会关闭演示入口与 mock 分支；演示走通不等于真实 API/SSE/鉴权/余量守恒通过。
 - 挂号与退号**必须在线直连**，不进离线队列（排队等于超卖）。
 - 分诊/问诊草稿只保留在当前 Activity 内存，进程被杀后不恢复；幂等 `client_token` 的持久恢复需由测试确认。

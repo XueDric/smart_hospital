@@ -1,0 +1,75 @@
+{
+    "ok":  true,
+    "data":  {
+                 "id":  0,
+                 "appointment_id":  936189,
+                 "patient_id":  0,
+                 "doctor_id":  0,
+                 "status":  "draft",
+                 "locked":  false,
+                 "filled":  0,
+                 "total_sections":  7,
+                 "complete":  false,
+                 "updated_by":  0,
+                 "created_at":  0,
+                 "updated_at":  0,
+                 "version":  0,
+                 "missing_required":  [
+                                          "诊断",
+                                          "处理意见"
+                                      ],
+                 "sections":  [
+                                  {
+                                      "key":  "chief_complaint",
+                                      "label":  "主诉",
+                                      "value":  "",
+                                      "max_len":  2000,
+                                      "required_to_lock":  false
+                                  },
+                                  {
+                                      "key":  "present_illness",
+                                      "label":  "现病史",
+                                      "value":  "",
+                                      "max_len":  4000,
+                                      "required_to_lock":  false
+                                  },
+                                  {
+                                      "key":  "past_history",
+                                      "label":  "既往史",
+                                      "value":  "",
+                                      "max_len":  2000,
+                                      "required_to_lock":  false
+                                  },
+                                  {
+                                      "key":  "allergy_history",
+                                      "label":  "过敏史",
+                                      "value":  "",
+                                      "max_len":  2000,
+                                      "required_to_lock":  false
+                                  },
+                                  {
+                                      "key":  "physical_exam",
+                                      "label":  "体格检查",
+                                      "value":  "",
+                                      "max_len":  2000,
+                                      "required_to_lock":  false
+                                  },
+                                  {
+                                      "key":  "diagnosis",
+                                      "label":  "诊断",
+                                      "value":  "",
+                                      "max_len":  2000,
+                                      "required_to_lock":  true
+                                  },
+                                  {
+                                      "key":  "treatment",
+                                      "label":  "处理意见",
+                                      "value":  "",
+                                      "max_len":  4000,
+                                      "required_to_lock":  true
+                                  }
+                              ],
+                 "patient_name":  "测试患者",
+                 "patient_gender":  ""
+             }
+}
