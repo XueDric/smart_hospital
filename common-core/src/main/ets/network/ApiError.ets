@@ -85,6 +85,10 @@ export class ApiError extends Error {
       this.code === ErrorCode.AUTH_TOKEN_EXPIRED) {
       return '登录已过期，请重新登录';
     }
+    if (this.code === ErrorCode.NETWORK_ERROR) {
+      // 原始 message 保留供排障，界面统一使用中文连接失败提示。
+      return '网络连接失败，请检查服务地址或网络';
+    }
     return this.message || '请求失败，请稍后重试';
   }
 }
