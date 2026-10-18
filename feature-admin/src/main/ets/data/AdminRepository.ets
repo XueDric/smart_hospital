@@ -1,5 +1,6 @@
 import {
   ApiConfig,
+  ApiError,
   HttpClient,
   asArray,
   asBool,
@@ -47,6 +48,25 @@ export class AdminRepository {
     result.refId = asNumber(response['ref_id']);
     result.displayName = asString(response['display_name']);
     return result;
+  }
+
+  /*
+   * ★ 2026-10-17 复查：管理端登出原来只清本地，服务端令牌继续有效到 TTL ——
+   * "登出"只登出了一半。这里补上服务端注销；401 视为"已经登出"，其它错误上抛。
+   */
+  async logout(): Promise<void> {
+    if (ApiConfig.isMock()) {
+      return;
+    }
+    try {
+      const body: Record<string, Object> = {};
+      await HttpClient.getInstance().post('/api/v1/auth/logout', body);
+    } catch (error) {
+      const apiError = ApiError.from(error as Error);
+      if (apiError.status !== 401) {
+        throw apiError;
+      }
+    }
   }
 
   async dashboard(): Promise<Dashboard> {

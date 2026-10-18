@@ -16,6 +16,11 @@ export class CurrentUser {
   deviceId: string = '';
   /** ★ 2026-10-17：服务端 `/api/v1/auth/me` 一直返回 `display_name`，此前客户端没解析 ⇒ "同步身份"刷不到姓名。 */
   displayName: string = '';
+  /**
+   * ★ 2026-10-17：服务端**滑动续期**后的新有效期。此前客户端只在登录时取过一次，
+   * 于是有效期一过就冷启动掉回登录页（而服务端其实还认这个令牌）。
+   */
+  expiresAt: number = 0;
 }
 
 export class TriageOption {

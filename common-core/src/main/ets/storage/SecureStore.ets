@@ -40,6 +40,13 @@ const TAG: string = 'SecureStore';
 
 /* 读令牌失败里的"没这条"是**正常**状态（首次登录前），不该当错误刷日志。 */
 const ERR_NOT_FOUND: number = 24000002;
+/*
+ * ★ 2026-10-17 复查：全新安装**第一次** query 时，安全存储的库还没建起来，
+ * 官方错误码表里 24000008「数据库操作失败」的典型原因正是这个 ——
+ * 它不是错误，而是"还没有任何记录"。原来只把 24000002 当空，
+ * 于是全新安装每次启动都刷一条假的错误日志（与文件头"没这条是正常状态"自相矛盾）。
+ */
+const ERR_DB_NOT_READY: number = 24000008;
 
 export class SecureStore {
   /* 最近一次失败原因（给排障用；不含秘密本体）。空串表示没有失败。 */
@@ -54,17 +61,25 @@ export class SecureStore {
   }
 
   /*
-   * 写入一个秘密（同别名**覆盖**：先删再加，因为 Asset 的 add 遇到已存在会报错）。
-   * 返回 true = 真的落到了系统安全存储。
+   * 写入一个秘密（同别名**覆盖**）。返回 true = 真的落到了系统安全存储。
+   *
+   * ★ 2026-10-17 复查：原来写的是"先 remove 再 add"，而 `remove()` 把除"没这条"
+   * 以外的错误全吞掉 —— 一旦删除没生效、add 又因"已存在"失败，就会留下
+   * 「preferences 里是新账号身份、安全存储里是旧账号令牌」的身份串号。
+   * 现在交给 Asset 自己的原子覆盖策略（CONFLICT_RESOLUTION=OVERWRITE），不再有那个窗口。
    */
   static async put(alias: string, secret: string): Promise<boolean> {
     if (secret.length === 0) {
+      /*
+       * 空秘密 = 明确要求清掉。返回 false 而不是 true：
+       * 原来的 `return true` 会让调用方（`saveLogin`）以为"已安全落盘"，
+       * 而实际上什么都没写 —— 语义谎报。
+       */
       await SecureStore.remove(alias);
-      return true;
+      return false;
     }
-    /* 覆盖语义：先尝试删除旧值，删除失败（不存在）不算错。 */
-    await SecureStore.remove(alias);
     const attr: asset.AssetMap = new Map<asset.Tag, asset.Value>();
+    attr.set(asset.Tag.CONFLICT_RESOLUTION, asset.ConflictResolution.OVERWRITE);
     attr.set(asset.Tag.ALIAS, SecureStore.toBytes(alias));
     attr.set(asset.Tag.SECRET, SecureStore.toBytes(secret));
     /*
@@ -103,7 +118,7 @@ export class SecureStore {
       return SecureStore.fromBytes(value as Uint8Array);
     } catch (error) {
       const e = error as BusinessError;
-      if (e.code === ERR_NOT_FOUND) {
+      if (e.code === ERR_NOT_FOUND || e.code === ERR_DB_NOT_READY) {
         return '';
       }
       SecureStore.lastErrorValue = `asset.query 失败：${e.code} ${e.message}`;
@@ -120,7 +135,7 @@ export class SecureStore {
       await asset.remove(query);
     } catch (error) {
       const e = error as BusinessError;
-      if (e.code === ERR_NOT_FOUND) {
+      if (e.code === ERR_NOT_FOUND || e.code === ERR_DB_NOT_READY) {
         return;
       }
       SecureStore.lastErrorValue = `asset.remove 失败：${e.code} ${e.message}`;

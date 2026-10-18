@@ -62,6 +62,15 @@ export struct ProfilePage {
         this.displayName = user.displayName;
         SessionStore.setDisplayName(user.displayName);
       }
+      /*
+       * ★ 2026-10-17 复查：服务端对每次鉴权请求都会**滑动续期**，而客户端此前只在登录那一刻
+       * 取过一次有效期 ⇒ 有效期一过，冷启动就把仍然有效的会话挡在登录页前。
+       * 这里把服务端返回的新有效期写回本地（过期的旧值会让用户在服务端还认他的时候被登出）。
+       */
+      SessionStore.updateExpiresAt(user.expiresAt);
+      if (user.expiresAt > 0) {
+        this.expiresAt = user.expiresAt;
+      }
       this.bannerTone = 'success';
       this.bannerMessage = '身份信息已同步';
     } catch (error) {

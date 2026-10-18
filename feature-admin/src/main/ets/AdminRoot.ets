@@ -1,4 +1,5 @@
 import { AppColor, AppRouter, AppSize, AppText, RouteName, SessionStore } from 'common-core';
+import { AdminRepository } from './data/AdminRepository';
 import { AdminLoginPage } from './pages/AdminLoginPage';
 import { AiCenterPage } from './pages/AiCenterPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -44,7 +45,14 @@ export struct AdminRoot {
    * 旧令牌仍可能留在安全存储里（登出等于没登出）。
    */
   private logout(): void {
-    SessionStore.clearLogin().catch(() => {
+    /*
+     * ★ 2026-10-17 复查：原来只清本地 —— 服务端令牌会继续有效到 TTL，"登出"只登出一半。
+     * 现在先请服务端注销（失败也继续，本地必须登出），再清安全存储、再跳登录页。
+     */
+    AdminRepository.getInstance().logout().catch(() => {
+    }).then(() => {
+      return SessionStore.clearLogin().catch(() => {
+      });
     }).then(() => {
       AppRouter.getInstance().reset(RouteName.ADMIN_LOGIN);
     });

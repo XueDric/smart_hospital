@@ -23,10 +23,8 @@ export struct DoctorLoginPage {
 
   aboutToAppear(): void {
     this.mockMode = ApiConfig.isMock();
-    const expiresAt = SessionStore.getExpiresAt();
-    const now = Math.floor(Date.now() / 1000);
-    if (SessionStore.hasToken() && SessionStore.getRole() === 'doctor' &&
-      (expiresAt === 0 || expiresAt > now)) {
+    // ★ 2026-10-17 复查：过期判据统一收到 SessionStore.hasValidToken()。
+    if (SessionStore.hasValidToken() && SessionStore.getRole() === 'doctor') {
       AppRouter.getInstance().reset(RouteName.DOCTOR_QUEUE);
     }
   }
@@ -173,6 +171,8 @@ export struct DoctorLoginPage {
         Text('返回患者端')
           .fontSize(AppText.CAPTION)
           .fontColor(AppColor.PRIMARY_DARK)
+          .height(44)
+          .padding({ left: 8, right: 8 })
           .margin({ top: AppSize.GAP, bottom: 32 })
           .onClick(() => {
             AppRouter.getInstance().replace(RouteName.LOGIN);

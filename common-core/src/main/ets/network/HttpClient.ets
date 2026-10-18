@@ -70,7 +70,11 @@ export class HttpClient {
       const status = response.responseCode as number;
       const text = response.result as string;
       const retryAfter = this.readRetryAfter(response.header);
-      return this.parseResponse(status, text, retryAfter);
+      // ★ 2026-10-17 复查：只有「这次请求确实带了令牌」时，401 才代表会话失效。
+      //   否则登录接口自己返回的 401（账号或密码错误）会被当成会话过期，
+      //   把医生端/管理端的登录取代成「回患者登录页」——用户看到的是「输错密码就被踢走」。
+      const sentAuth = authenticated && SessionStore.hasToken();
+      return this.parseResponse(status, text, retryAfter, sentAuth);
     } catch (error) {
       if (error instanceof ApiError) {
         throw error;
@@ -94,7 +98,7 @@ export class HttpClient {
     return http.RequestMethod.GET;
   }
 
-  private parseResponse(status: number, text: string, retryAfter: number): Object {
+  private parseResponse(status: number, text: string, retryAfter: number, sentAuth: boolean): Object {
     if (text.length === 0) {
       if (status >= 200 && status < 300) {
         const empty: Record<string, Object> = {};
@@ -125,7 +129,7 @@ export class HttpClient {
       const message = this.asString(errorObject['message'], '请求失败');
       const fieldsValue = errorObject['fields'];
       const fields = fieldsValue === undefined ? undefined : fieldsValue as Record<string, string>;
-      this.handleAuthStatus(code, status);
+      this.handleAuthStatus(code, status, sentAuth);
       throw new ApiError(code, message, status, fields, retryAfter);
     }
 
@@ -153,7 +157,15 @@ export class HttpClient {
     throw new ApiError(code, message.length > 0 ? message : `请求失败（HTTP ${status}）`, status);
   }
 
-  private handleAuthStatus(code: string, status: number): void {
+  private handleAuthStatus(code: string, status: number, sentAuth: boolean): void {
+    /*
+     * ⚠ 服务端「账号或密码错误」也是 401（`AUTH_BAD_CREDENTIALS`）。
+     * 只有请求**确实带了令牌**时，401 才等于「会话失效」；否则它只是这一次调用被拒，
+     * 应该把错误抛给调用方去显示，而不是清会话 + 跳走（否则医生/管理端登录页会被销毁）。
+     */
+    if (!sentAuth) {
+      return;
+    }
     if (status === 401 || code === ErrorCode.AUTH_REQUIRED || code === ErrorCode.AUTH_TOKEN_EXPIRED) {
       const role = SessionStore.getRole();
       /*
