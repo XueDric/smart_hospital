@@ -8,7 +8,7 @@
 
 | 文件 | 大小 | 说明 |
 |---|---|---|
-| `entry-default-unsigned.hap` | 1,748,913 B | 未签名 HAP（SHA256 `745D07E08A236EC4205AB9A103899064F6B4D07FA369230F1C40CE7EC664C6A3`）|
+| `entry-default-unsigned.hap` | 1,752,310 B | 未签名 HAP（SHA256 `0E2E293C3DAB084AA3CF22050782D9B19A58DCEAA2555502AB97C7E14F6675A4`）|
 | `pack.info` | 565 B | 打包信息（bundle `com.smart.hospital.patient`、versionCode/versionName、模块列表）|
 | `build-log-2026-10-17.txt` | 4,331 B | `assembleHap` 完整日志（ANSI 转义已剥离，可直接文本比对）|
 | `screenshots/*.jpeg` | 11 张 | 见下表 |

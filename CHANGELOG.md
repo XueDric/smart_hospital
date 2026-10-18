@@ -17,7 +17,7 @@
 - **`hvigorw.bat`（仓库根）**：自动探测 DevEco 安装位置并推出 `DEVECO_SDK_HOME` / `JAVA_HOME`，
   使用者不配环境变量即可在仓库根一条命令构建鸿蒙客户端（`assembleHap`）。
 - **鸿蒙构建与运行证据入库** [`release/harmony/`](release/harmony/README.md)：`entry-default-unsigned.hap`
-  （1,748,913 B，SHA256 `745D07E08A236EC4205AB9A103899064F6B4D07FA369230F1C40CE7EC664C6A3`）、`pack.info`、
+  （1,752,310 B，SHA256 `0E2E293C3DAB084AA3CF22050782D9B19A58DCEAA2555502AB97C7E14F6675A4`）、`pack.info`、
   剥掉 ANSI 的完整构建日志、**11 张模拟器实跑截图**（管理端登录/看板/AI 能力中心、患者端登录/首页/分诊/选号/挂号/就诊）
   —— 回应评审「鸿蒙零构建产物、零运行证据」。
 - **安卓构建与运行证据入库** [`release/android/`](release/android/README.md)：`app-debug.apk`（956,718 B，

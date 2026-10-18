@@ -68,12 +68,6 @@ export struct HomePage {
       this.notices = [];
     }
     try {
-      /*
-       * ★ 2026-10-17 复查：刷新时先复位。原来只在命中时赋值，
-       * 已无进行中就诊时「下一次就诊」卡片会继续显示上一次的旧数据。
-       */
-      this.hasNextAppointment = false;
-      this.nextAppointment = new Appointment();
       const appointments = await this.repository.appointments(false);
       let next = new Appointment();
       let found = false;
