@@ -32,6 +32,13 @@ package qingzhou
  * ⚠ 刻意**不做**的程度：不写进日志、不回显在 `/api/ai/settings`（那里只回
  *   `ref_kind=builtin`）、不进错误消息 —— 与 env:/file: 两条路径的纪律一致。
  *
+ * ## ★ 2026-10-18：加了**有效期**（`AI_BUILTIN_DEMO_VALID_UNTIL`）
+ *
+ * 负责人选择"保留这把 key 作为实验室/评审窗口用的演示密钥"。既然保留，就把风险
+ * 装进机制里：到期后 `aiResolveKey()` 拒绝使用，理由里写明到期日与替代做法。
+ * 演示窗口结束仍应去 DeepSeek 控制台**吊销**（日期只防"代码继续用它"，不防
+ * "已经流出去的副本"）。详见本文件下方"限时"一节。
+ *
  * ## 公开信息（不是秘密）
  *   · endpoint `https://api.deepseek.com/chat/completions`（OpenAI 兼容）
  *   · model    `deepseek-chat`
@@ -92,6 +99,76 @@ public func aiBuiltinKeyOf(name: String): ?String {
         return Some(AI_BUILTIN_DEMO_KEY)
     }
     return None
+}
+
+/* ===================== 限时：演示密钥的**有效期**（2026-10-18 新增）===================== */
+
+/*
+ * ★★ 为什么"内置"必须配一个有效期 —— 以及它到底防住了什么。
+ *
+ * 写死密钥的真实风险不是"评委看到"，而是**永久可用**：仓库一旦以任何形式流出
+ * （截图、录屏、误公开、转发的 zip），那把 key 就一直是活的，谁都能拿去跑自己的
+ * 业务。承诺"发布前轮换"没用 —— 承诺不看时间，代码看。
+ *
+ * ⇒ 把"限时"做成**机制**：到期后 `aiResolveKey()` 直接拒绝这把 key，
+ *   `aiKeyRefProblem()` 给出可执行原因（换自己的 env:/file:）。伤害窗口从"永久"
+ *   压到"评审窗口"。
+ *
+ * 它**不能**防住的：窗口期内有人拿走 key 去用。所以这把 key 的余额应当保持很小，
+ * 窗口结束后去控制台**吊销**（不是只改这里的日期）。
+ *
+ * 格式 `YYYY-MM-DD`（与 `hDateStringOf()` 输出同格式）：同格式下**字典序即时间序**，
+ * 直接用字符串比较，不需要日期库。想延长/缩短就改这一行 + 重编 + 记 CHANGELOG。
+ */
+public let AI_BUILTIN_DEMO_VALID_UNTIL: String = "2026-12-31"
+
+/* 该内置名字的有效期（`YYYY-MM-DD`）；没有到期概念的内置凭据返回空串。 */
+public func aiBuiltinValidUntil(name: String): String {
+    if (name.trimAscii().toAsciiLower() == AI_BUILTIN_DEMO) {
+        return AI_BUILTIN_DEMO_VALID_UNTIL
+    }
+    return ""
+}
+
+/*
+ * 到期判定（纯函数）。
+ *
+ * ⚠ `today` 为空（时钟取不到/格式坏了）时**不**判过期：宁可让演示继续可用，
+ *   也不要因为一次时钟异常把整条 AI 路径关上 —— 与"密钥解析失败就降级到规则"
+ *   同一个取舍方向：演示可用性优先，安全边界靠 `AI_BUILTIN_ALLOWED_HOST` 守。
+ */
+public func aiBuiltinExpired(name: String, today: String): Bool {
+    let until = aiBuiltinValidUntil(name)
+    if (until.size == 0) {
+        return false
+    }
+    if (today.size == 0) {
+        return false
+    }
+    return today.trimAscii() > until
+}
+
+/*
+ * 带"今天"的内置密钥取值：过期即 None（调用方按"解析不到"处理，
+ * 具体原因由 `aiKeyRefProblem()` 给 —— 那里能说出到期日与替代方案）。
+ */
+public func aiBuiltinKeyOfAt(name: String, today: String): ?String {
+    if (aiBuiltinExpired(name, today)) {
+        return None
+    }
+    return aiBuiltinKeyOf(name)
+}
+
+/*
+ * 到期后给人看的**可执行**原因（由 `aiKeyRefProblem()` 直接用，测试也断言它）。
+ *
+ * 分开成一个函数的原因：这条文案要能**被断言**。如果它藏在 `aiKeyRefProblem()`
+ * 里、而后者偷偷读墙上时钟，测试就只能"等真的到期"才能验 —— 那等于没验。
+ */
+public func aiBuiltinExpiredMessage(name: String): String {
+    return "内置演示密钥已于 ${aiBuiltinValidUntil(name)} 失效（`builtin:${name}` 只用于评审/演示窗口）" +
+           "—— 请换用自己的密钥：`ai.key_ref=env:DEEPSEEK_API_KEY`（或 `file:路径`），" +
+           "一条命令的写法见 `tools/set-ai-key.ps1`"
 }
 
 /* ===================== 内置密钥的**出站白名单**（2026-10-17 复查新增）===================== */

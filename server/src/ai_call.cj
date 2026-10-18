@@ -217,6 +217,16 @@ public func aiCanCall(o: AiRuntimeOptions): (Bool, String) {
  *   而症状看起来像"密钥错了"，极难查）。
  */
 public func aiResolveKey(ref: String): ?String {
+    return aiResolveKeyAt(ref, hDateStringOf(hNowEpoch()))
+}
+
+/*
+ * 上面那条的"可注入今天"版本（纯函数，便于断言"到期后取不到"）。
+ *
+ * `today` 用 `YYYY-MM-DD`；只影响 `builtin:` 分支 —— env:/file: 是运维自己放的
+ * 密钥，没有有效期这回事（由他决定何时吊销）。
+ */
+public func aiResolveKeyAt(ref: String, today: String): ?String {
     match (keyRefEnvName(ref)) {
         case Some(name) =>
             let v = getVariable(name)
@@ -248,10 +258,12 @@ public func aiResolveKey(ref: String): ?String {
      * ★ 2026-10-17：`builtin:demo` —— 从**代码里的常量**取（ai_builtin.cj）。
      *   排在这两条之后、`return None` 之前；顺序不影响正确性（三种前缀互不重叠），
      *   但保持"环境变量 → 文件 → 内置"这个从外到内的顺序便于阅读。
+     * ★ 2026-10-18：内置密钥有**有效期**（`AI_BUILTIN_DEMO_VALID_UNTIL`）——
+     *   到期后这里取不到，调用方因 `aiKeyRefProblem()` 的说明而知道该换成自己的密钥。
      */
     match (keyRefBuiltinName(ref)) {
         case Some(name) =>
-            match (aiBuiltinKeyOf(name)) {
+            match (aiBuiltinKeyOfAt(name, today)) {
                 case Some(k) => return Some(k)
                 case None => return None
             }
@@ -279,7 +291,15 @@ public func aiKeyRefProblem(ref: String): String {
         case None => ()
     }
     match (keyRefBuiltinName(ref)) {
-        case Some(name) => return "内置引用 `builtin:${name}` 没有对应的内置常量（应当是编译期就有的常量，缺失说明版本不对）"
+        case Some(name) =>
+            /*
+             * ★ 先区分"到期"与"常量缺失"：到期是**预期行为**（评审窗口结束），
+             *   必须说清到期日和替代做法，否则运维会去查"版本对不对"，方向就错了。
+             */
+            if (aiBuiltinExpired(name, hDateStringOf(hNowEpoch()))) {
+                return aiBuiltinExpiredMessage(name)
+            }
+            return "内置引用 `builtin:${name}` 没有对应的内置常量（应当是编译期就有的常量，缺失说明版本不对）"
         case None => ()
     }
     return "ai.key_ref 既不是 env: / file: / builtin:（只接受这三种形式）"

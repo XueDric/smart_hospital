@@ -158,6 +158,30 @@ public func acAiCall1(runner: TestRunner, db: DbBackend): Unit {
     runner.check("⑦ 运维自配的 env: 引用不受白名单限制（他有权决定发往哪）", hc3[0])
     let hc4 = aiBuiltinKeyHostCheck("", "https://api.deepseek.com")
     runner.check("⑦ 没有引用（走别的来源）不受影响", hc4[0])
+
+    /*
+     * ⑧ ★ 内置演示密钥的**有效期**（2026-10-18 增，纯逻辑）。
+     *
+     * 为什么这条值得单独断言：负责人决定保留这把写死的 key 供评审窗口使用，
+     * 那么"限时"就必须是**代码行为**而不是文档承诺 —— 否则文档写着"到期失效"、
+     * 代码却永远可用，是最坏的一种状态（比没写更糟：它让人以为已经处理了）。
+     */
+    let until = aiBuiltinValidUntil(AI_BUILTIN_DEMO)
+    runner.check("⑧ 内置演示密钥登记了有效期（${until}）", until.size == 10 && until.contains("-"))
+    runner.check("⑧ 窗口内可取到密钥（today=${until}）",
+                 aiBuiltinKeyOfAt(AI_BUILTIN_DEMO, until).isSome())
+    runner.check("★ ⑧ 有效期**之后**取不到（今天是 2999-12-31）",
+                 aiBuiltinKeyOfAt(AI_BUILTIN_DEMO, "2999-12-31").isNone())
+    runner.check("★ ⑧ 但有效期**之前**可取到（2020-01-01），说明不是一刀切关掉",
+                 aiBuiltinKeyOfAt(AI_BUILTIN_DEMO, "2020-01-01").isSome())
+    runner.check("★ ⑧ 到期后 `aiResolveKeyAt` 也取不到（同一判据，两条路径一致）",
+                 aiResolveKeyAt("builtin:${AI_BUILTIN_DEMO}", "2999-12-31").isNone())
+    runner.check("⑧ `today` 为空（时钟异常）时不判过期 —— 演示可用性优先",
+                 !aiBuiltinExpired(AI_BUILTIN_DEMO, ""))
+    runner.check("⑧ 没有有效期概念的名字不判过期", !aiBuiltinExpired("nobody", "2999-12-31"))
+    runner.check("★ ⑧ 到期理由要说到期日与替代做法（否则运维会去查版本）",
+                 aiBuiltinExpiredMessage(AI_BUILTIN_DEMO).contains(until) &&
+                 aiBuiltinExpiredMessage(AI_BUILTIN_DEMO).contains("key_ref"))
 }
 
 /* ---------- AC-AICALL-2：★★ 安全清理层（网络无关，CI 稳定）---------- */

@@ -188,8 +188,12 @@ public func aiSettingSpecs(): Array<AiSettingSpec> {
          * ★★ 密钥**引用**（不是密钥本身）。secret=true 让它在响应里只回显"是否已设置"。
          *   值必须是 `env:` / `file:` / `builtin:` 开头 —— 由 validateKeyRef 机制性保证。
          *   默认 `builtin:demo`：指向 ai_builtin.cj 里的内置常量（开箱即用）。
+         *   ⚠ 内置演示密钥有**有效期**（`AI_BUILTIN_DEMO_VALID_UNTIL`），到期后
+         *     `aiResolveKey()` 取不到 ⇒ 管理台这一项会变成"已设置但解析不到"，
+         *     理由里写明到期日与替代做法（换 `env:` / `file:`，见 tools\set-ai-key.ps1）。
          */
-        AiSettingSpec(SET_AI_KEY_REF, "密钥**引用**（env:名 / file:路径 / builtin:demo；⚠ 不存密钥本体）",
+        AiSettingSpec(SET_AI_KEY_REF,
+                      "密钥**引用**（env:名 / file:路径 / builtin:demo（演示密钥有效期至 ${AI_BUILTIN_DEMO_VALID_UNTIL}）；⚠ 不存密钥本体）",
                       AI_BUILTIN_DEFAULT_KEY_REF, secret: true),
         /*
          * ⚠⚠ **本版本不支持**（第十份复查发现它"被校验、被存库、被回显，却没人消费"）。

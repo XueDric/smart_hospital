@@ -16,6 +16,10 @@
 *.crt
 *.p7b
 *.p10
+# 评委/运维用自己的大模型密钥时，落盘位置（由 tools\set-ai-key.ps1 写入）
+# ⚠ 与 *.pem 同理：这是机密本体，绝不能入库。仓库里只允许出现"引用"（file:/env:/builtin:）。
+server/ai-key.txt
+
 # 本项目自己的 TLS 证书与私钥（由 server\new-tls-cert.ps1 生成）
 # ⚠ 私钥入库 = 泄露。这里同时有目录级与 *.pem 扩展名级两层 —— 防的是"把 key 放到别处"。
 server/certs/
