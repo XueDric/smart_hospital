@@ -1261,8 +1261,19 @@ public func buildHospitalRouter(repo: BookingRepo, auth: AuthRepo, gate: DevAuth
                      *   患者登录后最需要它来调 `/api/v1/appointments`（"我的挂号"），
                      *   而此前只有 `/auth/me` 才给 —— 等于每次登录后都要多一次往返。
                      *   与 `/auth/me` 的口径保持一致（role=patient 时 = ref_id）。
+                     *
+                     * ★★ 2026-10-18 三端联调修：此前**不分角色**直接 `ref_id`，
+                     *   于是医生登录会拿到 `patient_id = 医生 ref_id`（实测 e2e_doc
+                     *   拿到 patient_id=1），同一个令牌再调 `/auth/me` 却是
+                     *   `patient_id=0, doctor_id=1` —— 两个接口自相矛盾。客户端的
+                     *   医生/管理端恰好传 `0` 才没受害，但这属于"靠运气"。
+                     *   现在按角色给：只有患者回 `ref_id`，其它角色回 0。
                      */
-                    o.put("patient_id", JsonInt(u.refId))
+                    let loginPatientId = match (u.role) {
+                        case Patient => u.refId
+                        case _ => 0
+                    }
+                    o.put("patient_id", JsonInt(loginPatientId))
                 case None => ()
             }
             sendOk(ctx, o)

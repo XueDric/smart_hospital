@@ -183,10 +183,18 @@ public class DashboardRepo {
          */
         let days = 14
         o.put("trend_days", JsonInt(days))
+        /*
+         * ★★ 2026-10-18 三端联调修：原 SQL **只有下界**（`visit_date >= 截止日`），
+         *   于是"未来日期的挂号"也被算进「近 N 日趋势」—— 实测库里只有一条
+         *   2026-12-24 的号，看板就画出了 2026-12-24 这一根柱子（今天 2026-10-18）。
+         *   趋势是"过去 N 天发生了什么"，未来号应该由「号源/排班」表达，不是趋势。
+         *   现在补上界 `visit_date <= 今天`。
+         */
         o.put("trend", rowsToJson(group2(
             "SELECT visit_date, COUNT(*) FROM appointment " +
-            "WHERE visit_date >= ? GROUP BY visit_date ORDER BY visit_date ASC LIMIT ?",
-            [DbStr(dashCutoffDate(now, days)), DbInt(days)])))
+            "WHERE visit_date >= ? AND visit_date <= ? " +
+            "GROUP BY visit_date ORDER BY visit_date ASC LIMIT ?",
+            [DbStr(dashCutoffDate(now, days)), DbStr(dashCutoffDate(now, 0)), DbInt(days)])))
 
         /* ---------- ④ 科室分布（挂号量 / 号源使用率）---------- */
         /*
