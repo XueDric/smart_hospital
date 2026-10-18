@@ -139,6 +139,25 @@ public func acAiCall1(runner: TestRunner, db: DbBackend): Unit {
     runner.check("⑥ 成功 ⇒ 不重试", !aiCallRetryable(t8))
     runner.check("⑥ 重试上限是一个可审计的常量（${AI_CALL_MAX_ATTEMPTS} 次尝试）",
                  AI_CALL_MAX_ATTEMPTS == 2)
+
+    /*
+     * ⑦ ★★ 内置密钥的**出站白名单**（2026-10-17 复查增，纯逻辑）。
+     *
+     * 场景：`ai.key_ref = builtin:demo` 是全局配置，而 `ai_model` 每行自带 base_url。
+     * 种子里的**向量行**指向百炼（DeepSeek 没有 /embeddings）—— 若不做这道校验，
+     * DeepSeek 的密钥会被发给阿里云。这既是"必定失败"，也是一次凭据外泄。
+     */
+    let hc1 = aiBuiltinKeyHostCheck("builtin:demo", "https://api.deepseek.com/chat/completions")
+    runner.check("★ ⑦ 内置密钥发往官方端点 ⇒ 放行", hc1[0])
+    let hc2 = aiBuiltinKeyHostCheck("builtin:demo",
+                                    "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings")
+    runner.check("★ ⑦ 内置密钥发往别家 ⇒ **拒绝**（否则密钥外泄）", !hc2[0])
+    runner.check("★ ⑦ 拒绝理由要说清往哪发、怎么办",
+                 hc2[1].contains("api.deepseek.com") && hc2[1].contains("key_ref"))
+    let hc3 = aiBuiltinKeyHostCheck("env:DEEPSEEK_API_KEY", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    runner.check("⑦ 运维自配的 env: 引用不受白名单限制（他有权决定发往哪）", hc3[0])
+    let hc4 = aiBuiltinKeyHostCheck("", "https://api.deepseek.com")
+    runner.check("⑦ 没有引用（走别的来源）不受影响", hc4[0])
 }
 
 /* ---------- AC-AICALL-2：★★ 安全清理层（网络无关，CI 稳定）---------- */

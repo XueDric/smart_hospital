@@ -93,3 +93,39 @@ public func aiBuiltinKeyOf(name: String): ?String {
     }
     return None
 }
+
+/* ===================== 内置密钥的**出站白名单**（2026-10-17 复查新增）===================== */
+
+/*
+ * ★★ 为什么需要这一层。
+ *
+ * `ai.key_ref = builtin:demo` 是**全局**配置（KV 里那一行），而 `ai_model` 表里
+ * 每行都有自己的 `base_url`。当某个模型行**自己没有配 key_ref** 时，运行期会回落到
+ * 全局引用 —— 于是 DeepSeek 的密钥会跟着那条 `base_url` 发出去。库里种子的
+ * 向量行就指向 `dashscope.aliyuncs.com`：结果是**把一家服务商的密钥送给另一家**
+ * （对方只会回 401），既无功能收益，又是一次凭据外泄。
+ *
+ * ⇒ 内置密钥只允许发往它自己的官方端点；其余一律**拒绝发送**并给出可执行的原因。
+ *   `env:` / `file:` 引用不受此限（那把密钥是运维自己放进去的，他有决定权）。
+ */
+public let AI_BUILTIN_ALLOWED_HOST: String = "api.deepseek.com"
+
+/* 该 `keyRef` 是否是内置引用（只认白名单整串）。 */
+public func aiKeyRefIsBuiltin(keyRef: String): Bool {
+    return keyRefBuiltinName(keyRef).isSome()
+}
+
+/*
+ * 这次出站是否允许携带内置密钥。
+ * 返回 `(allowed, reason)`：`allowed = false` 时 `reason` 是给人看的一句话。
+ */
+public func aiBuiltinKeyHostCheck(keyRef: String, url: String): (Bool, String) {
+    if (!aiKeyRefIsBuiltin(keyRef)) {
+        return (true, "")
+    }
+    if (url.toAsciiLower().contains(AI_BUILTIN_ALLOWED_HOST)) {
+        return (true, "")
+    }
+    return (false, "内置密钥（${keyRef}）只允许发往 ${AI_BUILTIN_ALLOWED_HOST}；" +
+        "当前 base_url 指向别的服务商，已拒绝发送 —— 请为该模型行单独配置 key_ref，或改用官方端点")
+}

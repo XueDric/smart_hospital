@@ -221,31 +221,40 @@ public class DashboardRepo {
         let srcRows = group2(
             "SELECT source, COUNT(*) FROM triage_stat GROUP BY source ORDER BY COUNT(*) DESC LIMIT ?",
             [DbInt(10)])
+        /*
+         * ★★ 2026-10-17 复查：原来按 `label == "model"` **精确匹配**，于是
+         *   `model:invalid`（模型返回了但解析失败）落进 other 桶，只剩它一类时
+         *   会被推成 `mixed` —— 与同一响应里单列的 `model_invalid_calls` 自相矛盾。
+         *   现在按**前缀**归类：`model` / `model:invalid` / `model:*` 都算模型家族。
+         */
         var modelN: Int64 = 0
         var rulesN: Int64 = 0
         var otherN: Int64 = 0
         for (c in srcRows) {
-            if (c.label == "model") {
-                modelN = c.n
-            } else if (c.label == "rules") {
-                rulesN = c.n
+            if (c.label.startsWith("model")) {
+                modelN = modelN + c.n
+            } else if (c.label.startsWith("rules")) {
+                rulesN = rulesN + c.n
             } else {
                 otherN = otherN + c.n
             }
         }
         var srcLabel = "none"
-        if (modelN > 0 && rulesN == 0 && otherN == 0) {
+        if (modelN > 0 && rulesN == 0) {
             srcLabel = "model"
-        } else if (rulesN > 0 && modelN == 0 && otherN == 0) {
+        } else if (rulesN > 0 && modelN == 0) {
             srcLabel = "rules"
-        } else if (modelN + rulesN + otherN > 0) {
+        } else if (modelN > 0 && rulesN > 0) {
             srcLabel = "mixed"
+        } else if (otherN > 0) {
+            srcLabel = "other"
         }
         triage.put("source", JsonString(srcLabel))
         triage.put("by_source", rowsToJson(srcRows))
         triage.put("source_note", JsonString(
             "`source` 由 `triage_stat.source` 的分布**推导**（不是写死的）：" +
-            "只有 model / 只有 rules / 两者都有 = mixed / 无记录 = none；" +
+            "按前缀归成 model / rules 两族；只有一族报那一族，两族都有 = mixed，" +
+            "只有未知来源 = other，无记录 = none（`model:invalid` 属 model 族）；" +
             "`by_source` 是逐项真实计数。"))
         triage.put("total_calls", JsonInt(count1("SELECT COUNT(*) FROM triage_stat", Array<DbValue>())))
         triage.put("red_flag_calls",
