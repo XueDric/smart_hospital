@@ -119,7 +119,7 @@ public class DashboardRepo {
         /* ---------- ① 规模（科室 / 医生 / 患者）---------- */
         /*
          * ⚠ `department` / `doctor` / `patient` 三张表属**内存 Store**，
-         *   而内存 Store 在生产路径上**不刷盘**（P4 已确认，见 P4-HANDOFF）
+         *   而内存 Store 在生产路径上**不刷盘**（P4 已确认，见 docs/PHASE-HANDOFFS.md）
          *   ⇒ 这里读到的可能是**旧数据**（上一次刷盘时的快照）。
          *   如实标注：`scale.source` = "mysql（内存 Store 的表，生产未刷盘 ⇒ 可能滞后）"。
          *   📌 这比"悄悄给个数字"诚实得多 —— 运维看到这句就知道为什么数字不动。

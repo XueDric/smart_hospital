@@ -73,7 +73,7 @@
 - 种子默认行（表为空时播种）：**对话** provider `"DeepSeek"`、base_url `https://api.deepseek.com`、模型 `deepseek-chat`（温度 0.3、max_tokens 2048）；**向量** provider `"百练"`、base_url `https://dashscope.aliyuncs.com/compatible-mode/v1`、模型 `text-embedding-v3`。两者**故意不同源**：DeepSeek 没有 `/embeddings`，硬指过去只会 404（见 `ai_model.cj:98-107,786-824`）。
 - 端点推导：基址或完整端点均可，CHAT 追加 `/chat/completions`、EMBEDDING 追加 `/embeddings`；**强制 `https://`**（见 `ai_model.cj:338-356`、`ai_settings.cj:521-560`、`ai_call.cj:627`）。
 - 超时 **30s**（1..300）、并发 **4**（1..64），信号量闸门 + **失败重试（2 次尝试）** + **全链路墙钟硬上限**（含 DNS/connect，因为 stdx 本版本没有 connectTimeout，见 `ai_call.cj:306-420`）；密钥只存 `env:名` / `file:路径` / `builtin:demo` 三种**引用**；探活为 `aiProbeChat` / `aiProbeEmbedding` / `aiExtractEmbeddingDim`（见 `ai_settings.cj:171-186,521-560`、`ai_call.cj:219,814,889`）。
-- **已定型结论：DeepSeek 无 embeddings 端点** —— `/embeddings` 与 `/v1/embeddings` 实测均 404，故向量路未端到端验证、关键词检索为默认路（见 `docs/P5-HANDOFF.md:13-18,20-29`、`README.md:58`、`docs/HISTORY-PROJECT-BRIEF.md:255-257`）；测试里出现 `deepseek-chat` 仅用于协议形状验证（`server/src/acceptance_ai.cj:164-166`）。
+- **已定型结论：DeepSeek 无 embeddings 端点** —— `/embeddings` 与 `/v1/embeddings` 实测均 404，故向量路未端到端验证、关键词检索为默认路（见 `docs/PHASE-HANDOFFS.md` 的「P5 遗留」与附录、`README.md:58`）；测试里出现 `deepseek-chat` 仅用于协议形状验证（`server/src/acceptance_ai.cj:164-166`）。
 - 出站合规：仅发现主诉 + 科室名 + 提示词 + KB 片段，不含 patient_id；**2026-10-17 起演示环境默认开启**（`ai.enabled=1` + `builtin:demo` + DeepSeek），生产发布前必须按 `docs/Q6-合规决策记录.md` §2.1 把密钥换成 `env:`/`file:` 引用并轮换、按 Q6 结论决定是否置回 `0`；**未完成** DPA/留存删除、知情同意、脱敏预处理、出站审计明细、境内外约束（见 `docs/Q6-合规决策记录.md:16-26,30-39,63-72`，`:85-86` 明示该页不代表 Q6 已获批准）。DeepSeek 与百炼均为**商业 API**，非 OSS，无许可证义务但受条款与数据合规约束。
 
 ## 6. 数据集 / 词表 / 样本

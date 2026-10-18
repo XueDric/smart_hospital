@@ -8,10 +8,10 @@
 
 | 文件 | 大小 | 说明 |
 |---|---|---|
-| `entry-default-unsigned.hap` | 1,758,339 B | 未签名 HAP（SHA256 `D6AB687F4759C7203979553632F1D2948724CCF4975B59E07B44E689BA8CFBD8`）|
+| `entry-default-unsigned.hap` | 1,758,339 B | 未签名 HAP（SHA256 `70A7EB5366445E04F3895A305E3F59614019EF8CA698B6654B1DA8A2CC17479D`）|
 | `pack.info` | 565 B | 打包信息（bundle `com.smart.hospital.patient`、versionCode/versionName、模块列表）|
 | `build-log-2026-10-17.txt` | 7,381 B | 2026-10-17 的 `assembleHap` 完整日志（ANSI 已剥离）|
-| `build-log-2026-10-18.txt` | 7,148 B | 2026-10-18 三端联调后重建的日志（ANSI 已剥离，末行 `BUILD SUCCESSFUL`；本轮修复后 29 executed / 36 up-to-date）|
+| `build-log-2026-10-18.txt` | 9,453 B | 2026-10-18 文档收敛后重建的日志（ANSI 已剥离，末行 `BUILD SUCCESSFUL`；70 tasks 全部 executed）|
 | `screenshots/*.jpeg` | 14 张 | 见下表 |
 
 ## 二、截图索引

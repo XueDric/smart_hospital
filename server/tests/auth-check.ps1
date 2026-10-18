@@ -5,7 +5,7 @@
 #
 # ⚠ 含中文的 PowerShell 脚本必须 UTF-8 with BOM（PS 5.1 否则按 ANSI 解析 → 语法报错）。
 # ⚠ header/body 全部走 curl **config 文件**（-K）：
-#   `Start-Process -ArgumentList` 或含空格的 -H 参数会被拆坏（详见 docs/P1-HANDOFF.md §3.3）。
+#   `Start-Process -ArgumentList` 或含空格的 -H 参数会被拆坏（详见 docs/PHASE-HANDOFFS.md 的「P1 运行手册」）。
 #
 # 用法：
 #   .\auth-check.ps1 -Base http://127.0.0.1:8091 -AdminPw <口令>
@@ -43,7 +43,7 @@ New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 #     第 1 次跑：25 PASS / 0 FAIL
 #     紧接着第 2 次：13 PASS / 12 FAIL，且登录全部 429
 #
-# 这推翻了 P1-HANDOFF 里"三个脚本互不依赖执行顺序（各自夹具自建自清）"的说法，
+# 这推翻了 P1 阶段交接稿里"三个脚本互不依赖执行顺序（各自夹具自建自清）"的说法，
 # 也会让"跑完 auth-check 再跑 stress/tls"失败 —— 因为 admin 已被锁死。
 # 讽刺的是 `rate-limit-check.ps1` 的注释里**已经识别了这个风险**
 # （"塞进 auth-check 会让那个脚本的假设被限流状态污染"），

@@ -3,7 +3,7 @@
 # ── 为什么要有这个脚本（2026-10-07 加）────────────────────────────────────
 # "文档里的测试项数"这一类数字，本项目已经**漂移过两次**：
 #   第一次：selftest 写 32、实际 33（加断言后没回头改）
-#   第二次：删了 AC-8 后，P1-HANDOFF / ADR / server/README 仍写 33 / 35（实际 30 / 43）
+#   第二次：删了 AC-8 后，P1 交接稿 / ADR / server/README 仍写 33 / 35（实际 30 / 43）
 # 两次都是同一个毛病：**同一个事实存了多份，改一处忘其它处**。
 #
 # 光靠"下次记得改"是没用的（已经忘两次了）。所以做法变成：
@@ -170,10 +170,8 @@ $checks = @(
     @{ File = "server\README.md";     Pattern = '\| `selftest` \|[^\r\n]*自检（\*\*?(?<n>\d+) 项'; Want = 'selftest' },
     @{ File = "server\README.md";     Pattern = '`accept <dsn>` \| 验收测试 AC-1…AC-(?:P[234]-)?(?<ac>\d+)（\*\*(?<n>\d+) 项断言\*\*'; Want = 'accept' },
     @{ File = "server\README.md";     Pattern = '`src/acceptance\.cj` \| AC-1…AC-(?:P[234]-)?(?<ac>\d+) 验收测试'; Want = 'accept' },
-    @{ File = "docs\P1-HANDOFF.md";   Pattern = 'schema 自检（无需库） \| `hospital-server\.exe selftest` \| ✅ \*\*(?<n>\d+) 项\*\*'; Want = 'selftest' },
     @{ File = "README.md";            Pattern = '\*\*(?<ep>\d+) 个 REST\*\*'; Want = 'endpoints' },
     @{ File = "server\README.md";     Pattern = '`triagetest` \| P2 分诊.*?自检（\*\*\s*(?<n>\d+) 项\*\*'; Want = 'triagetest' },
-    @{ File = "docs\P1-HANDOFF.md";   Pattern = '验收（AC-1…AC-(?:P[234]-)?(?<ac>\d+)） \| `hospital-server\.exe accept <dsn>` \| ✅ \*\*(?<n>\d+) 项\*\*'; Want = 'accept' },
     @{ File = "docs\adr\ADR-0001-号源与挂号独立MySQL路径.md"; Pattern = '`hospital-server\.exe selftest` \| ✅ \*\*(?<n>\d+) 项\*\*'; Want = 'selftest' },
     @{ File = "docs\adr\ADR-0001-号源与挂号独立MySQL路径.md"; Pattern = '`hospital-server\.exe accept <dsn>` \| ✅ \*\*(?<n>\d+) 项 / 失败 0\*\*'; Want = 'accept' },
     @{ File = "server\README.md";     Pattern = '`src/acceptance_notice\.cj` \| AC-NOTICE-1…AC-NOTICE-(?<ac>\d+)'; Want = 'accept' },

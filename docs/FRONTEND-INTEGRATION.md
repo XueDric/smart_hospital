@@ -2138,14 +2138,14 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 
 ## 11. 本仓文档口径提示（读别的文档前先读这段）
 
-本仓库历史上存在多份交接文档（`server/README.md`、`docs/P1-HANDOFF.md`、`docs/P4-HANDOFF.md` 等），
+本仓库历史上存在多份交接文档（`server/README.md`、`docs/PHASE-HANDOFFS.md` 等），
 它们与实现存在若干出入。**以源码为准**。已发现的 7 条（已核到 `file:line`）：
 
 | # | 文档说法 | 实现事实 | 本文口径 |
 | --- | --- | --- | --- |
 | 1 | `server/README.md` 的启动示例用 `--port 8091` / `8443`，容易让人以为这是默认端口 | **默认端口已于 2026-10-17 改为 8091**（`main.cj:707`，原先 8080 与客户端不一致，评审 P2-15）；`8443` 只是 TLS 启动参数约定 | §1、§2.2 明确写"默认 8091；8443 只是约定" |
 | 2 | 一般文档措辞会让人以为"患者可搜知识库" | `GET /api/v1/kb/search` 需要 `query_knowledge_base`（admin\|doctor）⇒ **患者 403**（`http_app.cj:206-218` 有明确设计说明） | §6.3 |
-| 3 | `docs/P4-HANDOFF.md` 未提 `record/reopen` 的实际鉴权 | 原为 `http_p4.cj:363` 借 `requireCan(p.role, Action.ManageSchedule)`；**2026-10-15（改进 3）改为语义动作 `Action.ManageRecordRevision`**（`http_p4.cj:633`）⇒ **reopen 仍是管理员动作、医生仍 403**（授权结果不变，只是动作名不再含混） | §6.2、§5.29.7 |
+| 3 | `docs/PHASE-HANDOFFS.md`（P4）未提 `record/reopen` 的实际鉴权 | 原为 `http_p4.cj:363` 借 `requireCan(p.role, Action.ManageSchedule)`；**2026-10-15（改进 3）改为语义动作 `Action.ManageRecordRevision`**（`http_p4.cj:633`）⇒ **reopen 仍是管理员动作、医生仍 403**（授权结果不变，只是动作名不再含混） | §6.2、§5.29.7 |
 | 4 | 登录响应里的 `patient_id` 容易被读成"患者 id" | 实现是 `u.refId` 且**不判角色**（`http_app.cj:774`）⇒ 医生/管理员登录时它只是各自的档案 id | §4.2（含实测） |
 | 5 | 错误码表里可能登记着 `AUTH_TOKEN_INVALID` | **`apiErrorSpec` 里没有这个码**（`http_common.cj:55-197`）：令牌无效/过期一律 `AUTH_TOKEN_EXPIRED` 401，message「令牌无效或已过期，请重新登录」（`http_app.cj:313-316`） | §14.1 只列实现里真实存在的码 |
 | 6 | 文档写"连续失败 5 次后锁定"，容易被读成"第 6 次才 429" | 实现在 `recordFailure` 之后判 `fail_count >= 5` ⇒ **第 5 次失败就返回 429**（`auth_repo.cj:381-386`）。实测确认 | §4.2 |

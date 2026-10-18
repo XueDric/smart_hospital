@@ -2000,7 +2000,7 @@ r.post("/api/v1/auth/logout-all", { ctx: Context, _: () -> Unit =>
      *   与 `/admin/ai/` 下的其余端点**同一道闸门**（settings / prompts / tools /
      *   models 都是 `Action.ManageAi`）。这一屏的内容是"模型与模板的运行效果"，
      *   属于 AI 配置的责任范围 ⇒ 复用既有动作，不新造权限
-     *   （新动作要么有第二个用处、要么复用，见 P4-HANDOFF 纪律）。
+     *   （新动作要么有第二个用处、要么复用，见 docs/PHASE-HANDOFFS.md 的跨阶段纪律）。
      *
      * ── 参数与边界 ────────────────────────────────────────────────────────
      *   · `group_by`：**白名单**（source / reason_code / model_name），

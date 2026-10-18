@@ -5,9 +5,9 @@
 | **状态** | Accepted（已接受） |
 | **日期** | 2026-10-07（创建）｜ 2026-10-07（复查修订 rev.2） |
 | **阶段** | P0 —— 架构决策落定 |
-| **决策者** | 项目组（依据 `../HISTORY-PROJECT-BRIEF.md` §5.1） |
+| **决策者** | 项目组（依据 `../PHASE-HANDOFFS.md` 附录「五个硬骨头」的 5.1） |
 | **影响面** | `server/src/` 数据访问层；号源域 `schedule`/`appointment`（rev.4 删除 `booking_idem`）+ 配套域 `department`/`doctor`/`patient`（rev.5 落地内存 Store）+ 病历域 `medical_record`（**rev.6 移出内存 Store，改直接 SQL**） |
-| **关联** | `../HISTORY-PROJECT-BRIEF.md` §4 复用映射、§5.1、§7；搬迁前 `mysql_store.cj:30-37` |
+| **关联** | `../PHASE-HANDOFFS.md` 附录「五个硬骨头」与「跨阶段遗留总表」；搬迁前 `mysql_store.cj:30-37` |
 
 ### 修订记录
 
@@ -53,7 +53,7 @@ P4 落地电子病历时发现：**病历被划错了类**（rev.1 起一直在"
 #### 理由 ① 本仓**自己**已经为同类数据判过一次（P2 的先例）
 
 P2 引入 `previsit_session` 时**特意**把它排除在内存 Store 之外，当时的原话是
-（见 `docs/P2-HANDOFF.md` §「新增的第三类表」与 `previsit_schema` 注释）：
+（见 `docs/PHASE-HANDOFFS.md` 的「P2 交付」与 `previsit_schema` 注释）：
 
 > ★ 预问诊表**不属内存 Store 负责的表**（**它是医疗数据，必须立刻持久化**，
 >   不能进"整表替换"范式）
@@ -90,7 +90,7 @@ P2 引入 `previsit_session` 时**特意**把它排除在内存 Store 之外，�
 `department` / `doctor` / `patient` **仍在内存 Store 里**。
 它们同样"生产不刷盘"，但处置它们属**另一项决策**
 （是给 `serve` 接上刷盘、还是也改直接 SQL），本轮**没有**顺手改 ——
-把一件没论证的事混进来比留着它更糟。已写进 `docs/P4-HANDOFF.md` 的未做清单。
+把一件没论证的事混进来比留着它更糟。已写进 `docs/PHASE-HANDOFFS.md` 的「跨阶段遗留总表」。
 
 ### ★★★ rev.7 的核心：内存 Store 为什么被**整体拆除**
 
@@ -185,7 +185,7 @@ rev.6 一改就**必然变红**。这暴露了它是"**钉数字**"而不是"钉
 
 ### 1.2 挂号场景提出的新要求
 
-参考系统（`../HISTORY-PROJECT-BRIEF.md` §2.3）给出两条必须照搬的机制：
+参考系统（见 `../PHASE-HANDOFFS.md` 附录「参考系统的两个关键技术方案」）给出两条必须照搬的机制：
 
 1. **防超卖**：排班表 `version` 乐观锁 + 扣减带 `remain_num > 0` 条件；
 2. **顺延不串号**：挂号单保存 `visit_date` **就诊日快照**。
@@ -256,8 +256,8 @@ if (n == 1) {
 `writeDbToMysql(s, cur)` 只遍历 `Snapshot.entities` 里的表（搬迁前 `mysql_store.cj:1097`）。
 **新表不进 `PersistedState` ⇒ 整体替换不会碰它 ⇒ 无双写冲突。**
 
-> ⚠️ 此推论**基于 `mysql_store.cj` 的替换语义阅读得出，属推断**（`../HISTORY-PROJECT-BRIEF.md`
-> §附录C 推断 2 原话：**「建议落地即写测试钉住」**）。
+> ⚠️ 此推论**基于 `mysql_store.cj` 的替换语义阅读得出，属推断**（`../PHASE-HANDOFFS.md`
+> 附录「跨阶段遗留总表」原话：**「建议落地即写测试钉住」**）。
 > **验收条件 AC-4 就是钉住它的回归测试** —— 见 §5。
 
 ---
@@ -316,7 +316,7 @@ if (n == 1) {
 >   （rev.7 拆掉内存 Store 后这条**仍然成立**：域的分类不是按"用哪种范式"分的，
 >     而是按**纪律**分的。）
 
-~~**这是明确的架构债**~~（`../HISTORY-PROJECT-BRIEF.md` §9 **R-2**）。
+~~**这是明确的架构债**~~（`../PHASE-HANDOFFS.md` 附录「风险登记」**R-2**）。
 **rev.7 已还清**；下面是债存在时的代价清单，逐条注明现状：
 
 1. ~~开发者要**判断某个域该走哪条路**~~ —— ✅ **不再需要判断**（只有一条路）；

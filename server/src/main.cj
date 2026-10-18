@@ -364,7 +364,7 @@ func selftest(): Int64 {
     /*
      * ★ 基础数据域（rev.7 新分类，**取代**原来的"配套域（走内存 Store）"）：
      *   department / doctor / patient —— 直接 SQL 读；**目前没有写入端点**，
-     *   靠人工 SQL 维护（见 README 表集说明与 P4-HANDOFF 未做清单）。
+     *   靠人工 SQL 维护（见 README 表集说明与 docs/PHASE-HANDOFFS.md 的遗留表）。
      *   ⚠ 这条纪律要写明，否则读者会以为"系统会自动积累科室/医生数据"。
      */
     let baseTables = 3

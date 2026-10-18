@@ -173,7 +173,7 @@ $env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Stud
 </details>
 
 - **成功标志** `BUILD SUCCESSFUL`（本机实测 65 tasks / 约 23 s 首编、4 s 增量），产物 `entry/build/default/outputs/default/entry-default-unsigned.hap`（约 1.7 MB）+ `pack.info`。
-- **已入库的构建与运行证据**：[release/harmony/](../release/harmony/README.md) —— `entry-default-unsigned.hap`（1758339 B，SHA256 `D6AB687F4759C7203979553632F1D2948724CCF4975B59E07B44E689BA8CFBD8`）、`pack.info`、`build-log-2026-10-17.txt`（剥掉 ANSI 的完整日志）+ `screenshots/` **10 张模拟器实跑截图**（每张都有对应 `uitest dumpLayout` 文本实测）。这是「客户端可构建、可运行」的现场证据，不是二次生成的转述。
+- **已入库的构建与运行证据**：[release/harmony/](../release/harmony/README.md) —— `entry-default-unsigned.hap`（1758339 B，SHA256 `70A7EB5366445E04F3895A305E3F59614019EF8CA698B6654B1DA8A2CC17479D`）、`pack.info`、`build-log-2026-10-17.txt`（剥掉 ANSI 的完整日志）+ `screenshots/` **10 张模拟器实跑截图**（每张都有对应 `uitest dumpLayout` 文本实测）。这是「客户端可构建、可运行」的现场证据，不是二次生成的转述。
 - **装进模拟器（未签名也能装）**：在华为模拟器（Pura 90 / HarmonyOS 6.1.1 / API 24）实测 `hdc install -r …hap` 直接成功，**不需要先签名**；启动前若屏幕锁定，`aa start` 会报 `10106102 The device screen is locked…`，先 `hdc shell power-shell wakeup`（注意 `Emulator.exe -instance … -power` 是关屏，别用）：
   ```powershell
   & "D:\DevEco Studio\sdk\default\openharmony\toolchains\hdc.exe" install -r .\entry\build\default\outputs\default\entry-default-unsigned.hap
@@ -274,7 +274,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\package-release.ps1
 | `/health` 200 但业务接口 500 | 旧版 `/health` 只回静态字段；当前版本已改为**当场探库**，库不通即 503 | 确认 exe 是当前版本；503 时查 DSN/口令/库是否在跑 |
 | `/admin/` 404 或启动日志「未找到管理台静态目录」 | 启动目录里没有 `admin-web`（候选只有 `admin-web`、`server/admin-web`、`../admin-web`） | 从 `server\`（或包根）启动；`--prod` 缺 admin-web 会**直接拒绝启动** |
 | `LLVM ERROR: Broken module found` | cjc 版本串台（用了 PATH 上的 1.1.3） | 让 `build.ps1` 自己挑 1.2.0；不要手工指定错误的 `-CangjieHome` |
-| `can not find package 'mariadb.cdbc'` | 没编驱动（全新克隆） | 先跑 `build-mysql-driver.ps1`（见 §2③），产物在 `server\build\mysql-driver` |
+| `can not find package 'mariadb.cdbc'` | 没编驱动（全新克隆），或**清理过 `server\build`** —— 驱动产物 `server\build\mysql-driver` 就在里面，会一起被删 | 先 `.\build-mysql-driver.ps1 -CangjieHome "$env:CANGJIE_HOME"`（不指定时它会用 PATH 上的 cjc，通常是被 cjenv 改写的 1.1.3，脚本会直接拒绝），再 `.\build.ps1`；见 §2③ |
 | `10505001 ArkTS Compiler Error: Cannot find module 'common-core'`（12 个）+ `WARN: Please confirm the symbolic link is valid` | 仓库目录改名后，`oh_modules/` 里的 junction 还指向旧绝对路径 | 按 §4「改名后必做一次软链重连」（`ohpm install` 或 `mklink /J` 重连 7 个链接） |
 | `00306003 Specification Limit Violation / Invalid project path` | 工程路径含中文/非 ASCII | 仓库已在 `E:\harmonyOS\smart_hospital`；克隆到中文目录时 robocopy 一份 ASCII 副本再构建 |
 | `00308003 … ENOENT … node_modules\@ohos\hvigor\bin\hvigor.js` / 首次运行卡在 `npm install pnpm` | 官方 `hvigorw` 的 `hvigor-wrapper.js` 是 0 字节占位，需联网自举工具链；受限网络下失败 | 用仓库根 `.\hvigorw.bat`（复用本机 DevEco 的 hvigor，不下载），见 §4 |

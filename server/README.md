@@ -222,7 +222,7 @@ $env:HOSP_ADMIN_PW = "<管理员口令>"
 
 各脚本**互不依赖执行顺序**（自建夹具、自清数据）。
 > ⚠ 必须用 `curl -K` config 文件传 header/body —— `Start-Process -ArgumentList` 会拆坏
-> 含空格的参数（详见 [../docs/P1-HANDOFF.md](../docs/P1-HANDOFF.md) §3.3）。
+> 含空格的参数（详见 [../docs/PHASE-HANDOFFS.md](../docs/PHASE-HANDOFFS.md) 的「P1 运行手册」）。
 > ⚠ `tls-check.ps1` **不用** `curl --cacert` 做主校验：Windows 的 Schannel 对自签证书的
 > `--cacert` 支持不完整（实测 `schannel: error 0x00000010`，而同刻 `curl -k` 是 200），
 > 所以它走 .NET `SslStream` + 显式链校验 + 自解析 SAN。理由与两个坑写在脚本头注释里。
@@ -470,7 +470,7 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 > **历史横幅**：本节的 5 条**已经全部做完**（见下表）。一个照本节阅读的新读者
 > （或新会话的 agent）会得出与现状**完全相反**的结论 —— 这正是复查点名的问题。
 >
-> 处置口径**照 `docs/P0-HANDOFF.md`**（那边对同类问题用了"时点快照 + 勘误表"，
+> 处置口径**照 `docs/PHASE-HANDOFFS.md` 的 P0 一节**（那边对同类问题用了"时点快照 + 勘误表"，
 > 处理得好）：本节保留原样作为**历史记录**，但**逐条加勘误**，
 > 并把"当前真实未做的清单"指到别处 —— **不再维护第二份会过期的清单**。
 
@@ -484,9 +484,9 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 
 ### 当前真实的「未做」清单 —— 只此一处
 
-- **[docs/P2-HANDOFF.md §七](../docs/P2-HANDOFF.md)** —— P2 范围内未做 / 待决项
+- **[docs/PHASE-HANDOFFS.md](../docs/PHASE-HANDOFFS.md) 的「P2 遗留」** —— P2 范围内未做 / 待决项
   （接真模型阻塞于 Q6 合规、词表临床完备性、RAG 等）
-- **[docs/P1-OPS-HANDOFF.md](../docs/P1-OPS-HANDOFF.md)** —— 两项**运维**未做
+- **[docs/PHASE-HANDOFFS.md](../docs/PHASE-HANDOFFS.md) 的「P1 运维交接」** —— 两项**运维**未做
   （证书信任分发、轮换与到期监控）
 - **根 [README.md](../README.md) 的里程碑表** —— P3 / P4 尚未开始
 - ❌ AI 分诊与预问诊 SSE（P2/P4）

@@ -7,6 +7,40 @@
 
 ---
 
+## [0.2.0-p1-rev.4] 2026-10-18 —— 仓库瘦身：7 份阶段交接合并成 1 份，删掉过时文档
+
+### 新增
+
+- **`docs/PHASE-HANDOFFS.md`**（796 行）：把 `docs/P0–P5-HANDOFF.md` 与 `P1-OPS-HANDOFF.md` 七份阶段交接
+  合并成一份，统一按「交付 / 验证 / 遗留 / 关键决策」四段写，末尾加「跨阶段遗留总表」。
+  P1 的「怎么跑」与两条证书运维项**原样保留**（那是现行操作指南，不是历史）。
+  附录把原 `docs/HISTORY-PROJECT-BRIEF.md` 里**仍被 ADR / PROJECT-OVERVIEW 引用**的四块内容搬了过来
+  （参考系统的两个关键技术方案、五个硬骨头与落地结论、风险登记 R-2…R-7、启动时的 6 个待决问题与现状）。
+
+### 变更
+
+- `docs/` 从 **26 份缩到 17 份**：删除 `P0/P1/P1-OPS/P2/P3/P4/P5-HANDOFF.md` 与 `HISTORY-PROJECT-BRIEF.md`
+  （后者是与 README / PROJECT-OVERVIEW 重叠的启动时点长文，且部分数字已过时）。
+- 所有指向旧文档名的引用改写：`README.md`（4 处阶段链接 + 文档索引表 + 未决问题指针）、
+  `server/README.md`（3 处）、`docs/FRONTEND-INTEGRATION.md`（2 处）、`docs/PROJECT-OVERVIEW.md`（2 处）、
+  `docs/Q6-合规决策记录.md`、`docs/THIRD-PARTY.md`、`docs/adr/ADR-0001-号源与挂号独立MySQL路径.md`（6 处）。
+- **12 个源文件的注释**里指向旧文档名的引用一并改成 `docs/PHASE-HANDOFFS.md`
+  （`server/src/` 10 个 `.cj` + `server/tests/` 2 个 `.ps1` + `common-core/.../VisitStatus.ets`）——
+  注释指向已删文件等于留了个必然失效的线索。
+- `server/tests/doc-counts.ps1` 去掉 **2 条**指向已删 `docs/P1-HANDOFF.md` 的对账点（那是历史表格格式）；
+  其余 25 条对账点照旧全绿。
+- `docs/DEPLOYMENT.md` §8 的 `can not find package 'mariadb.cdbc'` 一行补全原因与命令：
+  **清理 `server\build` 会连驱动产物 `server\build\mysql-driver` 一起删掉**，
+  重编要带 `-CangjieHome "$env:CANGJIE_HOME"`（不指定时脚本用 PATH 上的 cjc，通常是被 cjenv 改写的 1.1.3，会直接拒绝）。
+
+### 清理（本地，未入库）
+
+- 删除本地构建产物与临时文件：`server\build`、`entry\build`、`feature-*/build`、`common-core\build`、
+  `android-patient\app\build`、`.hvigor`，以及 `.build-tools\` 下 32 个工作期截图 / 构建日志 / 中继脚本 / 备份 bundle。
+  仓库体积 **1509.5 MB → 1472.1 MB**；**跟踪文件数不变**（531 个，构建产物本来就没入库）。
+- 保留 `.build-tools\`（JDK 21 + Gradle 缓存，安卓重编要用）与 `server\devdb\data`（本地演示库）。
+
+---
 ## [0.2.0-p1-rev.3] 2026-10-18 —— 演示密钥「限时」：有效期变成代码行为 + 一条命令换 key
 
 ### 新增
@@ -126,7 +160,7 @@
 - **`hvigorw.bat`（仓库根）**：自动探测 DevEco 安装位置并推出 `DEVECO_SDK_HOME` / `JAVA_HOME`，
   使用者不配环境变量即可在仓库根一条命令构建鸿蒙客户端（`assembleHap`）。
 - **鸿蒙构建与运行证据入库** [`release/harmony/`](release/harmony/README.md)：`entry-default-unsigned.hap`
-  （1,758,339 B，SHA256 `D6AB687F4759C7203979553632F1D2948724CCF4975B59E07B44E689BA8CFBD8`）、`pack.info`、
+  （1,758,339 B，SHA256 `70A7EB5366445E04F3895A305E3F59614019EF8CA698B6654B1DA8A2CC17479D`）、`pack.info`、
   剥掉 ANSI 的完整构建日志、**11 张模拟器实跑截图**（管理端登录/看板/AI 能力中心、患者端登录/首页/分诊/选号/挂号/就诊）
   —— 回应评审「鸿蒙零构建产物、零运行证据」。
 - **安卓构建与运行证据入库** [`release/android/`](release/android/README.md)：`app-debug.apk`（956,718 B，

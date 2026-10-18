@@ -52,10 +52,10 @@ git log --oneline --graph | head -30      # 版本历史（截至 v0.2.0-p1-rev 
 | 准备 | 读取项目文档、确认技术路线（仓颉 + 轻舟）与数据模型范围 | ✅ 完成 |
 | **P0** | **号源/挂号独立 MySQL 路径**：ADR + 服务端骨架 + 表集 + 原子扣减/幂等/退号 + 验收测试 | ✅ **完成**（经 rev.2 / rev.3 / rev.4 三轮复查修订；**rev.3 推翻了 P0 的乐观锁扣号策略**，rev.4 删掉死代码 `booking_idem`） |
 | **P1** | **挂号闭环 + 令牌鉴权 + HTTPS + 安全加固**：中间件装配 + 三端权限矩阵 + **81 个 REST** + 不透明令牌（PBKDF2 100k）+ **HTTPS（TLS 1.2/1.3，带 SAN 自签）** + 登录限流/失败锁定 + 口令强度 + 会话按设备管理 + 多进程并发压测（20/30/40/50 抢同数号源全部卖光；并发退号零丢号） | ✅ **完成** |
-| **P2** | **AI 分诊（工程纪律层）**：危急征象兜底（词表 + 否定 + 共现）+ **验证层（绝不给没号的推荐）** + 三态结论 + `POST /api/v1/triage` + **预问诊多轮采集（SSE 流式）**。★ 真模型已于 P3 收尾时接通；未配置时 `source=rules`。见 [P2-HANDOFF](docs/P2-HANDOFF.md) | ✅ **完成** |
-| **P3** | **AI 能力中心（配置底座）**：`ai_setting` KV + **改配置零重启** + ★★ **密钥不引用不落库**（`env:`/`file:` 引用，机制性拒绝裸密钥）+ 脱敏回显 + Prompt 模板落库 + AI 工具开关落库。⚠ 合规决策见 [Q6-合规决策记录](docs/Q6-合规决策记录.md)。见 [P3-HANDOFF](docs/P3-HANDOFF.md) | ✅ **完成** |
-| **P4** | **电子病历 + 运营看板**：七段式病历（草稿 → **提交锁定，锁定后不可改**）+ 医生**接诊队列**（状态机）+ 患者只读档案 + 看板（只出聚合不出明细）。★ 顺带把 `medical_record` 移出内存 Store 改直接 SQL（[ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) rev.6），并在收尾时**整体拆除内存 Store**（rev.7，全库只剩一种数据访问范式）。见 [P4-HANDOFF](docs/P4-HANDOFF.md) | ✅ **完成** |
-| **P5** | **RAG 知识库（零向量库）**：切块（带重叠、结构性不丢内容）→ 向量存 MySQL JSON（**纯仓颉余弦**）→ 关键词检索为默认路 + 向量路；管理端 CRUD + 检索；RAG 片段接进分诊（过安全层、改不了 `options`）+ 看板知识库规模。⚠ DeepSeek 无 embeddings 端点 ⇒ 向量路未做端到端验证。见 [P5-HANDOFF](docs/P5-HANDOFF.md) | ✅ **完成** |
+| **P2** | **AI 分诊（工程纪律层）**：危急征象兜底（词表 + 否定 + 共现）+ **验证层（绝不给没号的推荐）** + 三态结论 + `POST /api/v1/triage` + **预问诊多轮采集（SSE 流式）**。★ 真模型已于 P3 收尾时接通；未配置时 `source=rules`。见 [阶段交接 P2](docs/PHASE-HANDOFFS.md) | ✅ **完成** |
+| **P3** | **AI 能力中心（配置底座）**：`ai_setting` KV + **改配置零重启** + ★★ **密钥不引用不落库**（`env:`/`file:` 引用，机制性拒绝裸密钥）+ 脱敏回显 + Prompt 模板落库 + AI 工具开关落库。⚠ 合规决策见 [Q6-合规决策记录](docs/Q6-合规决策记录.md)。见 [阶段交接 P3](docs/PHASE-HANDOFFS.md) | ✅ **完成** |
+| **P4** | **电子病历 + 运营看板**：七段式病历（草稿 → **提交锁定，锁定后不可改**）+ 医生**接诊队列**（状态机）+ 患者只读档案 + 看板（只出聚合不出明细）。★ 顺带把 `medical_record` 移出内存 Store 改直接 SQL（[ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) rev.6），并在收尾时**整体拆除内存 Store**（rev.7，全库只剩一种数据访问范式）。见 [阶段交接 P4](docs/PHASE-HANDOFFS.md) | ✅ **完成** |
+| **P5** | **RAG 知识库（零向量库）**：切块（带重叠、结构性不丢内容）→ 向量存 MySQL JSON（**纯仓颉余弦**）→ 关键词检索为默认路 + 向量路；管理端 CRUD + 检索；RAG 片段接进分诊（过安全层、改不了 `options`）+ 看板知识库规模。⚠ DeepSeek 无 embeddings 端点 ⇒ 向量路未做端到端验证。见 [阶段交接 P5](docs/PHASE-HANDOFFS.md) | ✅ **完成** |
 | **客户端** | **鸿蒙患者端 / 医生端 / 管理端**（`entry` + `common-core` + `feature-*`）+ **安卓患者端**（`android-patient`）+ **管理台网页**（`server/admin-web`，挂载在 `/admin`） | ✅ 已实现并可构建；**2026-10-17 已在华为模拟器（Pura 90 / HarmonyOS 6.1.1 / API 24）跑通患者全流程与管理端看板**（[证据](release/harmony/README.md)）；**2026-10-18 安卓端已用 JDK 21 编译并装进 Android 模拟器登录成功**（[证据](release/android/README.md)） |
 | **维护批次** | 2026-10-17 复验修复 10 条（S1/S2/S3/S5/S6/S8/S12/S14/S16 + S4/S13）、契约与文档同步 | ✅ 完成（[复验报告](docs/REVERIFY-AND-FIXES-2026-10-17.md)） |
 
@@ -79,7 +79,6 @@ git log --oneline --graph | head -30      # 版本历史（截至 v0.2.0-p1-rev 
 | `entry/` + `common-core/` + `feature-patient/` + `feature-doctor/` + `feature-admin/` | **鸿蒙三端**（ArkTS / ArkUI V2）：HAP 壳 + 公共层 + 三个 HAR 业务模块 |
 | [android-patient/](android-patient/README.md) | **安卓患者端**（Kotlin Views，AGP 8.5.2 / Gradle 8.7 / minSdk 26） |
 | [tools/](tools/) | 打包脚本（生成可运行程序包） |
-| [docs/HISTORY-PROJECT-BRIEF.md](docs/HISTORY-PROJECT-BRIEF.md) | ⚠ **历史文档**：2026-10-07 启动时点的决策与取舍（部分数字已过时，现状以上表为准） |
 
 ---
 
@@ -122,7 +121,7 @@ cd smart_hospital
 ```
 
 > **已入库的构建与运行证据**：[release/harmony/](release/harmony/README.md) 内有 2026-10-17 的
-> `entry-default-unsigned.hap`（1758339 B，SHA256 `D6AB687F…BA8CFBD8`）、`pack.info`、完整构建日志
+> `entry-default-unsigned.hap`（1758339 B，SHA256 `70A7EB53…CC17479D`）、`pack.info`、完整构建日志
 > （`BUILD SUCCESSFUL`，65 tasks），以及**模拟器实跑的 11 张截图 + 对应 `dumpLayout` 文本实测**
 > （患者登录 → 首页 → 智能分诊 → 选号 → 挂号成功 → 我的就诊；管理端登录 → 运营看板 → AI 能力中心）。
 > **未签名 HAP 可直接装进模拟器**（`hdc install -r …hap`），签名只在分发给真机时需要。
@@ -144,14 +143,14 @@ cd smart_hospital
 | 把系统跑起来 / 交付部署 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) · [docs/DEV-DB.md](docs/DEV-DB.md) |
 | 写客户端 / 对接接口 | [docs/FRONTEND-INTEGRATION.md](docs/FRONTEND-INTEGRATION.md)（唯一口径）· [docs/HARMONY-INTERFACE-GUIDE.md](docs/HARMONY-INTERFACE-GUIDE.md) |
 | 看 UI 规范 | [docs/UI-DESIGN.md](docs/UI-DESIGN.md) |
-| 查历史决策与踩坑 | [docs/HISTORY-PROJECT-BRIEF.md](docs/HISTORY-PROJECT-BRIEF.md) · `docs/P0`–`P5`-HANDOFF · [复验报告](docs/REVERIFY-AND-FIXES-2026-10-17.md) |
+| 查历史决策与踩坑 | [docs/PHASE-HANDOFFS.md](docs/PHASE-HANDOFFS.md)（P0–P5 合并稿）· [复验报告](docs/REVERIFY-AND-FIXES-2026-10-17.md) |
 | 确认第三方合规 | [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) · [Q6-合规决策记录](docs/Q6-合规决策记录.md) |
 
 ---
 
 ## 未决问题
 
-见 [docs/HISTORY-PROJECT-BRIEF.md §10](docs/HISTORY-PROJECT-BRIEF.md)，共 6 条。
+见 [docs/PHASE-HANDOFFS.md](docs/PHASE-HANDOFFS.md) 附录「启动时的 6 个待决问题」，共 6 条。
 
 | # | 问题 | 状态 |
 | --- | --- | --- |
