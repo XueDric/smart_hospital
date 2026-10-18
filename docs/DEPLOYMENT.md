@@ -81,7 +81,7 @@ $env:SSL_CERT_FILE = "$PWD\ca-bundle.pem"
   --dev-auth --bind 127.0.0.1
 ```
 
-- **AI 开箱即用**：默认 `ai.enabled=1` + 密钥引用 `builtin:demo` + DeepSeek `deepseek-chat`，启动日志会打印 `AI：已启用 — 模型「默认对话模型」，endpoint https://api.deepseek.com/chat/completions，密钥引用 builtin`。`builtin:demo` 是演示密钥、随源码分发，**发布前必须轮换成 `env:…` / `file:…`**（见 [Q6-合规决策记录](Q6-合规决策记录.md)）。
+- **AI 开箱即用**：默认 `ai.enabled=1` + 密钥引用 `builtin:demo` + DeepSeek `deepseek-chat`，启动日志会打印 `AI：已启用 — 模型「默认对话模型」，endpoint https://api.deepseek.com/chat/completions，密钥引用 builtin`。`builtin:demo` 是演示密钥、随源码分发，**有效期至 2026-12-31**（`AI_BUILTIN_DEMO_VALID_UNTIL`，到期后服务端拒绝并给出换法）；想立刻用自己的密钥：`.\tools\set-ai-key.ps1 -ApiKey sk-… -AdminPw <管理员口令>`（写 `server\ai-key.txt` → 改 `ai.key_ref=file:…` → 自检），详见 [Q6-合规决策记录](Q6-合规决策记录.md)。
 - **`SSL_CERT_FILE` 不设会怎样**：AI 出站报 `出站调用异常：TLS handshake failed (client): certificate verify failed (134), TLS alert unknown CA(F)`，而同一 endpoint 用 `curl` / .NET 访问都正常 —— 因为 OpenSSL 不读 `Cert:\LocalMachine\Root`。`export-ca-bundle.ps1` 把三个存储去重导出成 PEM（本机 76 张证）；**换网络（换代理/换 CA）后要重导**。分发包里带的是脚本不是 PEM（PEM 可能含企业内网根证书，绝不随包分发）。
 - 端口默认 **8091**（`server/src/main.cj:707`），绑定默认 **127.0.0.1**（`server/src/main.cj:708`）。
 - **服务端与客户端默认端口已对齐为 8091**（2026-10-17 由 8080 改为 8091，评审 P2-15）：鸿蒙 `common-core/src/main/ets/config/ApiConfig.ets:8` 与安卓 `DEFAULT_BASE_URL` 的默认值都是 `http://127.0.0.1:8091`，所以按上面这条命令起来客户端**零配置即可连**；要换端口就 `--port N` 并同步改客户端（见 §4/§5）。
@@ -254,7 +254,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\package-release.ps1
 | `… check-db <dsn>` | 连库 + 幂等建表 + 打印表清单 | `建表：执行 17 条 DDL（IF NOT EXISTS，幂等）` + 表清单 | **1.7 s** |
 | `tests\contract-check.ps1 -Base … -AdminPw …` | ①重新导出契约与 `contract/examples/**` **逐字节**比对 ②用 `contract/schema/*.json` 校验形状与分类 | 全部一致 / 校验通过；`-SkipExport` 只跑校验（`server/tests/contract-check.ps1:3-27`） | 需实例 + 管理员口令；**本机实测全绿**：载入 Schema 24 个、样例 67 条、`PASS 69 / FAIL 0` |
 | `tests\final-verify.ps1` | 一次跑完 **18 项** HTTP 门禁（三种实例：18092 `--dev-auth`、18095 裸、18096 `--prod`；末项 `doc-counts` 对账文档数字）+ 汇总 `EXIT` 表 | 全 `EXIT=0`；脚本自己起停三个实例并生成管理员口令（`server/tests/final-verify.ps1:1-13,63-93`） | 分钟级；**本机实测 18/18 `EXIT=0`**（端口须 ≥15001；`contract-check` 必须排在 `p1-extra-check` 之前，后者会重设管理员口令） |
-| `… accept <dsn>` | AC-1…AC-17 全量验收（786 项），**会清空业务表** | 只允许库名含 `test`；非测试库直接退 2（`server/src/main.cj:274-301`） | 长；**禁止在业务库跑** |
+| `… accept <dsn>` | AC-1…AC-17 全量验收（794 项），**会清空业务表** | 只允许库名含 `test`；非测试库直接退 2（`server/src/main.cj:274-301`） | 长；**禁止在业务库跑** |
 
 > 测试项数以 `server/tests/doc-counts.ps1` 的实测输出为准；上表的 `0.14 s / 4.39 s / 0.08 s / 1.7 s` 是本机 `0.2.0-p1` 包的实测值。
 

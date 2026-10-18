@@ -5,10 +5,11 @@
 | 脚本 | 作用 |
 | --- | --- |
 | `package-release.ps1` | 把服务端编译产物打成**可运行程序包**（Windows x64）。解压 → 改配置 → 起库 → 双击/命令行启动，不需要装 .NET、不需要装 OpenSSL。 |
-| `check-docs.ps1` | **仓库卫生门禁**：文档相对链接、`.ps1`/`.bat` 编码、旧仓库路径残留。CI 每次 push 都跑（`.github/workflows/repo-hygiene.yml`）。 |
+| `check-docs.ps1` | **仓库卫生门禁**：文档相对链接、`.ps1`/`.bat` 编码、旧仓库路径残留、源码注释里未闭合的 `/*`。CI 每次 push 都跑（`.github/workflows/repo-hygiene.yml`）。 |
+| `set-ai-key.ps1` | **换成你自己的大模型密钥**（一条命令）：写 `server\ai-key.txt`（已 gitignore）→ 把 `ai.key_ref` 改成 `file:<绝对路径>` → 调模型自检回显 `ok=true`。用于内置演示密钥到期后、或评委想用自己的额度时。 |
 
 部署全流程（环境要求、起库、生产 TLS、探活语义、故障排查）见 **[../docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md)**；
-本文件只讲这两个脚本本身。
+本文件只讲这三个脚本本身。
 
 ## package-release.ps1
 
@@ -130,3 +131,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\check-docs.ps1
 CI：`.github/workflows/repo-hygiene.yml` 在每次 push/PR 上跑同一条命令。
 服务端重活（`build.ps1` + `server/tests/` + `final-verify.ps1`）**故意不上 CI**——需要 cjc 1.2.0、
 stdx 1.1.3.1、自编 MariaDB 驱动和 MariaDB 实例，托管 runner 装不全，硬凑的红灯只会被绕过。
+
+## set-ai-key.ps1 —— 换自己的大模型密钥
+
+```powershell
+# 完整流程：写文件 → 改 ai.key_ref → 调模型自检
+.\tools\set-ai-key.ps1 -ApiKey sk-你自己的 -AdminPw <管理员口令>
+
+# 只写文件（服务端还没起、或想手工改配置）
+.\tools\set-ai-key.ps1 -ApiKey sk-你自己的 -WriteOnly
+```
+
+| 步骤 | 动作 | 为什么这么设计 |
+| --- | --- | --- |
+| 1 | 写 `server\ai-key.txt`（**无 BOM**、纯 ASCII，`.gitignore` 已排除） | BOM 会被当成密钥的一部分 ⇒ 明明密钥对却一直 401，是最难查的一类症状 |
+| 2 | `PUT /api/v1/admin/ai/settings/ai.key_ref` = `file:<绝对路径>` | 库里仍然只存**引用**，不存密钥本体（`ai_settings.cj` 的不变量） |
+| 3 | `POST /api/v1/admin/ai/models/<默认对话模型>/test`，回显 `ok / http_status / 耗时` | 换密钥后必须**现场自证**，不能"改完就当成功" |
+
+失败时只打印状态码与错误码、**不回显响应体**——万一是把密钥误填进了别的字段，
+回显就等于把它写进日志。内置演示密钥的有效期机制见
+[../server/src/ai_builtin.cj](../server/src/ai_builtin.cj) 的 `AI_BUILTIN_DEMO_VALID_UNTIL`。

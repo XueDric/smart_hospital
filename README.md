@@ -59,7 +59,7 @@ git log --oneline --graph | head -30      # 版本历史（截至 v0.2.0-p1-rev 
 | **客户端** | **鸿蒙患者端 / 医生端 / 管理端**（`entry` + `common-core` + `feature-*`）+ **安卓患者端**（`android-patient`）+ **管理台网页**（`server/admin-web`，挂载在 `/admin`） | ✅ 已实现并可构建；**2026-10-17 已在华为模拟器（Pura 90 / HarmonyOS 6.1.1 / API 24）跑通患者全流程与管理端看板**（[证据](release/harmony/README.md)）；**2026-10-18 安卓端已用 JDK 21 编译并装进 Android 模拟器登录成功**（[证据](release/android/README.md)） |
 | **维护批次** | 2026-10-17 复验修复 10 条（S1/S2/S3/S5/S6/S8/S12/S14/S16 + S4/S13）、契约与文档同步 | ✅ 完成（[复验报告](docs/REVERIFY-AND-FIXES-2026-10-17.md)） |
 
-> **验收口径**：`selftest` 51 + `authtest` 17 + `triagetest` 150 + `accept` **786 条断言** + `server/tests/` 26 个测试文件（19 个可独立运行的门禁套件）+ 契约门禁（24 Schema / 67 样例）+ `final-verify` 18/18 全绿。
+> **验收口径**：`selftest` 51 + `authtest` 17 + `triagetest` 150 + `accept` **794 条断言** + `server/tests/` 26 个测试文件（19 个可独立运行的门禁套件）+ 契约门禁（24 Schema / 67 样例）+ `final-verify` 18/18 全绿。
 > ⚠ 文档里的项数以 **`server/tests/doc-counts.ps1` 的实测输出为准**，不靠人记。
 
 > **自动门禁**：CI（`.github/workflows/repo-hygiene.yml`）每次 push/PR 跑 `tools/check-docs.ps1` ——
@@ -98,7 +98,18 @@ curl.exe -s http://127.0.0.1:8091/health
 
 > **AI 开箱即用**：默认 `ai.enabled=1` + 密钥引用 `builtin:demo` + DeepSeek `deepseek-chat`，
 > 装完即可真调模型（启动日志会打印「AI：已启用 … 密钥引用 builtin」）。
-> `builtin:demo` 是演示密钥、随源码分发，**发布前必须轮换**（见 [docs/Q6-合规决策记录.md](docs/Q6-合规决策记录.md)）。
+> **这把演示密钥有有效期**（`AI_BUILTIN_DEMO_VALID_UNTIL = 2026-12-31`，见
+> [server/src/ai_builtin.cj](server/src/ai_builtin.cj)）：到期后服务端会**拒绝**它，并把
+> 「到期日 + 换法」写进失败原因，而不是静默降级成规则。
+> 想用自己的密钥，一条命令：
+>
+> ```powershell
+> .\tools\set-ai-key.ps1 -ApiKey sk-你自己的 -AdminPw <管理员口令>
+> ```
+>
+> 它会写 `server\ai-key.txt`（已 gitignore）、把 `ai.key_ref` 改成 `file:<绝对路径>`、
+> 再调一次模型自检确认 `ok=true`。库里始终只存**引用**，不存密钥本体。
+> 背景与合规口径见 [docs/Q6-合规决策记录.md](docs/Q6-合规决策记录.md)。
 > 为什么需要 `SSL_CERT_FILE`：仓颉 stdx 走 OpenSSL、不读 Windows 证书存储，缺它会报
 > `TLS handshake failed (client): certificate verify failed (134)`；而 `curl` 访问同一端点正常。
 

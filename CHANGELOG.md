@@ -7,6 +7,39 @@
 
 ---
 
+## [0.2.0-p1-rev.3] 2026-10-18 —— 演示密钥「限时」：有效期变成代码行为 + 一条命令换 key
+
+### 新增
+
+- **内置演示密钥的有效期**：`server/src/ai_builtin.cj` 新增 `AI_BUILTIN_DEMO_VALID_UNTIL = "2026-12-31"`
+  与 `aiBuiltinValidUntil()` / `aiBuiltinExpired()` / `aiBuiltinKeyOfAt()` / `aiBuiltinExpiredMessage()`。
+  到期后 `aiResolveKey()` 拒绝该 key、`aiKeyRefProblem()` 回「已于 <日期> 失效 …… 请换用 `env:`/`file:`」，
+  分诊自动降级到规则。**伤害窗口从"永久"压到"评审/演示窗口"** —— 在此之前"发布前必须轮换"只是文档承诺。
+  对应 8 条纯逻辑断言（`acceptance_ai_call.cj` 的 ⑧ 段），`accept` 786 → **794**。
+- **`tools/set-ai-key.ps1`**：一条命令换成自己的密钥 —— 写 `server\ai-key.txt`（无 BOM、已 gitignore）
+  → `PUT ai.key_ref=file:<绝对路径>` → 调默认对话模型 `/test` 自检并回显 `ok / http_status / 耗时`。
+  失败只报状态码与错误码，**不回显响应体**（避免把误填的密钥写进日志）。
+
+### 变更
+
+- `ai.key_ref` 配置项的说明文字带上有效期（`… builtin:demo（演示密钥有效期至 2026-12-31）…`），
+  管理员在 AI 能力中心就能看到，不必翻源码。
+- `.gitignore` 增加 `server/ai-key.txt`（与 `*.pem` 同级理由：这是机密本体，仓库只允许存引用）。
+
+### 修复
+
+- **`aiKeyRefProblem()` 的到期分支**：区分"到期"（预期行为，说清到期日与替代做法）与"常量缺失"
+  （版本不对）—— 混成一句话会把运维引向错误的排查方向。
+- **`aiBuiltinExpired()` 的时钟容错**：`today` 为空时不判过期，避免一次时钟异常把整条 AI 路径关掉；
+  安全边界仍由 `aiBuiltinKeyHostCheck()`（只允许发往 `api.deepseek.com`）守。
+
+### 文档
+
+- `README.md` / `docs/DEPLOYMENT.md` / `docs/Q6-合规决策记录.md` §2.1 / `docs/整改方案-2026-10-17.md` §6 /
+  `docs/答辩材料-2026-10-17.md`（讲稿与 Q&A 第 4 问）/ `tools/README.md` 同步"限时 + 可一键替换"的口径。
+
+---
+
 ## [0.2.0-p1-rev.2] 2026-10-18 —— 审查记账项四条全部处置
 
 ### 新增
