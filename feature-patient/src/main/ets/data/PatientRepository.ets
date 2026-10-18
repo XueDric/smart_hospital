@@ -317,6 +317,10 @@ export class PatientRepository {
     result.totalNum = asNumber(response['total_num']);
     result.remainNum = asNumber(response['remain_num']);
     result.enabled = asBool(response['enabled'], true);
+    // ★ 2026-10-18（BUG-10）：号源行自带科室/医生名，照读（此前漏读 ⇒ 界面只剩 #id）
+    result.departmentName = asString(response['department_name']);
+    result.doctorName = asString(response['doctor_name']);
+    result.doctorTitle = asString(response['doctor_title']);
     return result;
   }
 

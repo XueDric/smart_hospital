@@ -68,6 +68,15 @@ export class Schedule {
   totalNum: number = 0;
   remainNum: number = 0;
   enabled: boolean = true;
+  /*
+   * ★★ 2026-10-18 三端联调修（BUG-10）：服务端 /api/v1/schedules 一直返回
+   *   department_name / doctor_name / doctor_title（2026-10-12 就补上了），
+   *   但客户端 model 没这两个字段、解析也没读 ⇒ 挂号列表在"没有路由参数"的路径上
+   *   （从常用服务直接进）只能显示「科室 #1」「医生 #1」。
+   */
+  departmentName: string = '';
+  doctorName: string = '';
+  doctorTitle: string = '';
 }
 
 export class Appointment {

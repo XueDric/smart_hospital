@@ -319,6 +319,7 @@ export class AdminRepository {
       trend.push(point);
     }
     result.trend = trend;
+    result.trendDays = asNumber(response['trend_days']);
     const byDepartment: LabelCount[] = [];
     for (const item of asArray(response['by_department'])) {
       const source = asRecord(item);
@@ -358,7 +359,19 @@ export class AdminRepository {
     result.kbChunks = asNumber(knowledgeBase['chunks']);
     result.kbChunksEmbedded = asNumber(knowledgeBase['chunks_embedded']);
     result.kbEmbeddingCoveragePct = asNumber(knowledgeBase['embedding_coverage_pct']);
-    result.triageHitPct = 0;
+    /*
+     * ★★ 2026-10-18 三端联调修：这里原本写着 `result.triageHitPct = 0;` ——
+     *   一个**写死的 0**。服务端 `/admin/dashboard` 里根本没有命中率字段
+     *   （顶层只有 scale / appointments / trend_days / trend / by_department /
+     *   slots / triage / previsit / medical_records / ai / knowledge_base），
+     *   于是界面上「分诊命中率」永远是 0%（Mock 里却是 73）——典型的假指标，
+     *   和评审 P2-7 的「看板硬编码 source=rules」是同一类问题。
+     *   现在改为读 `triage.total_calls`（真实计数），卡片标签也改成「分诊调用」，
+     *   不再假装有一个算不出来的百分比。
+     */
+    const triage = asRecord(response['triage']);
+    result.triageCalls = asNumber(triage['total_calls']);
+    result.triageRedFlagCalls = asNumber(triage['red_flag_calls']);
     return result;
   }
 

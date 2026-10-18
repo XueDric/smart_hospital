@@ -133,10 +133,28 @@ export class ThemeManager {
   }
 
   palette(): ThemePalette {
-    // ⚠ 这一行是响应式的**唯一入口**，删掉它主题就退回"不重建就不刷新"。
-    //   先读版本号（等价于声明依赖），再取值。
-    this.paletteVersion;
-    return this.isDark() ? ThemeManager.darkPalette : ThemeManager.lightPalette;
+    /*
+     * ⚠ 这一段是响应式的**唯一入口**，但**它目前还不足以让整页重绘**。
+     *
+     * 事实（2026-10-18 三端联调实测记录，见 docs/联调记录-2026-10-18.md BUG-2）：
+     *   - 上一版这里写的是**裸读** `this.paletteVersion;`；
+     *   - 改成"版本号参与取值"（下面的 `tick >= 0`）后，插桩日志证明 setMode 之后
+     *     `palette()` 返回的确实是新配色（bg #101817 / surface #1A2624 / text #E6F1EF），
+     *     但**页面上已画出来的颜色仍然不变**，离开页面再回来才正确；
+     *   - 也就是说依赖登记发生在 palette() 里，而 `AppColor.X` 是 static getter，
+     *    调用它的组件属性并不会因此被标记为依赖。
+     *
+     * 所以本改动只把"读取"做实（不再靠可能被优化掉的裸读），不宣称修好 BUG-2。
+     * 真正的修法需要让颜色来源成为组件可观察状态：
+     *   ① 把主题版本放进 `AppStorageV2`，页面用 `@Monitor` 订阅后触发重绘；或
+     *   ② 让 `AppColor` 变成 `@ObservedV2` 实例的属性，组件直接读实例字段。
+     */
+    const tick = this.paletteVersion;
+    const dark = this.isDark();
+    if (dark && tick >= 0) {
+      return ThemeManager.darkPalette;
+    }
+    return ThemeManager.lightPalette;
   }
 
   setOnChange(callback?: () => void): void {

@@ -47,10 +47,12 @@ export struct BookingPage {
     this.loadBookedSchedules();
   }
 
-  async loadSchedules(): Promise<void> {
+  async loadSchedules(keepMessage: boolean = false): Promise<void> {
     this.loading = true;
     this.errorMessage = '';
-    this.successMessage = '';
+    if (!keepMessage) {
+      this.successMessage = '';
+    }
     try {
       const departmentId = this.parsePositiveInt(this.departmentIdText);
       const all = await this.repository.schedules(departmentId, this.workDate.trim());
@@ -115,6 +117,13 @@ export struct BookingPage {
       this.bookedScheduleIds = ids;
       this.bookingToken = '';
       this.tokenScheduleId = 0;
+      /*
+       * ★ 2026-10-18 三端联调实测修：挂号成功后必须刷新号源余量。
+       *   原先只有 SLOT_GONE 分支会 reload，成功路径不刷新 —— 实测库里 remain_num 已 2→1，
+       *   卡片还写着「余 2 / 当日可约 2」，与真相不一致（患者会以为还有两个号）。
+       *   keepMessage = true：刷新不能把「挂号成功：… 序号 1」这条提示冲掉。
+       */
+      await this.loadSchedules(true);
     } catch (error) {
       const apiError = ApiError.from(error as Error);
       if (apiError.code === ErrorCode.SLOT_GONE) {
@@ -292,13 +301,25 @@ export struct BookingPage {
               Column() {
                 Row() {
                   Column() {
-                    Text(this.departmentName.length > 0 ?
-                      this.departmentName : `科室 #${schedule.departmentId}`)
+                    /*
+                     * ★★ 2026-10-18 三端联调修（BUG-10）：这里原来只看**路由参数**
+                     *   `this.departmentName` / `this.doctorName`，拿不到就退化成
+                     *   「科室 #1」「医生 #1」—— 而 `/api/v1/schedules` 明明返回了
+                     *   `department_name` / `doctor_name`（服务端 join 出来的）。
+                     *   于是"从分诊推荐点进挂号"能看到科室内科，而"从常用服务直接
+                     *   点预约挂号"只看到「科室 #1」。（路由参数只在分诊那条路径有。）
+                     *   现在优先用号源行自带的名称，路由参数只作兜底，最后才是 #id。
+                     */
+                    Text(schedule.departmentName.length > 0 ? schedule.departmentName :
+                      (this.departmentName.length > 0 ? this.departmentName : `科室 #${schedule.departmentId}`))
                       .fontSize(AppText.SUBHEADING)
                       .fontWeight(FontWeight.Bold)
                       .fontColor(AppColor.TEXT)
-                    Text(this.doctorName.length > 0 && schedule.doctorId === this.parsePositiveInt(this.doctorIdText) ?
-                      this.doctorName : `医生 #${schedule.doctorId}`)
+                    Text(schedule.doctorName.length > 0 ?
+                      (schedule.doctorTitle.length > 0 ?
+                        `${schedule.doctorName} · ${schedule.doctorTitle}` : schedule.doctorName) :
+                      (this.doctorName.length > 0 && schedule.doctorId === this.parsePositiveInt(this.doctorIdText) ?
+                        this.doctorName : `医生 #${schedule.doctorId}`))
                       .fontSize(AppText.CAPTION)
                       .fontColor(AppColor.TEXT_SECONDARY)
                       .margin({ top: 5 })

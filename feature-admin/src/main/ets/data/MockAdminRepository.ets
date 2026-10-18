@@ -241,8 +241,15 @@ export class MockAdminRepository {
     result.scheduleCount = MockAdminState.schedules.length;
     result.enabledScheduleCount = MockAdminState.schedules.filter((s: Schedule) => s.enabled).length;
     result.slotUsagePct = totalSlots > 0 ? Math.round((totalSlots - remainSlots) / totalSlots * 100) : 0;
-    result.triageHitPct = 73;
+    /*
+     * ★ 2026-10-18 三端联调修：原来是 `result.triageHitPct = 73;` —— 假指标
+     *   （线上服务端没有命中率字段，真实路径写死 0）。演示数据也改成计数，
+     *   与真实路径同口径。
+     */
+    result.triageCalls = 128;
+    result.triageRedFlagCalls = 7;
     result.previsitCompletionPct = 91;
+    result.trendDays = 7;
     const labels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
     const pcts = [46, 62, 38, 78, 88, 34, 22];
     for (let i = 0; i < labels.length; i++) {

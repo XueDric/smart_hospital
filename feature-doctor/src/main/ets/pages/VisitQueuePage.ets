@@ -51,6 +51,9 @@ export struct VisitQueuePage {
    * 没有这两个动作，队列页上的单就永远停在 booked/arrived，接诊流程断在原地。
    */
   async arrive(item: VisitItem): Promise<void> {
+    if (this.blockNotToday(item)) {
+      return;
+    }
     await this.act(async () => {
       await this.repository.arriveVisit(item.appointmentId);
       this.notice = '已登记到院';
@@ -59,6 +62,9 @@ export struct VisitQueuePage {
   }
 
   async waiting(item: VisitItem): Promise<void> {
+    if (this.blockNotToday(item)) {
+      return;
+    }
     await this.act(async () => {
       await this.repository.waitingVisit(item.appointmentId);
       this.notice = '已转入候诊';
@@ -67,6 +73,9 @@ export struct VisitQueuePage {
   }
 
   async start(item: VisitItem): Promise<void> {
+    if (this.blockNotToday(item)) {
+      return;
+    }
     await this.act(async () => {
       await this.repository.startVisit(item.appointmentId);
       this.notice = '已开始接诊';
@@ -152,6 +161,38 @@ export struct VisitQueuePage {
     return `${hh}:${mm}`;
   }
 
+  /*
+   * ★★ 2026-10-18 三端联调修（BUG-5）：接诊动作原本**不看就诊日**。
+   *
+   *   实测：预约的 `visit_date` 是 2026-12-24（当天是 2026-10-18），医生照样能
+   *   「到院登记 → 转入候诊 → 开始接诊 → 完成就诊」，页面还显示「到院 18:51 ·
+   *   候诊 0 分钟」—— 等于把两个月后的号当作今天在接诊，`arrived_at/started_at`
+   *   于是被写成"今天"，时间线与事实不符，而且病历锁定后不可改。
+   *
+   *   为什么在客户端拦：服务端 `visit.arriveVisit/waitingVisit/startVisit`
+   *   （`server/src/domain_emr.cj:1723/1733/1742`）只校验状态机，加日期硬门槛会
+   *   连带影响 `server/tests` 里用固定日期夹具的验收用例（改动面大、风险高）；
+   *   先把**界面上不可能点错**这件事做掉，服务端硬门槛记进文档 §9 待办。
+   *   ⚠ 这是"防误操作"，不是安全边界 —— 直接调 API 仍能绕过。
+   */
+  private isToday(dateText: string): boolean {
+    const now = new Date();
+    const mm = now.getMonth() + 1;
+    const dd = now.getDate();
+    const month = mm < 10 ? `0${mm}` : `${mm}`;
+    const day = dd < 10 ? `0${dd}` : `${dd}`;
+    return dateText === `${now.getFullYear()}-${month}-${day}`;
+  }
+
+  private blockNotToday(item: VisitItem): boolean {
+    if (this.isToday(item.visitDate)) {
+      return false;
+    }
+    this.notice = `该号的就诊日是 ${item.visitDate}，不是今天，不能到院登记/接诊`;
+    this.noticeTone = 'error';
+    return true;
+  }
+
   private waitText(item: VisitItem): string {
     // 候诊时长 = arrived_at → started_at（还没接诊就用"现在"算，让医生知道等了多久）
     if (item.arrivedAt <= 0) {
@@ -231,11 +272,21 @@ export struct VisitQueuePage {
     Column() {
       PageHeader({
         title: `接诊队列（${SessionStore.getDisplayName()}）`,
-        subtitle: '按状态展示今日接诊顺序'
+        /*
+         * ★★ 2026-10-18 三端联调修：副标题原写「按状态展示今日接诊顺序」，
+         *   但下面的分段第一格是 `ALL`（只按**时段**过滤，不按日期），而服务端
+         *   `GET /api/v1/doctor/visits` 没有日期参数、返回该医生**全部**预约 ——
+         *   实测 2026-12-24 的单子出现在"今日"里。这里把口径改成如实描述。
+         */
+        subtitle: '按状态展示接诊顺序（含历史与未来日期）'
       })
 
       Row() {
-        this.segment('ALL', '今日')
+        /*
+         * ★ 同上：原来第一格叫「今日」，而它实际是"全部时段"。改名为「全部」，
+         *   不再暗示日期过滤 —— 卡片上各自带 `visit_date`，日期不会被藏掉。
+         */
+        this.segment('ALL', '全部')
         this.segment('AM', '上午')
         this.segment('PM', '下午')
       }

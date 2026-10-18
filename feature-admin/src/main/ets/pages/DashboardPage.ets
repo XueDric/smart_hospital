@@ -103,7 +103,13 @@ export struct DashboardPage {
       .width('100%')
 
       Row() {
-        this.statCard(`${this.dashboard.triageHitPct}%`, '分诊命中率')
+        /*
+         * ★★ 2026-10-18 三端联调修：这里原本是「分诊命中率」+ `triageHitPct`。
+         *   服务端没有命中率字段，客户端写死 0 ⇒ 界面上永远 0%（看着像"AI 全错"）
+         *   而 Mock 里是 73。现在换成真能算出来的「分诊调用」次数，
+         *   命中率作为待办写进文档（要算必须有 triage → appointment 的关联）。
+         */
+        this.statCard(`${this.dashboard.triageCalls}`, '分诊调用')
         this.statCard(`${this.dashboard.previsitCompletionPct}%`, '预问诊完成率')
       }
       .width('100%')
@@ -135,7 +141,11 @@ export struct DashboardPage {
   @Builder
   trendPanel() {
     Column() {
-      SectionTitle({ title: '近 7 日挂号趋势' })
+      /*
+       * ★ 2026-10-18：标题原来硬编码「近 7 日」，服务端 `trend_days` 却是 14 ——
+       *   两处口径不一致。改为跟服务端走，取不到才退回 7。
+       */
+      SectionTitle({ title: `近 ${this.dashboard.trendDays > 0 ? this.dashboard.trendDays : 7} 日挂号趋势` })
 
       Row() {
         ForEach(this.dashboard.trend, (point: TrendPoint) => {

@@ -103,8 +103,15 @@ export class Dashboard {
   scheduleCount: number = 0;
   enabledScheduleCount: number = 0;
   slotUsagePct: number = 0;
-  triageHitPct: number = 0;
+  /*
+   * ★ 2026-10-18 三端联调修：`triageHitPct` 已删 —— 服务端 `/admin/dashboard`
+   *   没有命中率字段，原来的 `= 0` 是客户端写死的（Mock 里写 73），属假指标。
+   *   现在只暴露服务端真能算出来的分诊计数。
+   */
+  triageCalls: number = 0;
+  triageRedFlagCalls: number = 0;
   previsitCompletionPct: number = 0;
+  trendDays: number = 0;
   trend: TrendPoint[] = [];
   byDepartment: LabelCount[] = [];
   recordTotal: number = 0;
