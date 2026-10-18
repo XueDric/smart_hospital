@@ -8,10 +8,10 @@
 
 | 文件 | 大小 | 说明 |
 |---|---|---|
-| `entry-default-unsigned.hap` | 1,742,917 B | 未签名 HAP（SHA256 `312046ACD5E03888F5110D13F1921D0A4595A0C4A3EFC596F2960C56B626B696`）|
+| `entry-default-unsigned.hap` | 1,752,310 B | 未签名 HAP（SHA256 `0E2E293C3DAB084AA3CF22050782D9B19A58DCEAA2555502AB97C7E14F6675A4`）|
 | `pack.info` | 565 B | 打包信息（bundle `com.smart.hospital.patient`、versionCode/versionName、模块列表）|
 | `build-log-2026-10-17.txt` | 4,331 B | `assembleHap` 完整日志（ANSI 转义已剥离，可直接文本比对）|
-| `screenshots/*.jpeg` | 10 张 | 见下表 |
+| `screenshots/*.jpeg` | 11 张 | 见下表 |
 
 ## 二、截图索引
 
@@ -27,6 +27,7 @@
 | 08 | `screenshots/08-patient-booking.jpeg` | 患者端 | 预约挂号：`科室编号 1`、`医生编号 1`、`就诊日期 2026-12-24`、`查询号源`、分段 `全部/上午/下午` |
 | 09 | `screenshots/09-patient-booking-success.jpeg` | 患者端 | 挂号结果：**`挂号成功：2026-12-24 上午，序号 1`** + `查看就诊`；号源卡片变 `已预约该号源` |
 | 10 | `screenshots/10-patient-visits.jpeg` | 患者端 | 我的就诊：`当前预约 / 2026-12-24 上午 / 序号 1 · 内科 · 张医生 主任医师 / 已挂号 / 退号` |
+| 11 | `screenshots/11-admin-bad-password.jpeg` | 管理端 | **复查轮新增**：密码输错时停在管理端登录页，页面内红字 `账号或密码错误`。修复前这里会被 401 当成"会话过期"清掉会话、跳回**患者**登录页（医生/管理端输入错密码就被踢走） |
 
 ## 三、怎么复现（不需要 DevEco 界面）
 

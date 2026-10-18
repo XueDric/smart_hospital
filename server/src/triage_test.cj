@@ -243,6 +243,45 @@ func rtReviewP2(r: TriageRunner): Unit {
         }
 
         /*
+         * ★★ 2026-10-17 复查（本轮自查引入的回归）：否定窗口放宽到 8 之后，
+         * `head.contains(nego)` 会把**与本次命中无关**的否定词也算成否认 ⇒ 危急漏报。
+         * 下面四条在"窗口内出现即作废"的实现下**全部漏报**，必须报红牌。
+         */
+        let unrelatedNegation: Array<String> = [
+            "无法缓解的胸痛",
+            "无明显诱因突发胸痛",
+            "没胃口而且胸痛",
+            "腹部不适伴胸痛"
+        ]
+        for (c in unrelatedNegation) {
+            r.check("P2-1 复查：无关否定词不得吃掉真征象：${c}", detectRedFlag(c).redFlag)
+        }
+
+        /*
+         * P2-1 复查反向：真否定仍要判成否定（间隔短、无阻断成分）。
+         * 「不伴胸痛」用的是"不伴"这个具体词形 —— 裸"不"已经从否定表里删掉
+         * （它会吃掉"不适/不停/不明显"里的症状）。
+         */
+        let realNegation: Array<String> = [
+            "不伴胸痛",
+            "无胸痛",
+            "没有胸痛",
+            "未见明显胸痛"
+        ]
+        for (c in realNegation) {
+            r.check("P2-1 复查：真否定仍作废：${c}", !detectRedFlag(c).redFlag)
+        }
+
+        /*
+         * P2-1 复查：**顿号是并列枚举，不是分句边界**。
+         * 「无胸痛、咯血、呕血」里三个词都被"无"否定；
+         * 「胸痛但无咯血」里只有咯血被否定，胸痛必须报。
+         */
+        r.check("P2-1 复查：顿号并列里的否定传递到后续项", !detectRedFlag("无胸痛、咯血、呕血").redFlag)
+        r.check("P2-1 复查：并列里的肯定项仍报红牌", detectRedFlag("胸痛但无咯血").redFlag)
+        r.check("P2-1 复查：顿号不切断肯定并列", detectRedFlag("胸痛、咯血").redFlag)
+
+        /*
          * P2-2：**慢性/程度**修饰词 + 模糊词 ⇒ **不得**升级。
          * 这是评审原文点的两个例子，加上同族写法。
          */

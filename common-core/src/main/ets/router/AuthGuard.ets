@@ -20,8 +20,13 @@ export class AuthGuard {
       route === RouteName.ADMIN_LOGIN;
   }
 
+  /*
+   * ★ 2026-10-17 复查：原来只看"有没有令牌"，不看"过期没"。
+   * 服务端会滑动续期，本地这份是快照 —— 过期快照会让用户先闪一下受保护页，
+   * 再被第一个 401 踢回来。判据统一用 `hasValidToken()`。
+   */
   private static hasRole(role: string): boolean {
-    if (!SessionStore.hasToken()) {
+    if (!SessionStore.hasValidToken()) {
       return false;
     }
     return SessionStore.getRole() === role;

@@ -251,7 +251,7 @@ cd E:\harmonyOS\smart_hospital
 * 成功标志：`BUILD SUCCESSFUL`（本机 65 tasks，首编约 23 s、增量约 4 s），产物在
   `entry/build/default/outputs/default/entry-default-unsigned.hap`（约 1.7 MB，未签名）。
 * 当前只剩 ArkTS **警告**：`common-core/.../KeyValueStore.ets:19,27,35,41,48,55,62` 的
-  "Function may throw exceptions"、`ThemeManager.ets:79` 的 `matchMediaSync` 已废弃、
+  "Function may throw exceptions"、`ThemeManager.ets:101` 的 `matchMediaSync` 已废弃、
   `feature-admin/.../KnowledgeBasePage.ets:62` 的 `@Component` 成员名不能叫 `create`。均不影响构建。
 
 ### 10.1 本机（2026-10-17）实测可用的配方

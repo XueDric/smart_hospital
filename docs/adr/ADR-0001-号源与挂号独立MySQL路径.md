@@ -63,10 +63,10 @@ P2 引入 `previsit_session` 时**特意**把它排除在内存 Store 之外，�
 
 #### 理由 ② 内存 Store 在**生产路径上从未刷盘**（已核实）
 
-这是更硬的一条。`flushToMysql()` 的全部调用点：
+这是更硬的一条。`flushToMysql()` / `loadAll()` 的**生产调用点为零**（当时唯一实例在测试里，见 `acceptance.cj:414-421` 的逐条核对；rev.7 已直接拆掉 `MemStore`）：
 
 ```
-acceptance.cj:483   ← 只有测试
+生产：0 处；测试：1 处（`acceptance.cj:414-421` 记录核对过程，现已随 rev.7 拆除而消失）
 ```
 
 `main.cj` 与 `http_app.cj` **完全没有引用 `MemStore`**。
@@ -402,7 +402,7 @@ P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与
 | --- | --- |
 | `hospital-server.exe selftest` | ✅ **51 项** |
 | `hospital-server.exe authtest` | ✅ **17 项**（含 3 个公开测试向量） |
-| `hospital-server.exe accept <dsn>` | ✅ **777 项 / 失败 0**（原 32，新增 AC-10） |
+| `hospital-server.exe accept <dsn>` | ✅ **782 项 / 失败 0**（原 32，新增 AC-10） |
 | `tests\stress-booking.ps1` | ✅ **20/30/40/50 并发抢同数号源 → 全部恰好卖光、零 409、零少卖** |
 | `tests\auth-check.ps1` | ✅ 全绿 |
 | `tests\tls-check.ps1` | ✅ 全绿 |

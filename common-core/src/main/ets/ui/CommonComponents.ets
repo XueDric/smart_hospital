@@ -229,15 +229,20 @@ export struct LoadingBlock {
 @ComponentV2
 export struct StatusChip {
   @Param text: string = '';
-  @Param color: string = AppColor.PRIMARY;
-  @Param chipBackground: string = AppColor.PRIMARY_SOFT;
+  /*
+   * ★ 2026-10-17 复查：这两个 @Param 的默认值原本直接写 `AppColor.PRIMARY`。
+   * @Param 默认值只在构造时求值一次，而主题切换是靠 `paletteVersion` 在 build 里现读驱动的
+   * ⇒ 省略参数的调用点会永久停在首帧配色。默认值改成中性常量，真正的颜色在 build 里读。
+   */
+  @Param color: string = '';
+  @Param chipBackground: string = '';
 
   build() {
     Text(this.text)
       .fontSize(AppText.CAPTION)
-      .fontColor(this.color)
+      .fontColor(this.color.length > 0 ? this.color : AppColor.PRIMARY)
       .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-      .backgroundColor(this.chipBackground)
+      .backgroundColor(this.chipBackground.length > 0 ? this.chipBackground : AppColor.PRIMARY_SOFT)
       .borderRadius(AppSize.CONTROL_RADIUS)
   }
 }

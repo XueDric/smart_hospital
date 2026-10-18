@@ -173,7 +173,7 @@ $env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Stud
 </details>
 
 - **成功标志** `BUILD SUCCESSFUL`（本机实测 65 tasks / 约 23 s 首编、4 s 增量），产物 `entry/build/default/outputs/default/entry-default-unsigned.hap`（约 1.7 MB）+ `pack.info`。
-- **已入库的构建与运行证据**：[release/harmony/](../release/harmony/README.md) —— `entry-default-unsigned.hap`（1,742,917 B，SHA256 `312046ACD5E03888F5110D13F1921D0A4595A0C4A3EFC596F2960C56B626B696`）、`pack.info`、`build-log-2026-10-17.txt`（剥掉 ANSI 的完整日志）+ `screenshots/` **10 张模拟器实跑截图**（每张都有对应 `uitest dumpLayout` 文本实测）。这是「客户端可构建、可运行」的现场证据，不是二次生成的转述。
+- **已入库的构建与运行证据**：[release/harmony/](../release/harmony/README.md) —— `entry-default-unsigned.hap`（1752310 B，SHA256 `0E2E293C3DAB084AA3CF22050782D9B19A58DCEAA2555502AB97C7E14F6675A4`）、`pack.info`、`build-log-2026-10-17.txt`（剥掉 ANSI 的完整日志）+ `screenshots/` **10 张模拟器实跑截图**（每张都有对应 `uitest dumpLayout` 文本实测）。这是「客户端可构建、可运行」的现场证据，不是二次生成的转述。
 - **装进模拟器（未签名也能装）**：在华为模拟器（Pura 90 / HarmonyOS 6.1.1 / API 24）实测 `hdc install -r …hap` 直接成功，**不需要先签名**；启动前若屏幕锁定，`aa start` 会报 `10106102 The device screen is locked…`，先 `hdc shell power-shell wakeup`（注意 `Emulator.exe -instance … -power` 是关屏，别用）：
   ```powershell
   & "D:\DevEco Studio\sdk\default\openharmony\toolchains\hdc.exe" install -r .\entry\build\default\outputs\default\entry-default-unsigned.hap
@@ -218,6 +218,8 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 - release 额外强制：`-PapiBaseUrl=https://…` + `ANDROID_KEYSTORE_PATH/PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`（`app/build.gradle.kts:66-78`；`android-patient/README.md:67`）。
 - 产物：`app/build/outputs/apk/release/app-release.apk`（+ `.aab`，AAB 不能直接 `adb install`）。
 
+**2026-10-18 实测（debug）**：`.\build.ps1 -Variant debug` → `BUILD SUCCESSFUL`，APK 956,718 B；装进 AVD `Medium_Phone_API_37.0` 后 `adb reverse tcp:8091 tcp:8091` + 真实账号登录成功。四个**环境**坑（都与本仓代码无关）：① 本机只有 JDK 25，Gradle 8.7 / AGP 8.5.2 需要 **17–21**；② 写 `%USERPROFILE%\.gradle` 被安全软件拦 ⇒ `$env:GRADLE_USER_HOME` 指到工作区；③ `google()/mavenCentral()` 在本网络无进展 ⇒ 本机 init 脚本加镜像；④ `C:\Users\<用户>\.android\debug.keystore` 与 Kotlin 临时目录同样被拦 ⇒ `$env:ANDROID_SDK_HOME` / `$env:TEMP` 指到工作区。逐步命令与截图见 [release/android/README.md](../release/android/README.md)。
+
 ---
 
 ## 6. 可运行程序包（`tools/package-release.ps1`）
@@ -248,11 +250,11 @@ powershell -ExecutionPolicy Bypass -File .\tools\package-release.ps1
 | `hospital-server.exe version` | 版本串 | `0.2.0-p1`（⚠ `--version` **不是**合法参数，会退 2 并打印用法） | < 0.1 s |
 | `… selftest` | 纯本地 schema/口径不变量，**不连库** | `✅ 自检全部通过`，51 项 0 失败 | **0.14 s** |
 | `… authtest` | 口令/令牌原语 + 公开测试向量，**不连库** | `✅ 口令/令牌原语自检全部通过`，17 项 0 失败 | **4.39 s**（PBKDF2 100k 迭代，慢是正常的） |
-| `… triagetest` | 分诊纯逻辑（危急征象/问询流/三态结论），不碰库不调模型 | `通过 139 项，失败 0 项` | **0.08 s** |
+| `… triagetest` | 分诊纯逻辑（危急征象/问询流/三态结论），不碰库不调模型 | `通过 150 项，失败 0 项` | **0.08 s** |
 | `… check-db <dsn>` | 连库 + 幂等建表 + 打印表清单 | `建表：执行 17 条 DDL（IF NOT EXISTS，幂等）` + 表清单 | **1.7 s** |
 | `tests\contract-check.ps1 -Base … -AdminPw …` | ①重新导出契约与 `contract/examples/**` **逐字节**比对 ②用 `contract/schema/*.json` 校验形状与分类 | 全部一致 / 校验通过；`-SkipExport` 只跑校验（`server/tests/contract-check.ps1:3-27`） | 需实例 + 管理员口令；**本机实测全绿**：载入 Schema 24 个、样例 67 条、`PASS 69 / FAIL 0` |
 | `tests\final-verify.ps1` | 一次跑完 **18 项** HTTP 门禁（三种实例：18092 `--dev-auth`、18095 裸、18096 `--prod`；末项 `doc-counts` 对账文档数字）+ 汇总 `EXIT` 表 | 全 `EXIT=0`；脚本自己起停三个实例并生成管理员口令（`server/tests/final-verify.ps1:1-13,63-93`） | 分钟级；**本机实测 18/18 `EXIT=0`**（端口须 ≥15001；`contract-check` 必须排在 `p1-extra-check` 之前，后者会重设管理员口令） |
-| `… accept <dsn>` | AC-1…AC-17 全量验收（777 项），**会清空业务表** | 只允许库名含 `test`；非测试库直接退 2（`server/src/main.cj:274-301`） | 长；**禁止在业务库跑** |
+| `… accept <dsn>` | AC-1…AC-17 全量验收（782 项），**会清空业务表** | 只允许库名含 `test`；非测试库直接退 2（`server/src/main.cj:274-301`） | 长；**禁止在业务库跑** |
 
 > 测试项数以 `server/tests/doc-counts.ps1` 的实测输出为准；上表的 `0.14 s / 4.39 s / 0.08 s / 1.7 s` 是本机 `0.2.0-p1` 包的实测值。
 

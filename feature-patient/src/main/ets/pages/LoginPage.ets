@@ -15,10 +15,8 @@ export struct LoginPage {
 
   aboutToAppear(): void {
     this.mockMode = ApiConfig.isMock();
-    const expiresAt = SessionStore.getExpiresAt();
-    const now = Math.floor(Date.now() / 1000);
-    if (SessionStore.hasToken() && SessionStore.getRole() === 'patient' &&
-      (expiresAt === 0 || expiresAt > now)) {
+    // ★ 2026-10-17 复查：过期判据统一收到 SessionStore.hasValidToken()，别在页面里各写一遍。
+    if (SessionStore.hasValidToken() && SessionStore.getRole() === 'patient') {
       AppRouter.getInstance().reset(RouteName.HOME);
     }
   }
@@ -168,24 +166,33 @@ export struct LoginPage {
          * 否则医生端/管理端又变成"打包了但点不到"。
          */
         Row() {
+          /*
+           * ★ 2026-10-17 复查：原来只有纯文字，点击热区就是几个字的高度（< 40vp），
+           * 手小的用户/单手操作很容易点不到 —— 与本行"让三端入口可达"的目的相悖。
+           * 现在每段都撑到 44vp 高、左右各留 8vp 内边距。
+           */
           Text('医生登录')
             .fontSize(AppText.CAPTION)
             .fontColor(AppColor.PRIMARY_DARK)
+            .height(44)
+            .padding({ left: 8, right: 8 })
             .onClick(() => {
               AppRouter.getInstance().replace(RouteName.DOCTOR_LOGIN);
             })
           Text('·')
             .fontSize(AppText.CAPTION)
             .fontColor(AppColor.TEXT_SECONDARY)
-            .margin({ left: 10, right: 10 })
+            .margin({ left: 4, right: 4 })
           Text('管理端登录')
             .fontSize(AppText.CAPTION)
             .fontColor(AppColor.PRIMARY_DARK)
+            .height(44)
+            .padding({ left: 8, right: 8 })
             .onClick(() => {
               AppRouter.getInstance().replace(RouteName.ADMIN_LOGIN);
             })
         }
-        .margin({ top: AppSize.GAP, bottom: 32 })
+        .margin({ top: AppSize.GAP, bottom: 24 })
       }
       .width('100%')
       .padding({ left: AppSize.PAGE_PADDING, right: AppSize.PAGE_PADDING })

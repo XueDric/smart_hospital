@@ -13,7 +13,9 @@
 # ⚠ 原生命令写 stderr + `2>&1` 在 EAP=Stop 下会抛 NativeCommandError ⇒ 读 create-admin 口令时局部放宽。
 
 $ErrorActionPreference = 'Stop'
-$server = 'E:\harmonyOS\smart_hospital\server'
+# ✅ 2026-10-17 复查：原为硬编码绝对路径，换机器/进 CI 就找不到 exe。
+#   本脚本在 server\tests\ 下，父目录即 server 根 —— 与其余脚本同一口径。
+$server = Split-Path -Parent $PSScriptRoot
 $exe = "$server\build\hospital-server.exe"
 $dsn = 'mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital_test'
 $log = "$env:TEMP\final-verify.log"
@@ -22,8 +24,9 @@ Remove-Item $log -ErrorAction SilentlyContinue
 function Log([string]$s) { $s | Add-Content $log; $s | Write-Host }
 
 function Start-Inst([int]$port, [string[]]$extra) {
-    $args = @('serve', $dsn, '--port', "$port") + $extra
-    $p = Start-Process -FilePath $exe -ArgumentList $args `
+    # ⚠ 不要用 $args：它是 PowerShell 自动变量（函数未声明参数时自动收集）。
+    $srvArgs = @('serve', $dsn, '--port', "$port") + $extra
+    $p = Start-Process -FilePath $exe -ArgumentList $srvArgs `
         -RedirectStandardOutput "$env:TEMP\srv$port.out" -RedirectStandardError "$env:TEMP\srv$port.err" `
         -PassThru -WindowStyle Hidden
     $ok = $false
@@ -34,7 +37,13 @@ function Start-Inst([int]$port, [string[]]$extra) {
             if ($r.StatusCode -eq 200) { $ok = $true; break }
         } catch { }
     }
-    if (-not $ok) { Log "[FATAL] 实例 $port 起不来（见 %TEMP%\srv$port.err）"; return $null }
+    if (-not $ok) {
+        Log "[FATAL] 实例 $port 起不来（见 %TEMP%\srv$port.err）"
+        # ✅ 2026-10-17 复查：原来直接 return，进程留在后台继续占端口，
+        #    下一个用例就会报"端口被占用"，看起来像另一个 bug。
+        try { if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force } } catch { }
+        return $null
+    }
     Log "[ok] 实例 $port 已就绪（pid=$($p.Id)）"
     return $p
 }

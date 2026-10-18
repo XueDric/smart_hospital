@@ -15,7 +15,7 @@ import javax.crypto.spec.GCMParameterSpec
  *
  * ## 问题
  * 改之前 `SessionStore` 用 `prefs.edit().putString("token", ...)` 把 64 位会话令牌
- * **明文**写进 SharedPreferences。任何拿到 `data/data/<包名>/shared_prefs/*.xml`
+ * **明文**写进 SharedPreferences。任何拿到 `data/data/<包名>` 下 shared_prefs 里 xml
  * 的人（root、风控告警后 dump 的取证包、备份与 debug 导出的 APK 目录）都能直接
  * 拿这串东西冒充患者调接口，直到令牌过期为止。
  *

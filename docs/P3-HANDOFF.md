@@ -3,7 +3,7 @@
 > **一句话**：把 AI 配置从「命令行参数」搬到「数据库驱动」，做到**改配置零重启**；
 > 并且 brief §5.3 点名的那条安全红线 —— **密钥绝不落库** —— 由**机制**保证，不靠自觉。
 >
-> ★ **真模型已在 P3 收尾时接通**（`ai_call.cj` + `ai_triage.cj`）—— 本阶段交付的配置底座现在**真的有人消费**了。<br>> ⚠ **合规边界见 [Q6-合规决策记录](Q6-合规决策记录.md)**（默认关闭；主诉会出站给第三方）。
+> ★ **真模型已在 P3 收尾时接通**（`ai_call.cj` + `ai_triage.cj`）—— 本阶段交付的配置底座现在**真的有人消费**了。<br>> ⚠ **合规边界见 [Q6-合规决策记录](Q6-合规决策记录.md)**（2026-10-17 起演示环境默认开启 + `builtin:demo`；生产必须置回 0 并轮换密钥。主诉会出站给第三方）。
 > **配置机制**，不是"AI 接通了"。如实标注，避免误读。
 
 ---
@@ -320,7 +320,7 @@ create-db → ✅ 库已就绪：iso_test2
 check-db  → An exception has occurred:
             SqlException: ALTER command denied to user 'hospital'@'localhost'
             for table `iso_test2`.`appointment`
-            at migrateSchema(schema.cj:520) → checkDb(main.cj:73)
+            at migrateSchema(schema.cj:520) → checkDb(main.cj:79)
             exit=1
 ```
 

@@ -66,6 +66,8 @@ export class PatientRepository {
     result.doctorId = asNumber(response['doctor_id']);
     result.deviceId = asString(response['device_id']);
     result.displayName = asString(response['display_name']);
+    // ★ 2026-10-17：服务端每次鉴权请求都可能续期，这里必须把新有效期带回上层。
+    result.expiresAt = asNumber(response['expires_at']);
     return result;
   }
 

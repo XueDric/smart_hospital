@@ -12,12 +12,20 @@ struct Index {
     AppRouter.getInstance().setObserver((name: string) => {
       this.route = name;
     });
-    // 已登录会话重启后按角色回到对应端首页，避免被统一踢回患者登录页。
+    /*
+     * 已登录会话重启后按角色回到对应端首页，避免被统一踢回患者登录页。
+     *
+     * ★ 2026-10-17 复查：原来缺「患者已登录」分支，患者冷启动必然先渲染一帧登录页，
+     *   再由 `LoginPage.aboutToAppear` 二次跳到首页（闪一下 + 多一次路由）。
+     *   另外判据要统一到 `hasValidToken()`：过期令牌不该被当成已登录。
+     */
     const role: string = SessionStore.getRole();
-    if (SessionStore.hasToken() && role === 'doctor') {
+    if (SessionStore.hasValidToken() && role === 'doctor') {
       AppRouter.getInstance().replace(RouteName.DOCTOR_QUEUE);
-    } else if (SessionStore.hasToken() && role === 'admin') {
+    } else if (SessionStore.hasValidToken() && role === 'admin') {
       AppRouter.getInstance().replace(RouteName.ADMIN_DASHBOARD);
+    } else if (SessionStore.hasValidToken() && role === 'patient') {
+      AppRouter.getInstance().replace(RouteName.HOME);
     } else {
       this.route = AppRouter.getInstance().current();
     }

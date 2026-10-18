@@ -88,8 +88,10 @@ public let RED_FLAG_URGENT_MODIFIERS: Array<String> = [
  * 为什么单列：这些词描述的是"**长期如此**"或"**程度主观_strong**"，
  * 恰恰说明**不是新发的急症**。「一直头晕」「严重乏力」「多年头痛」
  * 是慢病随访场景的典型主诉，报红牌会把规则的可信度耗光。
- * 保留成表（而不是直接删掉）是为了**可解释**：命中时写进 `negated`/审计口径，
- * 回答"为什么这句话看着严重却没报红牌"。
+ * 保留成表（而不是直接删掉）是为了**可解释**与**留痕**。
+ * ⚠ 2026-10-17 复查如实说明：本表**当前没有消费者** —— 判定路径不会读它，
+ *   也不会把它写进 `negated`（"命中时写进 negated"是当时的设想，未实现）。
+ *   保留的价值是"决策留档"：后人要回答"为什么不算红牌"，表本身就是答案。
  */
 public let RED_FLAG_CHRONIC_MODIFIERS: Array<String> = [
     "一直", "长期", "多年", "经常", "总是", "严重", "轻微", "轻度", "偶尔"
@@ -100,7 +102,13 @@ public let RED_FLAG_COOCCUR_WINDOW: Int64 = 6
 
 /*
  * 否定词。命中词**前面 `RED_FLAG_NEGATION_WINDOW` 个字符内**出现这些词 ⇒ 本次命中作废。
- * 覆盖"没有/无/不/未/非"与病历常用的"否认/排除"。
+ * 覆盖"没有/无/未/非"与病历常用的"否认/排除"。
+ *
+ * ★★ 2026-10-17 复查：**裸"不"从表里删掉了**。理由：它是超级高频的构词成分
+ *   （不适 / 不停 / 不同 / 不明显 / 不出血），当否定词用会**吃掉真症状** ——
+ *   「腹部不适伴胸痛」里"不"距"胸痛"只有 2 个字符，会把胸痛判成"否认"⇒ 危急漏报。
+ *   真正的"不"式否定收成具体词形：不伴（「不伴胸痛」）。
+ * ⚠ 取舍方向：宁可多报（误报伤害小、可复核），不可漏报。
  *
  * ★★ 2026-10-17 评审 P2-1：窗口原来是 **4 个字符**，实测漏判 ——
  *   「我没有出现明显的胸痛」里"没有"距"胸痛"是 6 个字符，
@@ -109,6 +117,47 @@ public let RED_FLAG_COOCCUR_WINDOW: Int64 = 6
  *   所以跨分句的"没有"不会误伤，例如「没有发烧，胸痛」里"没有"不在"胸痛"那一句）。
  */
 public let RED_FLAG_NEGATION_WINDOW: Int64 = 8
+
+/*
+ * 否定词与症状词之间**允许的间隔**（字符数）—— 2026-10-17 复查新增。
+ *
+ * 两档，因为两类否定词的"管辖范围"不一样：
+ *   · **多字**否定（没有 / 否认 / 未见 / 无明显 …）是**述语级**的，可以隔着
+ *     宾语和修饰语管到后面的症状：「我没有**出现明显的**胸痛」间隔 5，必须判否定；
+ *   · **单字**否定（无 / 未 / 非 / 不）只能**紧贴**症状（间隔 ≤ 1），否则它几乎
+ *     一定是别的词的构词成分：「肢体**无力**伴胸痛」（间隔 2）、
+ *     「**无法**缓解的胸痛」（间隔 4）都不是在否认胸痛。
+ * ⚠ 纯用一个数做不到：要求 ≥5 会把「无法缓解的胸痛」读成否认（**危急漏报**），
+ *   要求 ≤3 又会把「没有出现明显的胸痛」读成肯定（误报）。两档是这里的解。
+ */
+public let RED_FLAG_NEGATION_GAP_MAX: Int64 = 6
+
+/* 单字否定词允许的最大间隔（见上）。 */
+public let RED_FLAG_NEGATION_GAP_SHORT: Int64 = 1
+
+/*
+ * 间隔里出现这些成分 ⇒ 否定的**作用对象是别的东西**，不能把症状判成"否认"。
+ * 例：「没胃口**而且**胸痛」（连词换了主语）、「无**明显诱因**突发胸痛」
+ * （否的是"诱因"，胸痛是**有**的 —— 这是最危险的漏报形态）。
+ */
+public let RED_FLAG_NEGATION_BLOCKERS: Array<String> = ["而", "且", "但", "却", "诱因", "原因"]
+
+/*
+ * **缺席动词** —— 单字否定（没/无/未）后面接一个"发生类"动词时，否定仍然管到症状：
+ *   「从来**没**_**出现过**_呼吸困难」「**没**_**有**_胸痛」「**未**_**见**_呕血」。
+ * 为什么需要这条：单字否定的间隔上限只有 1（防"无力/不适"这类构词误伤），
+ * 而"没 + 出现过 + 呼吸困难"的间隔是 3 —— 不认这条就会把"从来没有过"读成"有"。
+ * ⚠ 只认这些**明确的缺席述语**；"没胃口胸痛"不在此列（胃口不是缺席动词），仍报红牌。
+ */
+public let RED_FLAG_ABSENCE_VERBS: Array<String> = [
+    "出现过", "出现", "发生过", "发生", "有过", "有", "见过", "见",
+    "感觉到", "感觉", "觉得", "察觉", "发现", "碰见", "经历", "再"
+]
+
+/* 缺席动词与症状之间允许出现的修饰成分（「出现**明显的**胸痛」）。 */
+public let RED_FLAG_ABSENCE_FILLERS: Array<String> = [
+    "的", "过", "了", "明显", "任何", "症状", "情况", "现象", "发作", "过任何"
+]
 
 public let RED_FLAG_TERMS: Array<String> = [
     // 心脑血管 —— 胸痛的各种口语写法（★ 2026-10-17 评审 P2-3：原来只有"胸痛"，
@@ -152,7 +201,10 @@ public let RED_FLAG_VAGUE_TERMS: Array<String> = [
  * 窗口 4 → 8 个字符，因为「我没有出现明显的胸痛」这种写法里"没有"距命中词 6 个字符）。
  */
 public let RED_FLAG_NEGATIONS: Array<String> = [
-    "没有", "没", "无", "不", "未", "非", "否认", "排除", "从未", "并无", "无任何"
+    "没有", "没", "无任何", "无明显", "无", "未见", "未出现", "未", "非",
+    "否认", "排除", "从未", "并无", "不伴", "不太", "没怎么",
+    // 单字否定：只能紧贴症状（间隔 ≤ RED_FLAG_NEGATION_GAP_SHORT），否则多半是构词成分
+    "不"
 ]
 
 /* ===================== 结果类型 ===================== */
@@ -200,13 +252,16 @@ public class RedFlagFacts {
 private let RED_FLAG_SEPS: Array<Rune> = [
     r',', r'.', r';', r':', r'!', r'?',
     r'\n', r'\r', r' ', r'\t',
-    r'。', r'，', r'；', r'：', r'！', r'？', r'、', r'（', r'）'
+    r'。', r'，', r'；', r'：', r'！', r'？', r'（', r'）'
 ]
 
 /*
  * 该字符是否算"分句分隔符"。
  *
- * 清单：ASCII , . ; : ! ? + 换行/回车/空格/制表 + 中文 。，；：！？、（）
+ * 清单：ASCII , . ; : ! ? + 换行/回车/空格/制表 + 中文 。，；：！？（）。
+ * ★★ 2026-10-17 复查：**顿号「、」从这里移除了** —— 它是**并列枚举**而不是分句边界。
+ *   「无胸痛、咯血、呕血」按顿号切段后，"无"只作用于第一段，后两个词被误报红牌；
+ *   保留在同一段里，`redFlagIsNegatedAt` 的"枚举链"判据才能把否定传递下去。
  * ⚠ 写成**独立函数 + Rune 表**而不是塞进 for 里的一长串跨行 `||`：
  *   跨行 `||` 会触发仓颉的续行歧义；而且"哪些算分隔符"应该是**可见的清单**，
  *   不该埋在四行布尔表达式里。
@@ -308,26 +363,200 @@ func redFlagWindowBefore(chars: Array<Rune>, chat: Int64, width: Int64): String 
 /* ===================== 否定判定（字符空间）===================== */
 
 /*
- * 字符下标 `chat` 处的那次命中，是否被**否定**（往前 `RED_FLAG_NEGATION_WINDOW` 个字符内有否定词）。
+ * ★★ 字符下标 `chat` 处的那次命中，是否被**否定**（2026-10-17 复查重写）。
  *
- * ★★ 2026-10-17 评审 P2-1：窗口原来写死 4，实测漏判 ——
- *   「我没有出现明显的胸痛」里"没有"距"胸痛" 6 个字符 ⇒ "否认了"被读成"有"。
- *   现在取 8（且窗口不跨分句，因为 `redFlagSegments` 已按标点切段）。
- *   ⚠ 再加长会开始误伤：「三天前没有发烧现在胸痛」这种转折句式里，
- *     更远的"没有"就真的与本次命中无关了 —— 8 是实测的一个平衡点，不是随手取的。
- * ⚠ 窗口是**按字符**数的，不是按字节 —— 理由见 `redFlagRunes` 的长注释。
+ * 演化过程（三次，前两次都错，值得留档）：
+ *   ① 窗口写死 4：`我没有出现明显的胸痛`（"没有"距"胸痛"6 字）漏判 ⇒ 否认被读成"有"；
+ *   ② 窗口放宽到 8 + `head.contains(nego)`：**反向漏报更危险** —— 窗口内任何
+ *      一个否定词都算数，于是
+ *        「无法缓解的胸痛」      "无法"修饰的是"缓解"，胸痛必须报红牌；
+ *        「无明显诱因突发胸痛」  "无明显"修饰的是"诱因"；
+ *        「没胃口而且胸痛」      "没"在另一个并列成分里。
+ *      三种全被读成"否认" ⇒ **危急信号漏报**（比误报危险得多）；
+ *   ③ 现在：否定词必须与症状词**挨得够近**（间隔 ≤ `RED_FLAG_NEGATION_GAP_MAX`），
+ *      且间隔里不得出现把否定指向别处的连接成分（`RED_FLAG_NEGATION_BLOCKERS`）；
+ *      另加一条**并列枚举**通道（「无胸痛、咯血、呕血」三个词都被"无"否定）。
+ *
+ * 判据汇总：
+ *   ① 直接否定 —— 8 字窗口内有否定词，间隔 ≤ 3 且无阻断成分；
+ *   ② 枚举否定 —— 8 字窗口内有否定词，其后的路径全由「红牌词 + 顿号」组成。
+ * ⚠ 窗口与间隔都按**字符**数，不是字节 —— 理由见 `redFlagRunes` 的长注释。
+ * ⚠ 窗口不跨分句，因为 `redFlagSegments` 已按标点切段（顿号**不在**分隔符里）。
  */
 func redFlagIsNegatedAt(chars: Array<Rune>, chat: Int64): Bool {
-    let head = redFlagWindowBefore(chars, chat, RED_FLAG_NEGATION_WINDOW)
-    if (head.size == 0) {
+    if (chat <= 0) {
         return false
     }
-    for (nego in RED_FLAG_NEGATIONS) {
-        if (head.contains(nego)) {
+    if (redFlagNegatedDirect(chars, chat)) {
+        return true
+    }
+    if (redFlagNegatedByAbsenceVerb(chars, chat)) {
+        return true
+    }
+    return redFlagNegatedByEnumeration(chars, chat)
+}
+
+/* 判据 ①：否定词紧邻本次命中（间隔受 `RED_FLAG_NEGATION_GAP_MAX` 限制且无阻断成分）。 */
+func redFlagNegatedDirect(chars: Array<Rune>, chat: Int64): Bool {
+    var i = redFlagWindowStart(chars, chat, RED_FLAG_NEGATION_WINDOW)
+    while (i < chat) {
+        for (nego in RED_FLAG_NEGATIONS) {
+            let nc = redFlagRunes(nego)
+            if (nc.size > 0 && redFlagMatchAt(chars, i, nc)) {
+                let after = i + nc.size
+                let gap = chat - after
+                let limit = if (nc.size <= 1) { RED_FLAG_NEGATION_GAP_SHORT } else { RED_FLAG_NEGATION_GAP_MAX }
+                if (gap >= 0 && gap <= limit) {
+                    if (!redFlagGapHasBlocker(String(chars[after..chat]))) {
+                        return true
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+/* 间隔里是否出现"把否定指向别处"的连接成分（「无法**缓解**的胸痛」）。 */
+func redFlagGapHasBlocker(gap: String): Bool {
+    for (b in RED_FLAG_NEGATION_BLOCKERS) {
+        if (gap.contains(b)) {
             return true
         }
     }
     return false
+}
+
+/*
+ * 判据 ①b：**单字否定 + 缺席动词**（「从来没出现过呼吸困难」）。
+ * 从否定词末尾走到症状词开头：只允许「缺席动词」与「修饰填充」交替出现。
+ */
+func redFlagNegatedByAbsenceVerb(chars: Array<Rune>, chat: Int64): Bool {
+    var i = redFlagWindowStart(chars, chat, RED_FLAG_NEGATION_WINDOW)
+    while (i < chat) {
+        for (nego in RED_FLAG_NEGATIONS) {
+            let nc = redFlagRunes(nego)
+            if (nc.size != 1 || !redFlagMatchAt(chars, i, nc)) {
+                continue
+            }
+            if (redFlagAbsencePathCovers(chars, i + nc.size, chat)) {
+                return true
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+/* `[from, to)` 是否由「缺席动词 / 修饰填充」组成（至少一个动词）。 */
+func redFlagAbsencePathCovers(chars: Array<Rune>, from: Int64, to: Int64): Bool {
+    if (from >= to) {
+        return false
+    }
+    var pos = from
+    var verbs: Int64 = 0
+    while (pos < to) {
+        var advanced = false
+        for (v in RED_FLAG_ABSENCE_VERBS) {
+            let vc = redFlagRunes(v)
+            if (vc.size > 0 && vc.size <= to - pos && redFlagMatchAt(chars, pos, vc)) {
+                pos = pos + vc.size
+                verbs = verbs + 1
+                advanced = true
+                break
+            }
+        }
+        if (!advanced) {
+            for (f in RED_FLAG_ABSENCE_FILLERS) {
+                let fc = redFlagRunes(f)
+                if (fc.size > 0 && fc.size <= to - pos && redFlagMatchAt(chars, pos, fc)) {
+                    pos = pos + fc.size
+                    advanced = true
+                    break
+                }
+            }
+        }
+        if (!advanced) {
+            return false
+        }
+        if (pos > to) {
+            return false
+        }
+    }
+    return verbs > 0 && pos == to
+}
+
+/* 判据 ②：否定词与本次命中之间只有「红牌词 + 顿号」（「无胸痛、咯血、呕血」）。 */
+func redFlagNegatedByEnumeration(chars: Array<Rune>, chat: Int64): Bool {
+    var i = redFlagWindowStart(chars, chat, RED_FLAG_NEGATION_WINDOW)
+    while (i < chat) {
+        for (nego in RED_FLAG_NEGATIONS) {
+            let nc = redFlagRunes(nego)
+            if (nc.size > 0 && redFlagMatchAt(chars, i, nc)) {
+                let after = i + nc.size
+                if (after <= chat && redFlagEnumerationCovers(chars, after, chat)) {
+                    return true
+                }
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+/*
+ * `[from, to)` 是否正好由「红牌词 / 顿号等并列连接符」组成（可空，允许空区间）。
+ * ⚠ 也接受**红牌词直接相邻**（「无呕血便血」这种不写顿号的并列）。
+ *   这条放宽是有意的：判错的代价不对称 —— 多判"否认"是漏报（危险），
+ *   多判"肯定"是误报（可复核）。而能凑成"红牌词紧邻"的写法几乎只有并列。
+ */
+func redFlagEnumerationCovers(chars: Array<Rune>, from: Int64, to: Int64): Bool {
+    var pos = from
+    var hops: Int64 = 0
+    while (pos < to) {
+        var advanced = false
+        let r = chars[pos]
+        if (r == r'、' || r == r'和' || r == r'及' || r == r'与') {
+            pos = pos + 1
+            advanced = true
+        }
+        if (!advanced) {
+            var best: Int64 = 0
+            for (term in RED_FLAG_TERMS) {
+                let tc = redFlagRunes(term)
+                if (tc.size > best && tc.size <= to - pos && redFlagMatchAt(chars, pos, tc)) {
+                    best = tc.size
+                }
+            }
+            for (term in RED_FLAG_VAGUE_TERMS) {
+                let tc = redFlagRunes(term)
+                if (tc.size > best && tc.size <= to - pos && redFlagMatchAt(chars, pos, tc)) {
+                    best = tc.size
+                }
+            }
+            if (best > 0) {
+                pos = pos + best
+                advanced = true
+            }
+        }
+        if (!advanced) {
+            return false
+        }
+        hops = hops + 1
+        if (hops > 16) {
+            return false
+        }
+    }
+    return true
+}
+
+/* 窗口起点（字符下标），窗口宽度 `width`；供两段式判定共用。 */
+func redFlagWindowStart(chars: Array<Rune>, chat: Int64, width: Int64): Int64 {
+    if (chat > width) {
+        return chat - width
+    }
+    return 0
 }
 
 /*
@@ -397,7 +626,8 @@ func redFlagHit(seg: String, term: String, hits: ArrayList<String>,
 
 /*
  * 顺序比较 Rune，不再为每个否定命中从头计算字符/字节偏移。
- * 每个候选起点最多比较 termChars.size 个字符，否定窗口固定为 4 字符。
+ * 每个候选起点最多比较 termChars.size 个字符；否定判定见 `redFlagIsNegatedAt`
+ * （8 字符窗口 + 间隔 ≤ 3 + 并列枚举通道，不再是"窗口内出现即作废"）。
  * 对固定词表，全文工作量 O(n*k*m)，k 是词数、m 是最长词长，均为常量。
  * 否定命中后仍只前进一个字符，保持原 indexOf 实现对重叠命中的语义。
  */

@@ -120,6 +120,33 @@ export class SessionStore {
     return SessionStore.tokenValue.length > 0;
   }
 
+  /*
+   * ★ 2026-10-17 复查：服务端会**滑动续期**（每次鉴权请求都可能把 expires_at 推后，
+   * 见 server/src/acceptance.cj 的 AC-14「有效期必须回给客户端」），
+   * 但客户端只在登录那一刻取过一次有效期 ⇒ 有效期一过，冷启动就把仍然有效的会话
+   * 挡在登录页前。这里补一条回写 + 一个统一的"令牌是否还有效"判据。
+   */
+  static updateExpiresAt(expiresAt: number): void {
+    if (expiresAt <= 0 || expiresAt === SessionStore.expiresAtValue) {
+      return;
+    }
+    SessionStore.expiresAtValue = expiresAt;
+    SessionStore.putNumber(KEY_EXPIRES_AT, expiresAt);
+    SessionStore.flush();
+  }
+
+  /** 有令牌且（服务端给过有效期时）尚未过期。过期判据统一收在这里，别在页面里各写一遍。 */
+  static hasValidToken(): boolean {
+    if (!SessionStore.hasToken()) {
+      return false;
+    }
+    const expiresAt: number = SessionStore.expiresAtValue;
+    if (expiresAt <= 0) {
+      return true;
+    }
+    return expiresAt > Math.floor(Date.now() / 1000);
+  }
+
   static getRole(): string {
     return SessionStore.roleValue;
   }
@@ -239,6 +266,14 @@ export class SessionStore {
     SessionStore.putNumber(KEY_REF_ID, 0);
     SessionStore.putNumber(KEY_PATIENT_ID, 0);
     SessionStore.putString(KEY_DISPLAY_NAME, '');
+    /*
+     * ★ 2026-10-17 复查：原来只有 ProfilePage 手工清预问诊会话，
+     * 别的登出路径（HttpClient 的 401、管理端登出）都不清 ⇒ 换账号后首进预问诊
+     * 会先拿旧 session_id 打一次 404。服务端按患者归属校验，不会串数据，
+     * 但这属于"本该在这里清"的状态。
+     */
+    SessionStore.previsitSessionIdValue = '';
+    SessionStore.putString(KEY_PREVISIT_SESSION_ID, '');
     SessionStore.flush();
     SessionStore.tokenPersistedSecurely = false;
     await SecureStore.remove(SECURE_ALIAS_TOKEN);

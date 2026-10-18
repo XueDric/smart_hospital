@@ -1,4 +1,4 @@
-﻿# 智慧医院智能导诊就诊系统 · 系统设计
+# 智慧医院智能导诊就诊系统 · 系统设计
 
 > 本文回答"这套系统是怎么搭起来的"：总体架构、模块划分、接口设计、数据流转、关键技术实现。
 > 项目背景与需求见 [PROJECT-OVERVIEW.md](PROJECT-OVERVIEW.md)；逐字段接口口径见 [FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md)；架构决策的**论证过程**见 [adr/ADR-0001](adr/ADR-0001-号源与挂号独立MySQL路径.md)。
@@ -77,7 +77,7 @@
 | **预问诊** | `previsit.cj` | 多轮采集 + **SSE 流式**回显 + 会话持久化 |
 | **看板** | `dashboard.cj` | 聚合指标（科室/趋势/使用率/命中/完成率/病历进度/AI 概览），只出聚合 |
 | **知识库仓储** | `kb_repo.cj` | 切块、纯仓颉余弦、关键词检索降级 |
-| **测试与验收** | `acceptance*.cj`（9 个）+ `triage_test.cj` | 777 条断言的验收套件（随二进制内置，`hospital-server.exe authtest/triagetest` 可跑） |
+| **测试与验收** | `acceptance*.cj`（9 个）+ `triage_test.cj` | 782 条断言的验收套件（随二进制内置，`hospital-server.exe authtest/triagetest` 可跑） |
 
 ### 2.2 客户端
 
@@ -249,8 +249,8 @@ GET  …/record/revisions[/:version[/diff]]    修订历史与逐段对比（只
 
 | 层次 | 内容 | 规模 |
 | --- | --- | --- |
-| 单元自检 | `hospital-server.exe selftest` / `authtest` / `triagetest` | 51 + 17 + 110 项 |
-| 验收套件 | `accept`（`acceptance*.cj`，随二进制） | **777 条断言** |
+| 单元自检 | `hospital-server.exe selftest` / `authtest` / `triagetest` | 51 + 17 + 150 项 |
+| 验收套件 | `accept`（`acceptance*.cj`，随二进制） | **782 条断言** |
 | 接口套件 | `server/tests/*.ps1` | 26 个测试文件（25 个 `.ps1` + 1 个 `.mjs`）= 19 个可独立运行的门禁套件 + `common.ps1` + `final-verify.ps1` + 4 个辅助脚本（`doc-counts` / `json-schema-lite` / `export-contract` / `stress-booking`）+ `admin-web-smoke.mjs` |
 | 契约门禁 | 样例逐字节 + Schema 结构 | 67 样例 / 24 Schema，PASS 69 / FAIL 0 |
 | 压测 | 20/30/40/50 进程抢同数号源 | 号源全部卖光、零超卖、零丢号 |

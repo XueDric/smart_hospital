@@ -327,11 +327,12 @@ public func aiCallChat(o: AiRuntimeOptions, prompt: String, now: Int64): AiCallR
      *   残留任务数受 `ai.max_concurrent` 闸门约束 —— **许可由 worker 退出时归还**，
      *   所以最多"漏"出 maxConcurrent 个僵尸线程，不会无界增长。
      */
+    let deadline = if (o.timeoutSecs > 0) { o.timeoutSecs } else { 30 }
     var task: ?Future<AiCallResult> = None
     try {
         task = Some(spawn { =>
             try {
-                return aiCallChatRaw(o, prompt, now)
+                return aiCallChatRaw(o, prompt, now, retryBudgetMs: deadline * 1000)
             } finally {
                 aiReleaseGate()
             }
@@ -342,12 +343,21 @@ public func aiCallChat(o: AiRuntimeOptions, prompt: String, now: Int64): AiCallR
         r.reason = "无法启动模型任务，已降级为规则"
         return r
     }
-    let deadline = if (o.timeoutSecs > 0) { o.timeoutSecs } else { 30 }
     try {
         return task.getOrThrow().get(Duration.second * deadline)
-    } catch (e: Exception) {
+    } catch (e: TimeoutException) {
         let r = AiCallResult()
         r.reason = "模型调用超过 ${deadline}s 全链路上限（含 DNS/connect/读写），已降级为规则"
+        return r
+    } catch (e: Exception) {
+        /*
+         * ★★ 2026-10-17 复查：这里原来**只有**一个 catch，把所有异常都写成
+         *   "超过 Ns 全链路上限"。于是一个"响应解析失败/worker 内抛异常"会被
+         *   报成超时 —— 运维按超时去查网络，真因却在别处。
+         *   现在超时与非超时分开：非超时**带上真实异常信息**。
+         */
+        let r = AiCallResult()
+        r.reason = "模型调用执行失败（不是超时）：${e.message}，已降级为规则"
         return r
     }
 }
@@ -373,7 +383,7 @@ public func aiCallChatBudget(o: AiRuntimeOptions, prompt: String, now: Int64,
     try {
         task = Some(spawn { =>
             try {
-                return aiCallChatRaw(o, prompt, now, ioTimeoutSecs: (budgetMs + 999) / 1000)
+                return aiCallChatRaw(o, prompt, now, ioTimeoutSecs: (budgetMs + 999) / 1000, retryBudgetMs: budgetMs)
             } finally {
                 aiReleaseGate()
             }
@@ -451,6 +461,12 @@ private func aiCallChatOnce(o: AiRuntimeOptions, prompt: String, now: Int64,
         case None =>
             r.reason = aiKeyRefProblem(o.keyRef)
             return r
+    }
+    /* ★ 2026-10-17 复查：内置密钥不得跟着别人的 base_url 发出去（见 ai_builtin.cj）。 */
+    let (hostOk, hostWhy) = aiBuiltinKeyHostCheck(o.keyRef, o.endpoint)
+    if (!hostOk) {
+        r.reason = hostWhy
+        return r
     }
     /*
      * 请求体：只发必要字段。
@@ -621,10 +637,24 @@ private func aiCallChatOnce(o: AiRuntimeOptions, prompt: String, now: Int64,
  *   本身是可聚合的运维指标（例如重试率高说明服务商在抖）。
  */
 private func aiCallChatRaw(o: AiRuntimeOptions, prompt: String, now: Int64,
-                           ioTimeoutSecs!: Int64 = 0): AiCallResult {
+                           ioTimeoutSecs!: Int64 = 0, retryBudgetMs!: Int64 = 0): AiCallResult {
+    let startMs = aiNowMs()
     var attempt: Int64 = 1
     var r = aiCallChatOnce(o, prompt, now, ioTimeoutSecs: ioTimeoutSecs)
     while (attempt < AI_CALL_MAX_ATTEMPTS && aiCallRetryable(r)) {
+        /*
+         * ★★ 2026-10-17 复查：**重试不能越过调用方的期限**。
+         *   原来首试超时后照样 `sleep 200ms` 再试一次，而主线程的
+         *   `Future.get(deadline)` 早就到点了 —— 白烧一次配额，结果还会被丢弃。
+         *   现在：预计会用掉一半以上预算就**不重试**，直接如实返回首次失败原因。
+         */
+        if (retryBudgetMs > 0) {
+            let used = aiNowMs() - startMs
+            if (used + AI_CALL_RETRY_BACKOFF_MS > retryBudgetMs / 2) {
+                r.reason = "${r.reason}（剩余预算不足，未重试）"
+                break
+            }
+        }
         attempt = attempt + 1
         sleep(Duration.millisecond * AI_CALL_RETRY_BACKOFF_MS)
         r = aiCallChatOnce(o, prompt, now, ioTimeoutSecs: ioTimeoutSecs)
@@ -758,6 +788,12 @@ private func aiProbePost(endpoint: String, keyRef: String, bodyJson: String,
             r.reason = aiKeyRefProblem(keyRef)
             return r
     }
+    /* ★ 2026-10-17 复查：探活也走同一道白名单，否则"测试通过"会骗人。 */
+    let (probeHostOk, probeHostWhy) = aiBuiltinKeyHostCheck(keyRef, endpoint)
+    if (!probeHostOk) {
+        r.reason = probeHostWhy
+        return r
+    }
     try {
         let b = ClientBuilder()
         b.tlsConfig(TlsClientConfig())
@@ -866,7 +902,13 @@ public func aiProbeEmbedding(endpoint: String, model: String, keyRef: String,
     inputs.add(JsonString("ping"))
     reqBody.put("input", inputs)
     let r = aiProbePost(endpoint, keyRef, reqBody.toString(), timeoutSecs)
-    if (r.httpStatus == 0) {
+    /*
+     * ★★ 2026-10-17 复查：这里原来只判 `httpStatus == 0`（纯传输失败）。
+     *   401/403/404 这类**有状态码的真原因**会继续往下走，被"响应不是预期的向量形状"
+     *   覆盖掉 —— 排查时看到的是形状问题，实际是密钥/模型名/端点错。
+     *   判据改成 `!r.ok`：只要 HTTP 那一层已经失败，就保留它的原因。
+     */
+    if (!r.ok) {
         return r
     }
     let dim = aiExtractEmbeddingDim(r.text)

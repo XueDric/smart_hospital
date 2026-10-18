@@ -53,7 +53,7 @@
 | **可用** | AI 挂了业务不能挂；数据库闪断不能全站 500 到重启 | 三态降级（`rules` / `model` / `model:invalid`）；DB 断链自愈 + `/health` 探库（503） |
 | **可运维** | 改 AI 配置不重启；升级不加手工步骤 | 配置落库 + 缓存失效；自动建表 + 编号迁移（幂等） |
 | **合规** | 明确"发什么出站、默认关不关、谁能打开" | [Q6-合规决策记录.md](Q6-合规决策记录.md) |
-| **可验证** | 单元/验收/契约/压测/全量 live 门禁 | `selftest` 51 + `authtest` 17 + `triagetest` 139 + `accept` 777 断言 + `final-verify` 18 项门禁 + 契约门禁（24 Schema / 67 样例） |
+| **可验证** | 单元/验收/契约/压测/全量 live 门禁 | `selftest` 51 + `authtest` 17 + `triagetest` 150 + `accept` 782 断言 + `final-verify` 18 项门禁 + 契约门禁（24 Schema / 67 样例） |
 
 ### 2.4 范围边界（本期**不做**）
 
@@ -128,18 +128,18 @@
 
 ## 6. 项目团队
 
-按 `git shortlog -sne` 实测（2026-10-07 → 10-17，102 个提交）：
+按 `git shortlog -sne` 实测（2026-10-07 → 10-17，截至 tag `v0.2.0-p1-rev` 共 107 个提交）：
 
 | 贡献者 | 提交数 |
 | --- | --- |
-| XueDric | 79 |
+| XueDric | 84 |
 | Haocheng Sun | 8 |
 | fallensp | 6 |
 | lyz1679 | 4 |
 | FallenSP78 | 3 |
 | pyf | 2 |
 
-> 合计 **102** 个提交。`fallensp` 与 `FallenSP78` 是两个不同的提交身份（不同邮箱），未合并统计。
+> 合计 **107** 个提交（截至 tag `v0.2.0-p1-rev`）。`fallensp` 与 `FallenSP78` 是两个不同的提交身份（不同邮箱），未合并统计。
 
 协作方式：服务端（仓颉）与三端客户端（鸿蒙 ArkTS / 安卓 Kotlin / 管理台）并行推进，接口以 [contract/](../contract/) 的可执行契约 + [FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) 为唯一口径，跨端分歧以契约门禁红/绿判定。
 

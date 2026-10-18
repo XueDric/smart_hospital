@@ -61,15 +61,42 @@ $actual['accept']   = Get-PassCount "accept $Dsn"
 #     看起来像文档错，实际是脚本自己的赋值顺序错。
 
 $triOut = & $exe triagetest 2>&1 | Out-String
+$triExit = $LASTEXITCODE
 $triPass = ([regex]::Matches($triOut, '\[PASS\]')).Count
 $triFail = ([regex]::Matches($triOut, '\[FAIL\]')).Count
-if ($triFail -gt 0) { Write-Warning "  triagetest 有 $triFail 项失败（对账仍继续，但请先修）" }
+# ✅ 2026-10-17 复查：**必须先看退出码**。triagetest 起不来（例如库连不上）时
+#   输出里一个 [PASS] 都没有 ⇒ 实测=0 ⇒ 报"文档写 150，实测 0"的假 DRIFT，
+#   而真因是环境。与 Get-PassCount 里踩过的坑是同一个 —— 教训只吃一次。
+if ($triExit -ne 0 -or $triFail -gt 0) {
+    throw "triagetest 实测不成立（exit=$triExit，[FAIL]=$triFail 项）：先修环境，别改文档。"
+}
 $actual['triagetest'] = $triPass
 # ★ final-verify 的"项数"= 它 `$specs` 里的条目数，即"一条命令跑多少道门禁"。
 #   同样从源码数：加了门禁却忘了改文档，正是本脚本存在的理由
 #   （2026-10-17 把 doc-counts 接进去，17 → 18 就是这一项）。
 $fvSrc = [System.IO.File]::ReadAllText((Join-Path $serverDir "tests\final-verify.ps1"), [System.Text.UTF8Encoding]::new($false))
 $actual['finalverify'] = ([regex]::Matches($fvSrc, "@\{\s*n = '")).Count
+# ★ 提交数：文档写"107 个提交（截至 tag v0.2.0-p1-rev）"，就用 **tag 指向的提交数**核对 ——
+#   不能拿 HEAD 核：文档一旦这么写，每加一个提交都会假红（评审 P1-2 漂的就是这个数字）。
+#   tag 不存在时退回 HEAD 并告警（否则本地没取 tag 的人会看到一个无法解释的红）。
+$tagName = 'v0.2.0-p1-rev'
+$tagCount = (& git -C (Split-Path -Parent $serverDir) rev-list --count "$tagName" 2>$null)
+if (-not $tagCount -or $LASTEXITCODE -ne 0) {
+    Write-Warning "  提交数：取不到 tag $tagName（改用 HEAD），文档里的提交数请按 HEAD 核对"
+    $tagCount = (& git -C (Split-Path -Parent $serverDir) rev-list --count HEAD 2>$null)
+}
+$actual['commits'] = [int]$tagCount
+
+# ── HAP 字节数：入库证据里的 .hap 与文档里写的必须一致 ──────────────────────
+#   理由：HAP 每次重建都会变（有一次 1,714,016 → 1,742,917 B），而 README/DEPLOYMENT
+#   把字节数当"可核对的现场证据"写着。人抄的数字会过期，所以让它对账。
+$hapPath = Join-Path $repoDir 'release\harmony\entry-default-unsigned.hap'
+if (Test-Path $hapPath) {
+    $actual['hapsize'] = (Get-Item $hapPath).Length
+    Write-Host ("  入库 HAP 字节数 = {0:N0}" -f $actual['hapsize'])
+} else {
+    Write-Warning "  找不到 release\harmony\entry-default-unsigned.hap（证据未入库？）"
+}
 # accept 用例的最大编号（AC-1…AC-N 里的 N）——由源码里 runner.acN() 的调用推导
 $accSrc = [System.IO.File]::ReadAllText((Join-Path $serverDir "src\acceptance.cj"), [System.Text.UTF8Encoding]::new($false))
 # ★ AC 编号上限：既数 `runner.acN()`（AC-1…AC-12），也认 P2 的用例（AC-P2-N）。
@@ -164,7 +191,15 @@ $checks = @(
     @{ File = "docs\DEPLOYMENT.md";       Pattern = '全量验收（(?<n>\d+) 项）'; Want = 'accept' },
     @{ File = "docs\DEPLOYMENT.md";       Pattern = '一次跑完 \*\*(?<n>\d+) 项\*\*'; Want = 'finalverify' },
     # 2026-10-17：DEPLOYMENT 的耗时/项数表曾漏改 triagetest（110 → 139），加一条对账点钉住
-    @{ File = "docs\DEPLOYMENT.md";       Pattern = '`通过 (?<n>\d+) 项，失败 0 项`'; Want = 'triagetest' }
+    @{ File = "docs\DEPLOYMENT.md";       Pattern = '`通过 (?<n>\d+) 项，失败 0 项`'; Want = 'triagetest' },
+    # ── 提交数：三处都锚在 tag 上，用 tag 指向的提交数核对（见 $actual['commits'] 的注释）──
+    @{ File = "README.md";                Pattern = '\| 提交历史 \| (?<n>\d+) 个提交'; Want = 'commits' },
+    @{ File = "docs\PROJECT-OVERVIEW.md"; Pattern = '共 (?<n>\d+) 个提交）'; Want = 'commits' },
+    # ── SYSTEM-DESIGN 的"51 + 17 + N 项"曾漏改 triagetest（110 → 139）──
+    @{ File = "docs\SYSTEM-DESIGN.md";    Pattern = '51 \+ 17 \+ (?<n>\d+) 项'; Want = 'triagetest' },
+    # ── HAP 字节数（带千位分隔，比较时剥掉逗号）──
+    @{ File = "README.md";                Pattern = '`entry-default-unsigned\.hap`（(?<n>[\d,]+) B'; Want = 'hapsize' },
+    @{ File = "docs\DEPLOYMENT.md";       Pattern = '`entry-default-unsigned\.hap`（(?<n>[\d,]+) B'; Want = 'hapsize' }
 )
 
 # ── 3) 对账 ───────────────────────────────────────────────────────────────
@@ -180,7 +215,7 @@ foreach ($c in $checks) {
         $bad++
         continue
     }
-    $want = if ($c.Want -eq "endpoints") { $epCount } else { $actual[$c.Want] }
+    $want = if ($c.Want -eq "endpoints") { $epCount } elseif ($c.Want -eq "hapsize") { $actual["hapsize"] } else { $actual[$c.Want] }
     # ★ 用具名组取数 —— 不再靠"捕获组顺序"（那东西一改正则就错，实测被坑过）
     #
     # 两种检查形态（用哪个看正则里有哪些具名组）：
@@ -223,7 +258,7 @@ foreach ($c in $checks) {
         }
     }
     if (-not $hasN) { continue }
-    $got = [int]$m.Groups['n'].Value
+    $got = [int]($m.Groups['n'].Value -replace ',', '')
     if ($got -eq $want) {
         Write-Host "  [OK]   $($c.File) —— $($c.Want) = $got"
     } else {
@@ -244,7 +279,7 @@ if ($Fix) {
         $path = Join-Path $repoDir $c.File
         if (-not (Test-Path $path)) { continue }
         $text = [System.IO.File]::ReadAllText($path, [System.Text.UTF8Encoding]::new($false))
-        $want = if ($c.Want -eq "endpoints") { $epCount } else { $actual[$c.Want] }
+        $want = if ($c.Want -eq "endpoints") { $epCount } elseif ($c.Want -eq "hapsize") { $actual["hapsize"] } else { $actual[$c.Want] }
         $n = 0
         $new = [regex]::Replace($text, $c.Pattern, {
             param($mm)
