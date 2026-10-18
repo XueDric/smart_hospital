@@ -173,7 +173,7 @@ $env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Stud
 </details>
 
 - **成功标志** `BUILD SUCCESSFUL`（本机实测 65 tasks / 约 23 s 首编、4 s 增量），产物 `entry/build/default/outputs/default/entry-default-unsigned.hap`（约 1.7 MB）+ `pack.info`。
-- **已入库的构建与运行证据**：[release/harmony/](../release/harmony/README.md) —— `entry-default-unsigned.hap`（1758111 B，SHA256 `841B91854FD9640BB4D334687A5264EB4FCDE85CA7ABAF2F29385F37B946EB0A`）、`pack.info`、`build-log-2026-10-17.txt`（剥掉 ANSI 的完整日志）+ `screenshots/` **10 张模拟器实跑截图**（每张都有对应 `uitest dumpLayout` 文本实测）。这是「客户端可构建、可运行」的现场证据，不是二次生成的转述。
+- **已入库的构建与运行证据**：[release/harmony/](../release/harmony/README.md) —— `entry-default-unsigned.hap`（1758339 B，SHA256 `D6AB687F4759C7203979553632F1D2948724CCF4975B59E07B44E689BA8CFBD8`）、`pack.info`、`build-log-2026-10-17.txt`（剥掉 ANSI 的完整日志）+ `screenshots/` **10 张模拟器实跑截图**（每张都有对应 `uitest dumpLayout` 文本实测）。这是「客户端可构建、可运行」的现场证据，不是二次生成的转述。
 - **装进模拟器（未签名也能装）**：在华为模拟器（Pura 90 / HarmonyOS 6.1.1 / API 24）实测 `hdc install -r …hap` 直接成功，**不需要先签名**；启动前若屏幕锁定，`aa start` 会报 `10106102 The device screen is locked…`，先 `hdc shell power-shell wakeup`（注意 `Emulator.exe -instance … -power` 是关屏，别用）：
   ```powershell
   & "D:\DevEco Studio\sdk\default\openharmony\toolchains\hdc.exe" install -r .\entry\build\default\outputs\default\entry-default-unsigned.hap

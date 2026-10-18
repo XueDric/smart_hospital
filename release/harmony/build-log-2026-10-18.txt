@@ -3,16 +3,16 @@
 > hvigor UP-TO-DATE :feature_patient:default@PreBuild...  
 > hvigor UP-TO-DATE :feature_doctor:default@PreBuild...  
 > hvigor UP-TO-DATE :feature_admin:default@PreBuild...  
-> hvigor Finished :entry:default@CreateModuleInfo... after 3 ms 
+> hvigor Finished :entry:default@CreateModuleInfo... after 2 ms 
 > hvigor UP-TO-DATE :entry:default@GenerateMetadata...  
-> hvigor Finished :entry:default@PreCheckSyscap... after 2 ms 
+> hvigor Finished :entry:default@PreCheckSyscap... after 1 ms 
 > hvigor UP-TO-DATE :entry:default@GeneratePkgContextInfo...  
-> hvigor Finished :entry:default@GeneratePkgSdkInfo... after 11 ms 
-> hvigor Finished :entry:default@ProcessIntegratedHsp... after 3 ms 
+> hvigor Finished :entry:default@GeneratePkgSdkInfo... after 8 ms 
+> hvigor Finished :entry:default@ProcessIntegratedHsp... after 2 ms 
 > hvigor UP-TO-DATE :common_core:default@CreateHarBuildProfile...  
 > hvigor Finished :common_core:default@ConfigureCmake... after 1 ms 
 > hvigor UP-TO-DATE :common_core:default@MergeProfile...  
-> hvigor Finished :entry:default@SyscapTransform... after 22 ms 
+> hvigor Finished :entry:default@SyscapTransform... after 21 ms 
 > hvigor UP-TO-DATE :entry:default@ProcessRouterMap...  
 > hvigor UP-TO-DATE :entry:default@ProcessShareConfig...  
 > hvigor Finished :entry:default@ProcessStartupConfig... after 6 ms 
@@ -47,8 +47,7 @@
 > hvigor UP-TO-DATE :feature_patient:default@ProcessLibs...  
 > hvigor UP-TO-DATE :feature_doctor:default@ProcessLibs...  
 > hvigor UP-TO-DATE :feature_admin:default@ProcessLibs...  
-> hvigor UP-TO-DATE :entry:default@CompileArkTS...  
-> hvigor Finished :entry:default@BuildJS... after 9 ms 
+> hvigor Finished :entry:default@BuildJS... after 8 ms 
 > hvigor UP-TO-DATE :feature_patient:default@DoNativeStrip...  
 > hvigor UP-TO-DATE :feature_doctor:default@DoNativeStrip...  
 > hvigor UP-TO-DATE :feature_admin:default@DoNativeStrip...  
@@ -56,20 +55,77 @@
 > hvigor UP-TO-DATE :entry:default@ProcessLibs...  
 > hvigor UP-TO-DATE :entry:default@DoNativeStrip...  
 > hvigor UP-TO-DATE :entry:default@CacheNativeLibs...  
-> hvigor UP-TO-DATE :entry:default@GeneratePkgModuleJson...  
-> hvigor Finished :entry:default@ProcessCompiledResources... after 2 ms 
-> hvigor UP-TO-DATE :entry:default@PackageHap...  
-> hvigor Finished :entry:default@PackingCheck... after 9 ms 
-.\hvigorw.bat : > hvigor WARN: No signingConfig found for product default
+.\hvigorw.bat : > hvigor WARN: WARN: ArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/m
+ain/ets/storage/SessionStore.ets:53:38
 At line:3 char:1
 + .\hvigorw.bat --mode module -p product=default -p module=entry@defaul ...
 + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (> hvigor W...ct default:String) [], RemoteException
+    + CategoryInfo          : NotSpecified: (> hvigor W...Store.ets:53:38:String) [], RemoteException
     + FullyQualifiedErrorId : NativeCommandError
  
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/main/ets/storage/SessionStore.ets:286
+:38
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/main/ets/storage/SessionStore.ets:294
+:38
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/main/ets/storage/SessionStore.ets:300
+:26
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/main/ets/storage/SessionStore.ets:306
+:26
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/main/ets/storage/KeyValueStore.ets:11
+:41
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/main/ets/storage/KeyValueStore.ets:19
+:39
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/main/ets/storage/KeyValueStore.ets:27
+:39
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/main/ets/storage/KeyValueStore.ets:35
+:39
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/main/ets/storage/KeyValueStore.ets:41
+:27
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/main/ets/storage/KeyValueStore.ets:48
+:27
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/main/ets/storage/KeyValueStore.ets:55
+:27
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/main/ets/storage/KeyValueStore.ets:62
+:27
+ Function may throw exceptions. Special handling is required.
+
+WARN: ArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/main/ets/ui/ThemeManager.ets:101:39
+ 'matchMediaSync' has been deprecated.
+
+
+> hvigor Finished :entry:default@CompileArkTS... after 12 s 363 ms 
+> hvigor UP-TO-DATE :entry:default@GeneratePkgModuleJson...  
+> hvigor Finished :entry:default@ProcessCompiledResources... after 1 ms 
+> hvigor Finished :entry:default@PackageHap... after 588 ms 
+> hvigor Finished :entry:default@PackingCheck... after 11 ms 
+> hvigor WARN: No signingConfig found for product default
 > hvigor Finished :entry:default@SignHap... after 4 ms 
 > hvigor Finished :entry:default@CollectDebugSymbol... after 3 ms 
 > hvigor Finished :entry:assembleHap... after 1 ms 
-> hvigor BUILD SUCCESSFUL in 3 s 299 ms 
+> hvigor BUILD SUCCESSFUL in 22 s 701 ms 
 
-65 tasks in total: 27 executed, 38 up-to-date
+65 tasks in total: 29 executed, 36 up-to-date
