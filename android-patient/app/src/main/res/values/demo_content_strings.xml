@@ -1,0 +1,12 @@
+<resources>
+    <string name="demo_notices_title">医疗公告</string>
+    <string name="demo_notices_source">演示预置公告</string>
+    <string name="demo_notice_visit_title">门诊预约就诊提醒</string>
+    <string name="demo_notice_visit_body">请按预约时段提前 15 分钟到院，携带有效身份证件并完成签到。</string>
+    <string name="demo_notice_visit_category">就诊提醒</string>
+    <string name="demo_notice_health_title">流感季节呼吸道防护建议</string>
+    <string name="demo_notice_health_body">进入医院请规范佩戴口罩；如有发热、咳嗽等症状，请优先前往发热门诊评估。</string>
+    <string name="demo_notice_health_category">健康提示</string>
+    <string name="ui_status_visiting">接诊中</string>
+    <string name="ui_status_cancelled">已退号</string>
+</resources>

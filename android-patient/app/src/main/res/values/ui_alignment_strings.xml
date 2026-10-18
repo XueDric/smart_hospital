@@ -1,0 +1,32 @@
+<resources>
+    <string name="align_notices_title">医疗公告</string>
+    <string name="align_notices_all">全部</string>
+    <string name="align_notices_subtitle">查看就诊提醒与健康提示</string>
+    <string name="align_notices_loading">正在加载公告…</string>
+    <string name="align_notices_empty">暂无医疗公告</string>
+    <string name="align_notices_retry">刷新公告</string>
+    <string name="align_booking_subtitle">按科室、医生和日期筛选号源</string>
+    <string name="align_booking_filters">筛选号源</string>
+    <string name="align_department_label">科室编号</string>
+    <string name="align_department_hint">可选，留空查询全部科室</string>
+    <string name="align_doctor_label">医生编号</string>
+    <string name="align_doctor_hint">可选，留空查询全部医生</string>
+    <string name="align_period_label">就诊时段</string>
+    <string name="align_period_all">全部</string>
+    <string name="align_invalid_filter_id">%1$s必须为正整数，也可以留空</string>
+    <string name="align_filters_changed">筛选条件已修改，请查询号源</string>
+    <string name="align_booking_already_booked">已预约该号源</string>
+    <string name="align_booking_badges_unconfirmed">预约标记暂未同步，请在“我的就诊”核对已有预约，或重新查询。</string>
+    <string name="align_current_appointments">当前预约</string>
+    <string name="align_history_appointments">历史记录</string>
+    <string name="align_cancel_blocked">当前状态为【%1$s】，不能退号。</string>
+    <string name="align_address_save">保存服务地址</string>
+    <string name="align_theme_note">跟随系统时自动匹配浅色或深色；手动选择后重启仍保持。</string>
+    <string name="align_triage_subtitle">描述症状，服务端会校验真实可用号源</string>
+    <string name="align_triage_question">主要哪里不舒服？</string>
+    <string name="align_triage_hint">例如：咳嗽三天，伴咽痛，无发热</string>
+    <string name="align_triage_count">%1$d/500</string>
+    <string name="align_triage_caption">建议包含症状、持续时间和伴随表现</string>
+    <string name="align_previsit_initial">六轮信息采集</string>
+    <string name="align_previsit_complete">问诊单已完成</string>
+</resources>

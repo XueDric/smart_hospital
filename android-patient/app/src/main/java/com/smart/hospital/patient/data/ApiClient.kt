@@ -10,7 +10,7 @@ import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 
 class ApiException(val status: Int, val code: String, override val message: String,
-                   val retryAfterSeconds: Int = 0) : Exception(message)
+                   val retryAfterSeconds: Int = 0, val requestId: String = "") : Exception(message)
 
 data class PrevisitStreamResult(
     val sessionId: String,
@@ -51,7 +51,8 @@ class ApiClient(private val session: SessionStore) {
         val seconds = retrySeconds(connection.getHeaderField("Retry-After"))
         val deadline = System.currentTimeMillis() + seconds * 1000L
         cooldowns.compute(baseUrl) { _, previous -> maxOf(previous ?: 0L, deadline) }
-        return ApiException(429, code.ifBlank { "AUTH_RATE_LIMITED" }, session.text(R.string.data_rate_limited, seconds), seconds)
+        return ApiException(429, code.ifBlank { "AUTH_RATE_LIMITED" }, session.text(R.string.data_rate_limited, seconds), seconds,
+            connection.getHeaderField("X-Request-Id").orEmpty())
     }
 
     private fun connection(baseUrl: String, token: String, path: String, method: String, accept: String): HttpURLConnection {
@@ -79,7 +80,9 @@ class ApiClient(private val session: SessionStore) {
     private fun readJson(connection: HttpURLConnection, status: Int): JSONObject {
         val stream = if (status in 200..299) connection.inputStream else connection.errorStream
         val text = stream?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() }.orEmpty()
-        return runCatching { JSONObject(text) }.getOrDefault(JSONObject())
+        return runCatching { JSONObject(text) }.getOrDefault(JSONObject()).apply {
+            if (!has("request_id")) put("request_id",connection.getHeaderField("X-Request-Id").orEmpty())
+        }
     }
 
     private fun handleAuth(error: ApiException, requestedToken: String, baseUrl: String, path: String) {
@@ -119,7 +122,9 @@ class ApiClient(private val session: SessionStore) {
             }
             ensureCurrent(token, baseUrl)
             if (path == "/health") status to json
-            else if (json.optBoolean("ok") && json.optJSONObject("data") != null) status to json.getJSONObject("data")
+            else if (json.optBoolean("ok") && json.optJSONObject("data") != null) status to json.getJSONObject("data").apply {
+                put("_request_id",json.optString("request_id"))
+            }
             else throw ApiException(status, "INVALID_RESPONSE", session.text(R.string.data_invalid_response))
         } catch (e: ApiException) { throw e }
         catch (e: Exception) { throw ApiException(0, "NETWORK", session.text(R.string.data_network_failed)) }
@@ -147,11 +152,13 @@ class ApiClient(private val session: SessionStore) {
             status in 300..399 -> session.text(R.string.data_service_redirect)
             else -> session.text(R.string.data_request_failed)
         }
-        return ApiException(status, code, message)
+        val userMessage = if (status in 400..499) json.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() } ?: message else message
+        return ApiException(status, code, userMessage, requestId = json.optString("request_id"))
     }
 
     fun get(path: String) = request("GET", path).second
     fun post(path: String, body: JSONObject) = request("POST", path, body).second
+    fun put(path: String, body: JSONObject) = request("PUT", path, body).second
     fun postWithStatus(path: String, body: JSONObject) = request("POST", path, body)
     fun postWithStatus(path: String, body: JSONObject, requestedBaseUrl: String, requestedToken: String) =
         request("POST", path, body, requestedBaseUrl, requestedToken)

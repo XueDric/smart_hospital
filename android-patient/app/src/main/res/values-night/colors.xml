@@ -1,0 +1,21 @@
+<resources>
+    <color name="primary">#00A9A7</color>
+    <color name="primary_dark">#4FD8D6</color>
+    <color name="primary_soft">#0E3B39</color>
+    <color name="background">#101817</color>
+    <color name="surface">#1A2624</color>
+    <color name="surface_alt">#22302E</color>
+    <color name="text">#E6F1EF</color>
+    <color name="text_secondary">#9DB4B1</color>
+    <color name="border">#354744</color>
+    <color name="danger">#D96A6A</color>
+    <color name="danger_soft">#3A1F1F</color>
+    <color name="warning">#D99A4E</color>
+    <color name="warning_soft">#3A2E18</color>
+    <color name="success">#58B98F</color>
+    <color name="success_soft">#143528</color>
+    <color name="info">#7FA8DC</color>
+    <color name="info_soft">#1B2C42</color>
+    <color name="disabled">#5C6E6C</color>
+    <color name="on_primary">#FFFFFF</color>
+</resources>

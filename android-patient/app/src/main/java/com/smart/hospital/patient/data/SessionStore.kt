@@ -9,6 +9,8 @@ import java.net.URI
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.UUID
+import org.json.JSONObject
+import com.smart.hospital.patient.model.PendingBooking
 
 /** Passwords and demonstration identities are never persisted. */
 class SessionStore(context: Context) {
@@ -21,6 +23,7 @@ class SessionStore(context: Context) {
     private val demoBookingTokens = mutableMapOf<Long, String>()
     private val demoCompletedBookings = mutableMapOf<Long, Long>()
     private val demoCancelledBookings = mutableMapOf<Long, MutableSet<Long>>()
+    private val demoPending = mutableMapOf<Long, PendingBooking>()
 
     /**
      * 进程内令牌缓存（评审 P2-14）。
@@ -103,18 +106,20 @@ class SessionStore(context: Context) {
     val role: String get() = if (mockMode) demoLogin?.role.orEmpty() else prefs.getString("role", "").orEmpty()
     val refId: Long get() = if (mockMode) demoLogin?.refId ?: 0 else prefs.getLong("ref_id", 0)
     val patientId: Long get() = if (mockMode) demoLogin?.patientId ?: 0 else prefs.getLong("patient_id", 0)
+    val doctorId: Long get() = if (mockMode) demoLogin?.doctorId ?: 0 else prefs.getLong("doctor_id", 0)
     val displayName: String get() = if (mockMode) demoLogin?.displayName.orEmpty() else prefs.getString("display_name", "").orEmpty()
     val previsitSessionId: String get() = if (mockMode) demoPrevisitId else prefs.getString("previsit_session_id", "").orEmpty()
 
-    @Synchronized fun isLoggedIn(): Boolean = token.length == 64 && role == "patient" && patientId > 0 &&
+    @Synchronized fun isLoggedIn(): Boolean = token.length == 64 &&
+        ((role == "patient" && patientId > 0) || (role == "doctor" && doctorId > 0)) &&
         (!mockMode || expiresAt > System.currentTimeMillis() / 1000)
 
     // Cached expiry is a server snapshot: the server renews it on authenticated requests.
     // Only an authoritative rejection may discard an otherwise valid persisted online identity.
     @Synchronized fun updateCurrentUserIfCurrent(user: CurrentUser, requestedToken: String,
                                                 requestedBaseUrl: String): Boolean {
-        if (token != requestedToken || baseUrl != requestedBaseUrl || user.role != "patient" ||
-            user.userId != userId || user.patientId != patientId) return false
+        if (token != requestedToken || baseUrl != requestedBaseUrl || user.role != role ||
+            user.userId != userId || user.patientId != patientId || user.doctorId != doctorId) return false
         if (mockMode) demoLogin = demoLogin?.copy(displayName = user.displayName)
         else {
             val editor = prefs.edit().putString("display_name", user.displayName)
@@ -128,7 +133,8 @@ class SessionStore(context: Context) {
     @Synchronized fun saveLogin(result: LoginResult) {
         require(result.token.length == 64) { text(R.string.data_invalid_token) }
         require(result.expiresAt > System.currentTimeMillis() / 1000 && result.userId > 0 &&
-            result.refId > 0 && result.role == "patient" && result.patientId > 0) { text(R.string.data_invalid_patient_identity) }
+            result.refId > 0 && ((result.role == "patient" && result.patientId > 0) ||
+                (result.role == "doctor" && result.doctorId > 0))) { text(R.string.data_invalid_patient_identity) }
         if (mockMode) {
             demoLogin = result
             return
@@ -137,7 +143,8 @@ class SessionStore(context: Context) {
         storeTokenSecurely(result.token)
         prefs.edit().remove(KEY_TOKEN_LEGACY).putLong("expires_at", result.expiresAt)
             .putLong("user_id", result.userId).putString("role", result.role).putLong("ref_id", result.refId)
-            .putLong("patient_id", result.patientId).putString("display_name", result.displayName).apply()
+            .putLong("patient_id", result.patientId).putLong("doctor_id", result.doctorId)
+            .putString("display_name", result.displayName).apply()
     }
 
     @Synchronized fun setPrevisitSession(id: String) {
@@ -151,13 +158,14 @@ class SessionStore(context: Context) {
         demoLogin = null
         demoPrevisitId = ""
         tokenCache = null
+        demoPending.clear()
         demoBookingTokens.clear()
         demoCompletedBookings.clear()
         demoCancelledBookings.clear()
         SecretStore.remove(prefs, KEY_TOKEN_SECURE)
         prefs.edit().remove(KEY_TOKEN_LEGACY).remove("expires_at").remove("user_id").remove("role")
             .remove("ref_id").remove("patient_id").remove("display_name")
-            .remove("previsit_session_id").remove("mock_mode").apply()
+            .remove("doctor_id").remove("previsit_session_id").remove("mock_mode").apply()
         // Online keys survive logout/401: an uncertain request must keep its idempotency key.
     }
 
@@ -258,6 +266,31 @@ class SessionStore(context: Context) {
     }
 
     private fun newBookingToken() = UUID.randomUUID().toString().replace("-", "")
+    private fun pendingObject() = JSONObject(prefs.getString("booking_pending_${bookingNamespace(0)}", "{}").orEmpty())
+    @Synchronized fun pendingBookings(): List<PendingBooking> {
+        if (mockMode) return demoPending.values.toList()
+        if (role != "patient" || patientId <= 0) return emptyList()
+        val o=pendingObject()
+        return o.keys().asSequence().map { key -> val p=o.getJSONObject(key)
+            PendingBooking(key.toLong(),p.getString("token"),p.optString("previsit_id")) }.toList()
+    }
+    @Synchronized fun beginBooking(scheduleId: Long, previsitId: String): PendingBooking {
+        pendingBookings().firstOrNull { it.scheduleId == scheduleId }?.let { return it }
+        val pending=PendingBooking(scheduleId,bookingToken(scheduleId),previsitId)
+        if(mockMode) demoPending[scheduleId]=pending
+        else {
+            val o=pendingObject().put(scheduleId.toString(),JSONObject().put("token",pending.clientToken).put("previsit_id",previsitId))
+            check(prefs.edit().putString("booking_pending_${bookingNamespace(0)}",o.toString()).commit()) { text(R.string.data_booking_storage_failed) }
+        }
+        return pending
+    }
+    @Synchronized fun clearPending(scheduleId: Long, token: String) {
+        if(mockMode) { if(demoPending[scheduleId]?.clientToken==token) demoPending.remove(scheduleId);return }
+        val o=pendingObject()
+        if(o.optJSONObject(scheduleId.toString())?.optString("token")!=token) return
+        o.remove(scheduleId.toString())
+        check(prefs.edit().putString("booking_pending_${bookingNamespace(0)}",o.toString()).commit()) {text(R.string.data_booking_storage_failed)}
+    }
     private fun bookingNamespace(scheduleId: Long): String = MessageDigest.getInstance("SHA-256")
         .digest("$baseUrl|$patientId|$scheduleId".toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it.toInt() and 0xff) }

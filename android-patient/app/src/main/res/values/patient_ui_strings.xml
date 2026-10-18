@@ -1,0 +1,28 @@
+<resources>
+    <string name="ui_patient_role">患者服务</string>
+    <string name="ui_patient_services">智能分诊 · 预约挂号 · 医疗档案</string>
+    <string name="ui_login_account">登录账号</string>
+    <string name="ui_login_password">密码</string>
+    <string name="ui_demo_mode_action">演示模式</string>
+    <string name="ui_doctor_entry">医生入口</string>
+    <string name="ui_emergency_notice">如出现胸痛、呼吸困难、意识障碍等危急情况，请立即前往急诊或拨打 120。</string>
+    <string name="ui_next_visit">下一次就诊</string>
+    <string name="ui_next_visit_summary">%1$s %2$s · %3$s</string>
+    <string name="ui_common_services">常用服务</string>
+    <string name="ui_quick_triage">描述症状找科室</string>
+    <string name="ui_quick_previsit">提前整理病情</string>
+    <string name="ui_quick_booking">按日期查号源</string>
+    <string name="ui_quick_records">查看就诊记录</string>
+    <string name="ui_triage_question">哪里不舒服？</string>
+    <string name="ui_symptom_description">症状描述</string>
+    <string name="ui_booking_filter">选择就诊日期</string>
+    <string name="ui_visit_date">就诊日期</string>
+    <string name="ui_current_answer">填写回答</string>
+    <string name="ui_data_source">数据与服务</string>
+    <string name="ui_service_address">服务地址</string>
+    <string name="ui_nav_profile">我的</string>
+    <string name="ui_status_booked">已挂号</string>
+    <string name="ui_status_arrived">已到院</string>
+    <string name="ui_status_waiting">候诊中</string>
+    <string name="ui_status_no_show">已爽约</string>
+</resources>

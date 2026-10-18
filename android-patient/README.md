@@ -4,6 +4,12 @@ Kotlin 原生 Views 实现的患者端（包名 `com.smart.hospital.patient`）�
 
 接口口径**只以** [docs/FRONTEND-INTEGRATION.md](../docs/FRONTEND-INTEGRATION.md) 为准；两端差异只体现在 UI 框架与平台能力上（鸿蒙为 ArkTS + ArkUI V2，安卓为 Kotlin Views）。
 
+## 首页预约适配
+
+“下一次就诊”按鸿蒙 `c75b15e` 的规则选择活动预约：优先接诊中、候诊中、已到院、已挂号，再按日期、时段和序号比较；刷新先清掉旧卡，终态不参与。详见 [首页适配交接](HOME-APPOINTMENT-ALIGNMENT-2026-10-18.md)。本轮只做源码复核，运行结果待用户验证。
+
+本轮继续补齐科室/医生编号与时段筛选、在线公告、当前/历史预约分组、服务端状态文案、手动主题及页面内服务地址设置。演示数据现含七态预约，另有空闲排班可演示新挂号。完整实现范围与用户复测项见 [跨端功能适配交接](CROSS-PLATFORM-PARITY-2026-10-18.md)。
+
 ## 工具链
 
 | 工具 | 要求 |

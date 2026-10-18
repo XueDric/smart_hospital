@@ -1,0 +1,18 @@
+<resources>
+    <string name="align_demo_general_department">全科门诊</string>
+    <string name="align_demo_doctor_zhou">周宁医生</string>
+    <string name="align_demo_doctor_zhou_title">主任医师</string>
+    <string name="align_notice_records_title">电子病历查询说明</string>
+    <string name="align_notice_records_body">医生提交并锁定病历后，可在“医疗档案”中查看本次就诊的七段式记录。</string>
+    <string name="align_notice_records_category">服务说明</string>
+    <string name="align_status_booked">已挂号</string>
+    <string name="align_status_arrived">已到院</string>
+    <string name="align_status_waiting">候诊中</string>
+    <string name="align_status_visiting">接诊中</string>
+    <string name="align_status_done">已完成</string>
+    <string name="align_status_cancelled">已退号</string>
+    <string name="align_status_no_show">已爽约</string>
+    <string name="align_status_unknown">状态未知</string>
+    <string name="align_schedule_filter_invalid">请填写有效的科室、医生编号及就诊时段</string>
+    <string name="align_schedule_already_booked">已预约该号源，请在“我的就诊”中查看</string>
+</resources>

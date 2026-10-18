@@ -16,4 +16,6 @@
     <color name="success_soft">#DFF3E9</color>
     <color name="info">#315B96</color>
     <color name="info_soft">#E7EFFB</color>
+    <color name="disabled">#AAB8B6</color>
+    <color name="on_primary">#FFFFFF</color>
 </resources>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="doctor_brand">智慧医院</string>
+    <string name="doctor_role">医生端</string>
+    <string name="doctor_login_subtitle">接诊队列 · 电子病历</string>
+    <string name="doctor_online_service">在线服务 · 使用医生账号登录</string>
+    <string name="doctor_server_label">服务地址</string>
+    <string name="doctor_account_label">工号（登录名） *</string>
+    <string name="doctor_password_label">密码 *</string>
+    <string name="doctor_login_guidance">完成就诊前必须先提交锁定病历，锁定后不可再修改。</string>
+    <string name="doctor_queue_empty_hint">当前没有可显示的预约，可刷新队列查看最新接诊安排。</string>
+    <string name="doctor_period_morning">上午</string>
+    <string name="doctor_period_afternoon">下午</string>
+</resources>
