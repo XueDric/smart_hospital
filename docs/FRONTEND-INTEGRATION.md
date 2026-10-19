@@ -2071,7 +2071,7 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 | 12 | ~~**没有"这单还能不能退"的判定字段**~~ ✅ **服务端已强制校验 2026-10-12**（仍无 `can_cancel` 字段） | 退号按钮置灰 | 无 `can_cancel` 字段，`bookingJson` 里只有 `status`。**但现在服务端会拦**：非 `booked` 一律 409 `APPOINTMENT_NOT_CANCELLABLE`（§5.16/§8.2）。⇒ 置灰用 `status === 'booked'`，**并必须兜底 409**（列表快照会过期：医生随时可能点"开始接诊"） |
 | 13 | **分诊结果无法跳详情** | `options` 给了 `department_id`/`doctor_id`，但没有详情页可取（缺口 1/2） | ⇒ 分诊结果页**直接就地展示号源并允许挂号**，不做"科室详情"跳转 |
 | 14 | **没有 AI 流式分诊** | 分诊页不能做逐字输出 | 只有预问诊是 SSE；`POST /api/v1/triage` 是一次性 JSON（`http_app.cj:1157-1223` 无 stream 分支）。⇒ 分诊页用 loading 态即可 |
-| 15 | ~~**医生端任何接口都拿不到患者姓名**~~ **服务端已补齐 / 客户端待接**（2026-10-16，医生端同学复核 ★★★ 第 2 条） | 医生工作台左栏「给谁看病」、队列行、既往病历列表都只能显示「患者 #700001」 | 三条医生侧**读**接口已补 `patient_name` / `patient_gender`：`GET /doctor/visits`（§5.28.5）、`GET /doctor/visits/:id/record`（含空骨架，§6.2）、`GET /doctor/patients/:patientId/records`（§5.30.1）；医生端仍需解析并在队列、病历患者栏里展示。⚠ 患者侧与 `/admin/dashboard` **仍然不给**（后者禁用词表里就有 `patient_name`） |
+| 15 | ~~**医生端任何接口都拿不到患者姓名**~~ **服务端已补齐 / 客户端已接**（2026-10-16，医生端同学复核 ★★★ 第 2 条） | 医生工作台左栏「给谁看病」、队列行、既往病历列表都只能显示「患者 #700001」 | 三条医生侧**读**接口已补 `patient_name` / `patient_gender`：`GET /doctor/visits`（§5.28.5）、`GET /doctor/visits/:id/record`（含空骨架，§6.2）、`GET /doctor/patients/:patientId/records`（§5.30.1）；医生端已解析并在队列（`VisitQueuePage`）、病历患者栏（`EmrEditPage`）展示（提交 `e0eeb58`）。⚠ 患者侧与 `/admin/dashboard` **仍然不给**（后者禁用词表里就有 `patient_name`） |
 
 > 另有一条"半个缺口"：`GET /api/v1/previsit/:id` 能按 `session_id` 取单，但**没有"列出我的预问诊会话"**
 > 接口（`http_app.cj` 里只有 3 条 previsit 路由）⇒ 客户端必须自己持久化 `session_id`。
