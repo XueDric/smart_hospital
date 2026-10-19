@@ -5,17 +5,14 @@
 > 相关整改记录见 [docs/整改方案-2026-10-17.md](../../docs/整改方案-2026-10-17.md) §2.1。
 
 ## 一、文件清单
-
 | 文件 | 大小 | 说明 |
 |---|---|---|
-| `entry-default-unsigned.hap` | 1,758,339 B | 未签名 HAP（SHA256 `70A7EB5366445E04F3895A305E3F59614019EF8CA698B6654B1DA8A2CC17479D`）|
+| `entry-default-unsigned.hap` | 1,757,426 B | 未签名 HAP（SHA256 `63D02775386A2D9004AA6B8035F62ECF16355EE85C553549F4DD6C37F795A88C`，2026-10-19 22:40 构建，含医生端既往病历排序修复 `177ed59`）|
 | `pack.info` | 565 B | 打包信息（bundle `com.smart.hospital.patient`、versionCode/versionName、模块列表）|
-| `build-log-2026-10-17.txt` | 7,381 B | 2026-10-17 的 `assembleHap` 完整日志（ANSI 已剥离）|
-| `build-log-2026-10-18.txt` | 9,453 B | 2026-10-18 文档收敛后重建的日志（ANSI 已剥离，末行 `BUILD SUCCESSFUL`；70 tasks 全部 executed）|
+| `build-log-2026-10-19.txt` | 8,435 B | 2026-10-19 合并队友提交（含医生端排序修复）后重建的日志（ANSI 已剥离，末行 `BUILD SUCCESSFUL in 20 s 735 ms`；65 tasks / 44 executed / 21 up-to-date）|
 | `screenshots/*.jpeg` | 14 张 | 见下表 |
 
 ## 二、截图索引
-
 | # | 文件 | 端 | 画面内容（dump 实测摘要）|
 |---|---|---|---|
 | 01 | `screenshots/01-admin-login.jpeg` | 管理端 | 登录页：`智慧医院 / 管理端 / 运营看板·基础数据·AI 能力中心`；`在线服务 / 演示数据` 切换、管理员账号与密码、`登录` |

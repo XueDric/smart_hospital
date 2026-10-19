@@ -7,6 +7,17 @@
 
 ---
 
+## [0.2.0-p1-rev.6] 2026-10-19 —— 合并队友 4 个提交后重建 HAP，交付物与源码重新对齐
+
+### 变更
+
+- **鸿蒙 HAP 重建**：队友 `177ed59` 改了医生端两个页面（`EmrEditPage.ets` 既往病历排序、`RecordHistoryPage.ets` 修订历史排版），而入库的 HAP 是 10-18 21:28 构建的 —— 二进制落后于源码。本次重编后：**1,757,426 B**，SHA256 `63D02775386A2D9004AA6B8035F62ECF16355EE85C553549F4DD6C37F795A88C`（`BUILD SUCCESSFUL in 20 s 735 ms`，65 tasks / 44 executed）。
+- **构建日志只留最新一份**：`release/harmony/build-log-2026-10-19.txt`（8,435 B），删除 `-10-17` 与 `-10-18` 两份旧日志 —— 多份日志对应同一份产物会让"这份 HAP 到底怎么来的"无从判断。
+- **`docs/交付快照.md`** 由 `tools/check-snapshot.ps1 -Update` 刷新（hap_size / hap_sha256 / commit=9f8a8a4）；`README.md`、`docs/DEPLOYMENT.md`、`docs/整改方案-2026-10-17.md`、`release/harmony/README.md` 的体积与哈希同步；`server/tests/doc-counts.ps1` 实测 `hapsize=1757426`、`accept=794`、`triagetest=150` 全绿。
+
+### 修复
+
+- **`server/devdb.ps1` 在本机起不来（环境问题，非仓库缺陷）**：当前会话环境里 `NO_PROXY` 与 `no_proxy`（以及 `HTTP(S)_PROXY` 两套大小写）同时存在，Windows PowerShell 的 `Start-Process` 在复制环境变量时抛 `Item has already been added. Key in dictionary: 'NO_PROXY'`。绕过方式：先在当前进程 `Remove-Item Env:no_proxy` 等清掉重复项，再跑 `devdb.ps1 start`。已记在此处，避免下次误判成数据库坏了。
 ## [0.2.0-p1-rev.5] 2026-10-18 —— 按评审第 2–6 条补齐答辩与合规材料
 
 ### 新增
@@ -181,7 +192,7 @@
 - **`hvigorw.bat`（仓库根）**：自动探测 DevEco 安装位置并推出 `DEVECO_SDK_HOME` / `JAVA_HOME`，
   使用者不配环境变量即可在仓库根一条命令构建鸿蒙客户端（`assembleHap`）。
 - **鸿蒙构建与运行证据入库** [`release/harmony/`](release/harmony/README.md)：`entry-default-unsigned.hap`
-  （1,758,339 B，SHA256 `70A7EB5366445E04F3895A305E3F59614019EF8CA698B6654B1DA8A2CC17479D`）、`pack.info`、
+  （1,758,339 B，SHA256 `70A7EB5366445E04F3895A305E3F59614019EF8CA698B6654B1DA8A2CC17479D`；⚠ 该次构建的产物已被 [0.2.0-p1-rev.6] 的重建取代，现行口径见 `docs/交付快照.md`）、`pack.info`、
   剥掉 ANSI 的完整构建日志、**11 张模拟器实跑截图**（管理端登录/看板/AI 能力中心、患者端登录/首页/分诊/选号/挂号/就诊）
   —— 回应评审「鸿蒙零构建产物、零运行证据」。
 - **安卓构建与运行证据入库** [`release/android/`](release/android/README.md)：`app-debug.apk`（956,718 B，
