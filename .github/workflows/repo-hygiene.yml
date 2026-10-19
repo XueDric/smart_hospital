@@ -22,6 +22,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 浅克隆（默认 fetch-depth:1）拿不到 tag 与祖先历史，check-snapshot 的
+          # 「tag 存在」与「commit 祖先判定」会在 CI 里误报 FAIL。拉全历史即连带拉 tag。
+          fetch-depth: 0
       - name: Run tools/check-docs.ps1
         shell: pwsh
         run: ./tools/check-docs.ps1
