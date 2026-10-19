@@ -129,7 +129,8 @@ export struct RecordHistoryPage {
     }
   }
 
-  private closeDetail(): void {    this.selectedVersion = 0;
+  private closeDetail(): void {
+    this.selectedVersion = 0;
     this.hasDetail = false;
     this.hasDiff = false;
     this.diff = new RevisionDiff();

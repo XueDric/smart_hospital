@@ -190,26 +190,12 @@ export struct EmrEditPage {
       return;
     }
     try {
-      const items = await this.repository.getPatientRecords(this.patientId, 5,
+      // 顺序是服务端契约（§5.30.1 就诊时间倒序 visit_date/period/id），客户端不重排。
+      this.pastRecords = await this.repository.getPatientRecords(this.patientId, 5,
         this.appointmentId);
-      this.pastRecords = this.newestFirst(items);
     } catch (error) {
       this.pastRecords = [];
     }
-  }
-
-  /*
-   * 既往病历按**最近就诊在前**排。
-   * 契约（§5.30.1）没有规定 `items` 的顺序，所以不能指望服务端的排列 ——
-   * 直接按 `record.updated_at`（epoch 秒，恒定下发）倒序，既稳又不依赖字符串日期
-   * （`visit_date` 在挂号单已被清理时是缺的，按它排会把那些条排到任意位置）。
-   */
-  private newestFirst(items: PastRecord[]): PastRecord[] {
-    const sorted = items.slice();
-    sorted.sort((left: PastRecord, right: PastRecord) => {
-      return right.record.updatedAt - left.record.updatedAt;
-    });
-    return sorted;
   }
 
   // 统一错误出口。EMR_CHANGED / EMR_LOCKED 是两种**语义不同**的 409，必须分开处理。
