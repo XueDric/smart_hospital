@@ -7,11 +7,28 @@
 
 ---
 
+## [0.2.0-p1-rev.7] 2026-10-20 —— 分诊页两处 Mock 文案不再冒充"服务端实时校验"
+
+### 修复
+
+- **同页副标题（`TriagePage.ets:62` 的 `PageHeader.subtitle`）**：原为固定文案"描述症状，**服务端会校验真实可用号源**"，Mock 模式下同样是假的。改为按模式分支：Mock 显示"描述症状，按本地演示数据给出结论（不连服务端）"，在线服务保持原文案。
+- **`feature-patient/src/main/ets/pages/TriagePage.ets:186`**：判断依据第 3 条原来写死"可用号源：N 个，**均来自服务端实时校验**"，而演示数据（Mock）模式下根本没有服务端参与 —— 同一张卡片第 4 条又写着"当前为 Mock 模式"（`MockPatientRepository.ets:168`），自相矛盾。改为按模式分支：Mock 显示"来自本地演示数据（Mock），未经服务端校验"，在线服务仍显示"均来自服务端实时校验"。
+  - 触发场景：答辩录屏里用的正是 Mock 模式，观众会同时看到"未经校验"与"服务端实时校验"两个相反的结论。
+  - 验证：模拟器（Pura 90 / HarmonyOS 6.1.1）装新 HAP → 切「演示数据」→ 输入"咳嗽三天伴有咽痛"→ 结论卡实测 `3. 可用号源：2 个，来自本地演示数据（Mock），未经服务端校验`，截图 `release/harmony/screenshots/16-patient-triage-mock-subtitle.jpeg`（一张图同时能看到副标题与第 3 条两处改动）。
+
+### 变更
+
+- **HAP 重建**：**1,758,094 B**，SHA256 `D7509236EBA4EBC5964B4BB5FE7906A3B9420B0CC76B44E9DACC828230539235`（`BUILD SUCCESSFUL in 13 s 722 ms`，65 tasks / 29 executed）；`release/harmony/` 只保留最新一份日志 `build-log-2026-10-20.txt`（8,048 B）；`docs/交付快照.md` 与各文档体积/哈希同步，`doc-counts` 实测 `hapsize=1758094`。
+
+### 已知未改
+
+- 无（副标题已一并改掉；`PageHeader` 与第 3 条现在口径一致）。
+- 录屏文件本身（`E:\harmonyOS\b4894da26e0b5b7b7f93c5b986b90f13_raw.mp4`）仍是 10-20 上午的版本，**未包含本次修复**；若沿用该片，需重录或用字幕说明。
 ## [0.2.0-p1-rev.6] 2026-10-19 —— 合并队友 4 个提交后重建 HAP，交付物与源码重新对齐
 
 ### 变更
 
-- **鸿蒙 HAP 重建**：队友 `177ed59` 改了医生端两个页面（`EmrEditPage.ets` 既往病历排序、`RecordHistoryPage.ets` 修订历史排版），而入库的 HAP 是 10-18 21:28 构建的 —— 二进制落后于源码。本次重编后：**1,757,426 B**，SHA256 `63D02775386A2D9004AA6B8035F62ECF16355EE85C553549F4DD6C37F795A88C`（`BUILD SUCCESSFUL in 20 s 735 ms`，65 tasks / 44 executed）。
+- **鸿蒙 HAP 重建**：队友 `177ed59` 改了医生端两个页面（`EmrEditPage.ets` 既往病历排序、`RecordHistoryPage.ets` 修订历史排版），而入库的 HAP 是 10-18 21:28 构建的 —— 二进制落后于源码。本次重编后：**1,757,426 B**，SHA256 `63D02775386A2D9004AA6B8035F62ECF16355EE85C553549F4DD6C37F795A88C`（`BUILD SUCCESSFUL in 20 s 735 ms`，65 tasks / 44 executed）。⚠ 该次产物已被 [0.2.0-p1-rev.7] 的重建取代（原因是 rev.7 修了分诊页 Mock 文案），现行口径见 `docs/交付快照.md`。
 - **构建日志只留最新一份**：`release/harmony/build-log-2026-10-19.txt`（8,435 B），删除 `-10-17` 与 `-10-18` 两份旧日志 —— 多份日志对应同一份产物会让"这份 HAP 到底怎么来的"无从判断。
 - **`docs/交付快照.md`** 由 `tools/check-snapshot.ps1 -Update` 刷新（hap_size / hap_sha256 / commit=9f8a8a4）；`README.md`、`docs/DEPLOYMENT.md`、`docs/整改方案-2026-10-17.md`、`release/harmony/README.md` 的体积与哈希同步；`server/tests/doc-counts.ps1` 实测 `hapsize=1757426`、`accept=794`、`triagetest=150` 全绿。
 

@@ -1,4 +1,4 @@
-import { ApiError, AppRouter, RouteName } from 'common-core';
+import { ApiConfig, ApiError, AppRouter, RouteName } from 'common-core';
 import { PatientRepository } from '../data/PatientRepository';
 import { TriageOption, TriageResult } from '../model/PatientModels';
 import { AppButton, InfoBanner, LoadingBlock, PageHeader, SectionTitle, StatusChip } from 'common-core';
@@ -59,7 +59,7 @@ export struct TriagePage {
     Column() {
       PageHeader({
         title: '智能分诊',
-        subtitle: '描述症状，服务端会校验真实可用号源'
+        subtitle: ApiConfig.isMock() ? '描述症状，按本地演示数据给出结论（不连服务端）' : '描述症状，服务端会校验真实可用号源'
       })
 
       Scroll() {
@@ -183,7 +183,7 @@ export struct TriagePage {
                     .fontColor(AppColor.TEXT_SECONDARY)
                     .width('100%')
                     .margin({ top: 6 })
-                  Text(`3. 可用号源：${this.result.count} 个，均来自服务端实时校验`)
+                  Text('3. 可用号源：' + this.result.count + ' 个，' + (ApiConfig.isMock() ? '来自本地演示数据（Mock），未经服务端校验' : '均来自服务端实时校验'))
                     .fontSize(AppText.CAPTION)
                     .fontColor(AppColor.TEXT_SECONDARY)
                     .width('100%')

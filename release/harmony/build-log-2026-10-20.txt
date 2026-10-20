@@ -3,18 +3,18 @@
 > hvigor [32mUP-TO-DATE :feature_patient:default@PreBuild...  [39m
 > hvigor [32mUP-TO-DATE :feature_doctor:default@PreBuild...  [39m
 > hvigor [32mUP-TO-DATE :feature_admin:default@PreBuild...  [39m
-> hvigor [32mFinished :entry:default@CreateModuleInfo... after 2 ms [39m
-> hvigor [32mFinished :entry:default@GenerateMetadata... after 5 ms [39m
+> hvigor [32mFinished :entry:default@CreateModuleInfo... after 1 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@GenerateMetadata...  [39m
 > hvigor [32mFinished :entry:default@PreCheckSyscap... after 1 ms [39m
-> hvigor [32mFinished :entry:default@GeneratePkgContextInfo... after 24 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@GeneratePkgContextInfo...  [39m
 > hvigor [32mFinished :entry:default@GeneratePkgSdkInfo... after 5 ms [39m
 > hvigor [32mFinished :entry:default@ProcessIntegratedHsp... after 1 ms [39m
 > hvigor [32mUP-TO-DATE :common_core:default@CreateHarBuildProfile...  [39m
 > hvigor [32mFinished :common_core:default@ConfigureCmake... after 1 ms [39m
 > hvigor [32mUP-TO-DATE :common_core:default@MergeProfile...  [39m
-> hvigor [32mFinished :entry:default@SyscapTransform... after 34 ms [39m
-> hvigor [32mFinished :entry:default@ProcessRouterMap... after 6 ms [39m
-> hvigor [32mFinished :entry:default@ProcessShareConfig... after 4 ms [39m
+> hvigor [32mFinished :entry:default@SyscapTransform... after 10 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@ProcessRouterMap...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@ProcessShareConfig...  [39m
 > hvigor [32mFinished :entry:default@ProcessStartupConfig... after 3 ms [39m
 > hvigor [32mUP-TO-DATE :feature_patient:default@CreateHarBuildProfile...  [39m
 > hvigor [32mUP-TO-DATE :feature_doctor:default@CreateHarBuildProfile...  [39m
@@ -23,42 +23,42 @@
 > hvigor [32mUP-TO-DATE :feature_patient:default@MergeProfile...  [39m
 > hvigor [32mUP-TO-DATE :feature_doctor:default@MergeProfile...  [39m
 > hvigor [32mUP-TO-DATE :feature_admin:default@MergeProfile...  [39m
-> hvigor [32mFinished :entry:default@GenerateLoaderJson... after 16 ms [39m
-> hvigor [32mFinished :entry:default@CreateBuildProfile... after 3 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@GenerateLoaderJson...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@CreateBuildProfile...  [39m
 > hvigor [32mFinished :common_core:default@BuildNativeWithNinja... after 1 ms [39m
 > hvigor [32mFinished :feature_patient:default@ConfigureCmake... after 1 ms [39m
 > hvigor [32mFinished :feature_doctor:default@ConfigureCmake... after 1 ms [39m
 > hvigor [32mFinished :feature_admin:default@ConfigureCmake... after 1 ms [39m
-> hvigor [32mFinished :entry:default@MergeProfile... after 36 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@MergeProfile...  [39m
 > hvigor [32mUP-TO-DATE :common_core:default@ProcessLibs...  [39m
 > hvigor [32mFinished :feature_patient:default@BuildNativeWithCmake... after 1 ms [39m
 > hvigor [32mFinished :feature_doctor:default@BuildNativeWithCmake... after 1 ms [39m
 > hvigor [32mFinished :feature_admin:default@BuildNativeWithCmake... after 1 ms [39m
-> hvigor [32mFinished :entry:default@MakePackInfo... after 4 ms [39m
-> hvigor [32mFinished :entry:default@ProcessProfile... after 223 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@MakePackInfo...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@ProcessProfile...  [39m
 > hvigor [32mUP-TO-DATE :common_core:default@DoNativeStrip...  [39m
 > hvigor [32mFinished :entry:default@ConfigureCmake... after 1 ms [39m
-> hvigor [32mFinished :entry:default@ProcessResource... after 5 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@ProcessResource...  [39m
 > hvigor [32mFinished :feature_patient:default@BuildNativeWithNinja... after 1 ms [39m
 > hvigor [32mFinished :feature_doctor:default@BuildNativeWithNinja... after 1 ms [39m
 > hvigor [32mFinished :feature_admin:default@BuildNativeWithNinja... after 1 ms [39m
 > hvigor [32mFinished :entry:default@BuildNativeWithCmake... after 1 ms [39m
-> hvigor [32mFinished :entry:default@CompileResource... after 271 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@CompileResource...  [39m
 > hvigor [32mUP-TO-DATE :feature_patient:default@ProcessLibs...  [39m
 > hvigor [32mUP-TO-DATE :feature_doctor:default@ProcessLibs...  [39m
 > hvigor [32mUP-TO-DATE :feature_admin:default@ProcessLibs...  [39m
-> hvigor [32mFinished :entry:default@BuildJS... after 4 ms [39m
+> hvigor [32mFinished :entry:default@BuildJS... after 7 ms [39m
 > hvigor [32mUP-TO-DATE :feature_patient:default@DoNativeStrip...  [39m
 > hvigor [32mUP-TO-DATE :feature_doctor:default@DoNativeStrip...  [39m
 > hvigor [32mUP-TO-DATE :feature_admin:default@DoNativeStrip...  [39m
-> hvigor [32mFinished :entry:default@BuildNativeWithNinja... after 2 ms [39m
-> hvigor [32mFinished :entry:default@ProcessLibs... after 19 ms [39m
-> hvigor [32mFinished :entry:default@DoNativeStrip... after 5 ms [39m
-> hvigor [32mFinished :entry:default@CacheNativeLibs... after 13 ms [39m
-hvigorw.bat : > hvigor [33mWARN: [33mWARN: [33m[33mArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/mai
-n/ets/storage/SessionStore.ets:53:38
-At line:5 char:1
-+ & .\hvigorw.bat --mode module -p product=default -p module=entry@defa ...
+> hvigor [32mFinished :entry:default@BuildNativeWithNinja... after 1 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@ProcessLibs...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@DoNativeStrip...  [39m
+> hvigor [32mUP-TO-DATE :entry:default@CacheNativeLibs...  [39m
+.\hvigorw.bat : > hvigor [33mWARN: [33mWARN: [33m[33mArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/m
+ain/ets/storage/SessionStore.ets:53:38
+At line:2 char:1
++ .\hvigorw.bat --mode module -p product=default -p module=entry@defaul ...
 + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     + CategoryInfo          : NotSpecified: (> hvigor [33mW...Store.ets:53:38:String) [], RemoteException
     + FullyQualifiedErrorId : NativeCommandError
@@ -116,20 +116,16 @@ At line:5 char:1
 [33mWARN: [33m[33mArkTS:WARN File: E:/harmonyOS/smart_hospital/common-core/src/main/ets/ui/ThemeManager.ets:101:39
  'matchMediaSync' has been deprecated.
 [39m[39m
-[33mWARN: [33mArkTS:WARN File: E:/harmonyOS/smart_hospital/feature-admin/src/main/ets/pages/KnowledgeBasePage.ets:62:
-9
- Methods, properties and accessors in structures decorated by '@Component' and '@ComponentV2' cannot have name as 'crea
-te'.[39m[39m
 [39m
-> hvigor [32mFinished :entry:default@CompileArkTS... after 11 s 933 ms [39m
-> hvigor [32mFinished :entry:default@GeneratePkgModuleJson... after 4 ms [39m
+> hvigor [32mFinished :entry:default@CompileArkTS... after 4 s 212 ms [39m
+> hvigor [32mUP-TO-DATE :entry:default@GeneratePkgModuleJson...  [39m
 > hvigor [32mFinished :entry:default@ProcessCompiledResources... after 1 ms [39m
-> hvigor [32mFinished :entry:default@PackageHap... after 748 ms [39m
-> hvigor [32mFinished :entry:default@PackingCheck... after 8 ms [39m
+> hvigor [32mFinished :entry:default@PackageHap... after 451 ms [39m
+> hvigor [32mFinished :entry:default@PackingCheck... after 5 ms [39m
 > hvigor [33mWARN: No signingConfig found for product default[39m
 > hvigor [32mFinished :entry:default@SignHap... after 2 ms [39m
-> hvigor [32mFinished :entry:default@CollectDebugSymbol... after 2 ms [39m
+> hvigor [32mFinished :entry:default@CollectDebugSymbol... after 1 ms [39m
 > hvigor [32mFinished :entry:assembleHap... after 1 ms [39m
-> hvigor [32mBUILD SUCCESSFUL in 20 s 735 ms [39m
+> hvigor [32mBUILD SUCCESSFUL in 10 s 848 ms [39m
 
-65 tasks in total: 44 executed, 21 up-to-date
+65 tasks in total: 29 executed, 36 up-to-date
