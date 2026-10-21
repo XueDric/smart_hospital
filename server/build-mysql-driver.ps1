@@ -64,7 +64,9 @@ if ([string]::IsNullOrEmpty($Stdx)) {
                      "C:\cangjie\stdx\windows_x86_64_cjnative\static\stdx",
                      (Join-Path $env:USERPROFILE "cangjie\stdx\windows_x86_64_cjnative\static\stdx"),
                      $env:CANGJIE_STDX)) {
-        if (-not [string]::IsNullOrEmpty($d) -and (Test-Path (Join-Path $d "libstdx.a"))) { $Stdx = $d; break }
+        # 注意：不能用 Join-Path —— runner 上不存在 E: 盘时它会抛 DriveNotFoundException，
+        # 而这里只是在"试探候选目录"，不存在应当算 False。
+        if (-not [string]::IsNullOrEmpty($d) -and (Test-Path ([System.IO.Path]::Combine($d, "libstdx.a")))) { $Stdx = $d; break }
     }
 }
 if ([string]::IsNullOrEmpty($Stdx)) { throw "找不到 stdx 的静态库（libstdx*.a）。用 -Stdx 显式指定。" }

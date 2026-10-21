@@ -206,13 +206,42 @@ jobs:
           Write-Host "cjc --version：$v"
           if ($v -notmatch '1\.2\.0') { Write-Host "::error title=版本不符::需要 1.2.0，实际 $v"; exit 1 }
 
+      # 官方 SDK 安装包**不含 stdx**（libstdx*.a 是独立发布的包），而本项目的
+      # 业务代码要链 stdx.net.http / stdx.encoding.json 等，所以单独取一份静态库。
+      # 来源与 SDK 一样：本仓库 release 资产（变量 CANGJIE_STDX_URL 可覆盖）。
+      - name: 取 stdx 静态库（官方 SDK 不自带）
+        if: steps.sdk-url.outputs.SDK_SOURCE != 'none'
+        shell: pwsh
+        run: |
+          $dl = Join-Path $env:RUNNER_TEMP 'stdxdl'
+          New-Item -ItemType Directory -Force $dl | Out-Null
+          $url = "${{ vars.CANGJIE_STDX_URL }}"
+          if (-not $url) { $url = 'https://github.com/XueDric/smart_hospital/releases/download/sdk-cache-1.2.0/cangjie-stdx-1.1.3.1-windows-x64-static.zip' }
+          $zip = Join-Path $dl 'stdx.zip'
+          Write-Host "stdx 来源：$url"
+          try { gh release download sdk-cache-1.2.0 --pattern '*stdx*' --dir $dl --clobber } catch { Write-Host "gh 下载失败，改直连" }
+          if (-not (Test-Path $zip)) {
+            $found = Get-ChildItem -LiteralPath $dl -File -Filter '*stdx*' | Select-Object -First 1
+            if ($found) { $zip = $found.FullName } else { Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -TimeoutSec 900 }
+          }
+          if (-not (Test-Path $zip)) { Write-Host "::error title=取不到 stdx::下载失败"; exit 1 }
+          $dst = Join-Path $env:RUNNER_TEMP 'cangjie-stdx'
+          if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
+          Expand-Archive -LiteralPath $zip -DestinationPath $dst -Force
+          $lib = Get-ChildItem $dst -Recurse -Filter 'libstdx.a' | Select-Object -First 1
+          if (-not $lib) { Write-Host "::error title=stdx 不完整::解出来的目录里没有 libstdx.a"; exit 1 }
+          $stdxDir = $lib.Directory.FullName
+          "CANGJIE_STDX=$stdxDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $n = (Get-ChildItem $stdxDir -Filter 'libstdx*.a').Count
+          Write-Host "stdx = $stdxDir（libstdx*.a 共 $n 个）"
+
       - name: 编译服务端（含自编 MariaDB 驱动）
         if: steps.sdk-url.outputs.SDK_SOURCE != 'none'
         shell: pwsh
         run: |
           cd server
-          ./build-mysql-driver.ps1 -CangjieHome "$env:CANGJIE_HOME"
-          ./build.ps1 -CangjieHome "$env:CANGJIE_HOME"
+          ./build-mysql-driver.ps1 -CangjieHome "$env:CANGJIE_HOME" -Stdx "$env:CANGJIE_STDX"
+          ./build.ps1 -CangjieHome "$env:CANGJIE_HOME" -Stdx "$env:CANGJIE_STDX"
 
       - name: 跑三件套（纯逻辑，不需要数据库）
         if: steps.sdk-url.outputs.SDK_SOURCE != 'none'
