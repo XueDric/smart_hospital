@@ -10,7 +10,7 @@
 | `verify-source-manifest.ps1` | **源码清单校验**：按 `server/build/SOURCE-MANIFEST.sha256` 逐行核 76 个参与编译的源文件（路径相对 `server/`）。缺文件 exit 1、缺清单 exit 2。CI 的 `source-manifest` job 用它证明「交付的 exe 对应的就是这份源码」。 |
 | `ci-pure-tests.ps1` | **CI 纯逻辑三件套**：`selftest` / `authtest` / `triagetest`，不需要数据库。找不到 exe 时打印 SKIP 并 exit 0（诚实跳过，不是假绿）——CI 里代替它的角色已交给会真编译的 `build-and-test`。 |
 | `resolve-cangjie-sdk-url.ps1` | **CI 用**：在仓库变量/环境变量都没给 SDK 直链时，从仓颉官网**嗅探**一个可能的 1.2.0 Windows x64 zip 直链（只认 cangjie+版本+`.zip`，不猜 CDN）。嗅不到就 exit 1，让 job 诚实报「编译层未执行」。 |
-| `set-ci-sdk-url.ps1` | **一条命令配好 CI 的仓颉 SDK 直链**：先校验 URL 真的能下到 zip（防把网页地址填进去），再从环境变量或本机 git 凭据取 token，调 GitHub API 写/更新仓库变量 `CANGJIE_SDK_URL`。详见下文。 |
+| `set-ci-sdk-url.ps1` | **（可选）覆盖 CI 的 SDK 来源**：CI 默认从本仓库 release `sdk-cache-1.2.0` 下安装包，正常情况下不用配；想换别处托管的包时才用它——校验 URL 真能下到 zip/exe，再调 GitHub API 写/更新仓库变量 `CANGJIE_SDK_URL`。详见下文。 |
 | `check-snapshot.ps1` | **交付物一致性校验**：比对 `docs/交付快照.md` 里的版本/提交/HAP/APK/zip 的体积与 SHA256 与磁盘真值；`-Update` 用真值刷新快照。CI 每次 push 都跑（默认严格模式）。 |
 
 部署全流程（环境要求、起库、生产 TLS、探活语义、故障排查）见 **[../docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md)**；
@@ -159,7 +159,11 @@ stdx 1.1.3.1、自编 MariaDB 驱动和 MariaDB 实例，托管 runner 装不全
 
 ## set-ci-sdk-url.ps1
 
-CI 的 `build-and-test` job 要真编译，就得先拿到仓颉 SDK 1.2.0 的 zip。官方下载页
+> **正常情况下你不需要这个脚本。** CI 默认从本仓库的 release `sdk-cache-1.2.0`
+> 下载官方安装包并 `/S /D=` 静默安装，不依赖任何签名直链。只有当你想改成
+> 「别处托管的 zip/exe」时，才需要用它覆盖仓库变量 `CANGJIE_SDK_URL`。
+
+背景：官方下载页
 （<https://cangjie-lang.cn/download/1.2.0>）的直链是**点击时由前端签名生成**的，
 `curl` 拿不到（对任意路径都回 `200 + text/html`，看起来像成功、其实是网页兜底）。
 所以这一步只能由人在浏览器里做一次：

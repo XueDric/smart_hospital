@@ -8,6 +8,22 @@
 
 ---
 
+## [0.2.0-p1-rev.15] 2026-10-21 —— CI 的编译层终于有稳定 SDK 来源（不再靠签名直链）
+
+- 官方下载页的 Windows 包是**安装器**（`cangjie-sdk-windows-x64-1.2.0.exe`，93 MB，NSIS），
+  且直链由前端点击时签名生成（对任意路径都回 `200 + text/html`），无法作为 CI 的稳定来源。
+- 因此把该安装包作为**本仓库 release `sdk-cache-1.2.0` 的资产**托管（Apache-2.0 with Runtime
+  Library Exception，安装包内自带 `LICENSE`，仓库 `server/third_party/cangjie-runtime/` 也 vendored 了一份），
+  CI 用自己 job 的 `GITHUB_TOKEN` 下载 —— **私有仓库同样能跑**，不依赖任何外部签名直链。
+- `build-and-test` job 重写：来源解析（仓库变量 `CANGJIE_SDK_URL` 优先 → 默认 release 资产）→
+  `actions/cache` 缓存**安装后的目录**（命中即跳过 93 MB 下载与安装）→ `/S /D=<dir>` 静默安装
+  → 定位 `cjc.exe` 并断言版本 `1.2.0` → `build-mysql-driver.ps1` + `build.ps1` → 跑三件套。
+  备用路径：release 下载失败时退回官网嗅探到的直链；两者都没有则 **job 红**（不再有"绿但没编"）。
+- `tools/set-ci-sdk-url.ps1` 定位改为**可选覆盖**（默认不需要配变量），`tools/README.md` 同步说明；
+  `docs/答辩材料-2026-10-17.md` Q9 的 CI 口径改为"三层 + 第三层默认从 release 缓存装 SDK"。
+- 实测：静默安装 `exit 0`、15.4 s 装完，`cjc --version` = `Cangjie Compiler: 1.2.0 (cjnative)`；
+  release 资产用 token 下载校验 `HTTP 200 / 97,512,136 B / application/octet-stream`。
+
 ## [0.2.0-p1-rev.14] 2026-10-21 —— 第四轮：演示脚本的三处实测错误 + 一条命令配 CI 的 SDK 直链
 
 ### 修复（答辩演示脚本，全部是"照着念会当场出丑"的错误）

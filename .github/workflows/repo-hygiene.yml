@@ -4,6 +4,7 @@
 #   1) docs            —— 文档相对链接、脚本编码、旧路径残留、注释嵌套（纯文本，几十秒）
 #   2) source-manifest —— 分发包里的 exe 与仓库源码是不是同一份（**托管 runner 上也能真绿**）
 #   3) build-and-test  —— 真的装 cjc 1.2.0 编译、再跑 selftest/authtest/triagetest
+#      SDK 来自本仓库 release `sdk-cache-1.2.0` 的资产（官方直链签名且短命，不能当 CI 来源）
 #
 # 关于第 3 层（2026-10-21 第二轮评估后的调整）：
 #   上一版把编译层挂在 `if: vars.CANGJIE_SDK_URL != ''` 上 ⇒ **默认不跑**，
@@ -82,71 +83,108 @@ jobs:
 
   build-and-test:
     name: 真编译 + 三件套（selftest / authtest / triagetest）
-    # ★ 2026-10-21 第二轮：默认就跑。SDK 直链三来源解析（仓库变量 → 环境变量 → 官网嗅探），
-    #   都拿不到时打印 notice 并跳过编译；拿到就必须真编过，否则红。
+    # ★ 2026-10-21 第三轮：默认来源改成**仓库自己的 Release 资产**。
+    #   原因：官方下载页的直链是点击时签名生成的（几分钟就失效，且对任意路径都回 200 + text/html），
+    #   没法当 CI 的稳定来源。于是把官方安装包托管在 release `sdk-cache-1.2.0`（Apache-2.0 with
+    #   Runtime Library Exception，安装包内自带 LICENSE，仓库里也 vendored 了一份），
+    #   CI 用 GITHUB_TOKEN 从自己的 release 下载 —— 不依赖任何外部签名直链，且私有仓库也能跑。
+    #   想换成别处托管的包：设仓库变量 CANGJIE_SDK_URL（.zip 或 .exe 都行），优先于默认来源。
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
-      - name: 解析仓颉 SDK 直链
-        id: sdk-url
+      - name: 决定 SDK 来源（仓库变量优先，否则用本仓库的 Release 资产）
+        id: sdk
         shell: pwsh
         run: |
-          $candidates = @()
-          if ("${{ vars.CANGJIE_SDK_URL }}" -ne '') { $candidates += "${{ vars.CANGJIE_SDK_URL }}" }
-          if ($env:CANGJIE_SDK_URL) { $candidates += $env:CANGJIE_SDK_URL }
-          foreach ($c in $candidates) { if ($c -and $c.Trim()) { "SDK_URL=$($c.Trim())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8; "SDK_SOURCE=config" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8; exit 0 } }
-          # 官方下载页的直链由前端签名生成、会变，所以只在没有任何配置时才嗅探
-          $resolved = $null
-          try { $resolved = & "$PWD/tools/resolve-cangjie-sdk-url.ps1" -Version '1.2.0' -Quiet 2>$null } catch { $resolved = $null }
-          if ($resolved) { "SDK_URL=$($resolved.Trim())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8; "SDK_SOURCE=sniff" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
-          else { "SDK_SOURCE=none" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
+          $configured = "${{ vars.CANGJIE_SDK_URL }}"
+          if (-not $configured) { $configured = $env:CANGJIE_SDK_URL }
+          if ($configured -and $configured.Trim()) {
+            "SOURCE=config" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "SDK_URL=$($configured.Trim())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Host "来源：仓库变量/环境变量 CANGJIE_SDK_URL"
+          } else {
+            "SOURCE=release" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            $resolved = $null
+            try { $resolved = & "$PWD/tools/resolve-cangjie-sdk-url.ps1" -Version '1.2.0' -Quiet 2>$null } catch { $resolved = $null }
+            if ($resolved) {
+              "FALLBACK_URL=$($resolved.Trim())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+              Write-Host "来源：Release 资产；官网嗅探另有候选（备而不用）"
+            } else {
+              Write-Host "来源：Release 资产 sdk-cache-1.2.0"
+            }
+          }
 
-      - name: 没拿到直链时的说明（不伪装成绿）
-        if: steps.sdk-url.outputs.SDK_SOURCE == 'none'
-        shell: pwsh
-        run: |
-          Write-Host "::notice title=编译层未执行::缺仓颉 SDK 直链（variables.CANGJIE_SDK_URL / env / 官网嗅探都没拿到）。"
-          Write-Host "这一层今天没有编译证据；请用仓库变量 CANGJIE_SDK_URL 指定 cangjie-sdk-windows-x64-1.2.0.zip 的直链。"
-          Write-Host "可验证的编译证据仍在：release/harmony/build-log-*.txt（构建日志）+ source-manifest job（源码逐字节比对）。"
-          @"
-          ### 编译层未执行（缺 SDK 直链）
-          - 需要：`variables.CANGJIE_SDK_URL` = cangjie-sdk-windows-x64-1.2.0.zip 的直链
-          - 本 job 的"绿"**不代表编译通过**；编译证据请看 `source-manifest` job 与 `release/harmony/build-log-*.txt`
-          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-
-      - name: 缓存仓颉 SDK（命中则跳过 250 MB 下载）
-        if: steps.sdk-url.outputs.SDK_SOURCE != 'none'
+      - name: 缓存仓颉 SDK（命中则跳过 ~93 MB 下载与安装）
         id: sdk-cache
         uses: actions/cache@v4
         with:
-          path: C:\cangjie-sdk
-          key: cangjie-sdk-windows-x64-1.2.0
+          path: ${{ runner.temp }}\cangjie-sdk
+          key: cangjie-sdk-windows-x64-1.2.0-installed
 
-      - name: 下载并解包 cjc 1.2.0
-        if: steps.sdk-url.outputs.SDK_SOURCE != 'none' && steps.sdk-cache.outputs.cache-hit != 'true'
+      - name: 取 SDK 安装包 / 压缩包
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $dl = Join-Path $env:RUNNER_TEMP 'sdkdl'
+          New-Item -ItemType Directory -Force $dl | Out-Null
+          if ("${{ steps.sdk.outputs.SOURCE }}" -eq 'config') {
+            $url = "${{ steps.sdk.outputs.SDK_URL }}"
+            Write-Host "下载（配置来源）：$url"
+            $out = Join-Path $dl (Split-Path ([uri]$url).AbsolutePath -Leaf)
+            Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -TimeoutSec 1800
+          } else {
+            # gh 在 windows-latest 上预装；私有仓库用 github.token 也能下自己的 release 资产
+            $ok = $false
+            try {
+              gh release download sdk-cache-1.2.0 --pattern '*1.2.0*' --dir $dl --clobber
+              if ($LASTEXITCODE -eq 0) { $ok = $true }
+            } catch { $ok = $false }
+            if (-not $ok) {
+              $fallback = "${{ steps.sdk.outputs.FALLBACK_URL }}"
+              if (-not $fallback) { Write-Host "::error title=取不到 SDK::release 资产下载失败，且没有备用直链"; exit 1 }
+              Write-Host "release 资产下载失败，退回备用直链：$fallback"
+              Invoke-WebRequest -Uri $fallback -OutFile (Join-Path $dl 'cj.zip') -UseBasicParsing -TimeoutSec 1800
+            }
+          }
+          $pkg = Get-ChildItem -LiteralPath $dl -File | Sort-Object Length -Descending | Select-Object -First 1
+          if (-not $pkg) { Write-Host "::error title=取不到 SDK::下载目录是空的"; exit 1 }
+          "PKG=$($pkg.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host ("拿到安装包：" + $pkg.Name + "（" + [Math]::Round($pkg.Length/1MB,1) + " MB）")
+
+      - name: 静默安装 / 解包到 runner.temp\cangjie-sdk
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $url = "${{ steps.sdk-url.outputs.SDK_URL }}"
-          Write-Host "下载：$url"
-          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\cj.zip" -UseBasicParsing -TimeoutSec 1800
-          New-Item -ItemType Directory -Force C:\cangjie-sdk | Out-Null
-          Expand-Archive -LiteralPath "$env:RUNNER_TEMP\cj.zip" -DestinationPath C:\cangjie-sdk -Force
+          $pkg = "${{ steps.sdk.outputs.PKG }}"
+          $dst = Join-Path $env:RUNNER_TEMP 'cangjie-sdk'
+          if (Test-Path $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
+          if ($pkg -match '\.zip$') {
+            New-Item -ItemType Directory -Force $dst | Out-Null
+            Expand-Archive -LiteralPath $pkg -DestinationPath $dst -Force
+          } else {
+            # NSIS 安装包：/S 静默、/D= 指定目录（必须是最后一个参数且不加引号）
+            Write-Host "静默安装：$pkg → $dst"
+            $proc = Start-Process -FilePath $pkg -ArgumentList '/S', ("/D=" + $dst) -Wait -PassThru
+            if ($proc.ExitCode -ne 0) { Write-Host "::error title=安装失败::退出码 $($proc.ExitCode)"; exit 1 }
+          }
 
-      - name: 定位 CANGJIE_HOME 并验版本
-        if: steps.sdk-url.outputs.SDK_SOURCE != 'none'
+      - name: 定位 CANGJIE_HOME 并验版本 1.2.0
         shell: pwsh
         run: |
-          $cjc = Get-ChildItem C:\cangjie-sdk -Recurse -Filter cjc.exe | Select-Object -First 1
-          if (-not $cjc) { Write-Host "❌ 包里找不到 cjc.exe"; exit 1 }
-          $home = Split-Path -Parent (Split-Path -Parent $cjc.FullName)
-          "CANGJIE_HOME=$home" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          $env:CANGJIE_HOME = $home
-          & $cjc.FullName --version
-          # build.ps1 会自己按版本挑 cjc，并要求 1.2.0（1.1.3 会 LLVM ERROR）
-          $v = (& $cjc.FullName --version) -join ' '
-          if ($v -notmatch '1\.2\.0') { Write-Host "❌ 版本不是 1.2.0：$v"; exit 1 }
+          $root = Join-Path $env:RUNNER_TEMP 'cangjie-sdk'
+          $cjc = Get-ChildItem $root -Recurse -Filter cjc.exe -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1
+          if (-not $cjc) { Write-Host "::error title=SDK 不完整::找不到 cjc.exe"; exit 1 }
+          $home2 = Split-Path -Parent (Split-Path -Parent $cjc.FullName)
+          "CANGJIE_HOME=$home2" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "$home2\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          $env:CANGJIE_HOME = $home2
+          $v = (& $cjc.FullName --version 2>&1) -join ' '
+          Write-Host "cjc --version：$v"
+          if ($v -notmatch '1\.2\.0') { Write-Host "::error title=版本不符::需要 1.2.0，实际 $v"; exit 1 }
 
       - name: 编译服务端（含自编 MariaDB 驱动）
         if: steps.sdk-url.outputs.SDK_SOURCE != 'none'
