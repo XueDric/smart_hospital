@@ -2,7 +2,7 @@
 
 > 适用范围：本仓库 `E:\harmonyOS\smart_hospital` 的服务端（仓颉 + 轻舟）、管理台静态页、鸿蒙患者端、安卓患者端。
 > 文中所有命令都在 **Windows PowerShell 5.1** 下验证过；行号引用均相对仓库根。
-> 口径提示：端点的唯一事实来源是 `server/src/http_app.cj` 与 `docs/FRONTEND-INTEGRATION.md`，
+> 口径提示：端点的唯一事实来源是 `server/src/http_app.cj` 与 `docs/archive/FRONTEND-INTEGRATION.md`，
 > `server/README.md` 的端点清单比实现旧。
 
 ---
@@ -81,7 +81,7 @@ $env:SSL_CERT_FILE = "$PWD\ca-bundle.pem"
   --dev-auth --bind 127.0.0.1
 ```
 
-- **AI 开箱即用**：默认 `ai.enabled=1` + 密钥引用 `builtin:demo` + DeepSeek `deepseek-chat`，启动日志会打印 `AI：已启用 — 模型「默认对话模型」，endpoint https://api.deepseek.com/chat/completions，密钥引用 builtin`。`builtin:demo` 是演示密钥、随源码分发，**有效期至 2026-12-31**（`AI_BUILTIN_DEMO_VALID_UNTIL`，到期后服务端拒绝并给出换法）；想立刻用自己的密钥：`.\tools\set-ai-key.ps1 -ApiKey sk-… -AdminPw <管理员口令>`（写 `server\ai-key.txt` → 改 `ai.key_ref=file:…` → 自检），详见 [Q6-合规决策记录(archive/Q6-合规决策记录.md)。
+- **AI 开箱即用**：默认 `ai.enabled=1` + 密钥引用 `builtin:demo` + DeepSeek `deepseek-chat`，启动日志会打印 `AI：已启用 — 模型「默认对话模型」，endpoint https://api.deepseek.com/chat/completions，密钥引用 builtin`。`builtin:demo` 是演示密钥、随源码分发，**有效期至 2026-12-31**（`AI_BUILTIN_DEMO_VALID_UNTIL`，到期后服务端拒绝并给出换法）；想立刻用自己的密钥：`.\tools\set-ai-key.ps1 -ApiKey sk-… -AdminPw <管理员口令>`（写 `server\ai-key.txt` → 改 `ai.key_ref=file:…` → 自检），详见 [Q6-合规决策记录](archive/Q6-合规决策记录.md)。
 - **`SSL_CERT_FILE` 不设会怎样**：AI 出站报 `出站调用异常：TLS handshake failed (client): certificate verify failed (134), TLS alert unknown CA(F)`，而同一 endpoint 用 `curl` / .NET 访问都正常 —— 因为 OpenSSL 不读 `Cert:\LocalMachine\Root`。`export-ca-bundle.ps1` 把三个存储去重导出成 PEM（本机 76 张证）；**换网络（换代理/换 CA）后要重导**。分发包里带的是脚本不是 PEM（PEM 可能含企业内网根证书，绝不随包分发）。
 - 端口默认 **8091**（`server/src/main.cj:707`），绑定默认 **127.0.0.1**（`server/src/main.cj:708`）。
 - **服务端与客户端默认端口已对齐为 8091**（2026-10-17 由 8080 改为 8091，评审 P2-15）：鸿蒙 `common-core/src/main/ets/config/ApiConfig.ets:8` 与安卓 `DEFAULT_BASE_URL` 的默认值都是 `http://127.0.0.1:8091`，所以按上面这条命令起来客户端**零配置即可连**；要换端口就 `--port N` 并同步改客户端（见 §4/§5）。
@@ -144,7 +144,7 @@ Invoke-WebRequest -Uri http://127.0.0.1:8091/admin/ -UseBasicParsing | Select-Ob
 
 | 项 | 值 | 出处 |
 | --- | --- | --- |
-| IDE | DevEco Studio（本机装在 `D:\DevEco Studio`） | `docs/HARMONY-INTERFACE-GUIDE.md:242` |
+| IDE | DevEco Studio（本机装在 `D:\DevEco Studio`） | `docs/archive/HARMONY-INTERFACE-GUIDE.md:242` |
 | 兼容/目标 SDK | `5.0.0(12)` | `build-profile.json5`（products[0].compatibleSdkVersion / targetSdkVersion） |
 | hvigor | `modelVersion 5.0.0`；**引擎 6.26.4**（随 DevEco 分发，`--version` 可查） | `hvigor/hvigor-config.json5`；`oh-package.json5` |
 | Node / JDK | DevEco 自带 `tools\node`（v24.14.1）与 `tools\jbr`（17），**不要用系统 PATH 上的**（见下） | 本机实测 |
@@ -190,8 +190,8 @@ $env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Stud
   cmd /c mklink /J entry\oh_modules\common-core E:\harmonyOS\smart_hospital\common-core
   ```
   共 7 个：`entry\oh_modules\{common-core,feature-patient,feature-doctor,feature-admin}` + `feature-{admin,doctor,patient}\oh_modules\common-core`。
-- **工程路径必须纯 ASCII**：hvigor 在 `ProjectInspection` 阶段用 `00306003 Specification Limit Violation / Invalid project path` 直接拒绝含中文的工程路径，`subst` 也绕不过（会 realpath 回真实路径）。本仓库已改名为 `E:\harmonyOS\smart_hospital`，**该问题已消除**；若你把仓库克隆到含中文的目录仍会复现，此时用 robocopy 一份 ASCII 副本再构建（`docs/HARMONY-INTERFACE-GUIDE.md:259-262`）。
-- **签名**：`build-profile.json5` 的 `signingConfigs` 为空时，把 `products[0].signingConfig` 去掉 → 只报 `WARN: No signingConfig found for product default`，产出**未签名 HAP**；模拟器可直接安装（见上一条），分发给真机/上架才需要 DevEco「自动签名」或本机调试证书（`docs/HARMONY-INTERFACE-GUIDE.md:282-284`）。仓库里已按此去掉悬空引用（2026-10-17）。
+- **工程路径必须纯 ASCII**：hvigor 在 `ProjectInspection` 阶段用 `00306003 Specification Limit Violation / Invalid project path` 直接拒绝含中文的工程路径，`subst` 也绕不过（会 realpath 回真实路径）。本仓库已改名为 `E:\harmonyOS\smart_hospital`，**该问题已消除**；若你把仓库克隆到含中文的目录仍会复现，此时用 robocopy 一份 ASCII 副本再构建（`docs/archive/HARMONY-INTERFACE-GUIDE.md:259-262`）。
+- **签名**：`build-profile.json5` 的 `signingConfigs` 为空时，把 `products[0].signingConfig` 去掉 → 只报 `WARN: No signingConfig found for product default`，产出**未签名 HAP**；模拟器可直接安装（见上一条），分发给真机/上架才需要 DevEco「自动签名」或本机调试证书（`docs/archive/HARMONY-INTERFACE-GUIDE.md:282-284`）。仓库里已按此去掉悬空引用（2026-10-17）。
 - **接口地址**：`common-core/src/main/ets/config/ApiConfig.ets:8` 的 `baseUrlValue = 'http://127.0.0.1:8091'`（默认值同时出现在 `ApiConfig.ets:42`）；改这一处即可，`ApiConfig.restore()`/`url()` 会统一拼接。
 
 ---

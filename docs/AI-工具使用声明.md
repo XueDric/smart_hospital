@@ -10,10 +10,10 @@
 
 | | 是什么 | 在哪 |
 | --- | --- | --- |
-| **产品内 AI** | 作品功能：调用 DeepSeek 做分诊文案与结论，规则引擎做保险丝 | `server/src/ai_*.cj`、`server/src/triage_*.cj`；配置见 `docs/Q6-合规决策记录.md` |
+| **产品内 AI** | 作品功能：调用 DeepSeek 做分诊文案与结论，规则引擎做保险丝 | `server/src/ai_*.cj`、`server/src/triage_*.cj`；配置见 `docs/archive/Q6-合规决策记录.md` |
 | **开发期 AI** | 写代码/写文档/写测试时使用的助手 | 本文说明的范围 |
 
-**本文只声明"开发期 AI"。** 产品内 AI 是作品功能本身，其边界（出站只有主诉原文、候选科室清单、系统提示词与命中的知识库片段；不含姓名/手机号/证件等身份信息；失败回落规则）写在 [Q6 合规决策记录(archive/Q6-合规决策记录.md)。
+**本文只声明"开发期 AI"。** 产品内 AI 是作品功能本身，其边界（出站只有主诉原文、候选科室清单、系统提示词与命中的知识库片段；不含姓名/手机号/证件等身份信息；失败回落规则）写在 [Q6 合规决策记录](archive/Q6-合规决策记录.md)。
 
 ## 二、开发期使用的 AI 工具
 
@@ -25,14 +25,14 @@
 
 ⚠ 关于答辩录屏：视频**画面**是应用在模拟器/真机上的真实渲染，**没有**用 AI 生成或替换画面内容；但该 mp4 是剪辑工具合成的产物（按真实顺序分 5 段录制后拼接，切换点即场景边界），容器元数据带 `AIGC` 块（`ContentProducer` / `ProduceID`）——对应自动字幕/配音/合成一类工具处理。
 
-**提交成片是「在线服务 + 真模型」实录**：0:00 起是 `devdb.ps1 start -Port 3417` 与服务端启动日志（`连接：`、`AI：已启用 … 密钥引用 builtin`、`监听 127.0.0.1:8091`），0:55 分诊页写着「推荐来源：**模型增强**」「可用号源 1 个，均来自**服务端实时校验**」。早前那版「演示数据（Mock）」演练稿**未提交**（其规格见 [录屏脚本(archive/录屏脚本-2026-10-21.md) §6.6）。
+**提交成片是「在线服务 + 真模型」实录**：0:00 起是 `devdb.ps1 start -Port 3417` 与服务端启动日志（`连接：`、`AI：已启用 … 密钥引用 builtin`、`监听 127.0.0.1:8091`），0:55 分诊页写着「推荐来源：**模型增强**」「可用号源 1 个，均来自**服务端实时校验**」。早前那版「演示数据（Mock）」演练稿**未提交**（其规格见 [录屏脚本](archive/录屏脚本-2026-10-21.md) §6.6）。
 仓库内位图只有 DevEco 模板默认图标（见 [THIRD-PARTY.md](THIRD-PARTY.md) §7）。
 
 ## 三、AI 参与的范围（做什么 / 不做什么）
 
 **参与（且可追溯到具体提交）**
 
-- 缺陷修复：挂号余量不刷新、登录 401 误踢端、危急征象否定判定漏报、看板假指标、趋势含未来日期、安卓契约字段错配等（逐条见 [联调记录(archive/联调记录-2026-10-18.md)）。
+- 缺陷修复：挂号余量不刷新、登录 401 误踢端、危急征象否定判定漏报、看板假指标、趋势含未来日期、安卓契约字段错配等（逐条见 [联调记录](archive/联调记录-2026-10-18.md)）。
 - 测试与门禁：`server/tests/*.ps1`、`tools/check-docs.ps1`、`tools/check-snapshot.ps1`、安卓 `ContractParserTest.kt`。
 - 文档：答辩材料、联调记录、交付快照、第三方审计、本声明、分工说明；数字对账（`server/tests/doc-counts.ps1` 自动核对文档与实测）。
 - 构建与证据：`hvigorw.bat`、`tools/package-release.ps1` 的许可证段、`release/` 下的构建与截图证据。
@@ -41,7 +41,7 @@
 
 - 选题与评分策略、模块边界与数据模型（号源/挂号独立 MySQL 路径、乐观锁令牌、状态机）。
 - 临床安全边界：危急征象词表与"规则在前、模型在后"的顺序、`red_flag` 一律不给模型改写的硬约束。
-- 合规取舍：哪些字段可以出站、演示密钥的可接受风险、生产上线前的条件（[Q6(archive/Q6-合规决策记录.md) §2.1）。
+- 合规取舍：哪些字段可以出站、演示密钥的可接受风险、生产上线前的条件（[Q6](archive/Q6-合规决策记录.md) §2.1）。
 - 所有"对外承诺"的数字口径（断言数、截图、包哈希）——AI 只负责让代码与文档**一致**，不负责决定承诺什么。
 
 ## 四、为什么这些产出可以被信任：验证链
@@ -71,8 +71,8 @@ git show --stat <sha>                           # 任一提交改了哪些文件
 | 成员 | 工具与模型 | 主要使用范围 | 复核方式 |
 | --- | --- | --- | --- |
 | **申宇乐**（项目负责人） | DeepSeek 模型（`deepseek-flash` / `deepseek-chat`）驱动的编码代理，运行于 DSH 终端/编辑器环境 —— **全程只使用这一个 AI 工具**，未用其它编辑器补全、问答或生成式工具 | 2026-10-07 ～ 2026-10-21 全部开发期工作：需求落地与模块实现、缺陷定位与修复、测试与门禁脚本（`server/tests/*.ps1`、`tools/check-*.ps1`）、文档与数字对账、构建与打包、模拟器取证；提交说明与"为什么"由本人确认后落笔 | 每批改动跑全量门禁（`accept` / `triagetest` / `final-verify` / `doc-counts` / `check-docs` / `check-snapshot`）+ 鸿蒙与安卓模拟器实跑截图 + 本人逐条核对 diff 与结论后再提交；对外承诺的数字口径由本人拍板 |
-| **郭俊杰**（界面设计和鸿蒙 APP 开发） | WorkBuddy 编码代理（模型 `deepseek-V4.1-Flash`） | 2026-10-14 ～ 2026-10-16 客户端设计与公共层工作：① **界面设计** —— 医疗青绿主题的浅/深双色板、fp 字阶、4/8 基线间距、40vp 热区、公共组件库 10 件，并产出设计规范（现名 `docs/UI-DESIGN.md`）；② **鸿蒙 APP 开发** —— `common-core` 公共层（主题管理、键值/文件持久化、登录守卫）、患者/医生/管理三端页面收口与热区字号 token 化、就诊状态语义单一来源（`model/VisitStatus.ets`）与 Mock 夹具 7 态补齐；③ **git 版本控制与代码托管** —— 分支与 worktree 隔离、按主题拆分提交、main 快进同步与内容一致性核对 | 客户端语义层门禁（脚本为本地执行、未入库；6 条判据，含"故意植入病征应报错"的正向验证）+ `common-core` 导出符号核对 + 逐文件 diff 比对 + 人工审阅 diff 后再提交 |
-| **lyz1679**（医生端 `feature-doctor`） | Claude Code 编码代理（终端 / VSCode 扩展），底层接入 DeepSeek 模型（`deepseek-v4-pro` / `deepseek-v4-flash`） | 2026-10-13 ～ 2026-10-19 医生端病历与队列工作：七段病历编辑器升级为工作台（乐观锁 `expected_updated_at` 回传、`EMR_CHANGED`/`EMR_LOCKED` 分流、七段 Scroller 锚点导航、脏标记与离开保护、提交前预览、冲突逐段核对、版本历史入口）、病历修订历史只读页（列表 → 详情 → 逐段对比）、接诊队列就诊状态机按钮与 `done` 单入口；公共层 `AppRouter` 参数栈修复与 `ErrorCode` 扩充；后端对接问题清单（未入库，结论已并入 `docs/FRONTEND-INTEGRATION.md` §5.29/§5.30）与 `FRONTEND-INTEGRATION.md` §5.29/§5.30 更正 | 乐观锁 409 语义、修订历史稀疏版本、患者身份字段等契约逐条对照服务端源码（`server/src/domain_emr.cj`、`http_p4.cj`）与 `FRONTEND-INTEGRATION.md` 后实现 + 编辑器 TS 语言服务逐文件消错 + 逐条 diff 人工核对后再提交；本机无 DevEco 工具链，HarmonyOS 编译由 DevEco 侧补验 |
+| **郭俊杰**（界面设计和鸿蒙 APP 开发） | WorkBuddy 编码代理（模型 `deepseek-V4.1-Flash`） | 2026-10-14 ～ 2026-10-16 客户端设计与公共层工作：① **界面设计** —— 医疗青绿主题的浅/深双色板、fp 字阶、4/8 基线间距、40vp 热区、公共组件库 10 件，并产出设计规范（现名 `docs/archive/UI-DESIGN.md`）；② **鸿蒙 APP 开发** —— `common-core` 公共层（主题管理、键值/文件持久化、登录守卫）、患者/医生/管理三端页面收口与热区字号 token 化、就诊状态语义单一来源（`model/VisitStatus.ets`）与 Mock 夹具 7 态补齐；③ **git 版本控制与代码托管** —— 分支与 worktree 隔离、按主题拆分提交、main 快进同步与内容一致性核对 | 客户端语义层门禁（脚本为本地执行、未入库；6 条判据，含"故意植入病征应报错"的正向验证）+ `common-core` 导出符号核对 + 逐文件 diff 比对 + 人工审阅 diff 后再提交 |
+| **lyz1679**（医生端 `feature-doctor`） | Claude Code 编码代理（终端 / VSCode 扩展），底层接入 DeepSeek 模型（`deepseek-v4-pro` / `deepseek-v4-flash`） | 2026-10-13 ～ 2026-10-19 医生端病历与队列工作：七段病历编辑器升级为工作台（乐观锁 `expected_updated_at` 回传、`EMR_CHANGED`/`EMR_LOCKED` 分流、七段 Scroller 锚点导航、脏标记与离开保护、提交前预览、冲突逐段核对、版本历史入口）、病历修订历史只读页（列表 → 详情 → 逐段对比）、接诊队列就诊状态机按钮与 `done` 单入口；公共层 `AppRouter` 参数栈修复与 `ErrorCode` 扩充；后端对接问题清单（未入库，结论已并入 `docs/archive/FRONTEND-INTEGRATION.md` §5.29/§5.30）与 `FRONTEND-INTEGRATION.md` §5.29/§5.30 更正 | 乐观锁 409 语义、修订历史稀疏版本、患者身份字段等契约逐条对照服务端源码（`server/src/domain_emr.cj`、`http_p4.cj`）与 `FRONTEND-INTEGRATION.md` 后实现 + 编辑器 TS 语言服务逐文件消错 + 逐条 diff 人工核对后再提交；本机无 DevEco 工具链，HarmonyOS 编译由 DevEco 侧补验 |
 | 其它成员 | （如有使用，由本人补充） | — | — |
 
 **申宇乐 确认**：上述范围属实；本项目所有对外表述（评审材料、答辩稿、交付说明）中的技术结论均经本人核对，AI 产出不构成"未经复核即对外承诺"。确认日期：2026-10-18。
@@ -98,4 +98,4 @@ git show --stat <sha>                           # 任一提交改了哪些文件
 | **Prompt 模板**（`dept` / `previsit` / `redflag` / `triage`） | **`triage` 已真接线**：分诊增强每次都从库里读模板（`PromptRepo.body(PROMPT_TRIAGE)`），改完**零重启**生效；库里模板只决定"任务段"，**安全尾段（不下诊断/不提药名/≤80 字）由代码固定拼接，模板改不掉**。`dept` / `previsit` / `redflag` 仍是"落库 + 占位符校验"：对应的拼装逻辑目前写在代码里，接入点是 `PromptRepo.body()` 一行（`server/src/ai_prompt.cj`） | `server/src/ai_triage.cj` 的 `aiTriageTemplateOf()` / `aiTriagePromptWith()`；验收断言 `AC-P3-5 ⑧/⑧b`（含"故意写让模型开药的模板，尾段仍存在"） |
 | **工具开关**（6 条只读能力名） | **判据已实现、派发器未实现**：`aiToolEnabled()` 是纯函数闸门，当前只有"回显 + 验收断言"两个消费者；生产路径的模型调用是**单轮 chat completion**，没有 tool-calling 派发器，所以关掉某个开关**不会**让模型"被拒绝使用该工具" —— 它是**预留闸门**，不是已生效的权限系统 | `server/src/ai_prompt.cj:381`（`aiToolEnabled`）、`AC-P3-6`（被判据函数守住的"禁用即不可用"语义） |
 | **知识库检索** | **关键词路（默认，已端到端）**：入库 → 切块 → 关键词命中 → 进 Prompt 的"参考资料"段；分诊调用事实里会记 `used_kb` 与 `kb_doc_ids`。向量路**未接**（DeepSeek 无 Embeddings 端点），口径见 `docs/向量检索说明.md` | `server/tests/kb-seed.ps1`（种 8 条 → 5 个查询词验证命中 → 一次真实分诊断言 `used_kb=true`） |
-| **模型配置 / 密钥引用** | **已生效**：`ai.enabled`、`endpoint`、`model`、`key_ref` 全部落库、改完即生效；密钥只存引用（`env:` / `file:` / `builtin:demo`），库里没有密钥本体 | `CLAUDE` 之外的机制性拒绝见 `server/src/ai_settings.cj`；实测命令见 `docs/Q6-合规决策记录.md` |
+| **模型配置 / 密钥引用** | **已生效**：`ai.enabled`、`endpoint`、`model`、`key_ref` 全部落库、改完即生效；密钥只存引用（`env:` / `file:` / `builtin:demo`），库里没有密钥本体 | `CLAUDE` 之外的机制性拒绝见 `server/src/ai_settings.cj`；实测命令见 `docs/archive/Q6-合规决策记录.md` |

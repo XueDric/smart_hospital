@@ -53,7 +53,7 @@ git log --oneline --graph | head -30      # 版本历史（截至 v0.2.0-p1-rev 
 
 ## 持续集成（CI）
 
-三层都在托管 runner 上跑，最近一次真实绿：[Actions run `39584538073`](https://github.com/XueDric/smart_hospital/actions/runs/39584538073)（`main` @ `66d7bcea`）。
+三层都在托管 runner 上跑，最近一次真实绿：[Actions run `39585066504`](https://github.com/XueDric/smart_hospital/actions/runs/39585066504)（`main` @ `75e2587`；此后每次 push 由同一 workflow 复跑）。
 
 | job | 做什么 | 为什么它算证据 |
 | --- | --- | --- |
@@ -73,12 +73,12 @@ git log --oneline --graph | head -30      # 版本历史（截至 v0.2.0-p1-rev 
 | 准备 | 读取项目文档、确认技术路线（仓颉 + 轻舟）与数据模型范围 | ✅ 完成 |
 | **P0** | **号源/挂号独立 MySQL 路径**：ADR + 服务端骨架 + 表集 + 原子扣减/幂等/退号 + 验收测试 | ✅ **完成**（经 rev.2 / rev.3 / rev.4 三轮复查修订；**rev.3 推翻了 P0 的乐观锁扣号策略**，rev.4 删掉死代码 `booking_idem`） |
 | **P1** | **挂号闭环 + 令牌鉴权 + HTTPS + 安全加固**：中间件装配 + 三端权限矩阵 + **81 个 REST** + 不透明令牌（PBKDF2 100k）+ **HTTPS（TLS 1.2/1.3，带 SAN 自签）** + 登录限流/失败锁定 + 口令强度 + 会话按设备管理 + 多进程并发压测（20/30/40/50 抢同数号源全部卖光；并发退号零丢号） | ✅ **完成** |
-| **P2** | **AI 分诊（工程纪律层）**：危急征象兜底（词表 + 否定 + 共现）+ **验证层（绝不给没号的推荐）** + 三态结论 + `POST /api/v1/triage` + **预问诊多轮采集（SSE 流式）**。★ 真模型已于 P3 收尾时接通；未配置时 `source=rules`。见 [阶段交接 P2(docs/archive/PHASE-HANDOFFS.md) | ✅ **完成** |
-| **P3** | **AI 能力中心（配置底座）**：`ai_setting` KV + **改配置零重启** + ★★ **密钥不引用不落库**（`env:`/`file:` 引用，机制性拒绝裸密钥）+ 脱敏回显 + Prompt 模板落库 + AI 工具开关落库。⚠ 合规决策见 [Q6-合规决策记录(docs/archive/Q6-合规决策记录.md)。见 [阶段交接 P3(docs/archive/PHASE-HANDOFFS.md) | ✅ **完成** |
-| **P4** | **电子病历 + 运营看板**：七段式病历（草稿 → **提交锁定，锁定后不可改**）+ 医生**接诊队列**（状态机）+ 患者只读档案 + 看板（只出聚合不出明细）。★ 顺带把 `medical_record` 移出内存 Store 改直接 SQL（[ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) rev.6），并在收尾时**整体拆除内存 Store**（rev.7，全库只剩一种数据访问范式）。见 [阶段交接 P4(docs/archive/PHASE-HANDOFFS.md) | ✅ **完成** |
-| **P5** | **RAG 知识库（零向量库）**：切块（带重叠、结构性不丢内容）→ 向量存 MySQL JSON（**纯仓颉余弦**）→ 关键词检索为默认路 + 向量路；管理端 CRUD + 检索；RAG 片段接进分诊（过安全层、改不了 `options`）+ 看板知识库规模。⚠ DeepSeek 无 embeddings 端点 ⇒ 向量路未做端到端验证。见 [阶段交接 P5(docs/archive/PHASE-HANDOFFS.md) | ✅ **完成** |
+| **P2** | **AI 分诊（工程纪律层）**：危急征象兜底（词表 + 否定 + 共现）+ **验证层（绝不给没号的推荐）** + 三态结论 + `POST /api/v1/triage` + **预问诊多轮采集（SSE 流式）**。★ 真模型已于 P3 收尾时接通；未配置时 `source=rules`。见 [阶段交接 P2](docs/archive/PHASE-HANDOFFS.md) | ✅ **完成** |
+| **P3** | **AI 能力中心（配置底座）**：`ai_setting` KV + **改配置零重启** + ★★ **密钥不引用不落库**（`env:`/`file:` 引用，机制性拒绝裸密钥）+ 脱敏回显 + Prompt 模板落库 + AI 工具开关落库。⚠ 合规决策见 [Q6-合规决策记录](docs/archive/Q6-合规决策记录.md)。见 [阶段交接 P3](docs/archive/PHASE-HANDOFFS.md) | ✅ **完成** |
+| **P4** | **电子病历 + 运营看板**：七段式病历（草稿 → **提交锁定，锁定后不可改**）+ 医生**接诊队列**（状态机）+ 患者只读档案 + 看板（只出聚合不出明细）。★ 顺带把 `medical_record` 移出内存 Store 改直接 SQL（[ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) rev.6），并在收尾时**整体拆除内存 Store**（rev.7，全库只剩一种数据访问范式）。见 [阶段交接 P4](docs/archive/PHASE-HANDOFFS.md) | ✅ **完成** |
+| **P5** | **RAG 知识库（零向量库）**：切块（带重叠、结构性不丢内容）→ 向量存 MySQL JSON（**纯仓颉余弦**）→ 关键词检索为默认路 + 向量路；管理端 CRUD + 检索；RAG 片段接进分诊（过安全层、改不了 `options`）+ 看板知识库规模。⚠ DeepSeek 无 embeddings 端点 ⇒ 向量路未做端到端验证。见 [阶段交接 P5](docs/archive/PHASE-HANDOFFS.md) | ✅ **完成** |
 | **客户端** | **鸿蒙患者端 / 医生端 / 管理端**（`entry` + `common-core` + `feature-*`）+ **安卓患者端**（`android-patient`）+ **管理台网页**（`server/admin-web`，挂载在 `/admin`） | ✅ 已实现并可构建；**2026-10-17 已在华为模拟器（Pura 90 / HarmonyOS 6.1.1 / API 24）跑通患者全流程与管理端看板**（[证据](release/harmony/README.md)）；**2026-10-18 安卓端已用 JDK 21 编译并装进 Android 模拟器登录成功**（[证据](release/android/README.md)） |
-| **维护批次** | 复验修复 10 条（S1/S2/S3/S5/S6/S8/S12/S14/S16 + S4/S13）、契约与文档同步 | ✅ 完成（见 [联调记录(docs/archive/联调记录-2026-10-18.md) 与 [交付快照](docs/交付快照.md)） |
+| **维护批次** | 复验修复 10 条（S1/S2/S3/S5/S6/S8/S12/S14/S16 + S4/S13）、契约与文档同步 | ✅ 完成（见 [联调记录](docs/archive/联调记录-2026-10-18.md) 与 [交付快照](docs/交付快照.md)） |
 
 > **验收口径**：`selftest` 51 + `authtest` 17 + `triagetest` 150 + `accept` **821 条断言** + `server/tests/` 26 个测试文件（19 个可独立运行的门禁套件）+ 契约门禁（24 Schema / 67 样例）+ `final-verify` 18/18 全绿。
 > ⚠ 文档里的项数以 **`server/tests/doc-counts.ps1` 的实测输出为准**，不靠人记。
@@ -129,7 +129,7 @@ curl.exe -s http://127.0.0.1:8091/health
 >
 > 它会写 `server\ai-key.txt`（已 gitignore）、把 `ai.key_ref` 改成 `file:<绝对路径>`、
 > 再调一次模型自检确认 `ok=true`。库里始终只存**引用**，不存密钥本体。
-> 背景与合规口径见 [docs/Q6-合规决策记录.md(docs/archive/Q6-合规决策记录.md)。
+> 背景与合规口径见 [docs/archive/Q6-合规决策记录.md](docs/archive/Q6-合规决策记录.md)。
 > 为什么需要 `SSL_CERT_FILE`：仓颉 stdx 走 OpenSSL、不读 Windows 证书存储，缺它会报
 > `TLS handshake failed (client): certificate verify failed (134)`；而 `curl` 访问同一端点正常。
 
@@ -162,23 +162,23 @@ cd smart_hospital
 | 了解项目是什么、做了什么创新 | [docs/PROJECT-OVERVIEW.md](docs/PROJECT-OVERVIEW.md) |
 | 看架构与技术实现 | [docs/SYSTEM-DESIGN.md](docs/SYSTEM-DESIGN.md) → [adr/ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) |
 | 把系统跑起来 / 交付部署 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) · [docs/DEV-DB.md](docs/DEV-DB.md) |
-| 写客户端 / 对接接口 | [docs/FRONTEND-INTEGRATION.md(docs/archive/FRONTEND-INTEGRATION.md)（唯一口径）· [docs/HARMONY-INTERFACE-GUIDE.md(docs/archive/HARMONY-INTERFACE-GUIDE.md) |
-| 看 UI 规范 | [docs/UI-DESIGN.md(docs/archive/UI-DESIGN.md) |
-| 查历史决策与踩坑 | [docs/PHASE-HANDOFFS.md(docs/archive/PHASE-HANDOFFS.md)（P0–P5 合并稿）· [联调记录(docs/archive/联调记录-2026-10-18.md) |
-| 确认第三方合规 | [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) · [Q6-合规决策记录(docs/archive/Q6-合规决策记录.md) |
+| 写客户端 / 对接接口 | [docs/archive/FRONTEND-INTEGRATION.md](docs/archive/FRONTEND-INTEGRATION.md)（唯一口径）· [docs/archive/HARMONY-INTERFACE-GUIDE.md](docs/archive/HARMONY-INTERFACE-GUIDE.md) |
+| 看 UI 规范 | [docs/archive/UI-DESIGN.md](docs/archive/UI-DESIGN.md) |
+| 查历史决策与踩坑 | [docs/archive/PHASE-HANDOFFS.md](docs/archive/PHASE-HANDOFFS.md)（P0–P5 合并稿）· [联调记录](docs/archive/联调记录-2026-10-18.md) |
+| 确认第三方合规 | [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) · [Q6-合规决策记录](docs/archive/Q6-合规决策记录.md) |
 | 答辩/评审材料 | [docs/答辩材料-2026-10-17.md](docs/答辩材料-2026-10-17.md) · [交付快照](docs/交付快照.md) |
 | 答辩演示幻灯片（10 页） | [docs/答辩演示-2026-10-21.pptx](docs/答辩演示-2026-10-21.pptx) |
 | 说明作品真实性与 AI 边界 | [docs/项目真实性与分工说明.md](docs/项目真实性与分工说明.md) · [AI 工具使用声明](docs/AI-工具使用声明.md) |
 | 问「向量检索到底做了没有」 | [docs/向量检索说明.md](docs/向量检索说明.md)（关键词为默认，向量未接线） |
 | 看验收是**真的跑过**（不是只在文档里写数字） | [docs/验收实跑-2026-10-21.md](docs/验收实跑-2026-10-21.md)（accept 821 条、18 项 live 门禁、契约 67/67，含命令与退出码） |
-| 看答辩录屏的参数与已知问题 | [docs/录屏脚本-2026-10-21.md(docs/archive/录屏脚本-2026-10-21.md) §6（H.264 1920×1080 / 10.1 MB / 在线服务实录，5:23） |
-| 要重录答辩视频 | [docs/录屏脚本-2026-10-21.md(docs/archive/录屏脚本-2026-10-21.md)（鸿蒙 + 安卓分镜、逐句字幕稿、兜底话术、录后自查） |
+| 看答辩录屏的参数与已知问题 | [docs/archive/录屏脚本-2026-10-21.md](docs/archive/录屏脚本-2026-10-21.md) §6（H.264 1920×1080 / 10.1 MB / 在线服务实录，5:23） |
+| 要重录答辩视频 | [docs/archive/录屏脚本-2026-10-21.md](docs/archive/录屏脚本-2026-10-21.md)（鸿蒙 + 安卓分镜、逐句字幕稿、兜底话术、录后自查） |
 
 ---
 
 ## 未决问题
 
-见 [docs/PHASE-HANDOFFS.md(docs/archive/PHASE-HANDOFFS.md) 附录「启动时的 6 个待决问题」，共 6 条。
+见 [docs/archive/PHASE-HANDOFFS.md](docs/archive/PHASE-HANDOFFS.md) 附录「启动时的 6 个待决问题」，共 6 条。
 
 | # | 问题 | 状态 |
 | --- | --- | --- |
@@ -187,4 +187,4 @@ cd smart_hospital
 | Q3 | 患者端页面范围？ | ✅ **已决**：主闭环 6 页（登录 / 分诊 / 预问诊 / 约号 / 我的预约 / 我的）+ 档案 / 公告，已由鸿蒙与安卓两端实现 |
 | Q4 | 管理端前端是否复用既有 Vue 3 工程？ | ✅ **事实已收敛**：未复用 Vue，改为**零第三方依赖的原生 JS 管理台**（`server/admin-web/`），由服务端静态托管在 `/admin` |
 | Q5 | 单院区量级：日门诊量？号源放出峰值并发？ | ⏳ 未决 —— 影响扣号路径是否要加重试/排队 |
-| Q6 | AI 模型选型与合规 | 🟡 选型未决；出站合规口径已落档（[Q6(docs/archive/Q6-合规决策记录.md)） |
+| Q6 | AI 模型选型与合规 | 🟡 选型未决；出站合规口径已落档（[Q6](docs/archive/Q6-合规决策记录.md)） |

@@ -55,11 +55,11 @@ $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 ## 4. 与代码有关的真实修复（都已入库）
 
 - `app/src/main/java/com/smart/hospital/patient/data/SecretStore.kt` 头部文档里写了 `shared_prefs/*.xml`，Kotlin 的块注释**可嵌套**，注释里的 `/*` 会再开一层注释且永不闭合 ⇒ 整文件 `Syntax error: Unclosed comment`，连带 `SessionStore.kt` 报 4 处 `Unresolved reference 'SecretStore'`。已改写成不含 `/*` 的表述。
-- `SessionStore.kt` 的令牌路径（P2-14）：迁移失败不再删明文、写失败不再假装成功、解密失败不再静默返回空串（当时的整改记录已移出仓库，结论保留在本条与 `docs/联调记录-2026-10-18.md`）。
+- `SessionStore.kt` 的令牌路径（P2-14）：迁移失败不再删明文、写失败不再假装成功、解密失败不再静默返回空串（当时的整改记录已移出仓库，结论保留在本条与 `docs/archive/联调记录-2026-10-18.md`）。
 - `SessionStore` 的 7 处 `check(commit())` 改为 `persist()`：本地存储写失败不再抛 `IllegalStateException`（`commit()` 失败时内存值其实已生效，抛异常等于把"下次可能要重试"升级成闪退）。
 - `ThemeController.isNight()` 成为唯一明暗判定入口，`attachContext()`/`refresh()` 共用；两份 `themes.xml` 窗口属性对齐（浅色补 `windowBackground`，消除启动首帧纯白）。
 - 新增契约层单测 `app/src/test/java/.../ContractParserTest.kt`（10 个用例，金样本在 `app/src/test/resources/contracts/`，从本机服务端真实抓取）：`.\gradlew.bat testDebugUnitTest` → 10/10 PASS。
-- 同事 `de47f6f` 带入的 3 个契约缺陷（队列缺 `schedule_id`、病历缺 `version`、乐观锁字段名 `expected_version` vs `expected_updated_at`）已修，并顺手对齐鸿蒙侧的队列标题与日期守卫（当时的审查记录已移出仓库，结论保留在本条与 `docs/联调记录-2026-10-18.md`）。
+- 同事 `de47f6f` 带入的 3 个契约缺陷（队列缺 `schedule_id`、病历缺 `version`、乐观锁字段名 `expected_version` vs `expected_updated_at`）已修，并顺手对齐鸿蒙侧的队列标题与日期守卫（当时的审查记录已移出仓库，结论保留在本条与 `docs/archive/联调记录-2026-10-18.md`）。
 
 ## 5. 已知边界
 

@@ -18,7 +18,7 @@
 - `contract/schema/data-booking-cancelled.schema.json`：`required` 与 `properties` 加 `already_cancelled`（布尔）。
 - 服务端实现：`http_app.cj` 的退号 handler —— 口径取**取消前**那份快照（取消后重读永远是 `cancelled`，
   问不出"之前是什么"）。
-- 判读口径：`already_cancelled` 与 `slot_restored` 的组合见 `docs/FRONTEND-INTEGRATION.md` 的「退号」一节。
+- 判读口径：`already_cancelled` 与 `slot_restored` 的组合见 `docs/archive/FRONTEND-INTEGRATION.md` 的「退号」一节。
 - 回归守卫：`server/tests/p1-extra-check.ps1` 第 `[3c]` 节。
 
 ---
@@ -37,7 +37,7 @@
   与 `reconnects`（≥0），可选 `reason`（仅 `ok:false` 时出现，固定短句「数据库暂不可用（详见服务端日志）」
   —— **不回驱动原文**：该端点不鉴权）。
 - 服务端实现：`http_app.cj` 的 `healthBody` / `sendHealth`（`/health` 与 `/api/v1/health` 共用）。
-- 样例仍只钉**健康态**（200 + `ok:true`）；503 降级态的形状由本文与 `docs/FRONTEND-INTEGRATION.md`
+- 样例仍只钉**健康态**（200 + `ok:true`）；503 降级态的形状由本文与 `docs/archive/FRONTEND-INTEGRATION.md`
   §2.3 / §5.19 描述（无独立样例，因为 `ok:false` 与 Schema 里的 `const:true` 冲突，而"造一次库故障"
   不适合放进导出机的固定请求序列）。
 
@@ -164,7 +164,7 @@ N3「并发那条出口没有端到端门禁」）。
 
 ### 客户端影响
 
-- 错误解析按 `docs/FRONTEND-INTEGRATION.md` §3.2 的**五种**形状分支：先判 `ok` 字段存不存在，
+- 错误解析按 `docs/archive/FRONTEND-INTEGRATION.md` §3.2 的**五种**形状分支：先判 `ok` 字段存不存在，
   再判 `code`（非法 JSON）/ `error === 'Method Not Allowed'`（405，读 `allow`）/ `error === 'Not Found'`（静态 404）。
 - **不要**再用"404 就一定是路径拼错"来判断 —— API 404 是信封，`error.code` 会告诉你原因。
 - `previsit_bound` / `request_id` / `server_time` 从本版起在挂号类响应里出现（改进 1 / 改进 4）；
@@ -431,7 +431,7 @@ N3「并发那条出口没有端到端门禁」）。
   否则用户会把"降级率下降"误读成"模型变好了"；② 调用明细里用 `red_flag_bypass` 而不是解析
   `degrade_reason === 'RED_FLAG'` 来标红标行（同样的信息，少一次字符串比较）；
   ③ 分诊统计请求里 `from`/`to` 现在**可能返回 400**（非数字、倒序、超 366 天），
-  按 `docs/FRONTEND-INTEGRATION.md` §3.2 的错误信封显示 `error.message` 即可 —— **不要再把它当成"空窗口"**。
+  按 `docs/archive/FRONTEND-INTEGRATION.md` §3.2 的错误信封显示 `error.message` 即可 —— **不要再把它当成"空窗口"**。
 - **医生端 / 患者端**：不用动（本次没有改挂号、医生工作台、就诊时间线的既有形状）。
 - 兼容性：`red_flag` / `red_flag_rate` / `red_flag_bypass` 都是**纯增量字段**，
   旧客户端忽略它们即可；唯一需要重新理解的是 `degrade_rate` 的**分母含义**。

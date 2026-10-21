@@ -382,7 +382,7 @@ $md += "| 红标召回 | $($redHit.Count) / $($expRed.Count) = $($metrics.redfla
 $md += "| 红标误报 | $($redFp.Count) | 非急症被判红标（会让患者白跑急诊） |"
 $md += "| 降级率 | $($degraded.Count) / $($samples.Count) = $($metrics.degrade_rate) | **模型侧失败**：``degrade_reason`` 非空且非 ``RED_FLAG``（与 ``/admin/ai/triage-stats`` 同一判据）；本次口径：$($degradeCriterion) |"
 $md += "| 红标旁路 | $($bypass.Count) | ``degrade_reason='RED_FLAG'``：规则直接判红标、没调模型，属良性旁路，**不计入降级率** |"
-$md += "| 降级原因分布 | $(if ($degradeReasons.Count) { $degradeReasons -join '、' } else { '—' }) | 稳定码见 ``docs/FRONTEND-INTEGRATION.md`` §5.31 |"
+$md += "| 降级原因分布 | $(if ($degradeReasons.Count) { $degradeReasons -join '、' } else { '—' }) | 稳定码见 ``docs/archive/FRONTEND-INTEGRATION.md`` §5.31 |"
 $md += "| 耗时 p50 / p95 | $($metrics.p50_ms) / $($metrics.p95_ms) ms（样本 $($elapsed.Count)） | 最近秩法，与 ``triage-stats`` 同一口径 |"
 $md += ""
 if ($prev) {
