@@ -45,6 +45,7 @@ server/devdb/*.log
 .android-home/
 # hvigor 的工具链/缓存家目录：默认在 %USERPROFILE%\.hvigor，可用 HVIGOR_USER_HOME 重定向到仓库内
 .hvigor-user-home/
+.hvigor-user/
 
 # ── 构建产物（可重新生成，**不入库**）──────────────────────────────────────
 # ⚠ 尤其 server/build/：里面有 12 MB 的 exe + 5.7 MB 的 OpenSSL DLL + 编译好的

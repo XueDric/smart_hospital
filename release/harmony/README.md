@@ -7,7 +7,7 @@
 ## 一、文件清单
 | 文件 | 大小 | 说明 |
 |---|---|---|
-| `entry-default-unsigned.hap` | 1,758,110 B | 未签名 HAP（SHA256 `5DA919EBAC234CA80E2E3D7053455574AC15F2E928A3E728DD391CC0C3366AD0`，2026-10-20 19:34 构建，含分诊页 Mock 文案修复）|
+| `entry-default-unsigned.hap` | 1,758,190 | 未签名 HAP（SHA256 `6373A0F2898E7B3CBD8C31E45D1C47ACA430DF433843D8DE158241B06E01FB0C`，2026-10-20 19:34 构建，含分诊页 Mock 文案修复）|
 | `pack.info` | 565 B | 打包信息（bundle `com.smart.hospital.patient`、versionCode/versionName、模块列表）|
 | `build-log-2026-10-21.txt` | 8,435 B | 2026-10-19 合并队友提交（含医生端排序修复）后重建的日志（ANSI 已剥离，末行 `BUILD SUCCESSFUL in 20 s 735 ms`；65 tasks / 44 executed / 21 up-to-date）|
 | `screenshots/*.jpeg` | 16 张 | 见下表 |

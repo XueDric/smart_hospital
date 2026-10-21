@@ -142,7 +142,7 @@ cd smart_hospital
 ```
 
 > **已入库的构建与运行证据**：[release/harmony/](release/harmony/README.md) 内有 2026-10-21 重建的
-> `entry-default-unsigned.hap`（1758110 B，SHA256 `5DA919EB…C3366AD0`）、`pack.info`、完整构建日志
+> `entry-default-unsigned.hap`（1758190 B，SHA256 `6373A0F2…6E01FB0C`）、`pack.info`、完整构建日志
 > （`BUILD SUCCESSFUL`，65 tasks），以及**模拟器实跑的 16 张截图 + 对应 `dumpLayout` 文本实测**
 > （患者登录 → 首页 → 智能分诊 → 选号 → 挂号成功 → 我的就诊；管理端登录 → 运营看板 → AI 能力中心）。
 > **未签名 HAP 可直接装进模拟器**（`hdc install -r …hap`），签名只在分发给真机时需要。
