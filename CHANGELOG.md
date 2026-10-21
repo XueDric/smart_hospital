@@ -8,6 +8,43 @@
 
 ---
 
+## [0.2.0-p1-rev.12] 2026-10-21 —— 评估报告第二轮：契约层修回绿、验收留痕、CI 加两层
+
+### 修复（契约层：16 处样例与实测不一致）
+
+- **契约夹具的排班日期写死在 `2026-12-26`**，而服务端当天刚加了「不能给未来号到院/接诊」的硬门槛
+  ⇒ 到院/接诊类样例全部返回 409 `VISIT_DATE_FUTURE`，`contract-check` 从绿变红（一致 51 / 不一致 16）。
+  把 `server/tests/export-contract.ps1` 的种子排班改成**当天**（`$ctrToday`），归一化本来就把
+  `YYYY-MM-DD` 换成 `<date>`，所以样例字节不受影响。
+- **病历的 `version` 没进契约**：服务端 A2 修复后 `/record` 系列响应带 `version`（与 `updated_at` 同源），
+  但 4 个 record Schema 是 `additionalProperties: false` 且没这个字段 ⇒ Schema 校验 10 条 FAIL。
+  已在 4 个 Schema 补 `version`（`data-record` / `data-record-list` / `data-record-patient` /
+  `data-doctor-patient-records`）。
+- **`version` 不能按字段名一律置零**：病历 version 是 epoch 秒（每次变），病历修订行的 version 是
+  小整数修订号（1/2/3，Schema 里 `min 1`）。导出机改成**按值判定**：只有 ≥1e9 的 version 才置零，
+  修订号原样保留。连跑两次 `-Check` 均「一致 67 / 不一致 0」。
+- **`final-verify` 没把 DSN 传给子脚本**：子脚本各自有 `-Dsn`（默认 3317），DSN 不是 3317 时
+  它们仍去连默认端口 ⇒ `Can't connect to server (10061)`。现在 runner 把 `-Dsn` 注入每个子脚本
+  （`health-check` 只认 `-Base`，跳过），18 项全绿。
+
+### 新增
+
+- **`docs/验收实跑-2026-10-21.md`**：把「821 条断言」「18 项门禁」「契约 67/67」从**声明**变成
+  **留痕** —— 环境版本、DSN、命令、退出码、原样输出、复现四步、三个踩坑点，一条不少。
+- **`tools/verify-source-manifest.ps1`**：按 `SOURCE-MANIFEST.sha256` 重算 76 个源文件的 sha256，
+  证明「分发包里的 exe 与仓库源码是同一份」。**不需要编译器、不需要数据库**，托管 runner 上也能真绿。
+- **CI 从 2 层扩到 4 层**（`.github/workflows/repo-hygiene.yml`）：
+  `docs`（文本卫生）→ `pure-tests`（纯逻辑，缺工具链诚实 SKIP）→ **`source-manifest`**（分发包↔源码，
+  解包取清单后逐字节比对）→ **`build-and-test`**（真装 cjc 1.2.0、编驱动与 exe、跑三件套）。
+  第 4 层靠仓库变量 `CANGJIE_SDK_URL` 打开：没配时打印说明并跳过，配了就必须真编过，否则红。
+
+### 变更
+
+- 分发包重打：25 个文件，zip **8,260,344 B（7.88 MB）**，解压 **22.35 MB**，
+  SHA256 `FA7BD24BE9FD6B959AD45651F61DB44AF411A5592198CC80761B52EE13EDE41F`（内含上面 4 个修好的 Schema 与 `THIRD-PARTY.md`）。
+- `server/src/main.cj` 的 `isTestDatabase` 注释与实现对齐：新规则**有意**放行 `hospital_test_backup_2025`
+  （测试库的备份，清空不伤生产），要更严就收紧成精确白名单。
+
 ## [0.2.0-p1-rev.11] 2026-10-21 —— 按评估报告整改：Prompt 真接线、CI 纯逻辑 job、知识库种子、守卫收紧
 
 ### 修复（对外可见的行为变化）
@@ -55,8 +92,8 @@
 ### 重新打包与校验
 
 - 服务端重编：38 个 `.cj` → `hospital-server.exe`，源码清单 76 个文件。
-- 分发包重打：25 个文件，zip **8,260,341 B（7.88 MB）**，解压 **22.35 MB**，
-  SHA256 `0E9910E71CC4B30C875604AF3DCD839CF7A11E99B9623984CE0F887AE019B24D`。
+- 分发包重打：25 个文件，zip **8,260,344 B（7.88 MB）**，解压 **22.35 MB**，
+  SHA256 `FA7BD24BE9FD6B959AD45651F61DB44AF411A5592198CC80761B52EE13EDE41F`。
 - `accept` 821/0、`triagetest` 全绿；`check-docs`（145 条相对链接）、`check-snapshot`、
   `doc-counts` 25 条对账全绿。
 

@@ -116,6 +116,10 @@ function Normalize-Node($node) {
         foreach ($k in @($node.Keys)) {
             $v = $node[$k]
             if ($NormStr.ContainsKey($k) -and ($v -is [string])) { $o[$k] = $NormStr[$k]; continue }
+            # 2026-10-21：`version` **不能按字段名一律置零** —— 病历的 version 是 epoch 秒
+            # （与 updated_at 同源，每次跑都变），而病历修订行的 version 是小整数修订号
+            # （1/2/3，Schema 里 min 1，必须保留）。判据：只有 epoch 级的 version 才置零。
+            if ($k -eq 'version' -and ($v -is [int] -or $v -is [int64] -or $v -is [double]) -and [double]$v -ge 1000000000) { $o[$k] = 0; continue }
             if (($NormZero -contains $k) -and ($v -is [int] -or $v -is [int64] -or $v -is [double] -or $v -is [decimal] -or $v -is [single])) { $o[$k] = 0; continue }
             $o[$k] = Normalize-Node $v
         }
@@ -128,6 +132,10 @@ function Normalize-Node($node) {
             $k = $p.Name
             $v = $p.Value
             if ($NormStr.ContainsKey($k) -and ($v -is [string])) { $o[$k] = $NormStr[$k]; continue }
+            # 2026-10-21：`version` **不能按字段名一律置零** —— 病历的 version 是 epoch 秒
+            # （与 updated_at 同源，每次跑都变），而病历修订行的 version 是小整数修订号
+            # （1/2/3，Schema 里 min 1，必须保留）。判据：只有 epoch 级的 version 才置零。
+            if ($k -eq 'version' -and ($v -is [int] -or $v -is [int64] -or $v -is [double]) -and [double]$v -ge 1000000000) { $o[$k] = 0; continue }
             if (($NormZero -contains $k) -and ($v -is [int] -or $v -is [int64] -or $v -is [double] -or $v -is [decimal] -or $v -is [single])) { $o[$k] = 0; continue }
             $o[$k] = Normalize-Node $v
         }
@@ -373,12 +381,17 @@ $null = Invoke-MySqlScalar -My $My -Label "清医生" -Sql "DELETE FROM doctor W
 $null = Invoke-MySqlScalar -My $My -Label "清科室" -Sql "DELETE FROM department WHERE id >= 706000"
 $null = Invoke-MySqlScalar -My $My -Label "清患者" -Sql "DELETE FROM patient WHERE id >= 706000"
 
+# 2026-10-21：排班日期改成**当天** —— 服务端新增了「不能给未来号到院/接诊」的硬门槛，
+# 写死 2026-12-26 会让 到院/接诊 的样例永远 409（VISIT_DATE_FUTURE）。归一化里
+# `\d{4}-\d{2}-\d{2}` 本来就会替换成 <date>，所以样例字节不受影响。
+$ctrToday = (Get-Date).ToString('yyyy-MM-dd')
+
 $seedSql = @"
 INSERT INTO department (id, name, code, created_at) VALUES (706001, '契约验证科', 'CTRC', 0);
 INSERT INTO doctor (id, name, department_id, title, specialty, created_at) VALUES (706001, '契约医生甲', 706001, '主任医师', '测试', 0);
 INSERT INTO doctor (id, name, department_id, title, specialty, created_at) VALUES (706002, '契约医生乙', 706001, '住院医师', '测试', 0);
-INSERT INTO schedule (id, doctor_id, department_id, work_date, period, total_num, remain_num, version, enabled, created_at) VALUES (706001, 706001, 706001, '2026-12-26', 'AM', 20, 20, 0, 1, 0);
-INSERT INTO schedule (id, doctor_id, department_id, work_date, period, total_num, remain_num, version, enabled, created_at) VALUES (706002, 706001, 706001, '2026-12-27', 'AM', 1, 1, 0, 1, 0);
+INSERT INTO schedule (id, doctor_id, department_id, work_date, period, total_num, remain_num, version, enabled, created_at) VALUES (706001, 706001, 706001, '$ctrToday', 'AM', 20, 20, 0, 1, 0);
+INSERT INTO schedule (id, doctor_id, department_id, work_date, period, total_num, remain_num, version, enabled, created_at) VALUES (706002, 706001, 706001, '$ctrToday', 'AM', 1, 1, 0, 1, 0);
 INSERT INTO patient (id, phone, name, gender, birth_date, created_at) VALUES (706001, '13800070601', '契约患者甲', 'M', '1990-01-01', 0);
 INSERT INTO patient (id, phone, name, gender, birth_date, created_at) VALUES (706002, '13800070602', '契约患者乙', 'F', '1992-02-02', 0);
 INSERT INTO patient (id, phone, name, gender, birth_date, created_at) VALUES (706003, '13800070603', '契约患者丙', 'F', '1993-03-03', 0);

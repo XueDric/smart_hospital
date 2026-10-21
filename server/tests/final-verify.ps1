@@ -12,12 +12,18 @@
 # ⚠ 含中文必须 UTF-8 with BOM（PS 5.1）。
 # ⚠ 原生命令写 stderr + `2>&1` 在 EAP=Stop 下会抛 NativeCommandError ⇒ 读 create-admin 口令时局部放宽。
 
+param(
+    # 2026-10-21：DSN 可传参 —— devdb 的实际端口由 devdb.ps1 决定（本机跑在 3417），
+    # 写死 3317 会让脚本在 3417 的机器上"实例起不来"，看起来像代码坏了。
+    [string]$Dsn = 'mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital_test'
+)
+
 $ErrorActionPreference = 'Stop'
 # ✅ 2026-10-17 复查：原为硬编码绝对路径，换机器/进 CI 就找不到 exe。
 #   本脚本在 server\tests\ 下，父目录即 server 根 —— 与其余脚本同一口径。
 $server = Split-Path -Parent $PSScriptRoot
 $exe = "$server\build\hospital-server.exe"
-$dsn = 'mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital_test'
+$dsn = $Dsn
 $log = "$env:TEMP\final-verify.log"
 Remove-Item $log -ErrorAction SilentlyContinue
 
@@ -104,6 +110,12 @@ try {
         # 数字对不上就 exit 1。原先它只"能手动跑"、没进任何门禁 —— 所以文档能一直烂着。
         @{ n = 'doc-counts'; p = @{ Dsn = $dsn } }
     )
+    # 2026-10-21：**Dsn 必须传给子脚本** —— 它们各自有 `-Dsn` 参数（默认 3317），
+    # 只把 Dsn 给 accept/create-admin 是不够的：子脚本里的 SQL 夹具仍会去连 3317。
+    # health-check 只认 -Base，故跳过。
+    foreach ($sp in $specs) {
+        if ($sp.n -ne 'health-check' -and -not $sp.p.ContainsKey('Dsn')) { $sp.p['Dsn'] = $dsn }
+    }
 
     $results = @()
     foreach ($s in $specs) {

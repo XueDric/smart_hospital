@@ -16,6 +16,7 @@
     "complete": { "type": "boolean" },
     "updated_by": { "type": "integer" },
     "created_at": { "type": "integer" },
+    "version": { "type": "integer", "description": "乐观锁版本（与 updated_at 同源，服务端生成）" },
     "updated_at": { "type": "integer" },
     "missing_required": { "type": "array", "items": { "type": "string" } },
     "sections": {

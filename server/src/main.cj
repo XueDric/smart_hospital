@@ -173,16 +173,20 @@ func checkDb(dsn: String): Int64 {
  */
 func isTestDatabase(dbName: String): Bool {
     /*
-     * ★ 2026-10-21（评估报告 P3-9）：从"库名里含 test"改成**显式的名字形态**。
+     * ★ 2026-10-21（评估报告 P3-9）：从「库名里含 test」改成**显式的名字形态**。
      *
-     * 旧判据 `dbName.contains("test")` 的漏洞很具体：它把
-     *   `hospital_contest` / `latest_hospital` / `hospital_test_backup_2025`
-     * 都当成测试库 —— 前两个是**别的东西**（活动库、生产快照），
-     * 万一有人这么命名，`accept` 一跑就 DELETE 六张表。
+     * 旧判据 `dbName.contains("test")` 挡不住两类名字里的花招：
+     *   · `hospital_contest`（活动库）—— 含 `test` 但不是测试库；
+     *   · `latest_hospital`（生产快照）—— 同理。
+     * 这两个名字一旦被 accept 认成测试库，`accept` 一跑就 DELETE 六张表。
      *
-     * 现在只认三种**显式形态**（行业惯例，一眼能看出"这是测试库"）：
-     *   `*_test`  /  `test_*`  /  `*_test_*`
+     * 现在只认三种**显式形态**（行业惯例，一眼能看出「这是测试库」）：
+     *   `test` / `test_*` / `*_test` / `*_test_*`
      * 也就是 `test` 必须是**独立的下划线分段**，不能是别的单词的一部分。
+     *
+     * ⚠ 这条规则的**边界要写清楚**：按分段判，`hospital_test_backup_2025` 会**被放行**
+     *   （它含 `_test_` 分段）。这是**有意**的 —— 测试库的备份清空了也不伤生产数据；
+     *   如果你连备份库也不许清，就把下面的形态再收紧成精确白名单。
      *
      * ⚠ 仍然允许 `hospital_test`（`*_test`）这种最常用写法，
      *   所以 server/tests 下的脚本与 docs/DEPLOYMENT.md 里的命令都不需要改。
