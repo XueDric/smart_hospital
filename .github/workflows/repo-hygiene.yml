@@ -115,6 +115,10 @@ jobs:
               Write-Host "来源：Release 资产 sdk-cache-1.2.0"
             }
           }
+          # 嗅探脚本按设计会 exit 1（拿不到签名直链时的如实结果），
+          # 不能让它的 $LASTEXITCODE 把这一步判红 —— 本步的结论只由上面的来源解析决定。
+          $global:LASTEXITCODE = 0
+          exit 0
 
       - name: 缓存仓颉 SDK（命中则跳过 ~93 MB 下载与安装）
         id: sdk-cache

@@ -97,6 +97,9 @@ BuildProfile.ets
 /release/*
 !/release/harmony/
 !/release/android/
+# 2026-10-21：服务端分发包入库 —— CI 的 source-manifest job 要解包比对 SOURCE-MANIFEST，
+#   评委也不必从聊天记录里找附件；体积 8.3 MB，重建后需同步提交 + 刷快照。
+!/release/hospital-server-0.2.0-p1-win-x64.zip
 # 答辩录屏工作目录（原始素材/剪辑中间产物/成片都很大，按"录屏不入库"的既定口径忽略）
 /video/
 
