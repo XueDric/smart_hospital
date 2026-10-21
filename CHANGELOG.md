@@ -39,11 +39,11 @@
 
 - `release/hospital-server-0.2.0-p1-win-x64.zip`：25 文件，含 LICENSE / NOTICE / THIRD-PARTY 与 6 份第三方许可全文。
 - `release/harmony/`：未签名 HAP + `pack.info` + 构建日志 + 17 张实跑截图；`release/android/`：APK + 7 张截图。
-- 演示成片 `video/smart-hospital-demo-2026-10-21.mp4`（5:23，在线服务 + 真模型实录）；答辩演示 `docs/答辩演示-2026-10-21.pptx`（10 页）。
+- 演示成片 `video/smart-hospital-demo-2026-10-21.mp4`（5:23，在线服务 + 真模型实录）；答辩演示 `docs/答辩演示-2026-10-21.pptx`（11 页）。
 
 ## 2026-10-21 —— 答辩演示与验收留痕
 
-- 10 页 PPTX（`docs/答辩演示-2026-10-21.pptx`），每页备注即该页讲稿。
+- 11 页 PPTX（`docs/答辩演示-2026-10-21.pptx`），第 3 页为五个创新点，每页备注即该页讲稿。
 - `docs/验收实跑-2026-10-21.md`：`accept` / 三件套 / `final-verify` 的原文输出、环境指纹与复现步骤。
 
 ## 2026-10-20 —— 分诊文案与医生预填
