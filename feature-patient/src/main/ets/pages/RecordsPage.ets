@@ -56,7 +56,8 @@ export struct RecordsPage {
     Column() {
       PageHeader({
         title: '医疗档案',
-        subtitle: '医生提交锁定后即可查看七段式病历'
+        subtitle: '医生提交锁定后即可查看七段式病历',
+        showBack: true
       })
 
       if (this.errorMessage.length > 0) {
