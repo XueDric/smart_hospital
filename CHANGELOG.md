@@ -8,6 +8,29 @@
 
 ---
 
+## [0.2.0-p1-rev.16] 2026-10-21 —— CI 三层全绿：真编译 + 三件套已在 GitHub 上跑通
+
+GitHub Actions 现在有三个 job 全绿（run `39584538073`，`main` @ `66d7bcea`）：
+
+- `文档链接 / 脚本编码 / 旧路径`：`check-docs.ps1` + `check-snapshot.ps1`；
+- `分发包 ↔ 源码一致性`：解出 release 里的 `SOURCE-MANIFEST.sha256`，76 个文件逐字节比对；
+- `真编译 + 三件套`：装 cjc 1.2.0 → 编 MariaDB 驱动 → 编服务端 → `selftest` / `authtest` / `triagetest` 全 PASS。
+
+打通这一层先后修掉五个**只在 CI 才会犯**的错，逐个记下来：
+
+1. `steps.sdk.outputs.PKG` 永远是空 —— 写 `PKG=` 的那一步少了 `id:`，output 挂到了上一步；
+2. 源码清单 65/76 不一致 —— `windows-latest` 默认 `core.autocrlf=true`，检出把 LF 转成 CRLF；
+3. `build-mysql-driver.ps1` 的候选目录里有 `E:\cangjie\stdx\...`，runner 没有 E: 盘，
+   `Join-Path` 直接抛 `DriveNotFoundException`（改成 `[System.IO.Path]::Combine`）；
+4. 官方 SDK **不含 stdx**（`libstdx*.a` 是独立发布的包）⇒ 把 1.1.3.1 静态库打包成
+   release 资产 `cangjie-stdx-1.1.3.1-windows-x64-static.zip`（6.76 MB）供 CI 取用；
+5. 三件套"失败但零输出" —— exe 缺运行期 DLL（`libcrypto-3-x64` / `libssl-3-x64`，
+   OpenSSL 3.5.7 不在 SDK 里）⇒ 新增 release 资产 `openssl-3.5.7-x64-dlls.zip`（2.64 MB）。
+
+**可复现性证据**：CI 在干净 runner 上重编后产出 `SOURCE-MANIFEST.sha256`，
+76 个源文件的 sha256 与本机**逐条一致（0 处差异）**；差异只在指纹行
+（`stdx` 路径不同、`mariadb.cdbc.cjo` 的哈希不同 —— cjc 产物本就不逐字节可复现，仓库里已写明）。
+
 ## [0.2.0-p1-rev.15] 2026-10-21 —— CI 的编译层终于有稳定 SDK 来源（不再靠签名直链）
 
 - 官方下载页的 Windows 包是**安装器**（`cangjie-sdk-windows-x64-1.2.0.exe`，93 MB，NSIS），
