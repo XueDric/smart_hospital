@@ -36,7 +36,7 @@ git log --oneline --graph | head -30      # 版本历史（截至 v0.2.0-p1-rev 
 
 > **提交数为什么有两个口径**：上表那一行按 `v0.2.0-p1-rev` 这个 tag 统计（107 条），并由
 > `server/tests/doc-counts.ps1` 拿 **tag 指向的提交数**机器对账 —— 如果按 HEAD 统计，每加一个提交
-> 文档就会假红一次。截至 2026-10-21，HEAD 侧共 **150 个提交**（`git rev-list --count HEAD`），
+> 文档就会假红一次。截至 2026-10-21，HEAD 侧共 **152 个提交**（`git rev-list --count HEAD`），
 > tag 之后的 42 个是维护批次（文档整改、CI 补层、契约修回绿）。两边都对，看你怎么问。
 
 **版本历史摘要**（完整见 [CHANGELOG.md](CHANGELOG.md)）
