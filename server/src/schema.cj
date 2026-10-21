@@ -445,7 +445,7 @@ public let SCHEMA_DDL: Array<String> = [
      *   病历最要紧的属性之一是"**谁写的**" —— 没有它，"锁定"只锁住了内容，
      *   锁不住责任（解锁后谁改的、谁该为这版负责，都无从查）。
      *   ⚠ 本轮只记"最后修改人"，**没有**完整修订历史表（谁在第几版改了什么）——
-     *     那属后续，已写进 docs/PHASE-HANDOFFS.md 的遗留表。
+     *     那属后续范围。
      */
     "updated_by BIGINT NOT NULL DEFAULT 0, " +
     /*

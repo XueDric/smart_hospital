@@ -230,7 +230,7 @@ class DoctorActivity : Activity() {
     private fun patientEntry() { startActivity(Intent(this,MainActivity::class.java));finish() }
     private fun loadQueue() { task({repo.queue()}) { renderQueue(it) } }
     /* ★ 2026-10-18（对齐鸿蒙侧 BUG-5）：队列里有未来日期的号，点"确认到院"会在今天就把号当今天的接诊处理。
-     *   这里只做"防误操作"的界面守卫，真正的硬门槛应落在服务端（见 docs/联调记录-2026-10-18.md）。 */
+     *   这里只做"防误操作"的界面守卫，真正的硬门槛在服务端（就诊日为未来时服务端返回 VISIT_DATE_FUTURE）。 */
     private fun isToday(visitDate:String):Boolean = try { visitDate==java.time.LocalDate.now().toString() } catch(e:Exception) { false }
 
     private fun renderQueue(rows:List<DoctorVisit>) {

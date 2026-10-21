@@ -1,7 +1,7 @@
 # 智慧医院智能导诊就诊系统 · 系统设计
 
 > 本文回答"这套系统是怎么搭起来的"：总体架构、模块划分、接口设计、数据流转、关键技术实现。
-> 项目背景与需求见 [PROJECT-OVERVIEW.md](PROJECT-OVERVIEW.md)；逐字段接口口径见 [FRONTEND-INTEGRATION.md](archive/FRONTEND-INTEGRATION.md)；架构决策的**论证过程**见 [adr/ADR-0001](adr/ADR-0001-号源与挂号独立MySQL路径.md)。
+> 项目背景与需求见 [PROJECT-OVERVIEW.md](PROJECT-OVERVIEW.md)；逐字段接口口径见 [FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md)；架构决策的**论证过程**见 [adr/ADR-0001](adr/ADR-0001-号源与挂号独立MySQL路径.md)。
 
 ---
 
@@ -94,7 +94,7 @@
 | `contract/examples/` | 67 个**逐字节**样例（每个端点至少一例，含错误形状） |
 | `contract/schema/` | 24 个 JSON Schema（18 个 data 级 + 6 个信封/响应级） |
 | `contract/schema-map.json` | 样例 → Schema 映射 |
-| `contract/CHANGELOG.md` | 契约变更（含"客户端要不要动"的判断） |
+| `contract/examples/` | 67 个样例（服务端实测导出，逐字节比对） |
 
 ---
 
@@ -110,7 +110,7 @@
 
 - 客户端**只判 `code`，不判 HTTP 状态码**（状态码由 `apiErrorSpec` 统一映射，仅作运维观测）。
 - 状态码与默认文案集中在 `server/src/http_common.cj` 的 `apiErrorSpec(code)`。
-- 框架层错误（非法 JSON 400 / 请求体过大 413 / 路由未匹配 404 / 方法不匹配 405 / 静态 404/416）**也已统一成同一信封**（2026-10-17 完成），细节见 [FRONTEND-INTEGRATION.md §3.2](archive/FRONTEND-INTEGRATION.md)。
+- 框架层错误（非法 JSON 400 / 请求体过大 413 / 路由未匹配 404 / 方法不匹配 405 / 静态 404/416）**也已统一成同一信封**（2026-10-17 完成），细节见 [FRONTEND-INTEGRATION.md §3.2](FRONTEND-INTEGRATION.md)。
 
 ### 3.2 端点规模与分组
 
@@ -148,7 +148,7 @@
 
 ### 3.5 SSE（预问诊）
 
-`GET /api/v1/previsit/stream?chief_complaint=…` 返回 `text/event-stream`（主诉走 query，鉴权 `requireCan(role, Action.Book)`；`/api/v1/previsit/:id` 只取会话快照，非流式），帧为 `event:` + `data:`（JSON）。服务端在 handler 内 `streamStart()` → 多次 `writeChunk()` → 返回后自动写 last-chunk（`server/third_party/qingzhou/src/context.cj:301-325`）。原始帧样例见 [FRONTEND-INTEGRATION.md §6](archive/FRONTEND-INTEGRATION.md)。
+`GET /api/v1/previsit/stream?chief_complaint=…` 返回 `text/event-stream`（主诉走 query，鉴权 `requireCan(role, Action.Book)`；`/api/v1/previsit/:id` 只取会话快照，非流式），帧为 `event:` + `data:`（JSON）。服务端在 handler 内 `streamStart()` → 多次 `writeChunk()` → 返回后自动写 last-chunk（`server/third_party/qingzhou/src/context.cj:301-325`）。原始帧样例见 [FRONTEND-INTEGRATION.md §6](FRONTEND-INTEGRATION.md)。
 
 ---
 

@@ -171,7 +171,7 @@ $checks = @(
     @{ File = "server\README.md";     Pattern = '`accept <dsn>` \| 验收测试 AC-1…AC-(?:P[234]-)?(?<ac>\d+)（\*\*(?<n>\d+) 项断言\*\*'; Want = 'accept' },
     @{ File = "server\README.md";     Pattern = '`src/acceptance\.cj` \| AC-1…AC-(?:P[234]-)?(?<ac>\d+) 验收测试'; Want = 'accept' },
     @{ File = "README.md";            Pattern = '\*\*(?<ep>\d+) 个 REST\*\*'; Want = 'endpoints' },
-    @{ File = "server\README.md";     Pattern = '`triagetest` \| P2 分诊.*?自检（\*\*\s*(?<n>\d+) 项\*\*'; Want = 'triagetest' },
+    @{ File = "server\README.md";     Pattern = '`triagetest` \|[^|]*?自检（\*\*\s*(?<n>\d+) 项\*\*'; Want = 'triagetest' },
     @{ File = "docs\adr\ADR-0001-号源与挂号独立MySQL路径.md"; Pattern = '`hospital-server\.exe selftest` \| ✅ \*\*(?<n>\d+) 项\*\*'; Want = 'selftest' },
     @{ File = "docs\adr\ADR-0001-号源与挂号独立MySQL路径.md"; Pattern = '`hospital-server\.exe accept <dsn>` \| ✅ \*\*(?<n>\d+) 项 / 失败 0\*\*'; Want = 'accept' },
     @{ File = "server\README.md";     Pattern = '`src/acceptance_notice\.cj` \| AC-NOTICE-1…AC-NOTICE-(?<ac>\d+)'; Want = 'accept' },

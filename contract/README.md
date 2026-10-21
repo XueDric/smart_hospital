@@ -1,6 +1,6 @@
 # 接口契约（可执行）
 
-> **为什么有这个目录**：`docs/archive/FRONTEND-INTEGRATION.md` 解释字段的**语义**（这个字段是什么意思、
+> **为什么有这个目录**：`docs/FRONTEND-INTEGRATION.md` 解释字段的**语义**（这个字段是什么意思、
 > 什么情况下会出现），但它**拦不住形状漂移** —— 服务端改一个字段名、把 404 从信封换成平铺，
 > 文档不会自己变红。`contract/` 把真实响应**逐字节**钉住：**形状的权威在这里**，语义在文档里。
 
@@ -15,7 +15,6 @@
 | `contract/examples/*.json` | **67 条**真实响应样例（含请求、状态码、`content-type`、响应体） | `server/tests/export-contract.ps1` **自动生成，不要手工改** |
 | `contract/schema/*.schema.json` | **24 个** JSON Schema：6 个 **body 级**（`artifact` / `envelope-ok` / `envelope-error` / `envelope-error-fields` / `health` / `previsit-stream`），18 个 **data 级**（`data-*.schema.json`，校验 `response.body.data`） | 手工维护 |
 | `contract/schema-map.json` | 样例 → Schema 的映射（`body` / `data` / `body_text` / `error_code`）+ 文件级 Schema 声明 | 手工维护，**新增样例必须登记** |
-| `contract/CHANGELOG.md` | 形状变更日志（给人看：改了什么、客户端要不要动） | 手工维护 |
 
 样例文件的结构（`artifact.schema.json` 钉住它）：
 
@@ -39,10 +38,10 @@ cd E:\harmonyOS\smart_hospital\server
 # ① 只比对（不写盘）：重新导出并与已提交样例逐字节比 —— 门禁用的就是这个
 .\tests\export-contract.ps1 -Base http://127.0.0.1:18092 -AdminPw <管理员口令> -Check
 
-# ② 更新样例（只在"形状确实该变"时用；改完必须 review diff 并登记 schema-map + CHANGELOG）
+# ② 更新样例（只在"形状确实该变"时用；改完必须 review diff 并登记 schema-map）
 .\tests\export-contract.ps1 -Base http://127.0.0.1:18092 -AdminPw <管理员口令>
 
-# ③ 完整门禁 = ① + Schema 校验 + 登记完整性（推荐；已并入 final-verify.ps1）
+# ③ 完整门禁 = ① + Schema 校验 + 登记完整性（推荐；final-verify.ps1 走的就是这条）
 .\tests\contract-check.ps1 -Base http://127.0.0.1:18092 -AdminPw <管理员口令>
 
 # ④ 没起服务、只想校 Schema 与登记（快）
@@ -69,7 +68,7 @@ cd E:\harmonyOS\smart_hospital\server
 | 文本里的日期 / 手机号 / 长数字 | `<date>` / `<phone>` / `<N>` | 错误消息里回显的参数 |
 | 夹具专名 | `<dept>` / `<doctor>` / `<patient>` | 契约夹具的固定名字 |
 | 请求路径里的数字段 | `{id}` | `/api/v1/medical-records/{id}` |
-| **查询串里**值为库内自增 id 的参数 | `{id}` | `?exclude_appointment_id={id}` —— ⚠ 它同样是"每次导出都不同"的库内主键；而 `limit=9999`/`offset=-5`/`against=2` 这类**脚本文写死的常量**不归一化（它们是样例要钉住的东西）。漏了这条 → `doctor-patient-records-exclude-200` 每次都红（2026-10-15 实测） |
+| **查询串里**值为库内自增 id 的参数 | `{id}` | `?exclude_appointment_id={id}` —— ⚠ 它同样是"每次导出都不同"的库内主键；而 `limit=9999`/`offset=-5`/`against=2` 这类**脚本文写死的常量**不归一化（它们是样例要钉住的东西）。漏了这条 → `doctor-patient-records-exclude-200` 每次都红 |
 | 键顺序 | **排序**（`To-CanonicalJson`，非 `ConvertTo-Json`） | 保证 diff 可读、跨 PS 版本一致 |
 
 **volatile 逃生口**：极少数样例的内容依赖整库状态（当前只有 `admin-users-page-clamped-200` 的
@@ -79,10 +78,10 @@ cd E:\harmonyOS\smart_hospital\server
 
 > ⚠ **路径坐标**：`volatile` 里的路径相对**信封体**（`response.body`），和 `schema-map.json` 的
 > `body`/`data` 靶位同一套 —— 所以 `data.items` 指 `body.data.items`。
-> ⚠ **两条防呆（都是踩过坑之后加的）**：① 导出机解析不到某条 volatile 路径时**直接失败**（不静默跳过）；
+> ⚠ **两条防呆**：① 导出机解析不到某条 volatile 路径时**直接失败**（不静默跳过）；
 > ② 门禁会断言"声明的 volatile 路径在文件里**确实是** `"<volatile>"`"。
-> 没有这两条时，一条"声明了 volatile 但导出机其实没替换"的样例会在**别的脚本改了库之后**随机假红
-> （2026-10-15 实测：`final-verify` 里 `contract-check` 红在 `admin-users-page-clamped-200`，
+> 缺了这两条，一条"声明了 volatile 但导出机其实没替换"的样例会在**别的脚本改了库之后**随机假红
+> （`final-verify` 里 `contract-check` 红在 `admin-users-page-clamped-200`，
 > 而单独跑它却是绿的 —— 典型的"环境相关假红"）。
 
 ## 4. 新增一条样例的步骤
@@ -90,7 +89,7 @@ cd E:\harmonyOS\smart_hospital\server
 1. 在 `export-contract.ps1` 里加一个 `Cap` 调用（请求 + 期望状态码）；
 2. 去掉 `-Check` 跑一次，**逐行 review** 生成的 JSON（尤其确认没有真实 id/token 泄进去）；
 3. 在 `schema-map.json` 的 `map` 里登记（新形状要在 `schema/` 里补 Schema）；
-4. 在 `CHANGELOG.md` 记一行（日期 / 端点 / 变更 / 客户端要不要动）；
+4. **形状变更时同步更新 `contract/*.schema.json` 与 `contract/examples/`**，并在 PR 说明里写清客户端是否需要改动；
 5. 跑 `contract-check.ps1` 全绿后一起提交。
 
 ## 5. 校验器支持的 Schema 子集
@@ -112,17 +111,20 @@ cd E:\harmonyOS\smart_hospital\server
 
 ## 7. 契约**不**覆盖什么（别指望它）
 
-- **字段语义**（什么时候会出现、该显示什么文案）→ `docs/archive/FRONTEND-INTEGRATION.md`；
+- **字段语义**（什么时候会出现、该显示什么文案）→ `docs/FRONTEND-INTEGRATION.md`；
 - **权限矩阵的全量组合**（只覆盖示例路径上的角色）；
 - **数据库级不变式**（唯一键、并发、事务边界）→ `accept` 验收测试；
 - **幂等/重放的行为语义**（样例只钉住"重放也返回 200 且 `appointment_id` 相同"这个形状）；
 - **性能与超时**。
 
-## 8. 这个目录已经纠正过的文档错误
+## 8. 响应形状（契约钉住的）
 
-| 文档旧说法 | 实测（契约样例为准） |
-| --- | --- |
-| "未匹配路由是平铺 `{"error":"Not Found","path":…}`" | **API** 路径是信封 `404 ROUTE_NOT_FOUND` |
-| §3.2 只列 3 种失败形状 | **2026-10-17 起已收敛为 1 种**：所有 4xx/5xx（含框架的非法 JSON 400、路由/静态 404、405、416）都是 `{ok:false,error:{code,message}}`；`/health` 是第四种**成功**形状（`{ok,data}` 但字段少） |
-| §3.2 那三种平铺形状（`flat-error` / `static-not-found` / `method-not-allowed`） | **已作废**（2026-10-17）：框架层改成可注入的 `router.errorBody` / `StaticOptions.notFoundBody|forbiddenBody|rangeNotSatisfiableBody`，三个 Schema 文件已删除，样例改指 `envelope-error` + `error_code` |
-| `ROUTE_NOT_FOUND`"实现里未见任何 handler 抛它" | 兜底中间件会抛（`http_app.cj:2684-2706`） |
+- **错误一律是信封**：所有 4xx/5xx（含框架的非法 JSON 400、路由/静态 404、405、416）都是
+  `{ok:false,error:{code,message}}`。不存在平铺的 `{"error":"Not Found","path":…}` 之类形状，
+  也没有 `flat-error` / `static-not-found` / `method-not-allowed` 三个 Schema ——
+  框架层提供可注入的 `router.errorBody` / `StaticOptions.notFoundBody|forbiddenBody|rangeNotSatisfiableBody`，
+  样例统一指 `envelope-error` + `error_code` 靶位。
+- **成功形状两种**：多数接口是 `{ok:true,data}`（`envelope-ok`）；`/health` 走专用的
+  `health.schema.json`（也是 `{ok,data}`，但字段少）。
+- **路由 404**：`ROUTE_NOT_FOUND` 由兜底中间件统一回信封 —— 它必须注册在
+  `router.middleware()` **之后**，未命中才会透传到这里（`http_app.cj`）。

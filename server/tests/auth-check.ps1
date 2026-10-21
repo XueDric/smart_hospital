@@ -5,7 +5,7 @@
 #
 # ⚠ 含中文的 PowerShell 脚本必须 UTF-8 with BOM（PS 5.1 否则按 ANSI 解析 → 语法报错）。
 # ⚠ header/body 全部走 curl **config 文件**（-K）：
-#   `Start-Process -ArgumentList` 或含空格的 -H 参数会被拆坏（详见 docs/archive/PHASE-HANDOFFS.md 的「P1 运行手册」）。
+#   `Start-Process -ArgumentList` 或含空格的 -H 参数会被拆坏（含空格的 -H 参数同样会被拆坏）。
 #
 # 用法：
 #   .\auth-check.ps1 -Base http://127.0.0.1:8091 -AdminPw <口令>

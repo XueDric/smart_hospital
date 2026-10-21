@@ -1,6 +1,6 @@
 # 鸿蒙端对接与开发说明（面向 B / C）
 
-> 本文是鸿蒙客户端（`entry` + `common-core` + `feature-*`）的**开发者口径**，由 A 在完成基础架构与患者端后输出。
+> 本文是鸿蒙客户端（`entry` + `common-core` + `feature-*`）的**开发者口径**。
 > 服务端 HTTP 契约**只以** [docs/FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) 为准；本文只讲**鸿蒙侧怎么用**。
 
 ---
@@ -57,7 +57,7 @@ AppRouter.getInstance().back();                              // 回上一页，�
 * 参数用 `Record<string, Object>`，通过 `getParam(key)` 读取；值统一是字符串/数字。
 * **新增路由**：在 `common-core` 的 `RouteName` 加常量；不要在各 feature 里私自定义字符串。
 * **底部 tab 与详情页的分界**：`PatientRoot` 里 `isTabRoute()` 决定是否显示 `BottomNav`；详情页自带 `PageHeader({ showBack: true })`。
-* 现状：`entry` 已按登录角色分根（患者/医生/管理端各一），医生端与患者端页面没有装进同一个根。
+* `entry` 按登录角色分根（患者 / 医生 / 管理端各一），医生端与患者端页面不在同一个根里。
 
 ---
 
@@ -80,13 +80,13 @@ const health = await HttpClient.getInstance().getRoot('/health');         // 根
 | `getRoot(path)` | 根级、免鉴权（如 `/health`） |
 | `buildHeaders(authenticated)` | 需要时可复用（SSE 也用它取 token） |
 
-> ★ **服务端接口在 2026-10-12 有增量**（患者端联调后补的，全部是加法，老字段一个没删）：
+> **与患者端相关的服务端接口**（全部是加法，老字段一个没删）：
 > `GET /api/v1/departments`、`GET /api/v1/doctors`（患者可读的科室/医生字典）、
 > `GET /api/v1/notices`（首页「医疗公告」的真实数据源）、`GET /api/v1/health`（`/health` 的
-> `/api/v1` 别名）；`/schedules`、`/appointments`、`/medical-records`、挂号与退号响应**新增**
+> `/api/v1` 别名）；`/schedules`、`/appointments`、`/medical-records`、挂号与退号响应带
 > `department_name`/`doctor_name`/`doctor_title`（挂号/退号另有 `remain_num`），
-> `/auth/me` **新增** `display_name`；分诊 `patient_note` 去掉了 Markdown `**`；
-> 服务端「今天」口径改为 **Asia/Shanghai**。
+> `/auth/me` 带 `display_name`；分诊 `patient_note` 不带 Markdown `**`；
+> 服务端「今天」口径是 **Asia/Shanghai**。
 > 逐字段说明见 [`FRONTEND-INTEGRATION.md`](FRONTEND-INTEGRATION.md) §5.19–5.25。
 
 **它替你做的四件事**
@@ -228,7 +228,7 @@ SessionStore.setApiConfig(ApiConfig.mode, ApiConfig.baseUrl); // 持久化
 
 ---
 
-## 9. 代码约定（患者端已落地，建议 B/C 对齐）
+## 9. 代码约定（B/C 需对齐）
 
 * **状态管理统一 V2**：`@ComponentV2` + `@Local` / `@Param` / `@Event`，**不要 V1/V2 混用**。
 * **组件参数命名避坑**：不要用 `enabled` / `background` 当 `@Param` 名（与 ArkUI 内置属性冲突）。现有组件用 `isEnabled`、`chipBackground`。
@@ -254,11 +254,11 @@ cd E:\harmonyOS\smart_hospital
   "Function may throw exceptions"、`ThemeManager.ets:101` 的 `matchMediaSync` 已废弃、
   `feature-admin/.../KnowledgeBasePage.ets:62` 的 `@Component` 成员名不能叫 `create`。均不影响构建。
 
-### 10.1 本机（2026-10-17）实测可用的配方
+### 10.1 本机可用的构建配方
 
-仓库已改名为 `E:\harmonyOS\smart_hospital`（**纯 ASCII，可直接在仓库内构建**）。
-旧问题「`00306003 Specification Limit Violation / Invalid project path`」只会在把仓库克隆到含中文的目录时复现，
-那时才需要 robocopy 一份 ASCII 副本再构建（`subst` 映射盘符绕不过，hvigor 会 realpath 回真实路径）。
+仓库路径 `E:\harmonyOS\smart_hospital` 是**纯 ASCII，可直接在仓库内构建**。
+若把仓库克隆到含中文的目录，`hvigor` 会报 `00306003 Specification Limit Violation / Invalid project path`，
+此时需要 robocopy 一份 ASCII 副本再构建（`subst` 映射盘符绕不过，hvigor 会 realpath 回真实路径）。
 
 不想用仓库根的包装脚本时，等价的手工配方（本机路径为 `D:\DevEco Studio`）：
 
@@ -273,19 +273,18 @@ cd E:\harmonyOS\smart_hospital
 * `hvigorw.bat` 的探测顺序：`%HVIGOR_HOME%` → `D:\DevEco Studio\tools\hvigor\bin` →
   `C:\Program Files\Huawei\DevEco Studio\tools\hvigor\bin` → `%LOCALAPPDATA%\Huawei\DevEcoStudio\...`；
   找不到时打印明确提示并退 1（可改为直接用 DevEco Studio 的 `Build > Build Hap(s)`）。
-* **为什么不用官方 `hvigorw`**：仓库的 `hvigor/hvigor-wrapper.js` 是 **0 字节**（与 DevEco「New Project」
+* **不使用官方 `hvigorw`**：仓库的 `hvigor/hvigor-wrapper.js` 是 **0 字节**（与 DevEco「New Project」
   模板的占位文件一致），官方 wrapper 首次运行要联网装 pnpm + `@ohos/hvigor` 到 `%USERPROFILE%\.hvigor`；
-  离线环境会失败。本仓库改为复用本机 DevEco 自带的 hvigor 6.26.4，不下载任何东西。
+  离线环境会失败。本仓库直接复用本机 DevEco 自带的 hvigor 6.26.4，不下载任何东西。
 * ⚠ **仓库目录改名后要重连一次 `oh_modules` 软链**（绝对路径的 junction 会悬空，症状是
   `10505001 ArkTS Compiler Error: Cannot find module 'common-core'`）：`ohpm install`，或手工
-  `mklink /J` 重连 7 个链接。详见 [docs/DEPLOYMENT.md](../DEPLOYMENT.md) §4。
-* `signingConfigs` 为空时，`build-profile.json5` 的 `products[0]` 已**不再引用** `signingConfig`，
-  只报 `WARN: No signingConfig found for product default`，产物是**未签名 HAP**——要装机得先用
+  `mklink /J` 重连 7 个链接。详见 [docs/DEPLOYMENT.md](DEPLOYMENT.md) §4。
+* `signingConfigs` 为空时，`build-profile.json5` 的 `products[0]` **不写** `signingConfig`，
+  构建只报 `WARN: No signingConfig found for product default`，产物是**未签名 HAP**——要装机得先用
   DevEco 自动签名或本机调试证书签名。
 * 若需要把 hvigor 的缓存/工具链装到别处（C 盘清理、CI 隔离），设 `HVIGOR_USER_HOME=<绝对路径>` 即可；
   该目录默认是 `%USERPROFILE%\.hvigor`。
-* 2026-10-17 的构建证据已入库：[release/harmony/](../../release/harmony/)
-  （HAP + `pack.info` + 完整日志）。
+* 构建产物与完整日志在 [release/harmony/](../release/harmony/)（HAP + `pack.info`）。
 * 模拟器安装、UI 自动化、与真实服务端联调的完整命令与实测结论见
   [docs/FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) §5.33。
 * 服务端联调（本机库、建库、起服务）见 [docs/FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) §2。

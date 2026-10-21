@@ -1,7 +1,7 @@
 # 智慧医院客户端 UI 设计规范（UI-DESIGN）
 
 > 适用范围：鸿蒙端（`common-core` / `feature-patient` / `feature-doctor` / `feature-admin` / `entry`）与 Android 患者端（`android-patient`）。
-> 维护者：角色 C（公共模块与设计规范）。最后更新：2026-10-14。
+> 维护者：角色 C（公共模块与设计规范）。
 
 ---
 
@@ -14,7 +14,7 @@
 5. **深浅双模式必须同时可验证**：新增任何颜色槽位，必须同时给出浅色与深色取值，否则深色模式下会出现"黑底黑字"。
 6. **页面状态四态齐备**：每个数据页至少覆盖 加载中 / 空 / 错误 / 有数据 四种表现。
 
-> 当前状态：全仓硬编码色值 0 处、硬编码字号 0 处、小于 40vp 的按钮热区 0 处（2026-10-14 全量扫描核对）。
+> 当前状态：全仓硬编码色值 0 处、硬编码字号 0 处、小于 40vp 的按钮热区 0 处。
 
 ---
 
@@ -40,7 +40,7 @@
 | `DISABLED` | 禁用文字/描边 | `#AAB8B6` | `#5C6E6C` |
 | `NAV_BACKGROUND` / `NAV_TEXT` | 管理端侧栏底与其上文字 | `#193331` / `#FFFFFF` | `#0C1514` / `#E6F1EF` |
 
-**说明**：`NAV_*` 是为深色模式补的语义槽。此前侧栏复用 `TEXT` 当背景、`SURFACE` 当文字，深色下会整体反色，属典型"借槽位"反例，后续禁止再借。
+**说明**：`NAV_*` 是管理端侧栏的专属语义槽。侧栏不要复用 `TEXT` 当背景、`SURFACE` 当文字 —— 深色下会整体反色，属典型"借槽位"反例。
 
 ---
 
@@ -83,7 +83,7 @@
 
 - **状态**：`ThemeMode.AUTO | LIGHT | DARK`，存于 `KeyValueStore` 的 `theme_mode`，重启保持。
 - **系统跟随**：`AUTO` 下通过 `mediaquery.matchMediaSync('(prefers-color-scheme: dark)')` 监听，系统切换时自动刷新（`ThemeManager.initialize()` 注册）。
-- **刷新机制**：`AppColor` 是**静态 getter，非响应式**。`ThemeManager` 已改为 `@ObservedV2` + `@Trace paletteVersion` 通知，`Index.ets` 不再靠 `themeTick` 奇偶双分支销毁重建整树；⚠ **BUG-2 未修**：已绘制的页面在切换主题后仍不重绘（数据取值正确，是依赖收集没触发），根治要改 `AppStorageV2`/`@Monitor`，见 `common-core/.../ThemeManager.ets` 的说明。
+**刷新机制**：`AppColor` 是**静态 getter，非响应式**。`ThemeManager` 通过 `@ObservedV2` + `@Trace paletteVersion` 通知刷新，`Index.ets` 不需要 `themeTick` 奇偶双分支销毁重建整树。⚠ **已知限制**：已绘制的页面在切换主题后仍可能不重绘（数据取值正确，是依赖收集没触发），根治要改 `AppStorageV2`/`@Monitor`，见 `common-core/.../ThemeManager.ets` 的说明。
   - 因此：**新增页面无需关心主题**，只要颜色走 `AppColor` 就会自动生效；但页面内若有"一次性计算并存字段"的颜色变量，会在重建前保持旧值，应避免这种写法。
 - **用户入口**：患者端「我的 → 外观」提供 跟随系统 / 浅色 / 深色 三选一。
 
@@ -124,7 +124,7 @@
   - `doctor-*` 需 `token + role=doctor`，否则回落 `doctor-login`；
   - `admin-*` 需 `token + role=admin`，否则回落 `admin-login`；
   - 其余需 `token + role=patient`，否则回落 `login`。
-- 因此**各端 Root 内不再重复写登录检查**（已从 `PatientRoot/DoctorRoot/AdminRoot` 移除）。
+- 因此**各端 Root 内不重复写登录检查**，统一由 `AuthGuard` 负责。
 - 冷启动分流：`entry/pages/Index.ets` 依据 `SessionStore` 的 token 与 role 决定首路由；`EntryAbility` 无条件注册三个 feature（否则首装 `role` 为空会让医生/管理端入口不可达）。
 
 ---
@@ -133,7 +133,7 @@
 
 | 类 | 职责 | 注意 |
 |---|---|---|
-| `SessionStore` | 登录态、角色、预问诊会话、API 配置 | 所有 setter 必须立即持久化（此前 `setPrevisitSessionId` / `setApiConfig` 漏持久化，已修复） |
+| `SessionStore` | 登录态、角色、预问诊会话、API 配置 | 所有 setter 必须立即持久化 |
 | `KeyValueStore` | 通用偏好存储（Preferences） | setter 主动 `flush`，避免进程被杀丢值 |
 | `FileStore` | JSON 文件读写（`fileIo`） | 文件名走白名单校验，禁止外部传入路径拼接 |
 
@@ -169,7 +169,7 @@
 
 ## 11. 双端差异与对齐（鸿蒙 ArkTS ↔ Android Compose / MD3）
 
-`android-patient` 现为 13 个 `.kt`，已落地 `ui/ThemeController.kt` + `res/values{,-night}/colors.xml`（明暗色板复刻鸿蒙侧），以下为**已落地的映射**：
+`android-patient` 的 13 个 `.kt` 文件含 `ui/ThemeController.kt` + `res/values{,-night}/colors.xml`（明暗色板复刻鸿蒙侧），映射如下：
 
 | 语义 | 鸿蒙（vp / fp，`AppColor`/`AppText`） | Android（dp / sp，MaterialTheme） |
 |---|---|---|
@@ -189,11 +189,3 @@
 2. 鸿蒙深浅模式需手动重建页面树（见 §5）；Android 由 `colorScheme` + `isSystemInDarkTheme()` 自动重组。
 3. 鸿蒙端当前字符图标（⌂ ◎ ＋ □ 人）为占位方案，Android 端应使用矢量图标；两端最终需统一为图标资源。
 
----
-
-## 12. 待办与需协助事项
-
-- **需 B（业务页面）协助**：管理端缺患者档案、症状标签库、AI 工具中心/Agent/AI 观测页；新增页面须按 §6 使用公共组件、按 §10 骨架排版。
-- **已落地**：`ThemeController`（`isNight()` 统一判定）+ `values`/`values-night` 双色板；如取值有调整，回传后同步修正本表。
-- **需 A（服务端/联调）协助**：提供真机联调环境后，验证深色模式下 SSE 流式页、图表页的对比度。
-- **待 C 后续**：字符图标替换为矢量资源；为图表类页面补深色色序。

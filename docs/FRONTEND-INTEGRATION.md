@@ -10,13 +10,13 @@
 > **适用范围**：只要某条路由**只有**管理员或医生能调，本文只给**分组概览**并明确写「前端不应调用」，
 > 不浪费篇幅列字段。患者端可用的端点（18 个）+ 三端可读的排班端点（2 个）逐字段列全。
 >
-> **核对过的源码文件**：`server/src/http_app.cj`（1644 行，主路由）、`http_common.cj`、`http_p4.cj`、
+> **本文件依据的源码文件**：`server/src/http_app.cj`（1644 行，主路由）、`http_common.cj`、`http_p4.cj`、
 > `http_base.cj`、`http_kb.cj`、`previsit.cj`、`triage.cj`、`domain_booking.cj`、`domain_emr.cj`、
 > `auth_repo.cj`、`auth_crypto.cj`、`main.cj`、`schema.cj`；以及框架层
 > `server/third_party/qingzhou/src/{bodyparser,cors,router,compose,context}.cj`（用于解释两处非信封响应）。
 >
-> **文档口径提示**：本项目历史上有若干份交接文档（`server/README.md`、`docs/P*-HANDOFF.md`）与实现存在出入，
-> 详见 §11「本仓文档口径提示」。本文只描述服务端契约与前端通用对接要点。
+> **文档口径**：本仓库另有若干文档（`server/README.md` 等）与实现存在出入，
+> 详见 §11「与其它文档的口径差异」。本文只描述服务端契约与前端通用对接要点。
 
 ---
 
@@ -25,12 +25,12 @@
 | 项 | 值 |
 | --- | --- |
 | Base URL 形态 | `http://<host>:<port>` 或 `https://<host>:<port>`；**业务接口全部带前缀 `/api/v1`**（`http_app.cj:433`） |
-| 默认端口 | **8091**（`main.cj:707` `var port: UInt16 = 8091`）；2026-10-17 由 8080 改为 8091，**与服务端对齐了客户端的默认值**，所以服务端裸启动即可被默认客户端直接连上。要改端口用 `--port N` |
+| 默认端口 | **8091**（`main.cj:707` `var port: UInt16 = 8091`）；默认值与客户端一致，服务端裸启动即可被默认客户端直接连上。要改端口用 `--port N` |
 | 默认监听地址 | `127.0.0.1`（`main.cj:708`）。要局域网联调必须显式 `--bind 0.0.0.0`（`main.cj:581-583`） |
 | 鉴权头 | `Authorization: Bearer <token>`；头名大小写不敏感，`Bearer` 前缀大小写不敏感，token 前后空白会被 trim（`http_app.cj:350-363`） |
 | 成功信封 | `{"ok":true,"data":{…}}`，HTTP 200 / 201（`http_common.cj:225-238`） |
 | 失败信封 | `{"ok":false,"error":{"code","message","fields"?}}`（`http_common.cj:241-253`） |
-| 唯一例外 | `GET /health`：**在根路径、不在 `/api/v1` 下、不鉴权、不走信封**，返回平铺 `{ok,service,version,data_backend,dev_auth,today,timezone,db}`（`http_app.cj` 的 `healthBody`；`/api/v1/health` 是**同一份实现**的别名，见 §5.19）。★ 2026-10-17 起会探库：库不通 → **503** + `ok:false` |
+| 唯一例外 | `GET /health`：**在根路径、不在 `/api/v1` 下、不鉴权、不走信封**，返回平铺 `{ok,service,version,data_backend,dev_auth,today,timezone,db}`（`http_app.cj` 的 `healthBody`；`/api/v1/health` 是**同一份实现**的别名，见 §5.19）。★ 会探库：库不通 → **503** + `ok:false` |
 | SSE | `GET /api/v1/previsit/stream?chief_complaint=…`；线格式 `data: {"event":"meta"\|"delta"\|"done","data":{…}}\n\n`（`previsit.cj:611-616`） |
 | TLS | **只在显式给 `--tls-cert/--tls-key`（或 `--tls-files`）时才启用；绝不静默降级**（`main.cj:786-836`） |
 | ID 类型 | 除预问诊 `session_id` 是 64 位 hex **字符串**外，所有 id 都是 **JSON number**（Int64） |
@@ -121,20 +121,19 @@ Invoke-RestMethod http://127.0.0.1:8091/health
 
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
-| `ok` | Bool | ★ **2026-10-17 起口径变了**：以前恒 `true`（= "进程活着"），现在 = "进程活着**且库通**"。库不通时为 `false`、响应码 **503**。（仍**没有 `data` 包装层**） |
+| `ok` | Bool | ★ = 「进程活着**且库通**」。库不通时为 `false`、响应码 **503**。（仍**没有 `data` 包装层**） |
 | `service` | String | 恒 `"hospital-server"` |
 | `version` | String | `SERVER_VERSION`，当前 `"0.2.0-p1"`（`main.cj:31`）。**当成不透明字符串**，不要按版本号做能力判断 |
 | `data_backend` | String | 恒 `"mysql"` |
 | `dev_auth` | Bool | `true` = 服务端以 `--dev-auth` 启动，**开发鉴权模式已开**：`X-Role`/`X-Patient-Id`/`X-Doctor-Id` 头可绕过全部认证。**正式联调必须为 `false`**，前端可在设置页把 `dev_auth:true` 显示成红色告警 |
 | `today` | String | ★ **医院今天的日期**（`YYYY-MM-DD`，口径 = Asia/Shanghai）。客户端**不要**用设备本地日期去算"今天"（见 §10.4），拿这个字段即可 |
 | `timezone` | String | 恒 `"Asia/Shanghai"`，与 `today` 配套；**展示用**，不要拿它自己再换算一遍 |
-| `db` | Object | ★ **2026-10-17 新增**：`{ok, reconnects[, reason]}`。`ok=false` 时 `reason` 是固定短句「数据库暂不可用（详见服务端日志）」（**不回驱动原文**：本端点不鉴权）；`reconnects` 是累计重连次数，**非 0 说明链路抖过**（连接自愈生效的证据） |
+| `db` | Object | ★ `{ok, reconnects[, reason]}`。`ok=false` 时 `reason` 是固定短句「数据库暂不可用（详见服务端日志）」（**不回驱动原文**：本端点不鉴权）；`reconnects` 是累计重连次数，**非 0 说明链路抖过**（连接自愈生效的证据） |
 
 > ⚠ 探活语义：**200 + `ok:true`** = 能服务；**503 + `ok:false`** = 进程活着但库不通（探针应据此摘流量）。客户端若拿 `ok` 判断"能不能用"，这正是它想要的语义。
 
-> ⚠ `GET /api/v1/health` 自 2026-10-12 起**存在**（是 `/health` 的别名、同一份实现，见 §5.19）。
-> 早期文档与手工探测记录的"`/api/v1/health` → 404"**已过时**；客户端可以统一走 `/api/v1` 前缀，
-> 不必为探活特判根路径。
+> ⚠ `GET /api/v1/health` **存在**（是 `/health` 的别名、同一份实现，见 §5.19）；
+> 客户端可以统一走 `/api/v1` 前缀，不必为探活特判根路径。
 > `/health` 的响应是普通 `content-length` JSON，**不是** chunked（全项目只有 `/previsit/stream` 是 chunked 流）。
 
 ### 2.4 TLS 怎么开
@@ -152,8 +151,8 @@ Invoke-RestMethod http://127.0.0.1:8091/health
 * **绝不静默降级**：给了 TLS 参数但证书读不到 / PEM 解析失败 / 只给了一个 → **直接退出**，不回退明文
   （`main.cj:786-836`）。所以前端**不能靠探测**判断 http/https，必须由构建配置写死。
 * ⚠ `--tls-cert` 走命令行 argv，而本工具链的仓颉运行时**无法接受含非 ASCII 的 argv**（`main.cj:594-599`）。
-  本仓库已改名为 `E:\harmonyOS\smart_hospital`（纯 ASCII），**仓内证书路径可以直接传**；
-  但 exe 或证书若放在含中文的目录下仍会启动失败，那时要么把证书拷到纯 ASCII 路径，
+  本仓库路径 `E:\harmonyOS\smart_hospital` 是纯 ASCII，**仓内证书路径可以直接传**；
+  但 exe 或证书若放在含中文的目录下会启动失败，那时要么把证书拷到纯 ASCII 路径，
   要么用 `--tls-files`（文件内容可以是中文，文件路径必须 ASCII）。
 * 仓库自带 `server/certs/{cert.pem,key.pem,tls.env}` 与 `server/new-tls-cert.ps1`（生成带 SAN 的自签证书）可参考。
 * 联调自签证书时客户端需要临时信任策略；**发布版必须走受信 HTTPS**（见 §10.1）。
@@ -171,7 +170,7 @@ Invoke-RestMethod http://127.0.0.1:8091/health
 | 响应 `Content-Type` | `application/json; charset=utf-8`（`http_common.cj:225-238` → `ctx.json()`，`context.cj:285-286`） |
 | SSE 响应头 | `text/event-stream; charset=utf-8` + `transfer-encoding: chunked` + `cache-control: no-cache`（`http_app.cj:1262`、`context.cj:304-306`） |
 
-### 3.2 信封与失败形状（2026-10-17 起**只有一种**；最容易被前端踩的一条）
+### 3.2 信封与失败形状（**只有一种**；最容易被前端踩的一条）
 
 成功（HTTP 200/201）：
 
@@ -179,15 +178,13 @@ Invoke-RestMethod http://127.0.0.1:8091/health
 { "ok": true, "data": { /* … */ } }
 ```
 
-失败：**2026-10-17 起只有一种形状 —— 本项目的错误信封**：
+失败：**只有一种形状 —— 本项目的错误信封**：
 
 ```jsonc
 { "ok": false, "error": { "code": "…", "message": "…", "fields"? } }
 ```
 
-> ⚠ **2026-10-17 起已作废**：框架层三种平铺体（非法 JSON 400 / 静态 404 / 405）已全部改写信封。
-> 形状 (2)(4)(5) 在这里按**当前行为**写；它们改前的平铺样子只作**历史**收在下面的「改前 → 改后对照表」里。
-> `ok` 字段判存在**不再必要** —— 那个分支只为兼容旧服务端保留（见本节末尾的解析伪代码）。
+> ⚠ `ok` 字段判存在**不必要** —— 那个回退分支只为兼容旧服务端保留（见本节末尾的解析伪代码）。
 
 **(1) 业务错误（校验 / 鉴权 / 冲突）** —— `http_common.cj:241-253`：
 
@@ -197,11 +194,11 @@ Invoke-RestMethod http://127.0.0.1:8091/health
 
 `error.fields` **仅在**错误对象带了字段明细时出现（`ApiError.fields` 为 `Some`），形如 `{"字段名":"原因"}`；
 `http_common.cj:245-248` 会按需附加。客户端要**判空后再读**（当前患者端路径下它很少出现）。
-★ 2026-10-15 起有一个**会真的带上它**的场景：医生端保存病历的乐观锁冲突
+★ 有一个**会真的带上它**的场景：医生端保存病历的乐观锁冲突
 **409 `EMR_CHANGED`** ⇒ `fields = { updated_at, updated_by, record_id }`（见 §5.30.2）；
 它的形状由 `contract/schema/envelope-error-fields.schema.json` 钉住。
 
-**(2) 请求体不是合法 JSON** —— HTTP **400**、走**信封**（2026-10-17 起）：
+**(2) 请求体不是合法 JSON** —— HTTP **400**、走**信封**：
 
 ```json
 { "ok": false, "error": { "code": "VALIDATION_FAILED", "message": "请求体不是合法 JSON" } }
@@ -211,8 +208,6 @@ Invoke-RestMethod http://127.0.0.1:8091/health
 `http_app.cj:2950` 用 `.use(bodyParser(hospitalBodyParserOptions()))` 注入。
 ⚠ 它仍然**在 `cors()` 之前短路**（`bodyparser.cj:103-109`），不进入本项目的 `hospitalErrorHandler`
 ⇒ 跨域下这条 400 仍**不带 CORS 头**（见 §3.5）。
-⚠ 历史（**已作废**）：改前是框架自己的平铺体 `{"code":400,"message":"Invalid JSON body","data":null}`
-（`bodyparser.cj` 的 `defaultBodyParserError`）。
 
 **(3) 未匹配的 **API** 路由** —— HTTP **404**，走**本项目的信封**：
 
@@ -223,30 +218,27 @@ Invoke-RestMethod http://127.0.0.1:8091/health
 依据：本项目在 `router.middleware()` **之后**注册了兜底中间件（`http_app.cj:3054-3057`，`passOnNotFound = true`），
 把未命中的 404 写成信封；错误码登记在 `http_common.cj:148`。
 ⇒ 路径拼错时拿到的是**可读、可上报的业务码** `ROUTE_NOT_FOUND`，与业务 404（`APPOINTMENT_NOT_FOUND` 等）形状相同、**只差 code**。
-⚠ 2026-10-15 实测修正：本文档旧版说"未匹配路由是平铺 `{"error":"Not Found","path":…}`"，那是**中间件加进来之前**的行为，已作废。
 
-**(4) 静态文件未命中**（**只有** `/admin/<不存在的文件>` 这一类路径）—— HTTP **404**、走**信封**（2026-10-17 起），`content-type: application/json`（**无 charset**，历史遗留）：
+**(4) 静态文件未命中**（**只有** `/admin/<不存在的文件>` 这一类路径）—— HTTP **404**、走**信封**，`content-type: application/json`（**无 charset**）：
 
 ```json
 { "ok": false, "error": { "code": "ROUTE_NOT_FOUND", "message": "静态资源不存在" } }
 ```
 
 依据：`http_app.cj:3027` 把 `staticOpts.notFoundBody` 注成信封（`static.cj` 的 `notFoundBody` 本来就是可配项），
-**仍然不 fork 框架** —— 原注释"不为它 fork 框架"现在读作"用框架的可配项解决，所以不必 fork"。
+**仍然不 fork 框架** —— 用框架的可配项解决，不必 fork。
 ⚠ 与形状 (3) 的区分**只剩 `message`**：`/api/v1/**` 未命中 → `接口不存在：GET /api/v1/…`；
 `/admin/**` 静态未命中 → `静态资源不存在`。**两者的 `error.code` 都是 `ROUTE_NOT_FOUND`**，不要靠 code 区分前缀。`/` 也是 404。
-⚠ 历史（**已作废**）：改前是静态层自己写的平铺 `{"error":"Not Found"}`。
 
-**(5) 方法不允许** —— HTTP **405**、走**信封**（2026-10-17 起），并带 `allow` 响应头（`router.cj`）：
+**(5) 方法不允许** —— HTTP **405**、走**信封**，并带 `allow` 响应头（`router.cj`）：
 
 ```json
 { "ok": false, "error": { "code": "METHOD_NOT_ALLOWED", "message": "Method Not Allowed（允许的方法：GET）" } }
 ```
 
-⚠ **`allow: GET` 响应头仍在**，但**体里不再有 `allow` 字段** —— 正确方法只能从响应头读。
-⚠ 历史（**已作废**）：改前是平铺 `{"error":"Method Not Allowed","allow":"GET"}`（`allow` 在**体**里）。
+⚠ **`allow: GET` 响应头在**，**体里没有 `allow` 字段** —— 正确方法只能从响应头读。
 
-**(6) 请求体过大** —— HTTP **413**、走**信封**（2026-10-17 起）：
+**(6) 请求体过大** —— HTTP **413**、走**信封**：
 
 ```json
 { "ok": false, "error": { "code": "VALIDATION_FAILED", "message": "请求体过大，超出服务端允许的上限" } }
@@ -256,42 +248,30 @@ Invoke-RestMethod http://127.0.0.1:8091/health
 与内层 `bodyParser`（框架默认 1 MiB，兜 chunked）。文案刻意**不写具体数字** —— 两层上限不同，
 写死任何一个都会在另一个出口上撒谎（`http_common.cj:414-425`）。
 
-**(7) Range 超出文件大小** —— HTTP **416**、走**信封**（2026-10-17 起），仍带 `content-range: bytes */<文件大小>`：
+**(7) Range 超出文件大小** —— HTTP **416**、走**信封**，仍带 `content-range: bytes */<文件大小>`：
 
 ```json
 { "ok": false, "error": { "code": "RANGE_NOT_SATISFIABLE", "message": "Range 请求超出文件大小" } }
 ```
 
-**改前 → 改后对照表（2026-10-17，真机 `127.0.0.1:8091` 实测）**
-
-| 场景 | HTTP | 改前（**已作废**，只作历史） | 改后（当前，逐字） |
-| --- | --- | --- | --- |
-| 请求体不是合法 JSON（`POST /api/v1/auth/login`，体为 `{`） | 400 | `{"code":400,"message":"Invalid JSON body","data":null}` | `{"ok":false,"error":{"code":"VALIDATION_FAILED","message":"请求体不是合法 JSON"}}` |
-| 请求体过大（> 64 KiB，外层 `Content-Length` 闸门） | 413 | `{"code":413,"message":"Request body too large","data":null}` | `{"ok":false,"error":{"code":"VALIDATION_FAILED","message":"请求体过大，超出服务端允许的上限"}}` |
-| 方法不允许（`PUT /health`） | 405 | `{"error":"Method Not Allowed","allow":"GET"}`（`allow` 在**体**里） | `{"ok":false,"error":{"code":"METHOD_NOT_ALLOWED","message":"Method Not Allowed（允许的方法：GET）"}}` + **响应头** `allow: GET` |
-| API 路径未匹配（`GET /api/v1/nope`） | 404 | `{"error":"Not Found","path":"/api/v1/nope"}`（**2026-10-15 之前**；兜底中间件加进来后已改信封 404） | `{"ok":false,"error":{"code":"ROUTE_NOT_FOUND","message":"接口不存在：GET /api/v1/nope"}}` |
-| 静态文件未命中（`GET /admin/no-such-file.js`） | 404 | `{"error":"Not Found"}`（`content-type: application/json`，**无 charset**） | `{"ok":false,"error":{"code":"ROUTE_NOT_FOUND","message":"静态资源不存在"}}`，`content-type: application/json`（**仍无 charset**） |
-| Range 超出文件大小（`Range: bytes=99999999-` `GET /admin/js/api.js`） | 416 | `{"error":"Range Not Satisfiable"}` | `{"ok":false,"error":{"code":"RANGE_NOT_SATISFIABLE","message":"Range 请求超出文件大小"}}`，带 `content-range: bytes */7941` |
-
-**实现方式（为什么不再有平铺体）**：框架加**可注入点**、应用把自己的信封装进去，
+**实现方式（为什么不 fork 框架）**：框架留**可注入点**、应用把自己的信封装进去，
 **框架默认值不变**（框架自己的自测/手工清单仍走平铺）：
 
-* `server/third_party/qingzhou/src/router.cj`：新增 `Router.errorBody: (Int64, String) -> String`
-  （默认 `defaultRouterErrorBody`），5 处硬编码体改用它。
-* `server/third_party/qingzhou/src/static.cj`：`StaticOptions` 新增 `rangeNotSatisfiableBody`
-  （原 416 体硬编码）；`notFoundBody` / `forbiddenBody` 本来就有。
+* `server/third_party/qingzhou/src/router.cj`：`Router.errorBody: (Int64, String) -> String`
+  （默认 `defaultRouterErrorBody`），5 处响应体由它生成。
+* `server/third_party/qingzhou/src/static.cj`：`StaticOptions` 的 `rangeNotSatisfiableBody`（416 的体）、
+  `notFoundBody`、`forbiddenBody`。
 * `server/src/http_app.cj` 注入：405 → `METHOD_NOT_ALLOWED`（`http_app.cj:2914-2917`）、
   其余路由 404 → `ROUTE_NOT_FOUND`、静态 404 → `ROUTE_NOT_FOUND`、静态 403 → `FORBIDDEN_ROLE`、
   静态 416 → `RANGE_NOT_SATISFIABLE`（`http_app.cj:3027-3030`）；
   `.use(bodyParser(hospitalBodyParserOptions()))` 管非法 JSON；
   `.use(contentLengthLimit(hospitalContentLengthLimitOptions(64 * 1024)))` 管 413。
-* `server/src/http_common.cj`：新增 `errorEnvelopeString(code, message, fields)`（`:377`）、
+* `server/src/http_common.cj`：`errorEnvelopeString(code, message, fields)`（`:377`）、
   `hospitalBodyParserError`（`:413`）、`hospitalBodyParserOptions`（`:440`）、
-  `hospitalContentLengthLimitOptions`（`:456`）；`apiErrorSpec` 新增 `METHOD_NOT_ALLOWED`(405) / `RANGE_NOT_SATISFIABLE`(416)。
+  `hospitalContentLengthLimitOptions`（`:456`）；`apiErrorSpec` 含 `METHOD_NOT_ALLOWED`(405) / `RANGE_NOT_SATISFIABLE`(416)。
 
-> **这些形状现在都是可执行契约**：`contract/examples/*.json` 逐字节钉住了上面六种失败场景 + `/health`
-> （`server/tests/contract-check.ps1` 会在形状漂移时失败）。本节文字解释**语义**，`contract/` 才是**形状的权威**
-> （变更记录见 `contract/CHANGELOG.md` 的 2026-10-17 条）。
+> **这些形状都是可执行契约**：`contract/examples/*.json` 逐字节钉住了上面六种失败场景 + `/health`
+> （`server/tests/contract-check.ps1` 会在形状漂移时失败）。本节文字解释**语义**，`contract/` 才是**形状的权威**。
 
 **推荐解析顺序（ArkTS / TypeScript 伪代码）**：
 
@@ -308,7 +288,7 @@ function unwrap(res: Envelope): any {
   if (res.ok === true) {
     return res.data;
   }
-  // ③ 可选回退：ok 字段**缺席** ⇒ 旧服务端 / 旧框架（2026-10-17 之前）的平铺体。
+  // ③ 可选回退：ok 字段**缺席** ⇒ 旧服务端 / 旧框架的平铺体。
   //    这只是为了兼容尚未升级的服务端，不是"要处理的一套形状"；新服务端不会走到这里。
   return parseLegacyFlat(res);
 }
@@ -317,12 +297,12 @@ function unwrap(res: Envelope): any {
 > **回退分支是故意保留的**：`common-core/src/main/ets/network/HttpClient.ets:143-153` 的
 > `parseFrameworkError()` 就是这个回退（`HttpClient.ets:113-116` 只在 `ok` **缺席**时进入）。
 > 它认的是旧框架的 `{"code":400,"message":"Invalid JSON body"}` / `{"error":"Not Found","path":…}`
-> —— 2026-10-17 起服务端不再发这些形状，但**不能删**：删了就变成"遇到旧服务端一律报响应格式非法"。
+> —— 当代服务端不会发这些形状，但**不能删**：删了就变成"遇到旧服务端一律报响应格式非法"。
 > 新写客户端时可以先不实现 ③，等确认服务端版本后再决定。
 
 > `/health` **不是**第四种失败形状，而是**成功形状里的特例**：它有 `ok:true`、但**没有 `data`**
 > ——用上面的 `unwrap` 会返回 `undefined`。建议 `health()` 单独解析，不要复用同一个解析器。
-> 错误形状现在只有**一种**（上文的信封）。
+> 错误形状只有**一种**（上文的信封）。
 
 ### 3.3 HTTP 状态码 vs 业务码
 
@@ -425,7 +405,7 @@ function unwrap(res: Envelope): any {
 | 401 | `AUTH_BAD_CREDENTIALS` | 账号不存在**或**口令错误**或**账号被停用（服务端刻意不区分，防枚举；`http_app.cj:792-797`、`auth_repo.cj:618-641`） |
 | **429** | `AUTH_RATE_LIMITED` | 连续失败达到 `LOGIN_FAIL_LIMIT = 5` 次（`auth_repo.cj:90`）。**响应头带 `retry-after: <剩余秒数>`**（至少 1 s，`http_app.cj:789`、`auth_repo.cj:381-386`） |
 
-**限流的实测行为**（见 §12 实测记录，脚本 `server/tests/rate-limit-check.ps1`）：
+**限流行为**（脚本 `server/tests/rate-limit-check.ps1`）：
 
 * 第 **5** 次失败就返回 429（不是第 6 次）：`recordFailure` 记完第 5 次即 `fail_count >= 5`（`auth_repo.cj:381`）。
 * 锁定窗口 `LOGIN_LOCK_SECONDS = 900`（15 分钟），窗口内**即使口令正确也拒绝**（`auth_repo.cj:608-614` 在 PBKDF2 **之前**判定）。
@@ -473,8 +453,8 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | `patient_id` | Int64 | 非患者为 **0** |
 | `doctor_id` | Int64 | 非医生为 **0** |
 | `device_id` | String | 回显**本次请求**的 `X-Device-Id`（没带就是 `""`），用于在会话列表里标出"这台设备" |
-| `display_name` | String | 账号显示名（2026-10-12 起）。⚠ 账号在登录后被删除时**不带该字段**（不报错：令牌有效即会话成立） |
-| `expires_at` | Int64 | ★ **当前令牌的到期时刻**（epoch 秒，**滑动续期后的值**；2026-10-14 起，见 §4.1）。客户端每次拿到它都应刷新本地倒计时：登录时那个值不是一成不变的 —— 服务端会滑动续期，客户端只认旧值就会在令牌仍有效时把用户踢回登录页（跨端审计 F11）。`--dev-auth` 模式下没有令牌 ⇒ 恒为 **0**（= "本次不是令牌会话"，**不是**"已过期"） |
+| `display_name` | String | 账号显示名。⚠ 账号在登录后被删除时**不带该字段**（不报错：令牌有效即会话成立） |
+| `expires_at` | Int64 | ★ **当前令牌的到期时刻**（epoch 秒，**滑动续期后的值**，见 §4.1）。客户端每次拿到它都应刷新本地倒计时：登录时那个值不是一成不变的 —— 服务端会滑动续期，客户端只认旧值就会在令牌仍有效时把用户踢回登录页。`--dev-auth` 模式下没有令牌 ⇒ 恒为 **0**（= "本次不是令牌会话"，**不是**"已过期"） |
 
 错误：`401 AUTH_REQUIRED`（没带令牌）/ `401 AUTH_TOKEN_EXPIRED`（令牌无效或过期）。
 
@@ -561,12 +541,12 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | 5.21 | `GET /api/v1/doctors` | 是 | **三端都可** | 医生字典（带 `department_name`） |
 | 5.22 | `GET /api/v1/notices` | 是 | **三端都可** | 公告列表（首页「医疗公告」） |
 | 5.23 | `GET/POST /api/v1/admin/notices`、`GET/PUT/DELETE /api/v1/admin/notices/:id` | 是 | **仅 admin** | 公告维护（§6.1） |
-| 5.27 | `GET /api/v1/appointments/by-token/:token` | 是 | **仅 patient** | **按幂等键反查挂号结果**（★ 2026-10-14 新增，见 §5.27） |
-| 5.28 | `GET /api/v1/doctor/visits/:id/previsit` | 是 | **仅医生** | **读这一单的预问诊摘要**（★ 2026-10-14 新增，见 §5.28） |
-| 5.29 | `GET …/record/revisions`、`…/revisions/:version`、`…/revisions/:version/diff?against=` | 是 | **仅医生（本单）+ 管理员** | **病历修订历史**：列表 / 单版详情 / 逐段对比（★ 2026-10-15 新增，见 §5.29；同节含 `reopen` 必填 `reason` 与 `revision_version`） |
-| 5.30 | `GET /api/v1/doctor/patients/:patientId/records` | 是 | **仅医生（须接诊过该患者）** | **既往已定稿病历**（录入工作台同屏对比；★ 2026-10-15 新增，见 §5.30；同节含 `PUT …/record` 的可选 `expected_updated_at` 乐观锁与 409 `EMR_CHANGED` 的 `error.fields`） |
-| 5.31 | `GET /api/v1/admin/ai/triage-stats`、`GET /api/v1/admin/ai/triage-calls/:requestId` | 是 | **仅 admin** | **AI 分诊遥测**：质量聚合（分位数/降级率/分组）+ 单次调用全链路排障（★ 2026-10-15 新增，见 §5.31；同节含 `POST /api/v1/triage` 响应新增的 `request_id`） |
-| 5.32 | `POST /api/v1/doctor/visits/:id/arrive`、`POST /api/v1/doctor/visits/:id/waiting` | 是 | **仅医生（本单）** | **就诊时间线**：到院/候诊两步 + 七态状态机 + `arrived_at`/`started_at`/`finished_at`（★ 2026-10-15 新增，见 §5.32；同节含队列排序变化与 `start` 前置状态收紧） |
+| 5.27 | `GET /api/v1/appointments/by-token/:token` | 是 | **仅 patient** | **按幂等键反查挂号结果**（见 §5.27） |
+| 5.28 | `GET /api/v1/doctor/visits/:id/previsit` | 是 | **仅医生** | **读这一单的预问诊摘要**（见 §5.28） |
+| 5.29 | `GET …/record/revisions`、`…/revisions/:version`、`…/revisions/:version/diff?against=` | 是 | **仅医生（本单）+ 管理员** | **病历修订历史**：列表 / 单版详情 / 逐段对比（见 §5.29；同节含 `reopen` 必填 `reason` 与 `revision_version`） |
+| 5.30 | `GET /api/v1/doctor/patients/:patientId/records` | 是 | **仅医生（须接诊过该患者）** | **既往已定稿病历**（录入工作台同屏对比；见 §5.30；同节含 `PUT …/record` 的可选 `expected_updated_at` 乐观锁与 409 `EMR_CHANGED` 的 `error.fields`） |
+| 5.31 | `GET /api/v1/admin/ai/triage-stats`、`GET /api/v1/admin/ai/triage-calls/:requestId` | 是 | **仅 admin** | **AI 分诊遥测**：质量聚合（分位数/降级率/分组）+ 单次调用全链路排障（见 §5.31；同节含 `POST /api/v1/triage` 响应的 `request_id`） |
+| 5.32 | `POST /api/v1/doctor/visits/:id/arrive`、`POST /api/v1/doctor/visits/:id/waiting` | 是 | **仅医生（本单）** | **就诊时间线**：到院/候诊两步 + 七态状态机 + `arrived_at`/`started_at`/`finished_at`（见 §5.32；同节含队列排序与 `start` 的前置状态） |
 
 > 权限判定收敛在**单一函数** `can(role, action)`（`http_app.cj:255`；动作共 18 个，见同文件 `Action` 枚举）。相关动作与角色：
 > `book` = 仅 patient；`view_schedule` = 三端；`query_own_medical_record` = patient | doctor；
@@ -576,8 +556,8 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 见 §2.3。**唯一不走信封的接口**，实现在 `http_app.cj` 的 `healthBody` / `sendHealth`（`/api/v1/health` 是同一份实现的别名）。
 
-★ **2026-10-17 起它会探库**：`ok` = "进程活着**且库通**"，库不通 → **503** + `ok:false` + `db.ok:false`。
-`db.reconnects` 是累计重连次数（S4 连接自愈的证据）。契约样例：`contract/examples/health-200.json`。
+★ **它会探库**：`ok` = "进程活着**且库通**"，库不通 → **503** + `ok:false` + `db.ok:false`。
+`db.reconnects` 是累计重连次数（连接自愈的证据）。契约样例：`contract/examples/health-200.json`。
 
 ### 5.2 `POST /api/v1/auth/login`
 
@@ -603,7 +583,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 `http_app.cj:593-614`）。实测 1200 字主诉 → 200 且 `truncated=true`（不是 500）。
 客户端仍应在本地限制输入长度。
 
-★ **截断不影响危急检测**（2026-10-14，跨端审计 F01）：截断后的文本只用于**常规检索与模型输入**，
+★ **截断不影响危急检测**：截断后的文本只用于**常规检索与模型输入**，
 危急（`red_flag`）判定始终拿**用户原文**（`http_app.cj` 把 `redFlagComplaint: Some(complaint)` 原文一并传下去）。
 ⇒ 主诉很长、末尾才写「胸痛」时，仍然 `red_flag=true`、`reason_code=RED_FLAG`、`options` 为空。
 回归护栏：`tests\triage-check.ps1` 的该用例（600 字 + 末尾「胸痛」，并先断言 `truncated=true`）。
@@ -633,7 +613,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | `ai_note` | String | 模型生成的患者向文案；未启用时为 `""` |
 | `ai_reason` | String | 为什么是这个 `source`（给运维看，不含密钥） |
 | `options` | Array | 推荐号源，**每一个都已用真实数据库验证 `remain_num > 0`**（`http_app.cj:1146-1149`） |
-| `request_id` | String | 本次请求编号（★ 2026-10-15 新增，改进 7）。**请原样保存**：用户说"这条分诊不对"时要拿它去 `GET /api/v1/admin/ai/triage-calls/:requestId` 查全链路（§5.31）；它不是身份凭证 |
+| `request_id` | String | 本次请求编号。**请原样保存**：用户说"这条分诊不对"时要拿它去 `GET /api/v1/admin/ai/triage-calls/:requestId` 查全链路（§5.31）；它不是身份凭证 |
 | `options[].department_id` | Int64 | |
 | `options[].department_name` | String | ⚠ 患者端**唯一**能拿到科室名的来源（见 §9 缺口 1） |
 | `options[].doctor_id` | Int64 | |
@@ -805,9 +785,9 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | `visit_date` | String | `YYYY-MM-DD`（**下单时的快照**，管理员之后改排班不会跟着变，`domain_booking.cj:517-519`） |
 | `period` | String | `AM` / `PM` |
 | `seq_no` | Int64 | 就诊序号（`MAX(seq_no)+1`，不回收已用过的号，`domain_booking.cj:721-729`） |
-| `status` | String | `booked` / `arrived` / `waiting` / `visiting` / `done` / `cancelled` / `no_show`（★ 2026-10-15 起七态，见 §14.3 与 §5.32） |
-| `status_label` | String | 与 `status` 同源的中文名（★ 2026-10-15 新增，改进 6；**界面显示中文一律用它**，不要自抄映射表） |
-| `arrived_at` / `started_at` / `finished_at` | Int64 | 到院 / 开始接诊 / 完成就诊的 epoch 秒；`0` = 这一步还没发生（★ 2026-10-15 新增，改进 6） |
+| `status` | String | `booked` / `arrived` / `waiting` / `visiting` / `done` / `cancelled` / `no_show`（七态，见 §14.3 与 §5.32） |
+| `status_label` | String | 与 `status` 同源的中文名（**界面显示中文一律用它**，不要自抄映射表） |
+| `arrived_at` / `started_at` / `finished_at` | Int64 | 到院 / 开始接诊 / 完成就诊的 epoch 秒；`0` = 这一步还没发生 |
 | `slot_restored` | Bool | 号源是否已归还（退号相关） |
 
 > ⚠ `bookingJson` **没有** `created_at`：`BookingResult` 有该字段但不输出（`http_app.cj:411-426` 逐字段对照）。
@@ -825,7 +805,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | --- | --- | --- | --- |
 | `schedule_id` | Int64 | **是** | 缺 → 400「缺少必填数值字段 schedule_id」（`http_common.cj:359-363`） |
 | `client_token` | String | **是** | **幂等键**。同 token 重放不会重复占号，而是回放同一张挂号单（`AlreadyBooked`）。前端应为每次"点击确认挂号"生成一个稳定 UUID，**重试时复用同一个值** |
-| `previsit_id` | String | 否 | ★ **2026-10-14 新增**：要交给医生的预问诊 `session_id`（§5.9 的 `meta` 帧 / §5.11，64 hex）。服务端把它**绑到这张挂号单**上（`previsit_session.appointment_id`）⇒ 医生端才看得到「本次预问诊」。不带 = 本次不交预问诊 |
+| `previsit_id` | String | 否 | ★ 要交给医生的预问诊 `session_id`（§5.9 的 `meta` 帧 / §5.11，64 hex）。服务端把它**绑到这张挂号单**上（`previsit_session.appointment_id`）⇒ 医生端才看得到「本次预问诊」。不带 = 本次不交预问诊 |
 
 > `patient_id` 取自令牌。若令牌里 `patientId <= 0`（例如管理员账号）⇒ **400 VALIDATION_FAILED**
 > 「缺少 X-Patient-Id（开发态联调头）」（`http_app.cj:1449-1451`）。
@@ -838,11 +818,11 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | **201** | 首次成功（`Booked`） | `bookingJson` |
 | **200** | **幂等回放**（同 `client_token`，`AlreadyBooked`） | **同一张** `bookingJson` |
 
-> ★ **2026-10-14 起 body 里多两个字段**（纯增量，老客户端忽略即可）：`request_id`（本次请求编号，
+> ★ body 里带两个溯源字段（纯增量，不认识时忽略即可）：`request_id`（本次请求编号，
 > 与服务端日志、响应头 `X-Request-Id` 同值）与 `server_time`（服务端当前 epoch 秒）。
 > 用途：结果不确定时报障能对上日志；时间以服务端为准。详见 §5.27。
 >
-> ★ **2026-10-14 起再多一个字段**：`previsit_bound`（Bool）。仅当请求带了 `previsit_id`
+> ★ 另一个字段：`previsit_bound`（Bool）。仅当请求带了 `previsit_id`
 > **且**服务端确实绑上了才是 `true`。**幂等回放（200）与首次成功（201）都会带**。
 > ⇒ 前端应据此显示「预问诊摘要已交给医生」；**不要把"我提交了 session_id"当成"医生看到了"**（详见 §5.28）。
 
@@ -873,7 +853,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 **成功 `200`** —— `bookingJson`（**退号后重新读库的快照**，不是取消前的旧值，`http_app.cj:1491-1500`）。
 
-**两个字段决定「这次到底干了什么」**（2026-10-17 增 `already_cancelled`，复验报告 S16）：
+**两个字段决定「这次到底干了什么」**：
 
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
@@ -883,7 +863,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 > 组合判读：`already_cancelled:false` + `slot_restored:true` = 本次退号成功；
 > `already_cancelled:true` + `slot_restored:true` = 重复退号，**不要再提示"号已归还"**；
 > 任一 + `slot_restored:false` = 号源没归还，见下面的 `warning`。
-> 实测：重复退号时 `remain_num` 不再变化，而 `already_cancelled:true` 让客户端能分辨这一点。
+> 重复退号时 `remain_num` 不变，`already_cancelled:true` 让客户端能分辨这一点。
 
 **特例：号源归还失败时仍是 `200`**，但 body 额外带（`http_app.cj:1501-1512`）：
 
@@ -896,7 +876,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 > ⇒ **判断退号是否成功必须看 `data.status === 'cancelled'`**（HTTP 200 是恒定的），
 > 并在 `slot_restored === false` 时展示 `warning`（提示联系人工，不要让用户反复点退号）。
 >
-> ★ **2026-10-14 起退号响应也带** `request_id` + `server_time`（含上面那个 `slot_restored:false` 的特例），
+> ★ 退号响应也带 `request_id` + `server_time`（含上面那个 `slot_restored:false` 的特例），
 > 口径同 §5.15 / §5.27。退号是**写操作**，这两个字段对"结果未确认"同样重要。
 
 **错误**
@@ -905,10 +885,10 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | --- | --- | --- |
 | 404 | `APPOINTMENT_NOT_FOUND` | 无此单 |
 | 403 | `FORBIDDEN_ROLE` | 退别人的单。服务端**明知**这里用 403 会泄露"该单存在"仍选 403，理由是让患者能自我诊断（`http_app.cj:1483-1488`） |
-| 409 | `APPOINTMENT_NOT_CANCELLABLE` | ★ **2026-10-12 新增**：单存在、也是自己的，但当前状态**不允许退号**。`message` 里带中文状态名，如 `该挂号单当前状态为「接诊中」，不能退号` |
+| 409 | `APPOINTMENT_NOT_CANCELLABLE` | ★ 单存在、也是自己的，但当前状态**不允许退号**。`message` 里带中文状态名，如 `该挂号单当前状态为「接诊中」，不能退号` |
 | 400 | `VALIDATION_FAILED` | `:id` 非正整数 |
 
-> ★ **只有 `status = 'booked'` 的单能退**（2026-10-12 修；该次评审记录已按文档整理移出仓库，结论保留在 §5.16）。
+> ★ **只有 `status = 'booked'` 的单能退**。
 > `visiting`（接诊中）/ `done`（已完成）/ `no_show`（爽约）/ `cancelled` 都退不了：
 > 前三个返回 **409 `APPOINTMENT_NOT_CANCELLABLE`**（`cancelled` 仍走下面的幂等 200）。
 > 口径唯一来自状态机的显式流转表（`domain_emr.cj` 的 `visitTransitionAllowed`），
@@ -960,7 +940,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | `complete` | Bool | 是否七段都填了 |
 | `updated_by` | Int64 | 最后修改者的 `auth_user.id` |
 | `created_at` / `updated_at` | Int64 | epoch 秒 |
-| `previsit_ref` | Object | ★ **2026-10-14 新增**，**只有单查（`includeSections=true`）且确实由预问诊预填过时才出现**（没有就不是字段，不是空对象）。`{session_id: String, sections: [段 key…], at: Int64}` —— 记录**哪几段是患者自述预填进来的**，供界面显示「患者自述」角标 |
+| `previsit_ref` | Object | ★ **只有单查（`includeSections=true`）且确实由预问诊预填过时才出现**（没有就不是字段，不是空对象）。`{session_id: String, sections: [段 key…], at: Int64}` —— 记录**哪几段是患者自述预填进来的**，供界面显示「患者自述」角标 |
 | `missing_required` | Array\<String\> | 提交锁定前仍缺的**必填**段（空数组 = 可锁定） |
 | `sections` | Array | 七段正文，**只有单查才有** |
 | `sections[].key` | String | 见 §14.3 |
@@ -973,9 +953,9 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 > 医生后续把预填内容改掉、或又补写了别的段，这个字段**都不会变**（`domain_emr.cj` 只在**新建病历**那一次写入）。
 > ⇒ 前端角标文案用「患者自述（已由医生编辑）」而不是「当前内容＝患者原话」；要拿患者原话请用 §5.28 的摘要端点。
 
-> ★ **2026-10-15（改进 3）**：`POST …/record/lock` 与 `POST …/record/reopen` 的**成功响应**在此形状上多一个
+> ★ `POST …/record/lock` 与 `POST …/record/reopen` 的**成功响应**在此形状上多一个
 > `revision_version`（Int，本次动作落下的版本号；`0` = 审计行没写上，病历动作本身已成功）；
-> 且 **`reopen` 现在必须带 `{"reason": "…"}`（trim 后 4–255 字符）**、权限动作为
+> 且 **`reopen` 必须带 `{"reason": "…"}`（trim 后 4–255 字符）**、权限动作为
 > `Action.ManageRecordRevision`（仅管理员）。详见 §5.29。
 
 **七个病历段**（`domain_emr.cj:83-92`）
@@ -1015,10 +995,10 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 ---
 
-## 5.19+ 2026-10-12 补齐：名称 / 字典 / 公告 / 时区
+## 5.19+ 名称 / 字典 / 公告 / 时区
 
-> 背景：鸿蒙患者端在模拟器上与真服务端联调后，暴露出 8 个"服务端缺"的点，逐项补掉。
-> **全部是加法**（老字段一个没删）：既有客户端不改也能继续跑，但要**用上**这些数据
+> 本节覆盖鸿蒙患者端在模拟器联调中缺的 8 个「服务端缺」点。
+> **全部是加法**（没有删除任何既有字段）：既有客户端不改也能继续跑，但要**用上**这些数据
 > 需要客户端配合（见每节末尾的「客户端要做什么」）。
 
 ### 5.19 `GET /api/v1/health` —— 探活（`/api/v1` 别名）
@@ -1027,18 +1007,18 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `ok` | Bool | ★ 2026-10-17 起 = "进程活着**且库通**"（以前恒 `true`） |
+| `ok` | Bool | ★ = "进程活着**且库通**" |
 | `service` | String | `hospital-server` |
 | `version` | String | 如 `0.2.0-p1` |
 | `data_backend` | String | `mysql` |
 | `dev_auth` | Bool | 服务端是否开着 `--dev-auth` |
 | `today` / `timezone` | String | 医院口径的今天 / `Asia/Shanghai` |
-| `db` | Object | ★ 2026-10-17 新增：`{ok, reconnects[, reason]}`；库不通时 `ok:false` + 响应码 **503** |
+| `db` | Object | ★ `{ok, reconnects[, reason]}`；库不通时 `ok:false` + 响应码 **503** |
 
-⚠ **早期版本刻意不查库**（理由是"库慢不该表现成服务挂了"）。2026-10-17 改成**探库但区分表达**：
-库不通给 **503** + `ok:false` + `db.ok:false`，探针据此摘流量；而"进程活着"由**能不能连上**表达。
+⚠ **探库但区分表达**：库不通给 **503** + `ok:false` + `db.ok:false`（探针据此摘流量），
+"进程活着"本身由**能不能连上**表达。
 ⇒ 探针请按状态码分流：`200` 收流量、`503` 摘流量（不必解析 body）。
-⚠ 客户端此前定义了 `HttpClient.getRoot()` 却**没有调用方** ⇒ 建议在启动/保存服务地址时探活一次。
+⚠ 客户端定义了 `HttpClient.getRoot()`；建议在启动/保存服务地址时调它探活一次。
 
 ### 5.20 `GET /api/v1/departments` —— 科室字典（三端可读）
 
@@ -1051,7 +1031,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `id` | Int64 | 科室 id（挂号页 `department_id` 就是它） |
-| `name` | String | 科室名（此前患者端只能显示 `科室 #810003`） |
+| `name` | String | 科室名 |
 | `code` | String | 科室编码 |
 | `location` | String | 位置，可能为空串 |
 | `sort` | Int64 | 人工排序权重（小的在前） |
@@ -1114,44 +1094,43 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 **PUT 不传 `published_at` 时保持原发布时间**（改错别字不会把预排期公告提前发出）。
 >` 客户端**不得**出现这些路径（见 §6.1）。
 
-### 5.24 本次变更的既有端点字段（增量）
+### 5.24 既有端点的增量字段
 
-| 端点 | 新增字段 | 为什么 |
+| 端点 | 字段 | 用途 |
 | --- | --- | --- |
-| `GET /api/v1/auth/me`（§5.3） | `display_name` | 此前只回 id/role，患者端「同步身份信息」刷不出姓名 |
-| `GET /api/v1/auth/me`（§5.3） | ★ `expires_at` | **2026-10-14 新增（跨端审计 F11）**：服务端会**滑动续期**（每天最多写一次库、把到期时刻往后推一个 TTL），但此前响应里没有任何地方能读到"现在到期时刻是多少" ⇒ 各端只能拿登录那一刻的旧值倒计时，Android 端因此在令牌仍有效时把用户踢回登录页。现在每次 `/auth/me` 都回**续期后**的值 |
-| `GET /health` 与 `GET /api/v1/health`（§5.1/§5.19） | ★ `today` `timezone` | **2026-10-14 新增（跨端审计 F14）**：客户端原来自已用**设备本地日期**当"今天"去查排班（鸿蒙 `BookingPage` 默认日期、`Theme.todayString()`），设备时区不对或跨零点就会查不到当天号源。服务端直接把权威日期发出来，客户端读它即可 |
-| `GET /api/v1/schedules`（§5.12） | `department_name` `doctor_name` `doctor_title` `version` | 患者端此前只能显示 `科室 #810003 · 医生 #900003`；`version` 供"号源已变化"提示（`/schedules/:id` 早就给了） |
+| `GET /api/v1/auth/me`（§5.3） | `display_name` | 患者端「同步身份信息」要刷出姓名 |
+| `GET /api/v1/auth/me`（§5.3） | ★ `expires_at` | 服务端会**滑动续期**（每天最多写一次库、把到期时刻往后推一个 TTL），各端要能读到"现在到期时刻是多少"：只拿登录那一刻的旧值倒计时，会在令牌仍有效时把用户踢回登录页。每次 `/auth/me` 都回**续期后**的值 |
+| `GET /health` 与 `GET /api/v1/health`（§5.1/§5.19） | ★ `today` `timezone` | 客户端用**设备本地日期**当"今天"去查排班（鸿蒙 `BookingPage` 默认日期、`Theme.todayString()`）时，设备时区不对或跨零点就会查不到当天号源。服务端直接给出权威日期，客户端读它即可 |
+| `GET /api/v1/schedules`（§5.12） | `department_name` `doctor_name` `doctor_title` `version` | 不必再显示 `科室 #810003 · 医生 #900003`；`version` 供"号源已变化"提示（`/schedules/:id` 也给了） |
 | `GET /api/v1/appointments`（§5.14） | 同上三个名称 | 首页「下一次就诊」/就诊列表 |
 | `POST /api/v1/appointments`（§5.15） | 名称三个 + `remain_num` | 挂完号**就地刷新「余 N」**，不必再发一次排班查询 |
 | `POST /api/v1/appointments/:id/cancel`（§5.16） | 名称三个 + `remain_num` | 同上（退号后号源归还数） |
-| `GET /api/v1/medical-records`（§5.17） | `department_id` `visit_date` `period` + 名称三个 | 档案列表此前连"看的哪个科、哪天"都没有 |
-| `POST /api/v1/triage`（§5.8） | —（文案变更） | `patient_note` 里的 Markdown `**` 已去掉：原样显示会变成 `以下是**其它有号**的科室` |
+| `GET /api/v1/medical-records`（§5.17） | `department_id` `visit_date` `period` + 名称三个 | 档案列表要能显示"看的哪个科、哪天" |
+| `POST /api/v1/triage`（§5.8） | —（文案） | `patient_note` 里不含 Markdown `**`：原样显示会变成 `以下是**其它有号**的科室` |
 
 ### 5.25 时间口径：服务端「今天」= **Asia/Shanghai**
 
-此前服务端算"今天"用的是 **UTC**，而客户端用本机日期 ⇒ 在中国（UTC+8）每天
-**00:00–08:00** 这 8 小时里两者**差一天**：服务端认为"今天"还是昨天，
+服务端的「今天」按 **Asia/Shanghai** 算。若按 **UTC** 算，在中国（UTC+8）每天
+**00:00–08:00** 这 8 小时里就与客户端**差一天**：服务端认为"今天"还是昨天，
 患者早上打开 App 时**当天上午的号会被判成"过去"而排不出来**。
 
-现已在服务端统一为 `HOSPITAL_TZ_OFFSET_SECONDS = 8 * 3600`（`http_app.cj`），
+因此服务端统一为 `HOSPITAL_TZ_OFFSET_SECONDS = 8 * 3600`（`http_app.cj`），
 `hTodayDate()` / `hDateStringOf()` / 看板的默认日期窗（`dashboard.cj`）全部同一口径，
 并由 `selftest` 用**固定 epoch** 钉住（含"UTC 10-11T16:30 在上海应算 2026-10-12"这条跨零点断言）。
 
 ⚠ 客户端 `Theme.todayString()` 用的是**设备本地日期**：设备时区若被设成非中国时区，
-仍可能出现跨零点不一致。★ **2026-10-14 起服务端提供权威日期**：
+仍可能出现跨零点不一致。★ **服务端提供权威日期**：
 `GET /health` 与 `GET /api/v1/health` 的响应带 `today`（`YYYY-MM-DD`）与 `timezone`（恒 `Asia/Shanghai`），
-客户端应**直接读它**，不要再自己按设备时区算"今天"（跨端审计 F14）。
+客户端应**直接读它**，不要再自己按设备时区算"今天"。
 由 `accept` 的 AC-15 与 `tests\health-check.ps1`（含"`today` == UTC+8 当天"的断言）守住。
 
-### 5.26 2026-10-14 新增：AI 模型配置 / 账号列表 / 排班可改（仅 admin）
+### 5.26 AI 模型配置 / 账号列表 / 排班可改（仅 admin）
 
-> 这三组是为**服务端托管的后台管理台**（`/admin/`，见 [ADMIN-WEB.md](ADMIN-WEB.md)）加的。
+> 这三组面向**服务端托管的后台管理台**（`/admin/`，见 [ADMIN-WEB.md](ADMIN-WEB.md)）。
 > **患者端与医生端不用关心这一节**，列在这里是为了让"接口总表"保持完整、不漏缺口。
 > 全部端点：`principalOf` + `requireCan(...)` ⇒ **仅 admin**。具体动作名：
 > AI 全套（模型/配置/Prompt/工具）用 **`Action.ManageAi`**、账号管理（`/admin/users`）用
-> **`Action.ManageUser`**、排班维护仍用 `Action.ManageSchedule`（2026-10-14 评审 B8 之前，
-> 这三者都复用 `ManageSchedule`；现在 403 的 message 里会直接打印要求的动作名）。
+> **`Action.ManageUser`**、排班维护用 `Action.ManageSchedule`；403 的 message 里会直接打印要求的动作名。
 
 **① AI 模型配置（`ai_model` 表：一个模型一行）**
 
@@ -1168,11 +1147,11 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 - ★ `in_use` 与 `is_default` 是**两个事实**：`is_default` 是"用户指定的默认"，`in_use` 是"运行时
   真正在用的那一行"（默认行被停用/删除后会退到该类型第一条启用的行）。客户端若只显示
   `is_default`，会出现"一行默认标记都没有、而 AI 确实在用某一行"的状态。
-- `temperature` 只对 `CHAT` 有意义（`EMBEDDING` 行显示 `—`）；旧 KV `ai.*` 仍在，作为**回落**保留。
+- `temperature` 只对 `CHAT` 有意义（`EMBEDDING` 行显示 `—`）；KV `ai.*` 仍在，作为**回落**。
 
 **② 账号列表：`GET /api/v1/admin/users` 双模式**
 
-- **给了 `login_name`** ⇒ 原来的精确查询（找不到仍 `404 USER_NOT_FOUND`，**老调用方零改动**）。
+- **给了 `login_name`** ⇒ 精确查询（找不到仍 `404 USER_NOT_FOUND`）。
 - **没给** ⇒ 列表模式：`limit`（默认 50；非法/越界回默认）、`offset`、`role`、`status`
   （白名单外的值 = 不筛），回 `{items,count,total,limit,offset}`，列表项键名与精确查询**一致**（`user_id`）。
 - 列表**故意不读** `pw_salt`/`pw_hash`（"列表被整页导出"是最常见的泄露路径），由
@@ -1180,7 +1159,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 **③ 排班可改：`PUT /api/v1/admin/schedules/:id`**
 
-此前只有建、没有改：号源写错或医生停诊只能再开一条，老排班连同已经约出去的号继续可约。现在：
+号源写错或医生停诊时可以改，不必另开一条（另开会留下老排班连同已经约出去的号继续可约）：
 
 - body `total_num`(>0) / `enabled` / `version`（**至少给一个**，`version` 必填 = 乐观锁）；
 - 不变量「放号数 ≥ 已约数」在**一条原子 SQL** 里判断，影响 0 行时回读分辨三类：
@@ -1189,21 +1168,21 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 - 改 `total_num` 时 `remain_num` 同步加减**同一差值** ⇒ 已约数保持不变（不会超卖）；
 - `GET /api/v1/schedules`（§5.12）本就回 `version`，可直接拿来填。
 
-**④ 顺带修掉的一个真实漏洞**：`PUT /api/v1/admin/ai/settings/:key` 现在只接受**登记表里的 `ai.*`**。
-此前 `aiSettingKeyKnown()` 也认 `prompt.*` / `ai.tool.*` ⇒ 可以绕过 `PromptRepo` 的
+**④ 设置的写入闸门**：`PUT /api/v1/admin/ai/settings/:key` 只接受**登记表里的 `ai.*`**。
+`aiSettingKeyKnown()` 也认 `prompt.*` / `ai.tool.*`，因此不能靠它当闸门 —— 否则可以绕过 `PromptRepo` 的
 占位符/长度校验直接落库。命中时回 `400` 并在 `message` 里指路（Prompt 走
 `PUT /admin/ai/prompts/:name`，工具走 `PUT /admin/ai/tools/:name`）。
 
-**新增错误码**（§14.1 已并入）：`404 AI_MODEL_NOT_FOUND`、`409 AI_MODEL_NAME_TAKEN`、
+**错误码**（见 §14.1）：`404 AI_MODEL_NOT_FOUND`、`409 AI_MODEL_NAME_TAKEN`、
 `409 SCHEDULE_CONFLICT`。
 
 ---
 
-### 5.27 2026-10-14 新增：按幂等键反查挂号结果 + 溯源字段（患者端）
+### 5.27 按幂等键反查挂号结果 + 溯源字段（患者端）
 
 > 背景：`client_token` 是**客户端生成**的幂等键（§8.1）。网络中断时客户端**没拿到响应**，
-> 于是不知道"那次提交到底成没成"；此前唯一的补救是"用同一个 token 再提交一次"，
-> 那会把**查询**和**下单**混在一起（第一次若真没发出去，重提交会真的建一张单）。
+> 于是不知道"那次提交到底成没成"；只靠"用同一个 token 再提交一次"补救，
+> 会把**查询**和**下单**混在一起（第一次若真没发出去，重提交会真的建一张单）。
 > 本节给出一条**只读**通道，让客户端能诚实地给出两个动作：「查询这次请求的结果」与「继续确认同一预约」。
 
 `GET /api/v1/appointments/by-token/:token`
@@ -1245,13 +1224,13 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 ---
 
-### 5.28 2026-10-14 新增：预问诊真正交给医生（绑定 + 医生读取 + 来源痕迹）
+### 5.28 预问诊交给医生（绑定 + 医生读取 + 来源痕迹）
 
-> 背景：预问诊**早已**能写入 `previsit_session`，服务端**也早已**能把问诊单映射成病历四段
-> （`intakePrefill`：主诉；现病史＝病程+程度+伴随；既往史；过敏史）。缺的是三件事：
-> **① 把问诊单绑到具体那张挂号单**、**② 让医生看得见**（此前只有"医生端本机存 session_id 盲预填"）、
+> 背景：预问诊能写入 `previsit_session`，服务端也能把问诊单映射成病历四段
+> （`intakePrefill`：主诉；现病史＝病程+程度+伴随；既往史；过敏史）。本节的三件事：
+> **① 把问诊单绑到具体那张挂号单**、**② 让医生看得见**（"医生端本机存 session_id 盲预填"不够）、
 > **③ 留下来源痕迹**（锁定之后再回答"这段是患者说的还是医生写的"）。
-> 本节是这三件事的契约；**`use_intake_session` 没有被删除**（`emr-check.ps1:280-291` 有用例），它只是从"唯一通道"变成"其中一条"。
+> 本节就是这三件事的契约；`use_intake_session` 与"绑定"是两条并列通道（`emr-check.ps1:280-291` 有用例）。
 
 **一句话链路**
 
@@ -1301,7 +1280,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 **5.28.2 接诊队列多一个字段：`previsit_ready`（`GET /api/v1/doctor/visits`）**
 
-`visitQueueItemJson`（`http_p4.cj:97-113`）新增 `previsit_ready: Bool` —— **只有绑定了本单**的会话才算 `true`
+`visitQueueItemJson`（`http_p4.cj:97-113`）带 `previsit_ready: Bool` —— **只有绑定了本单**的会话才算 `true`
 （用"该患者有历史会话"来点亮徽标会让所有历史行都亮，徽标随即失去意义）。
 医生端据此在队列行显示「预问诊」徽标；点进去再调 5.28.1 取正文。
 
@@ -1322,19 +1301,19 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
   **医生在同一次请求里显式给出的段不算预填**（比如医生自己填了诊断，诊断不会被记成"患者自述"）。
 * 医生端的「一键预填」按钮**保留**：它是 `use_intake_session` 的界面落点；而 5.28.1 的摘要卡片是"看得见"的落点，两者互补。
 
-**5.28.5 队列项带患者姓名 / 性别（2026-10-16 增，医生端复核 ★★★ 第 2 条）**
+**5.28.5 队列项带患者姓名 / 性别（医生端）**
 
-`GET /api/v1/doctor/visits` 的每个 `items[]` 新增 **`patient_name`** 与 **`patient_gender`**：
-队列此前只有 `patient_id`，界面上是「患者 #700001」—— 医生在诊室里**认不出人**。
+`GET /api/v1/doctor/visits` 的每个 `items[]` 带 **`patient_name`** 与 **`patient_gender`**：
+队列只有 `patient_id` 时界面上是「患者 #700001」—— 医生在诊室里**认不出人**，所以补这两个字段。
 姓名/性别按 `patient_id` 从 `patient` 表**一次批量**查回（`VisitRepo.patientBriefs`），
 不是每行打一次库；查不到患者时给**空串**（形状不随数据在不在变化）。
 
-> ⚠ **空串是契约允许的合法值**，Schema 刻意**不设** `minLength`（`contract/CHANGELOG.md` 2026-10-16 条目）：
+> ⚠ **空串是契约允许的合法值**，Schema 刻意**不设** `minLength`：
 > `appointment.patient_id` **没有外键**，孤儿引用是真实可达的形态（患者档案迁移 / 历史数据带进来的 id）。
 > 客户端拿到空串要回退显示 `#<patient_id>`，**不要**当成解析失败或服务端故障；
 > 也**不要**指望用「字段缺席 vs 空串」区分「有没有这个患者」—— 服务端不省字段，两种情况都是空串。
 
-> 同一天，医生侧另外两条读接口也补了这两个字段（都是「医生认人」的落点）：
+> 医生侧另外两条读接口同样带这两个字段（都是「医生认人」的落点）：
 > - `GET /api/v1/doctor/visits/:id/record`（§6.2；**空病历骨架也带**：那时姓名取自**挂号单**，
 >   因为骨架的 `patient_id` 是 0）
 > - `GET /api/v1/doctor/patients/:patientId/records`（§5.30.1，每份既往病历都带）
@@ -1349,7 +1328,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | --- | --- | --- |
 | 鸿蒙患者端 | `BookingPage.ets` / `PrevisitPage.ets` | 挂号请求带 `previsit_id`；读 `previsit_bound` 决定文案；**不要把"本机存了 session_id"当成"医生看到了"** |
 | 鸿蒙医生端 | `VisitQueuePage.ets` | 用 `previsit_ready` 出行内徽标 |
-| | `EmrEditPage.ets` | 顶部「患者自述（预问诊）」卡片（数据来自 5.28.1，**不再依赖本机 `SessionStore`**）；按段「采纳到本段」（**追加**，不覆盖）；有 `previsit_ref` 的段显示角标 |
+| | `EmrEditPage.ets` | 顶部「患者自述（预问诊）」卡片（数据来自 5.28.1）；按段「采纳到本段」（**追加**，不覆盖）；有 `previsit_ref` 的段显示角标 |
 
 **"响应丢失"与越权演练**（`server/tests/previsit-bridge-check.ps1` 已进门禁，51 条断言）：
 跨患者 `previsit_id` ⇒ 仍 201 且 `previsit_bound=false`；别的医生的单 ⇒ 404；未绑定但有历史会话 ⇒ `bound=false`；
@@ -1357,11 +1336,11 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 
 ---
 
-### 5.29 2026-10-15 新增：病历修订历史（医生端 + 管理员）
+### 5.29 病历修订历史（医生端 + 管理员）
 
-> 改进 3。**病历锁定后**的每一次「解锁 → 重写 → 再锁定」都留一版快照 + 一条理由，
+> **病历锁定后**的每一次「解锁 → 重写 → 再锁定」都留一版快照 + 一条理由，
 > 对应纸质病历的"划改并签名"。契约样例与 Schema 见 `contract/examples/record-revision-*.json`、
-> `contract/schema/data-record-revision*.schema.json`；端到端演练见 `server/tests/revision-check.ps1`（46 条断言，2026-10-16 补 ⑪ 自清后 **47** 条，已进门禁）。
+> `contract/schema/data-record-revision*.schema.json`；端到端演练见 `server/tests/revision-check.ps1`（46 条断言 + ⑪ 自清用例 = **47** 条，已进门禁）。
 
 #### 5.29.1 什么时候会落一版（**只有两个时机**）
 
@@ -1436,9 +1415,9 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | 404 | `APPOINTMENT_NOT_FOUND` | 不是我的号（医生）/ 挂号单不存在；**患者读修订历史也走这里**（不给他 403，避免"这东西存在但不是你的"） |
 | 404 | `REVISION_NOT_FOUND` | 这一版不存在 |
 
-#### 5.29.6 定稿 / 解锁响应的新增字段：`revision_version`
+#### 5.29.6 定稿 / 解锁响应的字段：`revision_version`
 
-`POST …/record/lock` 与 `POST …/record/reopen` 的**成功响应**（`data` 是病历 JSON）新增：
+`POST …/record/lock` 与 `POST …/record/reopen` 的**成功响应**（`data` 是病历 JSON）带：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -1448,7 +1427,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 **不要当失败重试**（重试会走幂等路径自愈那一版：`lock` 的幂等分支会补齐缺失的 v1）。
 `PUT` / `GET` 病历的响应**不含**这个字段。
 
-#### 5.29.7 `reopen` 现在**必须**带理由
+#### 5.29.7 `reopen` **必须**带理由
 
 ```
 POST /api/v1/doctor/visits/:id/record/reopen
@@ -1456,10 +1435,10 @@ POST /api/v1/doctor/visits/:id/record/reopen
 ```
 
 - 长度按**字符**算（不是字节）：trim 后 **4–255**。少于 4 或超 255 ⇒ **400 `VALIDATION_FAILED`**。
-- 权限动作从"借 `ManageSchedule`"改为语义动作 **`Action.ManageRecordRevision`（仅管理员）**：
-  **授权结果不变**（医生仍是 403），但将来"让护士长调号源"不会连带放开"推翻已定稿的文书"。
+- 权限动作是语义动作 **`Action.ManageRecordRevision`（仅管理员）**：
+  医生仍是 403；"让护士长调号源"的权限不会连带放开"推翻已定稿的文书"。
 - 存量已锁定病历由 `migrateSchema` 第 ⑩ 步补一版 v1（`operation="lock"`、`operator_role=""`、
-  `created_at` = 病历的 `updated_at`）：客户端看到"只有 1 版"是正常的，**不是**历史丢了。
+  `created_at` = 病历的 `updated_at`）：这类病历只有 1 版是正常的，**不是**历史丢了。
 
 #### 5.29.8 客户端要做什么
 
@@ -1469,19 +1448,15 @@ POST /api/v1/doctor/visits/:id/record/reopen
 | 管理端（Web） | 可加"病历修订审计"视图（管理员能读任意单的修订历史）：列表 → 详情；`reason` / `operator_role` 是审计话术，**不要**出现在患者可见的任何界面 |
 | 患者端（鸿蒙/安卓） | **不用动**（患者读修订历史一律 404，这是刻意的） |
 
-> ⚠ **2026-10-16 更正（原文有矛盾）**：本表原先把"解锁对话框**必须**收集理由（4–255 字）"
-> 记在**医生端**，但按 §5.29.5/§5.29.7，`reopen` 的权限动作已收窄为
-> `Action.ManageRecordRevision`（**仅管理员**），医生端调它一律 403 `FORBIDDEN_ROLE` ——
-> 医生端根本走不到"收集理由"这一步，那条要求与接口本身互斥。
-> `reopen` 的理由输入（trim 后 4–255 字）因此属于**执行解锁的那一端**。
-> 具体归管理端 Web 还是另开一个管理端鸿蒙页，**待定**（已提请组长确认）。
-> 在此之前：医生端"版本历史"保持**只读**，不提供任何解锁/理由入口。
+> ⚠ **解锁对话框的理由（trim 后 4–255 字）属于执行解锁的那一端**：按 §5.29.5/§5.29.7，
+> `reopen` 的权限动作是 `Action.ManageRecordRevision`（**仅管理员**），医生端调它一律 403 `FORBIDDEN_ROLE`，
+> 走不到"收集理由"这一步。医生端"版本历史"保持**只读**，不提供任何解锁/理由入口。
 
 ---
 
-### 5.30 2026-10-15 新增：医生录入工作台（既往病历 + 保存冲突）
+### 5.30 医生录入工作台（既往病历 + 保存冲突）
 
-> 对应改进 2 的服务端部分。**它不新增"自动保存"端点** —— 自动保存就是重复 `PUT …/record`（幂等）。
+> **没有独立的"自动保存"端点** —— 自动保存就是重复 `PUT …/record`（幂等）。
 
 #### 5.30.1 `GET /api/v1/doctor/patients/:patientId/records` —— 这位患者的既往已定稿病历
 
@@ -1499,15 +1474,14 @@ POST /api/v1/doctor/visits/:id/record/reopen
 
 **只返回 `status='locked'` 的病历**（草稿是医生个人的工作稿，给另一个医生看会造成"未定稿当结论"）。
 
-**排序是契约（2026-10-16 改）**：按**就诊时间**倒序 —— `visit_date DESC, period DESC, id DESC`。
+**排序是契约**：按**就诊时间**倒序 —— `visit_date DESC, period DESC, id DESC`。
 服务端负责排，客户端按序渲染、**不要自己再排**（与 §5.31.2 的 `order` 字段同一纪律）。
 
-> ⚠ 此前按 `updated_at DESC, id DESC` 排，这是**错的**：`updated_at` 是"这份记录最后一次被写"的时间，
-> 而"解锁 → 重写 → 再锁定"会把一份**旧就诊**的病历顶到列表最前面。医生看到的顺序就会随
-> 「管理员今天解锁了哪一份」而变，与就诊先后无关。`updated_at` 仍然回给出站（客户端要拿它做乐观锁），
-> 只是**不再**充当排序键。
+> ⚠ **不要用 `updated_at` 排序**：它是"这份记录最后一次被写"的时间，而"解锁 → 重写 → 再锁定"
+> 会把一份**旧就诊**的病历顶到列表最前面 —— 医生看到的顺序就会随「管理员今天解锁了哪一份」而变，
+> 与就诊先后无关。`updated_at` 仍然回给出站（客户端要拿它做乐观锁），只是**不**充当排序键。
 
-**每一份都带 `patient_name` / `patient_gender`（2026-10-16 增）**：名字来自 `patient` 表，
+**每一份都带 `patient_name` / `patient_gender`**：名字来自 `patient` 表，
 按 `patient_id` **一次批量**查回（不是每份记录打一次库）。查不到患者时服务端给**空串**，
 不省字段 —— 响应形状不随数据在不在变化。**空串是合法值**（Schema 不设 `minLength`，理由见 §5.28.5 的 ⚠）。
 
@@ -1528,7 +1502,7 @@ POST /api/v1/doctor/visits/:id/record/reopen
 | 该医生没接诊过这位患者 | 404 | `APPOINTMENT_NOT_FOUND` |
 | 该医生接诊过、但一条已定稿病历都没有 | 200 | `items: []`、`count: 0`（**不是 404**） |
 
-#### 5.30.2 `PUT /api/v1/doctor/visits/:id/record` 新增可选 `expected_updated_at`（乐观锁）
+#### 5.30.2 `PUT /api/v1/doctor/visits/:id/record` 的可选 `expected_updated_at`（乐观锁）
 
 自动保存的竞态（两个窗口/两处同时改）靠它挡住：
 
@@ -1541,14 +1515,14 @@ POST /api/v1/doctor/visits/:id/record/reopen
 ```
 
 - 比较发生在**同一条 UPDATE 的 `WHERE` 里**（`updated_at = ?`），不是"先查再比" —— 否则两个请求都能通过。
-- 不带该字段 ⇒ 保持旧行为（**不校验**，用于兼容与首次保存）。
+- 不带该字段 ⇒ **不校验**（用于兼容与首次保存）。
 - 挂号单**还没有病历**时不走 UPDATE，而是 **INSERT**；两条请求同时首次保存时，唯一键
   `uk_medical_record_appointment` 会让后到的那条 INSERT 失败 —— 服务端捕获它，**回读刚建出来的那一行**，
   按"并发首建"处理成 **409 `EMR_CHANGED`**（与乐观锁同一个业务码，客户端同一套处理）。
-  ⚠ 2026-10-16 修（医生端复核 ★★★ 第 1 条）：这条路径此前**不回填** `updated_at`/`updated_by`，
-  于是它吐出的 409 **没有 `error.fields`**，与它自己的契约（`envelope-error-fields`）不符，
-  客户端读 `fields.updated_at` 会拿到 `undefined`。现在两条出口都填同一组值。
-- **`error.fields` 的保证（2026-10-16 起）**：只要回 `EMR_CHANGED`，`updated_at` 与 `updated_by`
+  ⚠ 这条路径也**回填** `updated_at`/`updated_by`：否则它吐出的 409 会**没有 `error.fields`**，
+  与契约（`envelope-error-fields`）不符，客户端读 `fields.updated_at` 会拿到 `undefined`。
+  两条出口填同一组值。
+- **`error.fields` 的保证**：只要回 `EMR_CHANGED`，`updated_at` 与 `updated_by`
   **一定有**（都是整数，来自"当前库里那一版"或"刚建出来的那一版"）；`record_id` 是**可选**字段，
   只有确实存在记录行时才给（`envelope-error-fields.schema.json` 的 `required` 据此只列前两个）。
 - **优先级**：已定稿的单先回 **409 `EMR_LOCKED`**（即使 `expected_updated_at` 也过期）——
@@ -1566,9 +1540,9 @@ POST /api/v1/doctor/visits/:id/record/reopen
 
 ---
 
-### 5.31 2026-10-15 新增：AI 分诊遥测与排障（仅 admin）
+### 5.31 AI 分诊遥测与排障（仅 admin）
 
-**要解决什么**：`triage_stat` 从此前"只写不读"变成可查 —— 管理台能回答两个问题：
+**要解决什么**：`triage_stat` 是可查的 —— 管理台能回答两个问题：
 「这几天的分诊质量怎么样」（聚合）与「这一次分诊到底发生了什么」（单次全链路）。
 两者都要 `Action.ManageAi`（与 AI 模型配置同一道闸门，**没有新造权限动作**）；
 患者/医生令牌下一律 **403 `FORBIDDEN_ROLE`**。
@@ -1577,7 +1551,7 @@ POST /api/v1/doctor/visits/:id/record/reopen
 
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
-| `from` / `to` | `to = 现在`、`from = to - 86400`（最近 24h） | epoch **秒**；给值就必须是**非负整数**（`?from=abc` / `?from=-1` ⇒ **400**，不再静默回落默认窗口）；`from > to` ⇒ **400 `VALIDATION_FAILED`**（**不自动交换** —— 交换会把参数写错掩盖成"查到了但是空"）；`to - from > 366 天` ⇒ **400**（无上限时"一次请求扫全表"只是少打几个字的事） |
+| `from` / `to` | `to = 现在`、`from = to - 86400`（最近 24h） | epoch **秒**；给值就必须是**非负整数**（`?from=abc` / `?from=-1` ⇒ **400**）；`from > to` ⇒ **400 `VALIDATION_FAILED`**（**不自动交换** —— 交换会把参数写错掩盖成"查到了但是空"）；`to - from > 366 天` ⇒ **400**（无上限时"一次请求扫全表"只是少打几个字的事） |
 | `group_by` | `source` | **只认 `source` / `reason_code` / `model_name`**。它是**要拼进 SQL 的列名**，所以非白名单值（含空串、`id`、注入串）一律 400，**绝不回退默认值继续查** |
 | `limit` | `5000` | 抽样行数上限，夹到 `1..20000`（分位数在内存里算，不设上限等于一次请求把整表拉进内存） |
 | `group_limit` | `20` | 返回的分组数上限，夹到 `1..100` |
@@ -1592,8 +1566,7 @@ POST /api/v1/doctor/visits/:id/record/reopen
   `RED_FLAG` 是"规则层直接判危急、压根没调模型"的**安全旁路**，把它算成 AI 失败会让看板
   在正常拦截时报告"AI 总在挂" ⇒ 二者分成两个量：`degraded` / `red_flag`。
   ⚠ **口径只在服务端定义一次**（`triageDegradeIsFailure` / `triageDegradeIsRedFlagBypass`），
-  客户端**不要**自己写 `source != "model"` 之类的第二份判据（2026-10-16 复核发现评测脚本
-  就是这么写的 —— 同一指标两处实现，两份数字迟早对不上）。
+  客户端**不要**自己写 `source != "model"` 之类的第二份判据 —— 同一指标两处实现，两份数字迟早对不上。
 - **`degrade_rate`** = `degraded / total`，**`red_flag_rate`** = `red_flag / total`，都带 **4 位小数**（如 `0.6667`）；
   `total = 0` 时为 `0`。两者**相加不是 1**：还有"真的用上了模型"的那部分。
 - **`p50_ms` / `p95_ms` 用最近秩法（nearest-rank），整数毫秒**：取排序后第 `ceil(p/100 × n)` 个**真实样本**，
@@ -1638,14 +1611,14 @@ POST /api/v1/doctor/visits/:id/record/reopen
 3. **`request_id` 是关联键、不是身份凭证**：它来自客户端请求头，服务端只用来串联日志与遥测，
    **不能**用它做鉴权或把它当"某人某次就诊"的证据。
 
-#### 5.31.4 `POST /api/v1/triage` 的响应新增两个字段
+#### 5.31.4 `POST /api/v1/triage` 响应里的两个排障字段
 
 | 字段 | 说明 |
 | --- | --- |
 | `request_id` | 本次请求的编号（= 服务端落库的 `triage_stat.request_id`）。**这是排障闭环的入口**：患者端默认不带 `X-Request-Id`，响应里不回编号，运营就无从取号 |
 | `server_time` | 服务端时间（epoch 秒），与挂号类响应同一口径 |
 
-这是**纯增量**（旧解析不受影响），也是本次唯一改动既有端点形状的地方。
+这是**纯增量**：旧解析不受影响。
 
 #### 5.31.5 客户端要做什么
 
@@ -1666,11 +1639,11 @@ POST /api/v1/doctor/visits/:id/record/reopen
 
 ---
 
-### 5.32 2026-10-15 新增：就诊时间线（到院 / 候诊 / 显式状态机）
+### 5.32 就诊时间线（到院 / 候诊 / 显式状态机）
 
-> 面向**医生端（鸿蒙）**与**患者端**。对应门诊闭环改进方案的「改进 6」（该方案文档已于 2026-10-17 整理仓库时移除，内容见 git 历史 `docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md`）。
-> 一句话：就诊状态从「挂号 → 接诊中 → 完成」三步，扩成**七态**，并把"人几点到、几点开始看、
-> 几点看完"落成三个时间戳。**医生端必须改流程**，否则会卡在 `booked → visiting` 已经不被允许。
+> 面向**医生端（鸿蒙）**与**患者端**。
+> 就诊状态是**七态**，并把"人几点到、几点开始看、几点看完"落成三个时间戳。
+> **医生端必须按七态走流程**：`booked → visiting` 不被允许。
 
 #### 5.32.1 状态取值（`status` 机器判据；`status_label` 给人看）
 
@@ -1689,7 +1662,7 @@ POST /api/v1/doctor/visits/:id/record/reopen
 
 ⚠ **`status_label` 必须用服务端返回的值**，不要在前端抄一份中文表（改文案时两份必然会漂）。
 
-#### 5.32.2 两个新端点（医生端，`Action.ManageVisit`，只能操作自己的单）
+#### 5.32.2 两个流转端点（医生端，`Action.ManageVisit`，只能操作自己的单）
 
 | 方法 | 路径 | 做什么 | 成功返回 |
 | --- | --- | --- | --- |
@@ -1718,15 +1691,15 @@ POST /api/v1/doctor/visits/:id/record/reopen
 每一次流转**只写自己那一个戳**（到院不许顺手写 `started_at`）；**被拒绝的流转一个都不写**。
 由此可直接算：候诊时长 = `started_at - arrived_at`，就诊时长 = `finished_at - started_at`。
 
-#### 5.32.3 既有端点的变化（形状变更，必须重新解析）
+#### 5.32.3 挂号类端点的响应形状与流转约束
 
-| 端点 | 变化 |
+| 端点 | 形状 / 约束 |
 | --- | --- |
-| `GET /api/v1/doctor/visits` | item 新增 `status_label` 与三个时间戳；**排序规则变了**：`arrived`/`waiting` 排最前，其内按 `seq_no` 升序，然后 `visiting`、`booked`、终态 |
-| `POST /api/v1/doctor/visits/:id/start` | **前置状态收紧**：只能从 `waiting` 开始（原先允许 `booked` ⇒ "人没到就能叫号"在服务端是合法的） |
-| `POST /api/v1/doctor/visits/:id/finish` | 不变：要求病历已 `locked`，否则 409 `EMR_NOT_LOCKED` |
-| `POST /api/v1/doctor/visits/:id/no-show` | 允许来源扩到 `booked`/`arrived`/`waiting`/`visiting` |
-| `POST /api/v1/appointments`、`GET /api/v1/appointments/by-token/:token`、`POST /api/v1/appointments/:id/cancel` | 新增 `status_label` 与 `arrived_at`/`started_at`/`finished_at`（三端一套解析代码吃下全部挂号类响应） |
+| `GET /api/v1/doctor/visits` | item 带 `status_label` 与三个时间戳；**排序**：`arrived`/`waiting` 排最前，其内按 `seq_no` 升序，然后 `visiting`、`booked`、终态 |
+| `POST /api/v1/doctor/visits/:id/start` | **前置状态**：只能从 `waiting` 开始（`booked` 直接叫号会 409 `VISIT_BAD_STATE`） |
+| `POST /api/v1/doctor/visits/:id/finish` | 要求病历已 `locked`，否则 409 `EMR_NOT_LOCKED` |
+| `POST /api/v1/doctor/visits/:id/no-show` | 允许来源：`booked`/`arrived`/`waiting`/`visiting` |
+| `POST /api/v1/appointments`、`GET /api/v1/appointments/by-token/:token`、`POST /api/v1/appointments/:id/cancel` | 带 `status_label` 与 `arrived_at`/`started_at`/`finished_at`（三端一套解析代码吃下全部挂号类响应） |
 
 ⚠ **客户端不要再按 `seq_no` 重排队列**：待处理优先由服务端给，重排会把"人在现场等叫号"的排到后面。
 
@@ -1759,31 +1732,28 @@ POST /api/v1/doctor/visits/:id/record/reopen
 | 患者或管理员令牌 | 403 | `FORBIDDEN_ROLE` |
 | 无令牌 | 401 | `AUTH_REQUIRED` |
 
-#### 5.32.7 2026-10-16 复核修正（客户端已落地，服务端行为补充）
+#### 5.32.7 客户端落地要点
 
-第三方复核在**客户端侧**发现改到院/候诊后"主流程整个走不通"，根因是前端只实现了 `start`：
+- 医生端队列页按钮随 `status` 给"下一步唯一动作"（`arrive` / `waiting` / `start` / `finish`），并给"爽约"。
+- 患者端状态文案**优先用服务端 `status_label`**，本地映射只作兜底，且逐字对齐服务端 `visitStatusLabel`
+  （`已挂号`/`已到院`/`候诊中`/`接诊中`/`已完成`/`已退号`/`已爽约`）；`feature-patient` 直接转调 `common-core`，
+  词汇表只留一份。
+- 管理台看板拆出 `已到院` / `候诊` 两列（`dashboard` 端点已给这两个数）。
+- 模型配置表单的「清空密钥引用」勾选框**优先于**输入框（勾了就是 `key_ref: ""`）；服务端从不读 `clear_key_ref` 这个键。
 
-| # | 问题 | 修正 | 落点 |
-| --- | --- | --- | --- |
-| 1 | 医生端只有 `startVisit`，「开始接诊」对着 `booked` 的单按下去必然 409 ⇒ 医生主流程断死 | 补 `arriveVisit` / `waitingVisit`，队列页按钮随 `status` 给"下一步唯一动作"，并给"爽约" | `feature-doctor/.../DoctorRepository.ets`（`arriveVisit`/`waitingVisit`）、`VisitQueuePage.ets` |
-| 2 | 患者端状态文案只有 `booked`/`visiting`/`cancelled`/`no_show` ⇒ 新状态在患者自己列表里显示英文机器码 | 补齐七态中文，**优先用服务端 `status_label`**、本地映射只作兜底；**2026-10-16 晚**把本地兜底逐字对齐服务端 `visitStatusLabel`（`已挂号`/`已到院`/`候诊中`/`接诊中`/`已完成`/`已退号`/`已爽约`），并让 `feature-patient` 直接转调 `common-core`（词汇表只留一份） | `common-core/.../Theme.ets`（`appointmentStatusText`/`appointmentStatusColor`）、`feature-patient/.../Theme.ets`（转调） |
-| 3 | 管理台看板仍只显示 `booked`/`visiting` ⇒ "候诊 12 人"全藏进"已约"里 | 看板拆出 `已到院` / `候诊`（`dashboard` 端点早就算好了这两个数） | `server/admin-web/js/pages.js` |
-| 4 | 模型配置表单的「清空密钥引用」勾选框：清空靠**显式发 `key_ref: ""`**，而原实现让输入框残留值优先 ⇒ 勾了也可能没清掉 | 勾选框**优先于**输入框（勾了就是 `key_ref: ""`）；并注明服务端从不读 `clear_key_ref` 这个键 | `server/admin-web/js/pages.js` |
+### 5.33 鸿蒙客户端在 DevEco 模拟器上的构建与联调
 
-### 5.33 2026-10-16 鸿蒙客户端在 DevEco 模拟器上的构建与端到端实测
-
-本节把 §5.32 那批客户端改动从「只做静态核对」升级为**本机真编译 + 模拟器运行 + 与真实服务端联调**的实测记录。
+本节是**本机真编译 + 模拟器运行 + 与真实服务端联调**的配方与已验证结果。
 环境：DevEco Studio `DS-261.23567.138.36.2600821`（装在 `D:\DevEco Studio`）、SDK `HarmonyOS 26.0.0`（apiVersion 26）、
 模拟器 `Pura 90`（HarmonyOS 6.1.1 / API 24 / x86_64 / 1320x2856）、服务端 `hospital-server.exe serve --dev-auth`。
 
-**① 构建（当时的工程路径问题，现已消除）**：`hvigor` **拒绝含中文的工程路径**
-（当时报 `ERROR: 00306003 Specification Limit Violation / Invalid project path`，栈指向 `project-inspection.js`），
+**① 构建**：`hvigor` **拒绝含中文的工程路径**
+（报 `ERROR: 00306003 Specification Limit Violation / Invalid project path`，栈指向 `project-inspection.js`），
 `subst` 映射盘符也绕不过（hvigor 会 realpath 回真实路径）。
-> **后续更正（2026-10-17）**：仓库已由中文名改名为 `E:\harmonyOS\smart_hospital`（纯 ASCII），
-> 该报错不再出现，**可以直接在仓库内构建**，不再需要 ASCII 副本。下面保留当时的实测配方与产物数据，
-> 作为「若把仓库克隆到中文目录」时的处置参考。
+> 仓库路径是纯 ASCII（`E:\harmonyOS\smart_hospital`），因此可直接在仓库内构建；
+> 若把仓库克隆到中文目录，需按下文的 `robocopy` 副本方案处置。
 
-当时的做法是 `robocopy` 一份**字节等价的 ASCII 副本**（排除 `.git`/`server`/`docs`/`contract`/`build`/`oh_modules` 等），在副本里构建：
+克隆到中文目录时：用 `robocopy` 做一份**字节等价的 ASCII 副本**（排除 `.git`/`server`/`docs`/`contract`/`build`/`oh_modules` 等），在副本里构建：
 
 ```powershell
 $env:DEVECO_SDK_HOME = 'D:\DevEco Studio\sdk'
@@ -1793,8 +1763,8 @@ $env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Stud
 ```
 
 `BUILD SUCCESSFUL`（65 个任务，`:entry:default@CompileArkTS` 干净通过），产物 `entry/build/default/outputs/default/entry-default-unsigned.hap`（≈1.4 MB）。
-`signingConfigs` 为空数组时不能引用不存在的签名配置：当时是在副本里去掉 `products` 的 `"signingConfig": "default"`；
-**仓库里的 `build-profile.json5` 已同样去掉该悬空引用**，现在只发一条 `WARN: No signingConfig found for product default`。
+`signingConfigs` 为空数组时不能引用不存在的签名配置：`build-profile.json5` 的 `products` 里**不写**
+`"signingConfig": "default"`，构建只发一条 `WARN: No signingConfig found for product default`。
 
 **② 安装与运行（未签名也能装）**：模拟器**接受未签名 HAP**，签名不是模拟器验证的前置条件：
 
@@ -1819,22 +1789,8 @@ $env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Stud
 **⑤ 实测结果**：
 * 医生端队列四态渲染正确：`接诊中` 给「写病历 / 完成就诊」、`候诊中` 给「爽约 / 开始接诊」、`已挂号` 给「爽约 / 到院登记」、`已完成` 无动作；候诊/就诊时长按时间戳算出。
 * **状态链全程点通（真实服务端）**：在模拟器上依次点「到院登记 → 转入候诊 → 开始接诊」，库里同一行
-  `booked → arrived → waiting → visiting`，`arrived_at` / `started_at` 落库（本次 `arrived_at=1792065257`、`started_at=1792065264`），界面同步变为 `接诊中`。
+  `booked → arrived → waiting → visiting`，`arrived_at` / `started_at` 落库（示例 `arrived_at=1792065257`、`started_at=1792065264`），界面同步变为 `接诊中`。
 * **负向用例**：对仍是 `booked` 的单直接 `POST /api/v1/doctor/visits/:id/start` ⇒ `409 {"code":"VISIT_BAD_STATE","message":"开始接诊：当前状态 'booked' 不允许流转到 'visiting'"}`。
-
-**⑥ 实测新发现（一条已修、一条待决策）**：
-
-| # | 现象 | 处置 |
-| --- | --- | --- |
-| 1 | 医生端**演示夹具**漏给 `booked` 那单设 `statusLabel`，队列页兜底成本地文案「待就诊」，而服务端 `visitStatusLabel(booked)` 是「已挂号」⇒ 演示与线上文案对不上 | 已修：`feature-doctor/.../MockDoctorRepository.ets` 给 603 补 `statusLabel = '已挂号'`，并在模拟器上复验 |
-| 2 | 客户端本地兜底 `appointmentStatusText`（`common-core` 与 `feature-patient` 各一份、逐字相同）与服务端权威 `visitStatusLabel` **7 态里有 4 态不一致**：`booked` 待就诊/已挂号、`visiting` 就诊中/接诊中、`cancelled` 已取消/已退号、`no_show` 爽约/已爽约 | ✅ **已按服务端术语对齐（2026-10-16 晚）**：`common-core/.../ui/Theme.ets` 把那 4 个值改成 `已挂号` / `接诊中` / `已退号` / `已爽约`；`feature-patient/.../ui/Theme.ets` 的 `appointmentStatusText` / `appointmentStatusColor` 改为**直接转调 `common-core`**（第二份词汇表已删），`HomePage.ets:143` 空态文案同步改为「目前没有已挂号的预约」。设备复验：就诊列表里 `2026-11-20 上午` 那张单的胶囊由「待就诊」变为「已挂号」 |
-
-服务端侧复核修正（D1/D2/D4/D5…）见门诊闭环改进方案的「§八」（该文档已于 2026-10-17 移除，见 git 历史）；本节对应的构建/联调命令也在其 §8.4 有摘要。
-
-**证据留存**（历史）：本轮 7 张模拟器截图曾暂存在本机 `.scratch-evidence-2026-10-16/`（`.scratch-*` 被 `.gitignore` 忽略 ⇒ 从未入库；2026-10-17 整理仓库时已连同构建产物清理）。文件名：`01-patient-home.jpeg`（患者首页）、
-`02-doctor-queue-mock.jpeg`（医生队列四态）、`03-doctor-arrived.jpeg`（点「到院登记」后 `已到院` + 「转入候诊」）、
-`04-live-queue.jpeg`（联调：真实队列与 `已挂号`）、`05-live-visiting.jpeg`（联调走完 `booked→arrived→waiting→visiting`）、
-`06-mock-label-fixed.jpeg`（夹具补 `statusLabel` 后复验）、`07-patient-appointments-aligned.jpeg`（文案对齐后就诊列表 `已挂号`）。
 
 ---
 
@@ -1852,7 +1808,7 @@ $env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Stud
 | `POST /api/v1/admin/users/:id/password` | `:id` 是 `auth_user.id`（**不是 `ref_id`**）；会**吊销该账号全部令牌**；账号不存在 → 404 | `http_app.cj:989-1007`、`auth_repo.cj:568-583` |
 | `POST /api/v1/admin/schedules` | body `doctor_id`/`department_id`/`work_date`/`period`/`total_num`；**201** `{schedule_id,total_num,remain_num}` | `http_app.cj:1523-1543` |
 | `GET /api/v1/admin/ai/settings`、`PUT/DELETE /api/v1/admin/ai/settings/:key` | AI 配置中心；**密钥绝不回显**（只回"是否已设置 + 引用类型"） | `http_app.cj:1029-1136` |
-| `GET /api/v1/admin/ai/triage-stats`、`GET /api/v1/admin/ai/triage-calls/:requestId` | **AI 分诊遥测**（★ 2026-10-15 新增，见 §5.31）；同一道 `manage_ai` 闸门；`group_by` 只认 `source`/`reason_code`/`model_name`（拼进 SQL 的列名）；**永不返回主诉原文**（表里没有这一列）；未知 `requestId` ⇒ **200 + `count: 0`**（不是 404） | `http_app.cj:1925`、`http_app.cj:1990` |
+| `GET /api/v1/admin/ai/triage-stats`、`GET /api/v1/admin/ai/triage-calls/:requestId` | **AI 分诊遥测**（见 §5.31）；同一道 `manage_ai` 闸门；`group_by` 只认 `source`/`reason_code`/`model_name`（拼进 SQL 的列名）；**永不返回主诉原文**（表里没有这一列）；未知 `requestId` ⇒ **200 + `count: 0`**（不是 404） | `http_app.cj:1925`、`http_app.cj:1990` |
 | `GET /api/v1/admin/ai/prompts`、`PUT/DELETE /api/v1/admin/ai/prompts/:name` | Prompt 模板 CRUD（正文原样回显，它不是机密） | `http_app.cj:1066-1098` |
 | `GET /api/v1/admin/ai/tools`、`PUT /api/v1/admin/ai/tools/:name` | 工具开关；`enabled` **只接受 JSON 布尔** | `http_app.cj:1101-1126` |
 | `GET/POST /api/v1/admin/departments`、`GET/PUT/DELETE /…/:id` | 科室 CRUD（`manage_base_data`）；**列表支持 `limit`/`offset`，响应含 `total`/`limit`/`offset`**（`limit` 缺省/非法/`>200` ⇒ 200） | `http_base.cj:172-256` |
@@ -1865,17 +1821,17 @@ $env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Stud
 
 | 方法 + 路径 | Action | 源码依据 |
 | --- | --- | --- |
-| `GET /api/v1/doctor/visits` | `manage_visit` | `http_p4.cj:455`（★ 2026-10-15：item 新增 `status_label` 与三个时间戳，排序改为待处理优先，见 §5.32） |
-| `POST /api/v1/doctor/visits/:id/arrive` \| `/waiting` | `manage_visit` | `http_p4.cj:488/507`（★ 2026-10-15 新增，见 §5.32） |
-| `POST /api/v1/doctor/visits/:id/start` \| `/finish` \| `/no-show` | `manage_visit` | `http_p4.cj:525/545/566`（★ 2026-10-15：`start` 只能从 `waiting` 来，见 §5.32） |
-| `GET` / `PUT /api/v1/doctor/visits/:id/record` | `query_own_medical_record` / `write_own_medical_record` | `http_p4.cj:592/657`（★ 2026-10-15：PUT 支持可选 `expected_updated_at`，见 §5.30） |
-| `GET /api/v1/doctor/visits/:id/previsit` | `query_own_medical_record`（**且必须是我的号**，否则 404） | `http_p4.cj:627`（★ 2026-10-14 新增，见 §5.28） |
+| `GET /api/v1/doctor/visits` | `manage_visit` | `http_p4.cj:455`（item 带 `status_label` 与三个时间戳，待处理优先，见 §5.32） |
+| `POST /api/v1/doctor/visits/:id/arrive` \| `/waiting` | `manage_visit` | `http_p4.cj:488/507`（见 §5.32） |
+| `POST /api/v1/doctor/visits/:id/start` \| `/finish` \| `/no-show` | `manage_visit` | `http_p4.cj:525/545/566`（`start` 只能从 `waiting` 来，见 §5.32） |
+| `GET` / `PUT /api/v1/doctor/visits/:id/record` | `query_own_medical_record` / `write_own_medical_record` | `http_p4.cj:592/657`（PUT 支持可选 `expected_updated_at`，见 §5.30） |
+| `GET /api/v1/doctor/visits/:id/previsit` | `query_own_medical_record`（**且必须是我的号**，否则 404） | `http_p4.cj:627`（见 §5.28） |
 | `POST /api/v1/doctor/visits/:id/record/lock` | `write_own_medical_record` | `http_p4.cj:712` |
-| `POST /api/v1/doctor/visits/:id/record/reopen` | **`manage_record_revision`（仅管理员）** —— 医生端也不能解锁；**必须带 `reason`** | `http_p4.cj:752`（★ 2026-10-15 改，见 §5.29） |
-| `GET /api/v1/doctor/visits/:id/record/revisions` | `query_own_medical_record`（**且必须是我的号**，否则 404；管理员可读任意单） | `http_p4.cj:807`（★ 2026-10-15 新增，见 §5.29） |
+| `POST /api/v1/doctor/visits/:id/record/reopen` | **`manage_record_revision`（仅管理员）** —— 医生端也不能解锁；**必须带 `reason`** | `http_p4.cj:752`（见 §5.29） |
+| `GET /api/v1/doctor/visits/:id/record/revisions` | `query_own_medical_record`（**且必须是我的号**，否则 404；管理员可读任意单） | `http_p4.cj:807`（见 §5.29） |
 | `GET /api/v1/doctor/visits/:id/record/revisions/:version` | 同上 | `http_p4.cj:833`（★ 同上） |
 | `GET /api/v1/doctor/visits/:id/record/revisions/:version/diff?against=N` | 同上 | `http_p4.cj:860`（★ 同上） |
-| `GET /api/v1/doctor/patients/:patientId/records` | `query_own_medical_record`（**且这位医生必须接诊过该患者**，否则 404；患者令牌 403） | `http_p4.cj:917`（★ 2026-10-15 新增，见 §5.30） |
+| `GET /api/v1/doctor/patients/:patientId/records` | `query_own_medical_record`（**且这位医生必须接诊过该患者**，否则 404；患者令牌 403） | `http_p4.cj:917`（见 §5.30） |
 
 ### 6.3 刻意对患者 403 的一个"看似通用"端点
 
@@ -2000,7 +1956,7 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
   ① 应用层按 `(patient_id, client_token)` 查**仍有效**（`status <> 'cancelled'`）的既有单 → 命中即回放；
   ② 数据库唯一索引 `(patient_id, client_token)` 兜底并发（撞索引后回读既有单，`domain_booking.cj:659-676`）。
 * ⇒ 同 token 重放：**200** + 同一张 `bookingJson`；首次成功：**201**。
-* ⇒ 同 token **跨患者互不影响**（2026-10-07 修的跨患者泄露缺陷，`domain_booking.cj:209-233`）。
+* ⇒ 同 token **跨患者互不影响**（`domain_booking.cj:209-233`）。
 * ⚠ 幂等键在**用户点击那一刻**生成并缓存，直到请求成功为止。**失败重试必须复用同一个值**，
   否则号源紧张时会重复占号。
 * ⚠ **换号源必须换新 token**：`client_token` 代表"一次挂号意图"，复用它去挂另一个 `schedule_id`
@@ -2011,11 +1967,11 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 
 * `POST /api/v1/appointments/:id/cancel` 在**单是自己的、且状态是 `booked`** 时返回 **200**：
   成功与否**必须看返回体的 `status === 'cancelled'`**。
-* ★ **2026-10-12 起**：状态不是 `booked` 的单**退不了**，返回 **409 `APPOINTMENT_NOT_CANCELLABLE`**，
+* ★ 状态不是 `booked` 的单**退不了**，返回 **409 `APPOINTMENT_NOT_CANCELLABLE`**，
   `message` 带中文状态名（如「当前状态为「已完成」，不能退号」）。
-  ⇒ 客户端**必须处理这个 409**（旧代码只判 200/404 会把这类拒绝显示成"未知错误"）；
+  ⇒ 客户端**必须处理这个 409**（只判 200/404 会把这类拒绝显示成"未知错误"）；
   按钮置灰判据用 `status === 'booked'`，但**仍要兜底 409** —— 列表是拉到那一刻的快照，
-  医生随时可能点"开始接诊"（见 §9 缺口 12）。
+  医生随时可能点"开始接诊"（见 §9 缺口 9）。
 * `slot_restored: false` 时要展示 `warning`（`"号源归还异常，请联系人工处理"`）。
 * 重复退同一单仍是 200（幂等），且**不会抹掉**上一次的 `slot_restored:false` 告警
   （`domain_booking.cj:757-772`）。
@@ -2043,9 +1999,8 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
   科室或医生被停用、已过就诊日、放号数被改成 0。
   判据是同一条可售谓词 `bookingSchedulePredicate`（`domain_booking.cj:104-113`）：
   入口判一次（`findBookableSchedule`，`:875-877`），**扣号 0 行后再判一次**（`:968-971`）。
-* ⚠ **2026-10-17 更正**（本行此前写反了）："读到时 `enabled=1`、扣减时被改成 0"
-  这条竞态**也回 404 `SCHEDULE_NOT_FOUND`**，不再落到 `SLOT_GONE` ——
-  后者语义是"被别人抢走了"，把它用在"排班被停掉"上会误导患者去刷新重试。
+* ⚠ "读到时 `enabled=1`、扣减时被改成 0" 这条竞态**也回 404 `SCHEDULE_NOT_FOUND`**，
+  不落到 `SLOT_GONE` —— 后者语义是"被别人抢走了"，把它用在"排班被停掉"上会误导患者去刷新重试。
 * 两种都要能用 UI 表达：`SLOT_GONE` ⇒ "号源已被抢完"；`SCHEDULE_NOT_FOUND` ⇒
   "该排班已停诊 / 不存在"；动作都是**回到列表刷新**。
 
@@ -2053,25 +2008,21 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 
 ## 9. 服务端缺口（前端必须先知道，否则会白写页面）
 
-> 这些是写前端时最容易撞墙的地方。**请在实现对应界面之前先确认服务端是否补齐。**
+> 这些是写前端时最容易撞墙的地方：实现对应界面之前，先确认服务端是否提供。
 
-| # | 缺口 | 影响哪个页面 | 现在的替代做法 / 证据 |
+| # | 缺口 | 影响哪个页面 | 替代做法 / 证据 |
 | --- | --- | --- | --- |
-| 1 | ~~**没有患者可读的科室列表**~~ ✅ **已补齐 2026-10-12** | 「选科室挂号」现在可以独立构建 | 补了 `GET /api/v1/departments`（三端可读，见 §5.20）。管理端仍走 `/api/v1/admin/departments` |
-| 2 | ~~**没有患者可读的医生列表 / 详情**~~ ✅ **已补齐 2026-10-12** | 号源列表可以显示「P4测试医生900003 主任医师」 | 补了 `GET /api/v1/doctors`（三端可读、带 `department_name`，见 §5.21） |
-| 3 | ~~**排班无科室名/医生名联表**~~ ✅ **已补齐 2026-10-12** | 同上 | `GET /api/v1/schedules` 现在回 `department_name` / `doctor_name` / `doctor_title` / `version`；`GET /appointments`、`/medical-records`、挂号与退号响应同样补齐（§5.24） |
-| 4 | **没有 `GET /api/v1/appointments/:id` 单查**（★ 2026-10-14 起有**按幂等键**的反查 `GET /api/v1/appointments/by-token/:token`，见 §5.27） | 无法深链到单张挂号单；从推送直接打开详情做不到 | 列表是 `GET /api/v1/appointments`，单查只有 token 键。⇒ 详情页要么从列表点入带上完整对象、要么本地缓存；"结果未确认"场景用 §5.27 反查 |
-| 5 | **没有患者自助注册** | 无法做注册页 | 只有 `POST /api/v1/admin/users`（`http_base.cj` 文件头明确记录 patient CRUD 被刻意排除，PII / 个保法）。⇒ 患者账号必须由院内前台建 |
-| 6 | **没有患者改密 / 忘记密码** | 无法做"安全设置"页 | 只能找管理员走 `POST /api/v1/admin/users/:id/password`（会踢下线） |
-| 7 | **没有令牌刷新接口**（且不需要） | —— | 30 天 TTL + 服务端滑动续期（`auth_repo.cj:754-792`）。**不要去实现 `/auth/refresh`** |
-| 8 | **没有真正的分页** | 长列表无法"加载更多" | 只有 `limit`（超限**静默夹住**），无 `total` / `cursor` / `page`。⇒ 只能靠 `count == limit` 猜"可能还有更多"，并用 `work_date` 等条件把结果集收窄 |
-| 9 | **排班不做"未来过滤"** | 「今日可约」会混入历史排班 | `domain_booking.cj:311-326` 无时间条件。⇒ 客户端必须自己按 `work_date` 过滤。**服务端的"今天"已改为 Asia/Shanghai**（§5.25，与北京时间一致） |
-| 10 | **没有按名搜索科室/医生** | 无法做搜索框 | 只能按 `department_id` 精确过滤，且需要先知道 id（而缺口 1 让前端拿不到 id 列表） |
-| 11 | ~~**没有消息 / 推送端点**~~ ✅ **公告已补齐 2026-10-12**（推送仍未做） | 消息中心 / 首页「医疗公告」 | 补了 `GET /api/v1/notices`（三端可读）+ 管理端 CRUD（§5.22/§5.23）。⚠ **到诊提醒这类主动推送仍没有** ⇒ 本地通知 + 本地保存的 `visit_date`/`period` |
-| 12 | ~~**没有"这单还能不能退"的判定字段**~~ ✅ **服务端已强制校验 2026-10-12**（仍无 `can_cancel` 字段） | 退号按钮置灰 | 无 `can_cancel` 字段，`bookingJson` 里只有 `status`。**但现在服务端会拦**：非 `booked` 一律 409 `APPOINTMENT_NOT_CANCELLABLE`（§5.16/§8.2）。⇒ 置灰用 `status === 'booked'`，**并必须兜底 409**（列表快照会过期：医生随时可能点"开始接诊"） |
-| 13 | **分诊结果无法跳详情** | `options` 给了 `department_id`/`doctor_id`，但没有详情页可取（缺口 1/2） | ⇒ 分诊结果页**直接就地展示号源并允许挂号**，不做"科室详情"跳转 |
-| 14 | **没有 AI 流式分诊** | 分诊页不能做逐字输出 | 只有预问诊是 SSE；`POST /api/v1/triage` 是一次性 JSON（`http_app.cj:1157-1223` 无 stream 分支）。⇒ 分诊页用 loading 态即可 |
-| 15 | ~~**医生端任何接口都拿不到患者姓名**~~ **服务端已补齐 / 客户端已接**（2026-10-16，医生端同学复核 ★★★ 第 2 条） | 医生工作台左栏「给谁看病」、队列行、既往病历列表都只能显示「患者 #700001」 | 三条医生侧**读**接口已补 `patient_name` / `patient_gender`：`GET /doctor/visits`（§5.28.5）、`GET /doctor/visits/:id/record`（含空骨架，§6.2）、`GET /doctor/patients/:patientId/records`（§5.30.1）；医生端已解析并在队列（`VisitQueuePage`）、病历患者栏（`EmrEditPage`）展示（提交 `e0eeb58`）。⚠ 患者侧与 `/admin/dashboard` **仍然不给**（后者禁用词表里就有 `patient_name`） |
+| 1 | **没有 `GET /api/v1/appointments/:id` 单查**（按幂等键的反查 `GET /api/v1/appointments/by-token/:token` 见 §5.27） | 无法深链到单张挂号单；从推送直接打开详情做不到 | 列表是 `GET /api/v1/appointments`，单查只有 token 键。⇒ 详情页要么从列表点入带上完整对象、要么本地缓存；"结果未确认"场景用 §5.27 反查 |
+| 2 | **没有患者自助注册** | 无法做注册页 | 只有 `POST /api/v1/admin/users`（`http_base.cj` 文件头明确记录 patient CRUD 被刻意排除，PII / 个保法）。⇒ 患者账号必须由院内前台建 |
+| 3 | **没有患者改密 / 忘记密码** | 无法做"安全设置"页 | 只能找管理员走 `POST /api/v1/admin/users/:id/password`（会踢下线） |
+| 4 | **没有令牌刷新接口**（且不需要） | —— | 30 天 TTL + 服务端滑动续期（`auth_repo.cj:754-792`）。**不要去实现 `/auth/refresh`** |
+| 5 | **没有真正的分页** | 长列表无法"加载更多" | 只有 `limit`（超限**静默夹住**），无 `total` / `cursor` / `page`。⇒ 只能靠 `count == limit` 猜"可能还有更多"，并用 `work_date` 等条件把结果集收窄 |
+| 6 | **排班不做"未来过滤"** | 「今日可约」会混入历史排班 | `domain_booking.cj:311-326` 无时间条件。⇒ 客户端必须自己按 `work_date` 过滤。服务端的"今天"是 Asia/Shanghai（§5.25），与北京时间一致 |
+| 7 | **没有按名搜索科室/医生** | 无法做搜索框 | 只能按 `department_id` 精确过滤 |
+| 8 | **没有主动推送端点**（公告可读） | 消息中心 / 首页「医疗公告」 | `GET /api/v1/notices`（三端可读）+ 管理端 CRUD（§5.22/§5.23）；**到诊提醒这类主动推送没有** ⇒ 本地通知 + 本地保存的 `visit_date`/`period` |
+| 9 | **没有 `can_cancel` 这类"这单还能不能退"的判定字段** | 退号按钮置灰 | `bookingJson` 里只有 `status`；**服务端会拦**：非 `booked` 一律 409 `APPOINTMENT_NOT_CANCELLABLE`（§5.16/§8.2）。⇒ 置灰用 `status === 'booked'`，**并必须兜底 409**（列表快照会过期：医生随时可能点"开始接诊"） |
+| 10 | **分诊结果无法跳详情** | `options` 给了 `department_id`/`doctor_id`，但没有按 id 取详情的端点 | ⇒ 分诊结果页**直接就地展示号源并允许挂号**，不做"科室详情"跳转 |
+| 11 | **没有 AI 流式分诊** | 分诊页不能做逐字输出 | 只有预问诊是 SSE；`POST /api/v1/triage` 是一次性 JSON（`http_app.cj:1157-1223` 无 stream 分支）。⇒ 分诊页用 loading 态即可 |
 
 > 另有一条"半个缺口"：`GET /api/v1/previsit/:id` 能按 `session_id` 取单，但**没有"列出我的预问诊会话"**
 > 接口（`http_app.cj` 里只有 3 条 previsit 路由）⇒ 客户端必须自己持久化 `session_id`。
@@ -2110,13 +2061,11 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 ### 10.4 日期与"今天"的口径差异
 
 * 服务端 `hTodayDate()` 用 **Asia/Shanghai**（`HOSPITAL_TZ_OFFSET_SECONDS = 8 * 3600`，`http_app.cj`），返回 `YYYY-MM-DD`。
-  （本节 2026-10-12 之前写的是"用 UTC"，那已是**过时**描述；现口径见 §5.25。）
 * 客户端拼 `work_date` 用**本地时区** ⇒ 跨零点时服务端"今天"可能比本地**早一天**。
   现象：本地以为"今天的号"查不到（分诊的号源筛选用的是服务端的今天）。
-* ★ **2026-10-14 起服务端有接口返回"服务端的今天"**：`GET /health` 与 `GET /api/v1/health`
+* ★ **服务端有接口返回"服务端的今天"**：`GET /health` 与 `GET /api/v1/health`
   的响应带 `today`（`YYYY-MM-DD`）与 `timezone`（恒 `"Asia/Shanghai"`）。
-  ⇒ 客户端**直接读这个字段**当"今天"，不要再按设备时区自己算（跨端审计 F14）。
-  （▲ 本节此前写的"服务端没有任何接口返回服务端的今天（`/health` 不返回日期）"**已作废**。）
+  ⇒ 客户端**直接读这个字段**当"今天"，不要按设备时区自己算。
 * 建议：客户端做"今天之后"过滤时用 `/health` 的 `today`；并以**分诊返回的 `work_date`** 为权威来展示与排序；
   "当天号查不到"最终以分诊 `reason_code` 为准（`NO_BOOKABLE` = 真的没号）。
 
@@ -2136,17 +2085,17 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 
 ---
 
-## 11. 本仓文档口径提示（读别的文档前先读这段）
+## 11. 与其它文档的口径差异
 
-本仓库历史上存在多份交接文档（`server/README.md`、`docs/PHASE-HANDOFFS.md` 等），
-它们与实现存在若干出入。**以源码为准**。已发现的 7 条（已核到 `file:line`）：
+本仓库另有若干文档（`server/README.md` 等），其中个别说法与实现有出入。**以源码为准**。
+已核到 `file:line` 的差异：
 
 | # | 文档说法 | 实现事实 | 本文口径 |
 | --- | --- | --- | --- |
-| 1 | `server/README.md` 的启动示例用 `--port 8091` / `8443`，容易让人以为这是默认端口 | **默认端口已于 2026-10-17 改为 8091**（`main.cj:707`，原先 8080 与客户端不一致，评审 P2-15）；`8443` 只是 TLS 启动参数约定 | §1、§2.2 明确写"默认 8091；8443 只是约定" |
+| 1 | `server/README.md` 的启动示例用 `--port 8091` / `8443`，容易让人以为 `8443` 也是默认端口 | **默认端口是 8091**（`main.cj:707`）；`8443` 只是 TLS 启动参数约定 | §1、§2.2 明确写"默认 8091；8443 只是约定" |
 | 2 | 一般文档措辞会让人以为"患者可搜知识库" | `GET /api/v1/kb/search` 需要 `query_knowledge_base`（admin\|doctor）⇒ **患者 403**（`http_app.cj:206-218` 有明确设计说明） | §6.3 |
-| 3 | `docs/PHASE-HANDOFFS.md`（P4）未提 `record/reopen` 的实际鉴权 | 原为 `http_p4.cj:363` 借 `requireCan(p.role, Action.ManageSchedule)`；**2026-10-15（改进 3）改为语义动作 `Action.ManageRecordRevision`**（`http_p4.cj:822`）⇒ **reopen 仍是管理员动作、医生仍 403**（授权结果不变，只是动作名不再含混） | §6.2、§5.29.7 |
-| 4 | 登录响应里的 `patient_id` 容易被读成"患者 id" | **2026-10-18 起按角色给值**：只有患者回 `ref_id`，其它角色回 `0`（`http_app.cj:1272-1276`）⇒ 与 `/auth/me` 口径一致 | §4.2（含实测） |
+| 3 | 容易以为 `record/reopen` 的口径含混 | 鉴权是语义动作 `Action.ManageRecordRevision`（`http_p4.cj:822`）⇒ **reopen 是管理员动作、医生 403** | §6.2、§5.29.7 |
+| 4 | 登录响应里的 `patient_id` 容易被读成"患者 id" | **按角色给值**：只有患者回 `ref_id`，其它角色回 `0`（`http_app.cj:1272-1276`）⇒ 与 `/auth/me` 口径一致 | §4.2（含实测） |
 | 5 | 错误码表里可能登记着 `AUTH_TOKEN_INVALID` | **`apiErrorSpec` 里没有这个码**（`http_common.cj:55-197`）：令牌无效/过期一律 `AUTH_TOKEN_EXPIRED` 401，message「令牌无效或已过期，请重新登录」（`http_app.cj:313-316`） | §14.1 只列实现里真实存在的码 |
 | 6 | 文档写"连续失败 5 次后锁定"，容易被读成"第 6 次才 429" | 实现在 `recordFailure` 之后判 `fail_count >= 5` ⇒ **第 5 次失败就返回 429**（`auth_repo.cj:381-386`）。实测确认 | §4.2 |
 | 7 | 错误码表里登记着 409 `SLOT_NOT_RESTORED` | 该码在当前实现路径中**不会被抛出**（**死条目**）：归还失败走的是 **200 + `warning`**（`http_app.cj:2735` 的 `warning` 分支）。`apiErrorSpec` 里有它，但没有任何 handler 抛它 | §14.1 标"死条目"；§5.16 写清实际形态 |
@@ -2158,14 +2107,14 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 
 ---
 
-## 12. 附：本机端到端实测记录
+## 12. 附：本机端到端验证
 
-> **以下为 2026-10-11 实测**，服务端 `hospital-server.exe` 跑在 `127.0.0.1:8091`，
+> 服务端 `hospital-server.exe` 跑在 `127.0.0.1:8091`，
 > 库为 `hospital_test@127.0.0.1:3317`。脚本在 `server/tests/`，**可复现**。
-> ⚠ 诚实标注：既有 5 个测试脚本**全绿**（`auth-check` / `triage-check` / `previsit-check` /
+> ⚠ 覆盖范围：既有 5 个测试脚本**全绿**（`auth-check` / `triage-check` / `previsit-check` /
 > `stress-booking` / `rate-limit-check`，合计 25 + 24 + 86 + 8 + 16 项断言）；
-> 而**手工裸探测**只完成 `health` / `login` / `429` 三项。
-> **SSE 原始字节、answer 空值语义、挂号幂等与退号 token 复用**这三条是由**既有脚本断言**覆盖的，
+> **手工裸探测**覆盖 `health` / `login` / `429` 三项。
+> **SSE 原始字节、answer 空值语义、挂号幂等与退号 token 复用**这三条由**脚本断言**覆盖，
 > **没有独立的手工原始字节证据** —— 不要把它读成"全部手工验证过"。
 
 ### 12.1 `GET /health` 原始返回
@@ -2175,10 +2124,8 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 ```
 
 * 平铺、**无信封**；`/api/v1/health` 是**同一份实现**的别名（见 §5.19）。
-  ▲ 本节此前写的"实测 `GET /api/v1/health` → 404"是 **2026-10-12 之前**的记录，**已作废**
-  （2026-10-14 由 `tests\health-check.ps1` 实测两个路径均为 200 且字段一致）。
-* ★ **2026-10-17 起多一个 `db` 块，且 `ok` 变成"进程活着且库通"**：库不通 → **503** + `ok:false` + `db.ok:false`。
-  实测见 `server/tests/health-check.ps1`（拔库 → 503，恢复后自动重连且 `reconnects` 递增；原复验记录已按文档整理移出仓库）。
+* ★ 响应带 `db` 块，`ok` 是"进程活着**且**库通"：库不通 → **503** + `ok:false` + `db.ok:false`。
+  见 `server/tests/health-check.ps1`（拔库 → 503，恢复后自动重连且 `reconnects` 递增）。
 * 是普通 `content-length` JSON，**不是 chunked**（只有 `/previsit/stream` 是 chunked）。
 * ★ `today` 的口径由脚本钉住：`tests\health-check.ps1` 断言它等于 **UTC+8 当天**（不是设备本地日期）。
 
@@ -2188,12 +2135,12 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
   ★ 与契约核对：一致（`http_app.cj` 抛 `AUTH_REQUIRED`，message「缺少 Authorization: Bearer \<token\>」）。
 * 错误口令 → 401；**账号不存在 → 同一个错误码**（防枚举）；计时比 **1.24**（< 2 判为防枚举成立）。
 * 乱令牌 → 401（`AUTH_TOKEN_EXPIRED`）。
-* ★ **`/auth/me` 回报 `expires_at`，且与登录响应一致、在未来**（2026-10-14 新增，跨端审计 F11）。
+* ★ **`/auth/me` 回报 `expires_at`，且与登录响应一致、在未来**。
 * 管理员重置口令后**旧令牌立即失效 → 401**；旧口令登录失败 → 401；新口令登录成功 → 200。
 * 登出 → 200；**登出后同一令牌 → 401**。
 * 患者建排班 / 建账号 → **403 `FORBIDDEN_ROLE`**；患者查排班**不是 403**（有则 200 / 无则 404）。
 * 不存在的账号查 `/admin/users` → 404 `USER_NOT_FOUND`。
-* ★ **账号列表模式（`/admin/users` 不带 `login_name`）**（2026-10-14 新增，管理台用）：
+* ★ **账号列表模式（`/admin/users` 不带 `login_name`）**（管理台用）：
   回 `{items,count,total,limit,offset}`；`role=admin` / `status=active` 能筛；**白名单外的 `role`/`status`
   当"不筛"**（不是 400，也不是空列表）；`limit` 越界回**默认 50**（与"非法值回默认"同一容错口径）；
   ★ 列表项**不含 `pw_hash` / `pw_salt`**（"列表被整页导出"是最常见的泄露路径）。
@@ -2216,17 +2163,17 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 * `source=rules`。
 * **1200 字主诉 → 200 且 `truncated=true`**（不是 500）。
 * ★ **600 字主诉 + 末尾「胸痛」→ 仍 `red_flag=true` / `RED_FLAG` / `count=0`**：截断发生在常规检索与模型输入，
-  **不发生在危急检测**（2026-10-14 新增，跨端审计 F01；用例先断言 `truncated=true`，避免"没触发截断"让断言白过）。
+  **不发生在危急检测**（用例先断言 `truncated=true`，避免"没触发截断"让断言白过）。
 
-### 12.8 `health-check.ps1`（15 项，2026-10-14 新增）
+### 12.8 `health-check.ps1`（15 项）
 
 * 两个路径（`/health`、`/api/v1/health`）**都不需要令牌**且均 200；两路径的 `today`/`timezone`/`version` 一致。
 * 响应形状：`ok/service/version/data_backend/dev_auth` 齐备，且**不含** `password|secret|dsn|token` 字样（它是不鉴权接口）。
-* ★★ `today` 等于 **UTC+8 当天**、`timezone` 恒 `Asia/Shanghai`（跨端审计 F14 的回归护栏）。
+* ★★ `today` 等于 **UTC+8 当天**、`timezone` 恒 `Asia/Shanghai`（跨端时区口径的回归护栏）。
 
-### 12.9 `ai-model-check.ps1`（45 项，2026-10-14 新增）
+### 12.9 `ai-model-check.ps1`（45 项）
 
-`server/tests/ai-model-check.ps1`，专门守 §5.26 的三组新接口 + 一个漏洞修复。夹具前缀
+`server/tests/ai-model-check.ps1`，守 §5.26 的三组接口与两道写入闸门。夹具前缀
 `AI-MODEL-CHK-<8hex>`，跑完自动清理（库里不留行）。
 
 * **鉴权**：无令牌 401 `AUTH_REQUIRED`；患者令牌 403 `FORBIDDEN_ROLE`。
@@ -2240,15 +2187,14 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 * **默认行唯一**：把探针行设为默认后，同类型只剩它一个 `is_default`。
 * ★ **`in_use`**：把默认行停用（或删除）后，`defaultOf()` 会退到该类型第一条启用行 ⇒ 此时
   列表里**没有任何行 `is_default=true`，但必有一行 `in_use=true`**（否则页面会出现"AI 在用哪条"不可见）。
-  这条断言是本轮唯一"测试先红、随后改了产品"的地方。
 * **连通性测试**：无密钥时仍 **200** 且 `probe.ok=false`、`reason` 是脱敏后的中文原因；
   `ai.enabled=false` 时**照样能测**（排查配置不该被总开关挡住）。
 * **缓存失效**：直连 MySQL 改行后 `GET` 仍回旧值（5 秒 TTL 内），`POST /invalidate` 之后立即回新值。
 * **settings 登记表闸门**：`PUT /api/v1/admin/ai/settings/prompt.dept` ⇒ 400 且消息指路
-  Prompt/工具专用端点，并断言**库里没留下这一行**（漏洞修的是"能绕过去落库"）。
+  Prompt/工具专用端点，并断言**库里没留下这一行**。
 * **删除**：`DELETE` 回 `{id,deleted:true}`，再删 404 `AI_MODEL_NOT_FOUND`。
 
-### 12.10 `admin-web-smoke.mjs`（11 页，2026-10-14 新增）
+### 12.10 `admin-web-smoke.mjs`（11 页）
 
 `server/tests/admin-web-smoke.mjs`：无头 Edge + CDP（Node 24 自带 `WebSocket`，无第三方依赖）。
 以 `--headless=new --remote-debugging-port=9333` 启浏览器 → 真实登录并写入
@@ -2261,11 +2207,11 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 & $env:NODE tests\admin-web-smoke.mjs --base http://127.0.0.1:8091 --admin admin --pw <口令> --out <截图目录>
 ```
 
-实测：`ok=true, footNoteOk=true, consoleErrors=0, exceptions=0, badResponses=0, navItems=14`，
+结果：`ok=true, footNoteOk=true, consoleErrors=0, exceptions=0, badResponses=0, navItems=14`，
 页脚 `服务端 hospital-server 0.2.0-p1 · 数据后端 mysql · 今天 2026-10-14（Asia/Shanghai）`。
-它抓到过两个**只有截图能看见**的真 bug：① `/health` 是唯一平铺返回（无 `data` 信封），
-`API.get('/health')` 曾返回 `undefined` ⇒ 看板显示「加载失败」但**控制台无报错**；
-② `/favicon.ico` 404。两者都已修，脚本会忽略浏览器自动请求的 `favicon.ico`。 
+它覆盖两个**只有截图能看见**的问题：① `/health` 是唯一平铺返回（无 `data` 信封），
+`API.get('/health')` 若返回 `undefined` ⇒ 看板显示「加载失败」但**控制台无报错**；
+② `/favicon.ico` 404（脚本忽略浏览器自动请求的 `favicon.ico`）。
 
 ### 12.5 `previsit-check.ps1`（86 项，含 SSE）
 
@@ -2282,14 +2228,14 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 
 * 20 并发抢 20 个号 → **201 × 20**；`remain_num = 0`；有效挂号单 **20**；余量守恒；**无超卖、无 5xx**。
 
-### 12.7 未覆盖（如实标注）
+### 12.7 未覆盖
 
 | 主题 | 状态 |
 | --- | --- |
 | SSE **原始字节**逐字节核对（`\n\n` 的字节序列、汉字跨 chunk 切分） | **由脚本断言覆盖**（帧计数 + 每帧 1 行 + 空行分隔），**无独立手工原始字节证据** |
 | `POST /previsit/answer` **空值语义**（空串不落库、不推进 `turn`） | **由脚本断言覆盖**，无独立手工证据（源码 `previsit.cj:451-460`） |
 | 挂号**幂等重放**与**退号后 token 复用** | **由脚本断言覆盖**（`stress-booking` 的重复提交用例、`p1-extra-check` 的退号用例），无独立手工证据 |
-| §3.2 的"非法 JSON 平铺 400"与"未知路径平铺 404"（**当时**的形状） | 2026-10-11 为**源码级**确认（`bodyparser.cj:50-54`、`router.cj:202-212`），未在本次实测中手工复现。★ **2026-10-17 后续结论**：两种都已是统一信封（平铺体作废），并已由真机实测覆盖 —— 见 §3.2 的「改前 → 改后对照表」 |
+| §3.2 的"非法 JSON 400"与"未知路径 404" | 两种都是统一信封；**源码级**确认（`bodyparser.cj:50-54`、`router.cj:202-212`），并经真机实测覆盖 |
 | §3.5 的"非法 JSON 的 400 不带 CORS 头" | **源码级**推理（`bodyParser` 在 `cors()` 之前短路），**未实测** |
 
 ---
@@ -2314,11 +2260,10 @@ curl -s http://127.0.0.1:8091/api/v1/auth/me -H "Authorization: Bearer <token>"
 curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer <token>"
 ```
 
-### 13.2 三个"后人必踩"的工具坑
+### 13.2 三个工具坑
 
 1. **PowerShell 里把含双引号的 JSON 直接交给 `curl.exe` 会被剥引号** ⇒ 服务端回
-   `{"ok":false,"error":{"code":"VALIDATION_FAILED","message":"请求体不是合法 JSON"}}`（就是 §3.2 的形状 2；
-   2026-10-17 之前这里是平铺 `{"code":400,"message":"Invalid JSON body","data":null}`）。
+   `{"ok":false,"error":{"code":"VALIDATION_FAILED","message":"请求体不是合法 JSON"}}`（§3.2 的形状 2）。
    必须写进文件再 `--data-binary "@文件"`，或干脆用 `Invoke-RestMethod -Body (@{…} | ConvertTo-Json -Compress)`。
 2. **PowerShell 的数组 splat `@a` 是位置传参**，**不能**用来传 `-Base` / `-Dsn` / `-AdminPw` 这类**命名**参数。
    要传命名参数请用**哈希表** splat `@params`（`$params = @{ Base = …; Dsn = … }`）。
@@ -2338,23 +2283,23 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 | 401 | `AUTH_TOKEN_EXPIRED` | 登录已过期，请重新登录 | ✅（令牌无效**或**过期；message 会被覆盖成「令牌无效或已过期，请重新登录」`http_app.cj:314-315`） |
 | 429 | `AUTH_RATE_LIMITED` | 登录失败次数过多，请稍后再试 | ✅（登录，带 `retry-after`） |
 | 403 | `FORBIDDEN_ROLE` | 当前角色无权执行此操作 | ✅（用非患者账号登了患者端；退别人的单） |
-| 400 | `VALIDATION_FAILED` | 参数校验失败（**具体原因在 `error.message`**）；**`413` 请求体过大也用这个 code**，message 是「请求体过大，超出服务端允许的上限」（§3.2 形状 6，2026-10-17 起） | ✅ |
+| 400 | `VALIDATION_FAILED` | 参数校验失败（**具体原因在 `error.message`**）；**`413` 请求体过大也用这个 code**，message 是「请求体过大，超出服务端允许的上限」（§3.2 形状 6） | ✅ |
 | 404 | `SCHEDULE_NOT_FOUND` | 排班不存在或已停诊 | ✅ |
 | 409 | `SLOT_GONE` | 号源已被抢完，请选择其它排班 | ✅ |
 | 409 | `SCHEDULE_EXISTS` | 同一科室/医生/日期/时段已有排班（`http_common.cj:97`，管理端建排班） | ❌（管理端） |
 | 404 | `APPOINTMENT_NOT_FOUND` | 挂号单不存在 | ✅ |
-| 409 | `APPOINTMENT_NOT_CANCELLABLE` | 该挂号单当前状态不允许退号（只有「已挂号」可以退）—— **`message` 实际带中文状态名**，如「该挂号单当前状态为「接诊中」，不能退号」（2026-10-12 新增，§5.16/§8.2） | ✅ |
+| 409 | `APPOINTMENT_NOT_CANCELLABLE` | 该挂号单当前状态不允许退号（只有「已挂号」可以退）—— **`message` 实际带中文状态名**，如「该挂号单当前状态为「接诊中」，不能退号」（§5.16/§8.2） | ✅ |
 | 404 | `PREVISIT_NOT_FOUND` | 预问诊会话不存在或已失效 | ✅ |
 | 404 | `EMR_NOT_FOUND` | 病历不存在或尚未提交 | ✅ |
-| 404 | `REVISION_NOT_FOUND` | 病历没有这一版修订（`GET …/record/revisions/:version` 与 `diff` 的 `against`；2026-10-15 新增，§5.29） | ❌（医生端） |
+| 404 | `REVISION_NOT_FOUND` | 病历没有这一版修订（`GET …/record/revisions/:version` 与 `diff` 的 `against`；§5.29） | ❌（医生端） |
 | 409 | `EMR_LOCKED` | 病历已提交锁定，不可修改（需管理员解锁） | ❌（医生端） |
-| 409 | `EMR_CHANGED` | 病历已被他人修改（乐观锁：请求里的 `expected_updated_at` 不是当前版本）—— **`error.fields` 带 `{updated_at, updated_by, record_id}`**（2026-10-15 起真的会带，§5.30.2） | ❌（医生端） |
+| 409 | `EMR_CHANGED` | 病历已被他人修改（乐观锁：请求里的 `expected_updated_at` 不是当前版本）—— **`error.fields` 带 `{updated_at, updated_by, record_id}`**（§5.30.2） | ❌（医生端） |
 | 409 | `EMR_NOT_LOCKED` | 完成就诊前必须先提交锁定病历 | ❌（医生端） |
 | 409 | `VISIT_BAD_STATE` | 当前就诊状态不允许该操作 | ❌（医生端） |
-| 409 | `VISIT_DATE_FUTURE` | 该号的就诊日还没到，不能到院登记或接诊（`http_common.cj:225`；2026-10-20 新增的服务端硬门槛） | ❌（医生端） |
-| 404 | `ROUTE_NOT_FOUND` | 接口不存在 / **静态资源不存在**（**同一个 code**，靠 `message` 区分） | ✅（**2026-10-15 起真的会被抛**：兜底中间件把未匹配的 `/api/v1/**` 改写成它，`http_app.cj:3054-3057`；2026-10-17 起静态层未命中也是它；旧版"实现里未见"的说法已作废） |
-| 405 | `METHOD_NOT_ALLOWED` | Method Not Allowed（允许的方法：GET）—— **`allow` 在响应头，体里没有 `allow` 字段**（2026-10-17 新增，§3.2 形状 5） | ✅（HTTP 方法用错） |
-| 416 | `RANGE_NOT_SATISFIABLE` | Range 请求超出文件大小（带 `content-range: bytes */<文件大小>`；2026-10-17 新增，§3.2 形状 7） | ❌（静态层断点续传路径） |
+| 409 | `VISIT_DATE_FUTURE` | 该号的就诊日还没到，不能到院登记或接诊（`http_common.cj:225`；服务端硬门槛） | ❌（医生端） |
+| 404 | `ROUTE_NOT_FOUND` | 接口不存在 / **静态资源不存在**（**同一个 code**，靠 `message` 区分） | ✅（兜底中间件把未匹配的 `/api/v1/**` 与静态层未命中都改写成它，`http_app.cj:3054-3057`） |
+| 405 | `METHOD_NOT_ALLOWED` | Method Not Allowed（允许的方法：GET）—— **`allow` 在响应头，体里没有 `allow` 字段**（§3.2 形状 5） | ✅（HTTP 方法用错） |
+| 416 | `RANGE_NOT_SATISFIABLE` | Range 请求超出文件大小（带 `content-range: bytes */<文件大小>`；§3.2 形状 7） | ❌（静态层断点续传路径） |
 | 409 | `SLOT_NOT_RESTORED` | 已退号，但号源归还异常，请联系人工处理 | ❌ **死条目**：登记在表里但当前实现路径**不抛**（归还失败走 200 + `warning`，`http_app.cj:2735`） |
 | 404 | `USER_NOT_FOUND` | 账号不存在 | ❌（管理端） |
 | 409 | `USER_EXISTS` | 登录名已存在 | ❌（管理端） |
@@ -2366,18 +2311,18 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 | 409 | `BASE_IN_USE` | 该记录正被引用，不能删除 | ❌（管理端） |
 | 404 | `KB_DOC_NOT_FOUND` | 知识库文档不存在 | ❌（管理端） |
 | 409 | `KB_TITLE_TAKEN` | 已存在同名知识库文档 | ❌（管理端） |
-| 404 | `AI_MODEL_NOT_FOUND` | 模型配置不存在（2026-10-14 新增，§5.26） | ❌（管理端） |
-| 409 | `AI_MODEL_NAME_TAKEN` | 同名模型配置已存在（2026-10-14 新增，§5.26） | ❌（管理端） |
-| 409 | `SCHEDULE_CONFLICT` | 该排班已被他人修改，请刷新后重试（`message` 实际带双方 `version`；2026-10-14 新增，§5.26③） | ❌（管理端） |
+| 404 | `AI_MODEL_NOT_FOUND` | 模型配置不存在（§5.26） | ❌（管理端） |
+| 409 | `AI_MODEL_NAME_TAKEN` | 同名模型配置已存在（§5.26） | ❌（管理端） |
+| 409 | `SCHEDULE_CONFLICT` | 该排班已被他人修改，请刷新后重试（`message` 实际带双方 `version`；§5.26③） | ❌（管理端） |
 | 500 | *（任何未登记码，含 `INTERNAL` / `INTERNAL_ERROR` / `KB_WRITE_FAILED`）* | 服务器内部错误 | ✅（兜底） |
 
 > ⚠ **不存在** `AUTH_TOKEN_INVALID` 这个码（见 §11 第 5 条）。
-> ⚠ **2026-10-17 更新**：框架/静态层不再输出"非本表形状"—— 下列各条的**主体都是统一信封**，
+> ⚠ 框架/静态层也输出**本表形状**：下列各条的**主体都是统一信封**，只是触发点在框架层：
 > 只是触发点在框架层：
 > **400 `VALIDATION_FAILED`**（请求体不是合法 JSON）、**404 `ROUTE_NOT_FOUND`**（`静态资源不存在`，
 > **只有静态路径** `/admin/**`）、**405 `METHOD_NOT_ALLOWED`**（`allow` 在**响应头**）、
 > **413 `VALIDATION_FAILED`**（body 超 64 KiB / 1 MiB）、**416 `RANGE_NOT_SATISFIABLE`**（Range 超出文件大小）。
-> `METHOD_NOT_ALLOWED` / `RANGE_NOT_SATISFIABLE` 已登记进本表（`http_common.cj:163-168`）。
+> `METHOD_NOT_ALLOWED` / `RANGE_NOT_SATISFIABLE` 登记在本表（`http_common.cj:163-168`）。
 > ⚠ **例外是 408**：handler 超时且未写响应时，`timeout(15000)` 补的是**纯文本** `Request Timeout`
 > （`timeout.cj:46-48`）—— 既不是信封、也不在本表，客户端按网络层失败处理。
 > ⚠ **API 路径未匹配与静态未命中是同一个 code** `ROUTE_NOT_FOUND`，只能靠 `message` 区分（§3.2 形状 3 / 4）。
@@ -2412,7 +2357,7 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 
 **`role`**（`http_app.cj:49-55`）：`patient` | `doctor` | `admin`
 
-**`appointment.status`**（`domain_emr.cj` 的 `visitTransitionAllowed`，★ 2026-10-15 改进 6 起为**七态**）：
+**`appointment.status`**（`domain_emr.cj` 的 `visitTransitionAllowed`，**七态**）：
 
 | 值 | 含义 | 可流转到 |
 | --- | --- | --- |
@@ -2449,7 +2394,7 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 ### 14.4 响应示例汇总（可直接做 mock）
 
 ```jsonc
-// GET /health（平铺，无 data 包装；2026-10-17 起含 db 块，库不通 → 503 + ok:false）
+// GET /health（平铺，无 data 包装；含 db 块，库不通 → 503 + ok:false）
 { "ok": true, "service": "hospital-server", "version": "0.2.0-p1",
   "data_backend": "mysql", "dev_auth": false,
   "today": "2026-10-14", "timezone": "Asia/Shanghai",
@@ -2511,10 +2456,10 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 // 业务错误
 { "ok": false, "error": { "code": "SLOT_GONE", "message": "号源已被抢完，请选择其它排班" } }
 
-// 框架层：请求体不是合法 JSON（2026-10-17 起走信封）
+// 框架层：请求体不是合法 JSON（走信封）
 { "ok": false, "error": { "code": "VALIDATION_FAILED", "message": "请求体不是合法 JSON" } }
 
-// 框架层：路径不匹配（2026-10-17 起走信封，不再回显 path）
+// 框架层：路径不匹配（走信封，不回显 path）
 { "ok": false, "error": { "code": "ROUTE_NOT_FOUND", "message": "接口不存在：GET /api/v1/aprpointments" } }
 ```
 
@@ -2530,7 +2475,6 @@ base        http://127.0.0.1:8091                     （就是服务端默认�
 失败        {"ok":false,"error":{code,message,fields?}}
 框架失败    同上（信封）—— 非法 JSON 400 VALIDATION_FAILED / 静态 404 ROUTE_NOT_FOUND /
             405 METHOD_NOT_ALLOWED（allow 在响应头）/ 413 VALIDATION_FAILED / 416 RANGE_NOT_SATISFIABLE
-            （2026-10-17 起；此前的平铺体 {"code":400,…} / {"error":"Not Found"} 已作废）
 SSE         data: {"event":"meta|delta|done","data":{…}}\n\n  严格按 \n\n 分帧、整段解码
 挂号        client_token 幂等键：重放 → 200，首次 → 201；换号源 = 换 token
 退号        永远 200，成功看 data.status==='cancelled'；slot_restored:false 要提示 warning
@@ -2544,4 +2488,4 @@ SSE         data: {"event":"meta|delta|done","data":{…}}\n\n  严格按 \n\n �
 
 ---
 
-**文档结束。** 任何与 `server/src/*.cj` 冲突之处，以源码为准；本文标注「未实测」的条目请在联调时确认后再据以编码。
+**文档结束。** 任何与 `server/src/*.cj` 冲突之处，以源码为准；标为「源码级」或「未覆盖」的条目（见 §12.7）请在联调时确认后再据以编码。

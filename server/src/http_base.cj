@@ -27,7 +27,7 @@ import std.time.*
  *
  * `patient` 存的是**敏感个人信息**（brief §9 R-4：需个保法合规、实名、留存策略）。
  * 给患者开管理端 CRUD 是**合规决策**而非工程便利 ⇒ **不在本次范围**，
- * 也没有顺手加进来。已写进 docs/PHASE-HANDOFFS.md 的遗留表。
+ * 也没有顺手加进来。属后续范围。
  *
  * ## 端点一览（全部仅管理员：`Action.ManageBaseData`）
  *
