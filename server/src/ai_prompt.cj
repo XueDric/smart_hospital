@@ -64,9 +64,21 @@ public class PromptSlot {
 public let PROMPT_DEPT: String = "dept"
 public let PROMPT_PREVISIT: String = "previsit"
 public let PROMPT_REDFLAG: String = "redflag"
+/*
+ * ★ 2026-10-21（评估报告 P0-2）：新增 `triage` 槽位。
+ *
+ * 在此之前，分诊给模型的 Prompt **整段硬编码**在 `ai_triage.cj` 里，
+ * 而管理台的「AI 能力中心 · Prompt 模板」页只登记了 dept/previsit/redflag ——
+ * 结果是那一页对分诊**没有任何作用**（改了不起作用，等于展示品）。
+ *
+ * ⚠ 边界：库里的模板只决定"任务描述"那一段；
+ *   **安全尾段（不下诊断/不提药名/≤80 字/纯文本）由代码固定拼在后面，
+ *   不允许被模板覆盖** —— 安全不变量不能交给可编辑的文本。
+ */
+public let PROMPT_TRIAGE: String = "triage"
 
 /*
- * 三处 Prompt 的登记表。
+ * 四处 Prompt 的登记表（2026-10-21 起加了 `triage`，与 `ai_triage.cj` 真接线）。
  *
  * ⚠ 每一项都对应**本项目已有的一处真实逻辑**，不是凭空造的：
  *   · `dept`     ↔ `guessDepartment()`（关键词规则做的科室判定）
@@ -92,6 +104,15 @@ public func promptSlots(): Array<PromptSlot> {
         PromptSlot(PROMPT_REDFLAG,
                    "危急征象辅助识别（⚠ 只是辅助；真正的保险丝是纯规则）",
                    ["{主诉}"],
+                   2000),
+        /*
+         * 分诊患者说明：把**规则已经判定好**的科室转述成患者能读的一两句。
+         * ⚠ 必需占位符只认 `{主诉}` 与 `{科室}`：模型在这里**没有**选科室的权力，
+         *   所以模板里不该出现"你可以推荐哪些科室"这种洞。
+         */
+        PromptSlot(PROMPT_TRIAGE,
+                   "分诊患者说明：把系统判定转写成患者能读的一两句",
+                   ["{主诉}", "{科室}"],
                    2000)
     ]
 }
@@ -155,6 +176,15 @@ public func promptDefaultBody(name: String): String {
     if (name == PROMPT_REDFLAG) {
         return "请判断下面主诉里是否出现需要立即就医的危急征象：{主诉}\n" +
                "只输出 {\"red_flag\":true/false,\"hit\":\"命中的表述\"}。"
+    }
+    /*
+     * ⚠ 这里只写**任务**，不写安全规则：安全尾段由 `aiTriagePromptWith()` 用代码拼，
+     *   哪怕管理员把模板改成"给我推荐三个科室"，也改不掉那四条约束。
+     */
+    if (name == PROMPT_TRIAGE) {
+        return "你是医院导诊助手。患者主诉：{主诉}\n" +
+               "系统已按规则判定应去：{科室}\n" +
+               "请用一到两句中文向患者说明：为什么会建议去这个科室、就诊前可以准备什么。"
     }
     return ""
 }

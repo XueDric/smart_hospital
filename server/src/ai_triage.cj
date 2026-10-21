@@ -249,7 +249,13 @@ public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
      *   ⚠ `ragHits` 为空时 Prompt **完全不变**（不加空的"参考资料"段：
      *     那会诱导模型自己编参考资料）。
      */
-    let prompt = aiTriagePrompt(complaint, v, ragHits: ragHits)
+    /*
+     * ★ 2026-10-21（评估报告 P0-2）：模板改成**从库里取**（管理台「Prompt 模板」页真接线）。
+     *   `aiTriageTemplateOf()` 读不到就返回空串 ⇒ 退回代码里的默认模板，
+     *   所以**数据库不可用时分诊仍然按老样子跑**（不会因为取配置失败而丢 AI 增强）。
+     */
+    let template = aiTriageTemplateOf(aiSettings, now)
+    let prompt = aiTriagePromptWith(complaint, v, template, ragHits: ragHits)
     let remaining = if (deadlineMs > 0) {
         deadlineMs - DateTime.now().toUnixTimeStamp().toMilliseconds()
     } else { TRIAGE_ENHANCEMENT_BUDGET_MS }
@@ -287,17 +293,74 @@ public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
     v.aiDegradeReason = "CALL_FAILED"
 }
 
-/* 组给模型的 Prompt（只含规则已判定的事实 + 可选的知识库片段）。 */
-public func aiTriagePrompt(complaint: String, v: TriageVerdict,
-                           ragHits!: Array<KbHit> = Array<KbHit>()): String {
-    var deptHint = ""
+/*
+ * 取库里配的分诊模板（`prompt.triage`）。
+ *
+ * ⚠ 返回**空串**表示"用代码里的默认模板"，两种情况都走它：
+ *   ① 库里没有这一行（`PromptRepo.body()` 自己也会回退默认值，这里只是双保险）；
+ *   ② 读配置/读库抛异常（DB 挂了不能让分诊跟着挂 —— 分诊是患者主路径）。
+ */
+func aiTriageTemplateOf(aiSettings: AiSettingsRepo, now: Int64): String {
+    try {
+        let repo = PromptRepo(aiSettings)
+        return repo.body(PROMPT_TRIAGE, now)
+    } catch (e: Exception) {
+        return ""
+    }
+}
+
+/*
+ * 模板渲染：把 `{主诉}` / `{科室}` / `{红牌}` 换成实际值。
+ *
+ * ⚠ 占位符语义必须与 `promptSlots()` 里 `PromptSlot.required` 登记的一致 ——
+ *   那边是**写入时的契约**（缺了不让存），这里是**运行时的兑现**。两处一起改才安全。
+ */
+func aiTriageRenderTemplate(template: String, complaint: String, v: TriageVerdict): String {
+    var deptHint = "（未判定）"
     if (v.options.size > 0) {
         deptHint = v.options[0].departmentName
     }
-    var b = "患者主诉：${complaint}\n"
-    if (deptHint.size > 0) {
-        b = b + "系统已按规则判定应去：${deptHint}\n"
+    var b = template.replace("{主诉}", complaint)
+    b = b.replace("{科室}", deptHint)
+    /*
+     * `{红牌}` 目前**不会出现在发给模型的 Prompt 里**（红牌在 `aiEnhanceTriage()`
+     * 开头就旁路了，根本不调模型）；留着是为了让模板作者能写出"若是危急则…"的
+     * 分情形措辞，并且将来若放开红牌增强不必再改这里。
+     */
+    let flagText = if (v.redFlag) { "是" } else { "否" }
+    b = b.replace("{红牌}", flagText)
+    return b
+}
+
+/* 组给模型的 Prompt（旧签名：用代码里的默认模板）。 */
+public func aiTriagePrompt(complaint: String, v: TriageVerdict,
+                           ragHits!: Array<KbHit> = Array<KbHit>()): String {
+    return aiTriagePromptWith(complaint, v, "", ragHits: ragHits)
+}
+
+/*
+ * 组给模型的 Prompt：**任务段来自模板（可配）+ 参考资料段 + 安全尾段（不可配）**。
+ *
+ * ⚠⚠ 这里的分层是本次接线的**核心不变量**，改动前先读：
+ *
+ *   ① **任务段**：`template`（管理台可编辑）。只描述"要模型干什么"。
+ *   ② **参考资料段**：知识库检索片段（`aiRagContext()` 已清理限长）。
+ *      ⚠ 为空则**整段不加**（留空的"参考资料："会诱导模型自己编）。
+ *   ③ **安全尾段**：**写在代码里**，模板改不掉。
+ *      为什么不让它可配：模板是运维能改的数据，而"不下诊断、不提药名、≤80 字、
+ *      不复述系统判定"这几条是**免责与可用性的底线**。让底线跟着数据走，
+ *      一次误编辑就会把线上变成"模型给患者开药"。所以它必须是代码。
+ *
+ *   规则判定的科室只作为**事实**出现在任务段里（`{科室}`），
+ *   模型的输出仅用于措辞，`options` 始终由规则决定（见 `acceptance_kb.cj` ⑥⑧）。
+ */
+public func aiTriagePromptWith(complaint: String, v: TriageVerdict, template: String,
+                               ragHits!: Array<KbHit> = Array<KbHit>()): String {
+    var head = template
+    if (head.trimAscii().size == 0) {
+        head = promptDefaultBody(PROMPT_TRIAGE)
     }
+    var b = aiTriageRenderTemplate(head, complaint, v)
     /*
      * ★ P5：参考资料段。
      *
@@ -318,8 +381,7 @@ public func aiTriagePrompt(complaint: String, v: TriageVerdict,
     if (rag.size > 0) {
         b = b + "\n参考资料（供措辞参考；**不要去哪个科室以系统判定为准**）：\n" + rag + "\n"
     }
-    b = b + "\n请用**一到两句**中文向患者说明：为什么会建议去这个科室、就诊前可以准备什么。\n" +
-        "要求：\n" +
+    b = b + "\n要求：\n" +
         "· 不要下诊断、不要提任何药名或剂量、不要承诺疗效；\n" +
         "· 纯文本，不要 Markdown 标记；\n" +
         "· 不超过 80 字；\n" +

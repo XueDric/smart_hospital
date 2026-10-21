@@ -11,7 +11,7 @@
 | 阶段 | 主题 | 交付要点（≤40 字） | 验收方式与结果 | 遗留项数 |
 | --- | --- | --- | --- | --- |
 | P0 | 立项与骨架 | ADR-0001、build.ps1、schema.cj、锁号原子自减、验收套件 | `selftest`（无需库）+ `accept <dsn>` 当时「通过 32 项，失败 0 项」；变异 1 项被抓 | 5（全部移交 P1） |
-| P1 | 挂号闭环 + 鉴权 + HTTPS | 4 个挂号 REST、PBKDF2 令牌鉴权、自签 HTTPS | `accept` 当时 794 项（现基线 801）；压测 20/30/40/50 抢同数号源全部卖光；`auth-check`/`tls-check`/`rate-limit-check`/`p1-extra-check` 全绿 | 2 项运维（转 P1 运维交接）+ 5 条已知边界 |
+| P1 | 挂号闭环 + 鉴权 + HTTPS | 4 个挂号 REST、PBKDF2 令牌鉴权、自签 HTTPS | `accept` 当时 794 项（现基线 821）；压测 20/30/40/50 抢同数号源全部卖光；`auth-check`/`tls-check`/`rate-limit-check`/`p1-extra-check` 全绿 | 2 项运维（转 P1 运维交接）+ 5 条已知边界 |
 | P2 | AI 分诊 | 危急征象兜底、验证层、预问诊 SSE、三态原因码 | `triagetest` 当时 108 项（现基线 150）；`accept` 当时 118 项；2 个 HTTP 脚本；6 项变异全被抓 | 6（原列 6 项，其中 1 项在本阶段完成） |
 | P3 | AI 能力中心（配置底座） | 配置库驱动、密钥只存引用、Prompt/工具开关 | `selftest` 39 项；`accept` 184 项；变异 11/11 被抓 | 5（原列 7 项，2 项收尾解决） |
 | P4 | 电子病历 + 运营看板 | 七段式病历、接诊状态机、只出聚合的看板 | `selftest` 43 项；`accept` 238 项；`emr-check` 54 项连跑三次一致 | 6（另有 3 条接线边界） |
@@ -160,7 +160,7 @@ stdx @ `E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx`；MariaDB 11.4.13 �
 | 登录限流 / 锁定 | 5 次失败 / 15 分钟窗口 / 锁 15 分钟；锁定检查在 PBKDF2 之前（解冻期失败 t≈0.55s，锁定期拒绝 t≈0.02s，断言 <0.2s）；限流不是 oracle（admin 与 nobody 都是 401×4 → 429，计时比值 1.03）；登录名归一后 7 种写法全部 429 且库里只剩 1 份计数 |
 | TLS（`tests\tls-check.ps1`） | SAN 8 个条目（DNS=localhost + 7 个 IP）；TLS 1.2 真校验（链 + 主机名）协商 Tls12；TLS 1.3 协商 Tls13；TLS 1.0/1.1 被拒（服务端侧 SSPI 失败）；反向：不在 SAN 的主机名不覆盖 ✅、用不同 CA 验证必须失败 ✅；明文打 TLS 端口失败 000；HTTPS 下登录 + 带令牌 `/auth/me` 200 |
 | 绝不静默降级（4 条实测） | 证书不存在 FATAL exit=1；私钥不存在 exit=1；PEM 非法 FATAL exit=1；只给 cert 或只给 key 拒绝 exit=2；端口不会被误起成明文服务 |
-| 测试总览（时点值） | `selftest` 51 项、`authtest` 17 项、`accept`（AC-1…AC-P4-8）当时 794 项（现基线 801）、`auth-check` / `tls-check` / `rate-limit-check`（9 节）/ `p1-extra-check`（连跑 3 次）全绿、`doc-counts` 与实测一致、手工冒烟 401/403/404/409/400/201/200 |
+| 测试总览（时点值） | `selftest` 51 项、`authtest` 17 项、`accept`（AC-1…AC-P4-8）当时 794 项（现基线 821）、`auth-check` / `tls-check` / `rate-limit-check`（9 节）/ `p1-extra-check`（连跑 3 次）全绿、`doc-counts` 与实测一致、手工冒烟 401/403/404/409/400/201/200 |
 | 变异测试 | 扣号把 version 塞回 → AC 变红；退号把 version 塞回 → 8 项 FAIL |
 
 > **勘误（§3.1 的结论被推翻）**：原写"少卖已修复（把 `MAX_BOOKING_RETRY` 2→3、加 `HTTP_BOOKING_RETRY=6`）"是**假的** ——

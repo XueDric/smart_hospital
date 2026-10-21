@@ -74,7 +74,7 @@ cd server     # ⚠ cwd 必须是 server/，见下
 | `triagetest` | P2 分诊 + 预问诊**纯逻辑**自检（**150 项**断言），不碰库不调模型 | ❌ |
 | `authtest` | **口令/令牌原语自检**（含 3 个公开测试向量，**17 项**） | ❌ |
 | `check-db <dsn>` | 连库 + 幂等建表 + 打印表清单（★ 标记号源域） | ✅ |
-| `accept <dsn>` | 验收测试 AC-1…AC-17（**801 项断言**：AC-1…AC-13 + **AC-14/AC-15**（令牌续期回值、`/health` 日期口径）+ **AC-16/AC-17**（`ai_model` 模型配置、账号列表/排班可改）+ AC-P2-1…6 / AC-P3-1…6 / **AC-P4-1…7** / AC-BASE-1…3 / AC-AICALL-1…3 / AC-NOTICE-1…3；⚠ 只允许库名含 `test` 的测试库） | ✅ |
+| `accept <dsn>` | 验收测试 AC-1…AC-17（**821 项断言**：AC-1…AC-13 + **AC-14/AC-15**（令牌续期回值、`/health` 日期口径）+ **AC-16/AC-17**（`ai_model` 模型配置、账号列表/排班可改）+ AC-P2-1…6 / AC-P3-1…6 / **AC-P4-1…7** / AC-BASE-1…3 / AC-AICALL-1…3 / AC-NOTICE-1…3；⚠ 只允许库名含 `test` 的测试库） | ✅ |
 | `create-db <dsn>` | 幂等建库（utf8mb4）—— 测试库靠它 | ✅ |
 | `create-admin <dsn>` | 建/重置管理员并打印口令（**引导入口**） | ✅ |
 | `serve <dsn>` | **P1**：启动 HTTP / HTTPS 服务（默认只绑 `127.0.0.1`） | ✅ |

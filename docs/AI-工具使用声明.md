@@ -23,7 +23,9 @@
 | 其它成员的助手（如有） | — | — | 由各成员在 §六 自行登记；**申宇乐本人全程未使用**（见下） |
 | 无 | — | 临床规则词表、合规结论、评分与答辩口径 | 全部由团队决策，AI 只负责把决策写成文档 |
 
-⚠ 关于答辩录屏：视频**画面**是应用在模拟器上的真实渲染，**没有**用 AI 生成或替换画面内容；但该 mp4 是剪辑工具合成的产物，容器元数据带 `AIGC` 块（`ContentProducer` / `ProduceID`）——对应自动字幕/配音/合成一类工具处理。原片全程跑在 App 的「演示数据（Mock）」开关下，已在成品片头加 3 秒说明卡写明，详见 [录屏脚本](录屏脚本-2026-10-21.md) §6。
+⚠ 关于答辩录屏：视频**画面**是应用在模拟器/真机上的真实渲染，**没有**用 AI 生成或替换画面内容；但该 mp4 是剪辑工具合成的产物（按真实顺序分 5 段录制后拼接，切换点即场景边界），容器元数据带 `AIGC` 块（`ContentProducer` / `ProduceID`）——对应自动字幕/配音/合成一类工具处理。
+
+**提交成片是「在线服务 + 真模型」实录**：0:00 起是 `devdb.ps1 start -Port 3417` 与服务端启动日志（`连接：`、`AI：已启用 … 密钥引用 builtin`、`监听 127.0.0.1:8091`），0:55 分诊页写着「推荐来源：**模型增强**」「可用号源 1 个，均来自**服务端实时校验**」。早前那版「演示数据（Mock）」演练稿**未提交**（其规格见 [录屏脚本](录屏脚本-2026-10-21.md) §6.6）。
 仓库内位图只有 DevEco 模板默认图标（见 [THIRD-PARTY.md](THIRD-PARTY.md) §7）。
 
 ## 三、AI 参与的范围（做什么 / 不做什么）
@@ -47,7 +49,7 @@
 每条 AI 参与的改动都必须过下面几道，任何一道红了就不许写进结论：
 
 1. **编译**：`server/build.ps1`（仓颉 1.2.0）、`hvigorw.bat assembleHap`、`android-patient/build.ps1 -Variant debug`。
-2. **断言**：`accept`（801 项）、`triagetest`（150 项）、`selftest`（51 项）、`authtest`（17 项）、`final-verify`（18 项 live 门禁，全绿才算完）、安卓 JVM 单测（10 项）。
+2. **断言**：`accept`（821 项）、`triagetest`（150 项）、`selftest`（51 项）、`authtest`（17 项）、`final-verify`（18 项 live 门禁，全绿才算完）、安卓 JVM 单测（10 项）。
 3. **文档一致性**：`server/tests/doc-counts.ps1` 把文档里的数字与实测逐条对账；`tools/check-docs.ps1` 查链接、编码、注释嵌套、旧路径残留；`tools/check-snapshot.ps1` 查交付物哈希与版本。
 4. **端到端**：鸿蒙模拟器（Pura 90 / HarmonyOS 6.1.1）与安卓模拟器（API 37）实跑，截图存 `release/harmony/screenshots/`、`release/android/`。
 5. **人工审阅**：每批提交由人看 diff 后再推；提交信息里写清"为什么"。
@@ -83,3 +85,17 @@ git show --stat <sha>                           # 任一提交改了哪些文件
 | 2026-10-18 | 登记成员实名：申宇乐 —— 全程仅使用 DeepSeek 编码代理；补本人确认语 |
 | 2026-10-19 | 登记成员实名：郭俊杰（界面设计和鸿蒙 APP 开发）—— 使用 WorkBuddy 编码代理（`deepseek-V4.1-Flash`），使用范围含界面设计、鸿蒙 APP 开发与 git 版本控制/代码托管 |
 | 2026-10-19 | 登记成员实名：lyz1679（医生端 `feature-doctor`）—— 使用 Claude Code 编码代理（底层 DeepSeek 模型 `deepseek-v4-pro` / `deepseek-v4-flash`），范围含病历工作台、修订历史、接诊队列与后端对接问题清单 |
+| 2026-10-21 | 新增 §八「产品内 AI 的接线状态」：`triage` Prompt 已真接线（安全尾段不可配）、工具开关属预留闸门、知识库为关键词路；同步提交成片口径为在线服务实录 |
+
+## 八、产品内 AI 的接线状态（如实说明）
+
+> 这一节是**自我披露**：哪些"看起来能配"的东西是真的接了，哪些还只是落库与闸门。
+> 写它的原因很直接 —— 评估报告问过"Prompt 模板页是不是只写不读"，
+> 与其等评委发现，不如自己把边界写清（2026-10-21 已完成其中一项接线）。
+
+| 能力 | 现状 | 证据 |
+| --- | --- | --- |
+| **Prompt 模板**（`dept` / `previsit` / `redflag` / `triage`） | **`triage` 已真接线**：分诊增强每次都从库里读模板（`PromptRepo.body(PROMPT_TRIAGE)`），改完**零重启**生效；库里模板只决定"任务段"，**安全尾段（不下诊断/不提药名/≤80 字）由代码固定拼接，模板改不掉**。`dept` / `previsit` / `redflag` 仍是"落库 + 占位符校验"：对应的拼装逻辑目前写在代码里，接入点是 `PromptRepo.body()` 一行（`server/src/ai_prompt.cj`） | `server/src/ai_triage.cj` 的 `aiTriageTemplateOf()` / `aiTriagePromptWith()`；验收断言 `AC-P3-5 ⑧/⑧b`（含"故意写让模型开药的模板，尾段仍存在"） |
+| **工具开关**（6 条只读能力名） | **判据已实现、派发器未实现**：`aiToolEnabled()` 是纯函数闸门，当前只有"回显 + 验收断言"两个消费者；生产路径的模型调用是**单轮 chat completion**，没有 tool-calling 派发器，所以关掉某个开关**不会**让模型"被拒绝使用该工具" —— 它是**预留闸门**，不是已生效的权限系统 | `server/src/ai_prompt.cj:381`（`aiToolEnabled`）、`AC-P3-6`（被判据函数守住的"禁用即不可用"语义） |
+| **知识库检索** | **关键词路（默认，已端到端）**：入库 → 切块 → 关键词命中 → 进 Prompt 的"参考资料"段；分诊调用事实里会记 `used_kb` 与 `kb_doc_ids`。向量路**未接**（DeepSeek 无 Embeddings 端点），口径见 `docs/向量检索说明.md` | `server/tests/kb-seed.ps1`（种 8 条 → 5 个查询词验证命中 → 一次真实分诊断言 `used_kb=true`） |
+| **模型配置 / 密钥引用** | **已生效**：`ai.enabled`、`endpoint`、`model`、`key_ref` 全部落库、改完即生效；密钥只存引用（`env:` / `file:` / `builtin:demo`），库里没有密钥本体 | `CLAUDE` 之外的机制性拒绝见 `server/src/ai_settings.cj`；实测命令见 `docs/Q6-合规决策记录.md` |

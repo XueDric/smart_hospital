@@ -32,3 +32,18 @@ jobs:
       - name: Run tools/check-snapshot.ps1
         shell: pwsh
         run: ./tools/check-snapshot.ps1
+  pure-tests:
+    name: 纯逻辑测试（selftest / authtest / triagetest，不需要数据库）
+    # ★ 2026-10-21 加（评估报告 P1-3）：此前 CI 只跑文本卫生检查，
+    #   "accept 801/813 条断言"这种自证材料只能靠我们自述。
+    #   这三个子命令是**纯函数**测试（口令原语、状态机、分诊规则），不碰 MySQL。
+    #
+    # ⚠ 诚实说明：它们编译在 hospital-server.exe 里，而 runner 上没有仓颉工具链，
+    #   所以这里默认会 SKIP 而不是假绿（见 tools/ci-pure-tests.ps1 文件头）。
+    #   想让它真的跑：把 exe 作为 artifact 传进来，或在本机 `server/build.ps1` 后跑同一脚本。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tools/ci-pure-tests.ps1
+        shell: pwsh
+        run: ./tools/ci-pure-tests.ps1

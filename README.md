@@ -60,7 +60,7 @@ git log --oneline --graph | head -30      # 版本历史（截至 v0.2.0-p1-rev 
 | **客户端** | **鸿蒙患者端 / 医生端 / 管理端**（`entry` + `common-core` + `feature-*`）+ **安卓患者端**（`android-patient`）+ **管理台网页**（`server/admin-web`，挂载在 `/admin`） | ✅ 已实现并可构建；**2026-10-17 已在华为模拟器（Pura 90 / HarmonyOS 6.1.1 / API 24）跑通患者全流程与管理端看板**（[证据](release/harmony/README.md)）；**2026-10-18 安卓端已用 JDK 21 编译并装进 Android 模拟器登录成功**（[证据](release/android/README.md)） |
 | **维护批次** | 复验修复 10 条（S1/S2/S3/S5/S6/S8/S12/S14/S16 + S4/S13）、契约与文档同步 | ✅ 完成（见 [联调记录](docs/联调记录-2026-10-18.md) 与 [交付快照](docs/交付快照.md)） |
 
-> **验收口径**：`selftest` 51 + `authtest` 17 + `triagetest` 150 + `accept` **801 条断言** + `server/tests/` 26 个测试文件（19 个可独立运行的门禁套件）+ 契约门禁（24 Schema / 67 样例）+ `final-verify` 18/18 全绿。
+> **验收口径**：`selftest` 51 + `authtest` 17 + `triagetest` 150 + `accept` **821 条断言** + `server/tests/` 26 个测试文件（19 个可独立运行的门禁套件）+ 契约门禁（24 Schema / 67 样例）+ `final-verify` 18/18 全绿。
 > ⚠ 文档里的项数以 **`server/tests/doc-counts.ps1` 的实测输出为准**，不靠人记。
 
 > **自动门禁**：CI（`.github/workflows/repo-hygiene.yml`）每次 push/PR 跑 `tools/check-docs.ps1` ——
@@ -147,9 +147,10 @@ cd smart_hospital
 | 查历史决策与踩坑 | [docs/PHASE-HANDOFFS.md](docs/PHASE-HANDOFFS.md)（P0–P5 合并稿）· [联调记录](docs/联调记录-2026-10-18.md) |
 | 确认第三方合规 | [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) · [Q6-合规决策记录](docs/Q6-合规决策记录.md) |
 | 答辩/评审材料 | [docs/答辩材料-2026-10-17.md](docs/答辩材料-2026-10-17.md) · [交付快照](docs/交付快照.md) |
+| 答辩演示幻灯片（10 页） | [docs/答辩演示-2026-10-21.pptx](docs/答辩演示-2026-10-21.pptx) |
 | 说明作品真实性与 AI 边界 | [docs/项目真实性与分工说明.md](docs/项目真实性与分工说明.md) · [AI 工具使用声明](docs/AI-工具使用声明.md) |
 | 问「向量检索到底做了没有」 | [docs/向量检索说明.md](docs/向量检索说明.md)（关键词为默认，向量未接线） |
-| 看答辩录屏的参数与已知问题 | [docs/录屏脚本-2026-10-21.md](docs/录屏脚本-2026-10-21.md) §6（H.264 / 21.86 MB / 片头已声明演示数据） |
+| 看答辩录屏的参数与已知问题 | [docs/录屏脚本-2026-10-21.md](docs/录屏脚本-2026-10-21.md) §6（H.264 1920×1080 / 10.1 MB / 在线服务实录，5:23） |
 | 要重录答辩视频 | [docs/录屏脚本-2026-10-21.md](docs/录屏脚本-2026-10-21.md)（鸿蒙 + 安卓分镜、逐句字幕稿、兜底话术、录后自查） |
 
 ---

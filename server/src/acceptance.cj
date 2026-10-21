@@ -1185,9 +1185,30 @@ func cancelStateOf(c: CancelOutcome): String {
 /*
  * 跑全部验收测试。返回失败项数（0 = 全绿）。
  */
+/*
+ * ★ 2026-10-21（评估报告 P3-9）：`accept` 的库名守卫是**纯函数**，可以脱离数据库验证。
+ *
+ * 背景：旧判据 `dbName.contains("test")` 会把 `hospital_contest` / `latest_hospital`
+ * 这类"名字里恰好含 test"的库当成测试库 —— 而 `accept` 一跑就 DELETE 六张表。
+ * 改成"`test` 必须是独立的下划线分段"之后，这里把这套形态判定钉死。
+ *
+ * ⚠ 这些断言**不碰库**（纯字符串判定），排在 `hResetAll` 之后只是为了输出顺序好看。
+ */
+public func acP0_guard(runner: TestRunner): Unit {
+    runner.check("库名守卫：hospital_test 允许（最常用写法）", isTestDatabase("hospital_test"))
+    runner.check("库名守卫：test_ci 允许（test_ 前缀）", isTestDatabase("test_ci"))
+    runner.check("库名守卫：hospital_test_backup_2025 允许（_test_ 分段）", isTestDatabase("hospital_test_backup_2025"))
+    runner.check("库名守卫：test 允许（就叫 test）", isTestDatabase("test"))
+    runner.check("库名守卫：hospital 拒绝（生产库名）", !isTestDatabase("hospital"))
+    runner.check("库名守卫：hospital_contest 拒绝（contest 不是 test 分段）", !isTestDatabase("hospital_contest"))
+    runner.check("库名守卫：latest_hospital 拒绝（latest 不是 test 分段）", !isTestDatabase("latest_hospital"))
+    runner.check("库名守卫：TEST 大写也按分段判（大小写不敏感）", isTestDatabase("HOSPITAL_TEST") && !isTestDatabase("HOSPITAL_CONTEST"))
+}
+
 public func runAcceptance(db: DbBackend): Int64 {
     let runner = TestRunner(db)
     hResetAll(db)
+    acP0_guard(runner)
     runner.ac2()
     runner.ac1()
     runner.ac5()
