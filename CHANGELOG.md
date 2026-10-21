@@ -7,6 +7,18 @@
 
 ---
 
+## [0.2.0-p1-rev.9] 2026-10-21 —— 轻舟口径更正：参与开发，不是纯第三方
+
+### 变更（口径，非代码）
+
+- 轻舟（QingZhou）此前多处被写成"第三方框架 / 本地仅改注释"。这与提交记录不符：我们在 `server/third_party/qingzhou/src/` 提交过四组框架级修复，且已并入上游。
+  - `be569cd` 参数化绑定静默改坏写入值（`db_mysql.cj` **+303/−4**）
+  - `c9a41e8` 连接隔离与失败恢复（`db.cj` +14、`db_mysql.cj` **+141/−28**）
+  - `310fd4f` 路由/静态错误体可注入（`router.cj` **+32/−10**、`static.cj` +9/−2）
+  - `181921b` 断链自愈 + 探活（`db.cj` +39、`db_mysql.cj` **+210/−31**）
+- **新增 `docs/轻舟共建说明.md`**：三层证据（上游身份 / 四组框架级提交 / 修复并入上游的旁证）、"参与开发 ≠ 拥有"的许可证边界、答辩话术与三个追问的答案。
+- 同步更正：`docs/THIRD-PARTY.md` §1.1 标题与表格（新增「团队参与」行，`PROVENANCE` 表述改为"逻辑与上游一致是因为补丁已上游化"）、§8 结论表、`docs/PROJECT-OVERVIEW.md` §1/§5 与可复用资产表、`docs/项目真实性与分工说明.md` §二、`docs/答辩材料-2026-10-17.md` Q11 并新增 Q11.1、`docs/SYSTEM-DESIGN.md` 架构图两行、`README.md` 技术栈与文档索引、`server/third_party/qingzhou/PROVENANCE.md`、分发包 `NOTICE.txt` 第 1 条。
+- **版权与许可不变**：仍为 MIT，`Copyright (c) 2026 guowei, BIT FSSLab`；分发包继续随附 `licenses/qingzhou-LICENSE.txt`。
 ## [0.2.0-p1-rev.8] 2026-10-21 —— 医生端「一键预填」不再是假复制
 
 ### 修复

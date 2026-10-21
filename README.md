@@ -2,7 +2,7 @@
 
 > 患者输入一句主诉 → AI 多步推理取证 → 推荐科室与医生 → **校验真实有号** → 一键挂号 → 医生接诊 → 生成电子病历，全程落库、可追溯、可观测。
 >
-> 技术栈：**仓颉（Cangjie）+ 轻舟（QingZhou）** 服务端 · **鸿蒙 ArkTS** 三端客户端 · **安卓 Kotlin** 患者端 · 零中间件（不需要 Redis / 向量库 / 消息队列）。
+> 技术栈：**仓颉（Cangjie）+ 轻舟（QingZhou，本团队参与开发的国产 Web 框架）** 服务端 · **鸿蒙 ArkTS** 三端客户端 · **安卓 Kotlin** 患者端 · 零中间件（不需要 Redis / 向量库 / 消息队列）。
 
 ---
 
@@ -15,6 +15,7 @@
 | 3 | **源码仓库与版本历史** | 本文件 §仓库信息 · [CHANGELOG.md](CHANGELOG.md) |
 | 4 | **可运行包 / 部署 / 环境配置** | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) · [tools/package-release.ps1](tools/package-release.ps1) |
 | 5 | **开源组件 / 第三方模型 / 外部 API / 数据集** | [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) |
+| 5.1 | **我们参与开发的框架（轻舟）**：改了哪几层、哪些进了上游、边界在哪 | [docs/轻舟共建说明.md](docs/轻舟共建说明.md) |
 
 ---
 
