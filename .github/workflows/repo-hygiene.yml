@@ -27,6 +27,7 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\ci-pure-tests.ps1
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify-source-manifest.ps1
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\resolve-cangjie-sdk-url.ps1   # 嗅探 SDK 直链
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\set-ci-sdk-url.ps1 -Url '<SDK 直链>'  # 一条命令配 ①（见 tools/README.md）
 name: repo-hygiene
 
 on:

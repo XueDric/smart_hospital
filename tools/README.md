@@ -7,10 +7,14 @@
 | `package-release.ps1` | 把服务端编译产物打成**可运行程序包**（Windows x64）。解压 → 改配置 → 起库 → 双击/命令行启动，不需要装 .NET、不需要装 OpenSSL。 |
 | `check-docs.ps1` | **仓库卫生门禁**：文档相对链接、`.ps1`/`.bat` 编码、旧仓库路径残留、源码注释里未闭合的 `/*`。CI 每次 push 都跑（`.github/workflows/repo-hygiene.yml`）。 |
 | `set-ai-key.ps1` | **换成你自己的大模型密钥**（一条命令）：写 `server\ai-key.txt`（已 gitignore）→ 把 `ai.key_ref` 改成 `file:<绝对路径>` → 调模型自检回显 `ok=true`。用于内置演示密钥到期后、或评委想用自己的额度时。 |
+| `verify-source-manifest.ps1` | **源码清单校验**：按 `server/build/SOURCE-MANIFEST.sha256` 逐行核 76 个参与编译的源文件（路径相对 `server/`）。缺文件 exit 1、缺清单 exit 2。CI 的 `source-manifest` job 用它证明「交付的 exe 对应的就是这份源码」。 |
+| `ci-pure-tests.ps1` | **CI 纯逻辑三件套**：`selftest` / `authtest` / `triagetest`，不需要数据库。找不到 exe 时打印 SKIP 并 exit 0（诚实跳过，不是假绿）——CI 里代替它的角色已交给会真编译的 `build-and-test`。 |
+| `resolve-cangjie-sdk-url.ps1` | **CI 用**：在仓库变量/环境变量都没给 SDK 直链时，从仓颉官网**嗅探**一个可能的 1.2.0 Windows x64 zip 直链（只认 cangjie+版本+`.zip`，不猜 CDN）。嗅不到就 exit 1，让 job 诚实报「编译层未执行」。 |
+| `set-ci-sdk-url.ps1` | **一条命令配好 CI 的仓颉 SDK 直链**：先校验 URL 真的能下到 zip（防把网页地址填进去），再从环境变量或本机 git 凭据取 token，调 GitHub API 写/更新仓库变量 `CANGJIE_SDK_URL`。详见下文。 |
 | `check-snapshot.ps1` | **交付物一致性校验**：比对 `docs/交付快照.md` 里的版本/提交/HAP/APK/zip 的体积与 SHA256 与磁盘真值；`-Update` 用真值刷新快照。CI 每次 push 都跑（默认严格模式）。 |
 
 部署全流程（环境要求、起库、生产 TLS、探活语义、故障排查）见 **[../docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md)**；
-本文件只讲这三个脚本本身。
+本文件只讲上面这些脚本本身。
 
 ## package-release.ps1
 
@@ -152,3 +156,29 @@ stdx 1.1.3.1、自编 MariaDB 驱动和 MariaDB 实例，托管 runner 装不全
 失败时只打印状态码与错误码、**不回显响应体**——万一是把密钥误填进了别的字段，
 回显就等于把它写进日志。内置演示密钥的有效期机制见
 [../server/src/ai_builtin.cj](../server/src/ai_builtin.cj) 的 `AI_BUILTIN_DEMO_VALID_UNTIL`。
+
+## set-ci-sdk-url.ps1
+
+CI 的 `build-and-test` job 要真编译，就得先拿到仓颉 SDK 1.2.0 的 zip。官方下载页
+（<https://cangjie-lang.cn/download/1.2.0>）的直链是**点击时由前端签名生成**的，
+`curl` 拿不到（对任意路径都回 `200 + text/html`，看起来像成功、其实是网页兜底）。
+所以这一步只能由人在浏览器里做一次：
+
+1. 打开下载页 → 点「Windows x64 SDK 下载」；
+2. F12 → Network → 找到类型是 `x-zip` / `octet-stream` 的那一条请求 → 右键 Copy → Copy link address；
+3. 把复制的直链交给脚本（**一条命令**，其余全自动）：
+
+```powershell
+cd E:\harmonyOS\smart_hospital
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\set-ci-sdk-url.ps1 -Url '<粘贴直链>'
+```
+
+脚本做四件事：校验（HTTP 200/206 + 不是 `text/html` + 像 zip）→ 取 token（`$env:GITHUB_TOKEN`
+或本机 git 凭据）→ `POST`/`PATCH` 写仓库变量 `CANGJIE_SDK_URL` → 回读确认。token 全程不打印；
+token 需要 `repo` 作用域（或 fine-grained 的 Variables: Read and write）。
+
+只想校验不想写：加 `-DryRun`。换仓库/换变量名：`-Repo owner/name -Name OTHER_NAME`。
+
+配好之后，Actions 里手动跑一次 **Repo Hygiene**，`build-and-test` 的「校验 SDK 压缩包」这一
+步通过即说明直链持续可用（直链带签名时可能几小时就失效，失效时重跑一次本脚本换新链接即可；
+失效不会让 job 假绿 —— 它会失败并说明原因）。
