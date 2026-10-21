@@ -5,7 +5,7 @@
 
 .DESCRIPTION
 把"靠人眼复查一次"的五件事变成可重跑的一条命令（评审 P1-4/P1-6 的落点其一）：
-  1) 所有 .md 里的**相对链接**必须指向真实存在的文件（外链、页内锚点跳过）；
+  1) 所有 .md 里的**相对链接**必须指向真实存在的文件（外链、页内锚点、.gitignore 排除的目标跳过）；
   2) **含中文的 .ps1 必须带 UTF-8 BOM**，否则 PS 5.1 按 ANSI 解析会乱码/报 Unexpected token；
   3) **.bat 必须是纯 ASCII**（cmd 在 GBK 代码页下会把 UTF-8 中文注释解析坏，实测报 wrapper.js 不是命令）；
   4) 任何文件都不得再出现旧仓库绝对路径 `harmonyOS\智能医院...`（2026-10-17 已改名）；
@@ -59,8 +59,18 @@ foreach ($f in $files | Where-Object { $_.Extension -eq '.md' -and $_.FullName.I
         $abs = if ($path.StartsWith($sep)) { Join-Path $repo $path.TrimStart($sep) } else { Join-Path $f.DirectoryName $path }
         $mdChecked++
         if (-not (Test-Path -LiteralPath $abs)) {
-            $rel = $f.FullName.Substring($repo.Length + 1)
-            Add-Problem "坏链：$rel -> $target"
+            # 目标被 .gitignore 排除（本地开发手册之类）⇒ 有意不入库，跳过。
+            # 这样本地有文件时链接可用，CI 上没有这些文件也不会误报坏链。
+            $ignored = $false
+            $relTarget = $abs.Substring($repo.Length).TrimStart($sep)
+            if ($relTarget.Length -gt 0) {
+                & git -C $repo check-ignore --quiet -- $relTarget 2>$null
+                $ignored = ($LASTEXITCODE -eq 0)
+            }
+            if (-not $ignored) {
+                $rel = $f.FullName.Substring($repo.Length + 1)
+                Add-Problem "坏链：$rel -> $target"
+            }
         }
     }
 }

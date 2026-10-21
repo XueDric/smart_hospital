@@ -11,7 +11,7 @@
 | 编译器 | **cjc 1.2.0** | `C:\Users\ASUS\.cjenv\sdks\1.2.0\cangjie` |
 | ⚠ PATH 上的 cjc | **1.1.3**（`D:\Cangjie`） | **是旧版、不可用**。版本串台症状 = 编译中途 `LLVM ERROR: Broken module found` |
 | stdx | **1.1.3.1 静态** | `E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx` |
-| 数据库 | **仓库自管 MariaDB 11.4.13** @ `127.0.0.1:3317` | `server\devdb`（见 [../docs/DEV-DB.md](../docs/DEV-DB.md)）；启停 `.\devdb.ps1 start` |
+| 数据库 | **仓库自管 MariaDB 11.4.13** @ `127.0.0.1:3317` | `server\devdb`（见 `../docs/DEV-DB.md.md`（本地开发手册，未入库））；启停 `.\devdb.ps1 start` |
 | 业务库 / 账号 | `hospital`（开发）/ `hospital_test`（**测试**，`accept` 只认它）/ 账号 `hospital` 口令 `hospital_dev_2026` | ⚠ 开发口令，**上生产必须换** |
 | Shell | **Windows PowerShell 5.1** | ⚠ 含中文的 `.ps1` **必须 UTF-8 with BOM**，否则 PS 5.1 按 ANSI 解析会**语法报错** |
 
@@ -228,7 +228,7 @@ $env:HOSP_ADMIN_PW = "<管理员口令>"
    `doctor`/`department`/`patient` 一起删。同一脚本里更细的夹具则都带
    `id >= 703000`/`704000`/`707000`。结论只有一句：
    **跑这些脚本的库必须是可以随时清空的测试库（`hospital_test`）**，
-   不要指向 `hospital`（开发库）。细则见 [../docs/DEV-DB.md](../docs/DEV-DB.md) §四。
+   不要指向 `hospital`（开发库）。细则见 `../docs/DEV-DB.md.md`（本地开发手册，未入库） §四。
 2. **登录被限流不中断整轮**：5 次失败锁 15 分钟是服务端的正常保护
    （`auth_repo.cj:90-92`：`LOGIN_FAIL_LIMIT=5` / `LOGIN_FAIL_WINDOW=900s` /
    `LOGIN_LOCK_SECONDS=900s`）。`common.ps1` 的 `Test-HospLoginRateLimited` 命中
@@ -261,7 +261,7 @@ start http://127.0.0.1:8091/admin
 | 密钥 | 配置里只存 `env:变量名` / `file:路径` 这类**引用**；列表接口只回 `key_ref_set` / `key_ref_kind`，**永不回显**引用本体 |
 | 改配置要重启吗 | 不用。写库后立即 `invalidate()`，下一次 AI 请求按新配置动态构建模型实例（页面上的「失效配置缓存」按钮是同一件事的手动兜底） |
 
-细节（页面 ↔ 接口映射、安全口径、为什么不用前端框架/不加构建步骤）见 [../docs/ADMIN-WEB.md](../docs/ADMIN-WEB.md)。
+细节（页面 ↔ 接口映射、安全口径、为什么不用前端框架/不加构建步骤）见 `../docs/ADMIN-WEB.md.md`（本地开发手册，未入库）。
 
 ### 验收依据：源码哈希，不是产物哈希
 
@@ -311,9 +311,9 @@ cjc 的产物**不逐字节可复现**（同一份源码连续两次构建，exe
 | `tests/ai-model-check.ps1` | **AI 模型配置端到端**（46 项）：鉴权 / 播种 / 密钥不回显 / 校验闸门 / PATCH 语义 / 默认位唯一与 `in_use` / 连通性测试 / 缓存失效 / `settings` 登记表闸门 |
 | `tests/visit-timeline-check.ps1` | **就诊时间线端到端**（47 项）：到院/候诊鉴权与归属 / 全链路 `booked→arrived→waiting→visiting→done` / **三个时间戳逐字段**（只写自己那一个、被拒的流转一个都不写、`waiting` 不写戳）/ 非法流转（重复到院、跳步、终态回退）⇒ 409 `VISIT_BAD_STATE` / 未锁病历完成 ⇒ 409 `EMR_NOT_LOCKED` / 队列排序（待处理优先）与 `status_label` 同源 / **到院后退号 ⇒ 409 `APPOINTMENT_NOT_CANCELLABLE`，未到院退号 ⇒ 200** / **混合态排序真断言**（`waiting` 排在 `booked` 前）/ 夹具自清**只扫本夹具范围** |
 | `tests/ai-telemetry-check.ps1` | **分诊遥测与排障端到端**（53 项）：鉴权 / 参数闸门（`group_by` 白名单、`from>to`、**非数字与 >366 天跨度 ⇒ 400**、上限夹取）/ 一次真调用后按 `request_id` 捞全链路（**17 字段**齐 + `degraded` 与 `red_flag_bypass` **互补**）/ **超长 `X-Request-Id` 端到端**（写侧截 64、读侧同口径仍查得到）/ **隐私否定断言**（聚合与单次体里都搜不到主诉指纹）/ 聚合分位数与降级率**（`RED_FLAG` 不计入降级，另立 `red_flag`/`red_flag_rate`）**/ 版本号严格前进 / 夹具自清（残留为 0 会真的红） |
-| `tests/ai-eval/run-ai-eval.ps1` | **AI 分诊评测**：默认**回放**（读 `recorded/`，离线可重复，连跑两次指纹须一致）；`-Mode live [-Record]` 打真实服务端并录制样本；报告落 `../docs/ai-eval/<date>.md` + `.metrics.json`。**不进 `final-verify`**（依赖真实模型，见 [../docs/ai-eval/README.md](../docs/ai-eval/README.md)） |
+| `tests/ai-eval/run-ai-eval.ps1` | **AI 分诊评测**：默认**回放**（读 `recorded/`，离线可重复，连跑两次指纹须一致）；`-Mode live [-Record]` 打真实服务端并录制样本；报告落 `../docs/ai-eval/<date>.md` + `.metrics.json`。**不进 `final-verify`**（依赖真实模型，见 `../docs/ai-eval/README.md.md`（本地开发手册，未入库）） |
 | `tests/admin-web-smoke.mjs` | **管理台前端冒烟**：无头 Edge + CDP，11 个页面逐个真实渲染 + 控制台/异常/`>=400` 全收集 + 逐页截图；任一项失败 `exit 1` |
-| `admin-web/` | **后台管理台的静态资源**（零构建：`index.html` + `css/` + `js/` 四个脚本），由服务端按 `/admin` 前缀托管；页面本身不鉴权，数据全走 `/api/v1/admin/*`（详见 [../docs/ADMIN-WEB.md](../docs/ADMIN-WEB.md)） |
+| `admin-web/` | **后台管理台的静态资源**（零构建：`index.html` + `css/` + `js/` 四个脚本），由服务端按 `/admin` 前缀托管；页面本身不鉴权，数据全走 `/api/v1/admin/*`（详见 `../docs/ADMIN-WEB.md.md`（本地开发手册，未入库）） |
 
 **最小表集（17 张 / 9 类；下表按域合并，`kb_doc`/`kb_chunk` 属知识库域、`medical_record_revision` 属病历域）**：
 

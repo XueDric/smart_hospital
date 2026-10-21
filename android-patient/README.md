@@ -2,7 +2,7 @@
 
 Kotlin 原生 Views 实现的患者端（包名 `com.smart.hospital.patient`），覆盖与鸿蒙患者端相同的主闭环：登录 / 首页 / AI 分诊 / 预问诊（SSE）/ 约号 / 我的就诊 / 医疗档案 / 公告 / 我的。
 
-接口口径**只以** [docs/FRONTEND-INTEGRATION.md](../docs/FRONTEND-INTEGRATION.md) 为准；两端差异只体现在 UI 框架与平台能力上（鸿蒙为 ArkTS + ArkUI V2，安卓为 Kotlin Views）。
+接口口径**只以** `docs/FRONTEND-INTEGRATION.md` 为准（本地开发手册，未入库）；两端差异只体现在 UI 框架与平台能力上（鸿蒙为 ArkTS + ArkUI V2，安卓为 Kotlin Views）。
 
 ## 首页预约适配
 

@@ -161,18 +161,15 @@ cd smart_hospital
 | --- | --- |
 | 了解项目是什么、做了什么创新 | [docs/PROJECT-OVERVIEW.md](docs/PROJECT-OVERVIEW.md) |
 | 看架构与技术实现 | [docs/SYSTEM-DESIGN.md](docs/SYSTEM-DESIGN.md) → [adr/ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) |
-| 把系统跑起来 / 交付部署 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) · [docs/DEV-DB.md](docs/DEV-DB.md) |
-| 写客户端 / 对接接口 | [docs/FRONTEND-INTEGRATION.md](docs/FRONTEND-INTEGRATION.md)（唯一口径）· [docs/HARMONY-INTERFACE-GUIDE.md](docs/HARMONY-INTERFACE-GUIDE.md) |
-| 看 UI 规范 | [docs/UI-DESIGN.md](docs/UI-DESIGN.md) |
+| 把系统跑起来 / 交付部署 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
+| 写客户端 / 对接接口 | [contract/README.md](contract/README.md)（可执行契约 + 响应形状） |
 | 查决策与边界 | [docs/README.md](docs/README.md)（文档地图）· [ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) · [PROJECT-OVERVIEW](docs/PROJECT-OVERVIEW.md) |
 | 确认第三方合规 | [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) · [Q6-合规决策记录](docs/Q6-合规决策记录.md) |
-| 答辩/评审材料 | [docs/答辩材料-2026-10-17.md](docs/答辩材料-2026-10-17.md) · [交付快照](docs/交付快照.md) |
+| 答辩/评审材料 | [交付快照](docs/交付快照.md)（版本·体积·哈希的唯一锚点） |
 | 答辩演示幻灯片（10 页） | [docs/答辩演示-2026-10-21.pptx](docs/答辩演示-2026-10-21.pptx) |
 | 说明作品真实性与 AI 边界 | [docs/项目真实性与分工说明.md](docs/项目真实性与分工说明.md) · [AI 工具使用声明](docs/AI-工具使用声明.md) |
 | 问「向量检索到底做了没有」 | [docs/向量检索说明.md](docs/向量检索说明.md)（关键词为默认，向量未接线） |
 | 看验收是**真的跑过**（不是只在文档里写数字） | [docs/验收实跑-2026-10-21.md](docs/验收实跑-2026-10-21.md)（accept 821 条、18 项 live 门禁、契约 67/67，含命令与退出码） |
-| 看答辩录屏的参数与已知问题 | [docs/录屏脚本-2026-10-21.md](docs/录屏脚本-2026-10-21.md) §6（H.264 1920×1080 / 10.1 MB / 在线服务实录，5:23） |
-| 要重录答辩视频 | [docs/录屏脚本-2026-10-21.md](docs/录屏脚本-2026-10-21.md)（鸿蒙 + 安卓分镜、逐句字幕稿、兜底话术、录后自查） |
 
 ---
 
