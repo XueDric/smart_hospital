@@ -4,84 +4,28 @@ import std.collection.*
 import std.time.*
 import stdx.encoding.json.*
 
-/* RAG/config/Prompt 已用时间从分诊模型等待额度扣除；SQL自身由部署侧限时。 */
+/* RAG/config/Prompt 已用时间从分诊模型等待额度扣除；SQL 自身由部署侧限时。 */
 public let TRIAGE_ENHANCEMENT_BUDGET_MS: Int64 = 12000
 
 /*
  * SPDX-License-Identifier: MIT
  *
- * ===== ai_triage.cj —— 把真模型接到分诊上（**增强层**）=============
- *
- * ## 这个文件存在的唯一理由：把"模型能改什么"钉死在类型层面
- *
- * 函数签名 `aiEnhanceTriage(v: TriageVerdict, ...)` 收的是 `TriageVerdict`，
- * 而它**只写两个字段**：`v.aiNote` 与 `v.aiReason`。
- *
- * ⚠⚠ **它绝不碰 `v.options`** —— 科室、排班、号源全部由 `triageComplaint()`
- *   （规则 + 数据库）决定，模型一个字节都改不了。
- *   这不是"我小心一点"，而是**结构上做不到**：本文件里没有对 `v.options`
- *   的任何赋值，连能构造 `TriageOption` 的途径都没有。
- *
- * ⇒ 于是 P2 立的硬性验证层「**绝不给没有号的推荐**」在接上模型之后**依然成立**，
- *   而且**不可能被绕过**。这一点很要紧：模型幻觉推荐一个没号的科室，是比规则
- *   出错**更危险**的失败 —— 它看起来很有道理，患者会照做，然后挂不上号。
- *
- * ---------------------------------------------------------------------------
- * ## 为什么"模型的输出"必须**校验**而不能直接透传
- *
- * 模型是不可信输入源（和 HTTP 请求体一样）。它会：
- *   · 输出 Markdown 标题/列表 ⇒ 前端按纯文本渲染会看到一堆 `##`
- *   · 输出"建议服用 XXX 5mg" ⇒ **这是医疗建议**，本项目绝不能给
- *   · 输出几百字论文 ⇒ 患者不会读
- *   · 输出空 / 复述 Prompt
- * ⇒ `aiSanitizeNote()` 做**白名单式**清理：只留一行、限长、去掉 Markdown 标记、
- *   并在发现**疑似诊断/用药**时**整条丢弃**（回退规则文案）。
- *   📌 丢弃而不是"改一改"：我们**没有能力**把一句医疗建议改成安全的，
- *     能做的是**不让它出去**。
+ * ai_triage.cj —— 把真模型接到分诊上（增强层）
+ * 严格边界：模型只给措辞，结论由规则与知识库给 —— 本文件对 v.options 无任何赋值。
+ * 模型输出是不可信输入，必须过 aiSanitizeNote 白名单清理，违规整条丢弃。
  */
 
-/* 模型给患者的说明最长多少**字符**（不是字节 —— 本仓踩过三次这个坑）。 */
+/* 患者可见说明的字符上限（按字符不按字节）。 */
 public let AI_NOTE_MAX_CHARS: Int64 = 160
 
-/*
- * ===================== P5：RAG 片段接入 =====================
- *
- * ★★ 三条约束（都不是"注意一下"，而是结构性的）：
- *
- * ① **片段是"不可信输入"，与本仓对模型输出、HTTP 请求体的口径一致。**
- *    这些文本来自 `kb_doc.body` —— 由**本院人员**维护，比模型编的可信；
- *    但"可信来源"≠"可信格式"：里面可能有 Markdown、可能有超长段落、
- *    也可能被误粘进一段医疗建议。⇒ 片段**也要过 `aiSanitizeNote` 那套白名单清理**。
- *    📌 判据：**清理的判据是"这段文本会不会原样给患者看"，不是"它从哪来"。**
- *
- * ② **必须有界。** 检索可以返回 5 段 × 400 字 = 2000 字，直接拼进 Prompt 会：
- *    · 顶掉"患者主诉"在模型注意力里的位置（主诉才是真正的输入）；
- *    · 把 token 成本乘几倍，而收益递减。
- *    ⇒ `AI_RAG_TOTAL_CHARS` 卡总长，**超了就截**（不是"丢最后一段"：
- *      截断保留的是**最相关那段的开头**，而丢弃会连标题一起丢）。
- *
- * ③ **模型仍然一个字节都改不了 `options`。** 片段只影响"给患者的说明"怎么写。
- *    ⚠ 这一条在接入 RAG 之后**更重要**了：知识库文档里很可能写着
- *    "高血压请挂心内科"之类的句子 —— 若模型能据此改推荐，就等于
- *    **知识库内容可以绕过 P2 的硬性验证层**（推荐一个没号的科室）。
- *    ⇒ 本文件里依然**没有**对 `v.options` 的任何赋值。
- */
+/* RAG 片段按"不可信输入"处理：逐条清理、总长有界；只影响措辞，不影响 options（否则知识库可绕过"绝不给没号的推荐"）。 */
 public let AI_RAG_TOTAL_CHARS: Int64 = 600
 
 /* 单条片段喂给模型前的最大字符数（块本身 ≤ KB_CHUNK_CHARS，这里再压一道）。 */
 public let AI_RAG_PER_HIT_CHARS: Int64 = 300
 
-/*
- * 把检索命中整理成"可以喂给模型"的片段文本。
- *
- * ⚠ 返回**已清理、已有界**的字符串（空串表示"没有可用片段"）。
- *   调用方据此决定要不要在 Prompt 里加"参考资料"段 ——
- *   ⚠ **不要**在 Prompt 里写一段空的"参考资料："，那会让模型去**编**参考内容。
- *
- * ⚠ 每条都带上标题：让模型知道"这是哪份材料的说法"，
- *   输出里提到"按我院须知…"比"据资料…"对患者更有用；
- *   同时**给排障留了线索**（哪份文档被召回）。
- */
+/* 检索命中 → 已清理、已有界的片段文本；空串表示无可用片段（调用方不加参考资料段）。
+ * 每条带标题：便于模型注明出处，也为排障留下召回线索。 */
 public func aiRagContext(hits: Array<KbHit>): String {
     if (hits.size == 0) {
         return ""
@@ -92,11 +36,6 @@ public func aiRagContext(hits: Array<KbHit>): String {
         if (used >= AI_RAG_TOTAL_CHARS) {
             break
         }
-        /*
-         * ⚠ 片段**逐条过清理**（只取首行、去 Markdown、命中禁用词整条丢）。
-         *   禁用词命中 ⇒ `aiSanitizeNote` 返回空串 ⇒ 这条**自然被跳过**，
-         *   不需要在这里再写一遍判断（同一语义只留一处实现）。
-         */
         let body = aiSanitizeNote(h.content)
         if (body.size == 0) {
             continue
@@ -106,24 +45,9 @@ public func aiRagContext(hits: Array<KbHit>): String {
         if (title.size > 0) {
             piece = "【${title}】${piece}"
         }
-        /*
-         * ⚠⚠ 分隔符**必须计入预算**（2026-10-09 由 AC-KB-5 ⑤ 抓到的真缺陷）。
-         *
-         * 原来只按 `piece` 的长度扣预算，而实际写进 `out` 的还有：
-         *   · 条目之间的 `"\n"`（1 字符）
-         *   · 每条开头的 `"· "`（2 字符）
-         * 这些**没被计入 `used`** ⇒ 累加式超界。实测：50 条长片段时
-         * 结果 **611 字符** > 上限 600（超了 11）。
-         *
-         * 📌 教训：**算"还能放多少"时，要把所有将要写入的字节都算上** ——
-         *   只算"正文"而漏掉分隔符/前缀，是累加式起界最典型的错法，
-         *   而且**条目越多超得越多**（少量条目时看不出来）。
-         * ⇒ 做法：先算出完整的一行（含 `"· "` 与可能的 `"\n"`），
-         *   用它去比对剩余预算。
-         */
+        /* 分隔符必须计入 used：条目越多越容易累加超界（曾实测 611 > 600）。 */
         let sep = if (out.size > 0) { "\n· " } else { "· " }
         let sepLen = previsitCharLen(sep)
-        /* 剩余预算里要先扣掉分隔符；不够就到此为止（不写半行）。 */
         let remain = AI_RAG_TOTAL_CHARS - used - sepLen
         if (remain <= 0) {
             break
@@ -141,57 +65,30 @@ public func aiRagContext(hits: Array<KbHit>): String {
 }
 
 
-/* 命中这些词就**整条丢弃**模型输出（疑似诊断/用药/剂量）。 */
+/* 命中这些词就整条丢弃模型输出（疑似诊断/用药/剂量）。 */
 public let AI_NOTE_DENY: Array<String> = [
     "mg", "毫克", "克", "片", "粒", "支", "剂量", "服用", "口服", "注射", "静脉",
     "处方", "开药", "吃药", "用法用量", "每日", "一日", "一次",
     "诊断为", "确诊", "你得了", "您得了", "患的是", "可能是癌", "肿瘤",
     "手术", "化疗", "放疗", "输液",
-    /*
-     * ⚠ 英文剂量单位也拦：模型常写 "take 500 mg" 或 "2 tablets"。
-     *   `tablet`/`capsule`/`dose`/`prescription` 同理。
-     */
     "tablet", "capsule", "dose", "prescription", "take ", "twice daily",
 ]
 
-/*
- * 把一个**已被规则引擎判定的**结论做模型增强。
- *
- * ⚠ 本函数**不抛异常**（模型调用已在上游被包住，这里再做一层防御）：
- *   它是分诊响应路径上的一环，任何异常都会变成患者看到 500。
+/* 对已被规则判定的结论做模型增强：只写 aiNote / aiReason / 统计字段。
+ * 不抛异常 —— 它处在分诊响应路径上，抛异常会让患者看到 500。
  */
 public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
                             aiSettings: AiSettingsRepo, now: Int64,
                             ragHits!: Array<KbHit> = Array<KbHit>(),
                             deadlineMs!: Int64 = 0): Unit {
-    /*
-     * ① 危急征象 ⇒ **不调模型**。
-     *   理由：这时患者最需要的是"立刻就医"四个字，而不是一段更通顺的解释。
-     *   多一次网络往返只会延迟它，收益为零、风险为正（网络抖动还会让人以为系统坏了）。
-     */
+    /* ① 危急征象不调模型：患者最需要"立刻就医"，多一次网络往返只增加延迟。 */
     if (v.redFlag) {
         v.aiReason = "危急征象：优先让患者立刻看到处置建议，不进模型"
-        /* ⚠ 用常量而不是字面量：`triageDegradeIsRedFlagBypass()` 按同一个值判定
-           "这是安全旁路而不是 AI 失败"，两处写字面量迟早会分叉。 */
+        /* 用常量 TR_RED_FLAG，与 triageDegradeIsRedFlagBypass() 同一判据，避免两处字面量分叉。 */
         v.aiDegradeReason = TR_RED_FLAG
         return
     }
-    /*
-     * ⚠⚠ 这里**不再**放"工具开关"这道闸 —— 我原先写了一道，是**理解错了 P3**：
-     *
-     *   `ai.tool.*` 那六个开关（`list_departments` / `bookable_slots` /
-     *   `doctor_specialty` / `redflag_scan` / `intake_slots` / `patient_history`）
-     *   是**模型可调用的只读能力白名单**，**不是**"分诊这个功能要不要用 AI"的功能开关。
-     *   而 `aiToolEnabled(settings, name, now)` 对**未登记**的名字**返回 false** ——
-     *   所以我原先那句 `aiToolEnabled(aiSettings, AI_TOOL_TRIAGE, ...)`
-     *   （`AI_TOOL_TRIAGE` 这个常量**根本不存在**）会把模型**静默关掉**：
-     *   表现是"配好了却永远走规则"，而**没有任何错误信息** ——
-     *   这正是本项目最忌的失败形态（"看起来对，实际没生效"）。
-     *
-     * ⇒ 本函数的开关就是 `ai.enabled` + `aiCanCall()`（配置齐不齐）。
-     *   若将来真要"分诊单独关 AI"，那应当**新增一个功能开关键**
-     *   （例如 `ai.feature.triage`），而不是挪用工具白名单。
-     */
+    /* 开关只有 ai.enabled + aiCanCall()；ai.tool.* 是模型只读能力白名单，不是功能开关。 */
     var opts: AiRuntimeOptions
     try {
         opts = aiSettings.options(now)
@@ -207,28 +104,12 @@ public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
         v.aiDegradeReason = "AI_DISABLED"
         return
     }
-    /*
-     * ★ 2026-10-15（改进 7）：**过了闸门之后就把"当时的调用事实"记进结论**。
-     *
-     * ⚠ 位置很关键：必须在 `aiCanCall` **之后**、`aiCallChatBudget` **之前**。
-     *   · 之前：还没确定真的会调模型，记下模型名会造成"用了模型"的假象；
-     *   · 之后：调用失败时仍需知道"本来是要发给谁"（`r.elapsedMs` 也会照记）。
-     *
-     * ⚠ `aiUsedKb` 的语义是"**这次真的把知识库片段带给了模型**"，
-     *   所以判据是 `ragHits` 非空（与 `aiTriagePrompt` 里"rag 为空则整段不加"
-     *   同一条件）—— 不能写成"知识库检索过"，那两者不是一回事。
-     */
+    /* 过了 aiCanCall 之后才记调用事实（之前记会造成"用了模型"的假象）；aiUsedKb = ragHits 非空。 */
     v.aiModelId = opts.modelId
     v.aiModelName = opts.modelName
     v.aiUsedKb = ragHits.size > 0
     if (v.aiUsedKb) {
-        /*
-         * ⚠ 拼的是**文档 id**（`KbHit.docId`），不是标题/正文 ——
-         *   排障要的是"能定位到哪篇"，而正文属于知识库自己的数据，
-         *   抄进统计表只会在文档被修订后留下**一份与原文不一致的副本**。
-         * ⚠ 用 `,` 分隔的可读形式（而不是 JSON 数组）：这一列是给人扫一眼的，
-         *   且长度可控（片段数本就是个位数）。
-         */
+        /* aiKbDocIds 只拼文档 id，不抄标题/正文（避免与知识库原文分叉）。 */
         var ids = ""
         for (h in ragHits) {
             if (ids.size > 0) {
@@ -238,41 +119,20 @@ public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
         }
         v.aiKbDocIds = ids
     }
-    /*
-     * ③ 组 Prompt。
-     *   ⚠ 只给模型**规则已经算好的事实**（命中的科室名），**不给**它自由发挥的余地：
-     *     让它"想推荐哪个科室"就回到了一开始要避免的那件事上。
-     *
-     * ★ P5：额外给**知识库检索片段**（`ragHits`）。
-     *   ⚠ 片段已经在调用方经过 `aiRagContext()` 的清理与限长 ——
-     *     本函数**不再**碰它们的格式（同一语义只留一处实现）。
-     *   ⚠ `ragHits` 为空时 Prompt **完全不变**（不加空的"参考资料"段：
-     *     那会诱导模型自己编参考资料）。
-     */
-    /*
-     * ★ 2026-10-21（评估报告 P0-2）：模板改成**从库里取**（管理台「Prompt 模板」页真接线）。
-     *   `aiTriageTemplateOf()` 读不到就返回空串 ⇒ 退回代码里的默认模板，
-     *   所以**数据库不可用时分诊仍然按老样子跑**（不会因为取配置失败而丢 AI 增强）。
-     */
+    /* ③ 组 Prompt：只给规则已算好的事实；P5 片段已在调用方清理限长，为空则整段不加。 */
+    /* 模板从库里取；读不到返回空串 ⇒ 退回默认模板，DB 挂时分诊照跑。 */
     let template = aiTriageTemplateOf(aiSettings, now)
     let prompt = aiTriagePromptWith(complaint, v, template, ragHits: ragHits)
     let remaining = if (deadlineMs > 0) {
         deadlineMs - DateTime.now().toUnixTimeStamp().toMilliseconds()
     } else { TRIAGE_ENHANCEMENT_BUDGET_MS }
     let r = aiCallChatBudget(opts, prompt, now, remaining)
-    /*
-     * ★ 2026-10-15（改进 7）：耗时**无论成败都记**（0 表示"没走到拿到响应的那一步"，
-     *   与 `AiCallResult.elapsedMs` 的口径一致）。排障看 p50/p95 要的正是这个数。
-     */
+    /* 耗时无论成败都记（0 = 没走到拿到响应那一步），排障看 p50/p95。 */
     v.aiElapsedMs = r.elapsedMs
     if (r.ok) {
         let clean = aiSanitizeNote(r.text)
         if (clean.size == 0) {
-            /*
-             * 模型答了，但清理后为空（含疑似诊断/用药，或全是 Markdown）。
-             * ⇒ 标 `model:invalid` 并**保留规则文案**。
-             *   ⚠ 与"调用失败"分开标：这一个要**改 Prompt**，那一个要**查网络**。
-             */
+            /* 清理后为空 ⇒ 标 model:invalid，保留规则文案；与调用失败分开标。 */
             v.source = "model:invalid"
             v.aiReason = "模型输出未通过安全检查（疑似诊断/用药或格式不合格），已用规则文案"
             v.aiDegradeReason = "INVALID_OUTPUT"
@@ -282,24 +142,13 @@ public func aiEnhanceTriage(v: TriageVerdict, complaint: String,
         v.source = "model"
         return
     }
-    /* ④ 调用失败 ⇒ 降级。`source` 保持 `rules`（**不假装成功**）。 */
+    /* ④ 调用失败 ⇒ 降级。source 保持 rules（不假装成功）。 */
     v.aiReason = r.reason
-    /*
-     * ⚠ `degrade_reason` 存的是**稳定的码**而不是 `r.reason` 那句人话：
-     *   这个列要给看板按原因聚合（"上周 30% 是超时"），
-     *   而人话会被改写（改一次文案，历史聚合就断成两段）。
-     *   人话仍在 `aiReason` 里随接口回给调用方（`ai_reason`）。
-     */
+    /* degrade_reason 存稳定码（CALL_FAILED 等）供看板聚合；人话只进 aiReason。 */
     v.aiDegradeReason = "CALL_FAILED"
 }
 
-/*
- * 取库里配的分诊模板（`prompt.triage`）。
- *
- * ⚠ 返回**空串**表示"用代码里的默认模板"，两种情况都走它：
- *   ① 库里没有这一行（`PromptRepo.body()` 自己也会回退默认值，这里只是双保险）；
- *   ② 读配置/读库抛异常（DB 挂了不能让分诊跟着挂 —— 分诊是患者主路径）。
- */
+/* 取库里配的分诊模板（prompt.triage）；空串（含读库异常）表示用代码默认模板。 */
 func aiTriageTemplateOf(aiSettings: AiSettingsRepo, now: Int64): String {
     try {
         let repo = PromptRepo(aiSettings)
@@ -309,12 +158,7 @@ func aiTriageTemplateOf(aiSettings: AiSettingsRepo, now: Int64): String {
     }
 }
 
-/*
- * 模板渲染：把 `{主诉}` / `{科室}` / `{红牌}` 换成实际值。
- *
- * ⚠ 占位符语义必须与 `promptSlots()` 里 `PromptSlot.required` 登记的一致 ——
- *   那边是**写入时的契约**（缺了不让存），这里是**运行时的兑现**。两处一起改才安全。
- */
+/* 模板渲染：{主诉} / {科室} / {红牌}；占位符须与 promptSlots() 的 PromptSlot.required 一致。 */
 func aiTriageRenderTemplate(template: String, complaint: String, v: TriageVerdict): String {
     var deptHint = "（未判定）"
     if (v.options.size > 0) {
@@ -322,11 +166,7 @@ func aiTriageRenderTemplate(template: String, complaint: String, v: TriageVerdic
     }
     var b = template.replace("{主诉}", complaint)
     b = b.replace("{科室}", deptHint)
-    /*
-     * `{红牌}` 目前**不会出现在发给模型的 Prompt 里**（红牌在 `aiEnhanceTriage()`
-     * 开头就旁路了，根本不调模型）；留着是为了让模板作者能写出"若是危急则…"的
-     * 分情形措辞，并且将来若放开红牌增强不必再改这里。
-     */
+    /* {红牌} 当前不会出现在 Prompt 里（红牌在开头就旁路），保留供模板作者写分情形措辞。 */
     let flagText = if (v.redFlag) { "是" } else { "否" }
     b = b.replace("{红牌}", flagText)
     return b
@@ -338,21 +178,9 @@ public func aiTriagePrompt(complaint: String, v: TriageVerdict,
     return aiTriagePromptWith(complaint, v, "", ragHits: ragHits)
 }
 
-/*
- * 组给模型的 Prompt：**任务段来自模板（可配）+ 参考资料段 + 安全尾段（不可配）**。
- *
- * ⚠⚠ 这里的分层是本次接线的**核心不变量**，改动前先读：
- *
- *   ① **任务段**：`template`（管理台可编辑）。只描述"要模型干什么"。
- *   ② **参考资料段**：知识库检索片段（`aiRagContext()` 已清理限长）。
- *      ⚠ 为空则**整段不加**（留空的"参考资料："会诱导模型自己编）。
- *   ③ **安全尾段**：**写在代码里**，模板改不掉。
- *      为什么不让它可配：模板是运维能改的数据，而"不下诊断、不提药名、≤80 字、
- *      不复述系统判定"这几条是**免责与可用性的底线**。让底线跟着数据走，
- *      一次误编辑就会把线上变成"模型给患者开药"。所以它必须是代码。
- *
- *   规则判定的科室只作为**事实**出现在任务段里（`{科室}`），
- *   模型的输出仅用于措辞，`options` 始终由规则决定（见 `acceptance_kb.cj` ⑥⑧）。
+/* 组 Prompt：任务段来自模板（可配）+ 参考资料段 + 安全尾段（不可配）。
+ * 固定安全尾段不可被模板覆盖：不下诊断、不提药名、≤80 字是免责与可用性底线。
+ * 模型只给措辞，结论由规则与知识库给（options 始终由规则决定）。
  */
 public func aiTriagePromptWith(complaint: String, v: TriageVerdict, template: String,
                                ragHits!: Array<KbHit> = Array<KbHit>()): String {
@@ -361,22 +189,8 @@ public func aiTriagePromptWith(complaint: String, v: TriageVerdict, template: St
         head = promptDefaultBody(PROMPT_TRIAGE)
     }
     var b = aiTriageRenderTemplate(head, complaint, v)
-    /*
-     * ★ P5：参考资料段。
-     *
-     * ⚠⚠ 三处刻意的措辞，都是为了**不让知识库内容变成"第二个推荐来源"**：
-     *
-     *   ① 标题是「参考资料（供措辞参考）」而**不是**「你可以推荐这些科室」——
-     *      后者会让模型觉得"可以按资料改建议去哪"。
-     *   ② 正文明确写「**不要去哪个科室以系统判定为准**」——
-     *      知识库文档里极可能写着"高血压请挂心内科"这类句子；
-     *      若不点明，模型会**照着资料复述一个科室名**，而那个科室
-     *      **可能根本没号** ⇒ 患者照做就挂不上号（P2 硬性验证层要防的正是这个）。
-     *   ③ 整段包在「参考资料」里而不是混进主诉 —— 让模型能区分
-     *      "患者自己说的"与"院内材料写的"。
-     *
-     * ⚠ `rag` 为空 ⇒ **整段不加**（不留空的"参考资料："，那会诱导模型自己编）。
-     */
+    /* 参考资料段只为措辞："供措辞参考" + "不要去哪个科室以系统判定为准"，防止知识库文档被复述成推荐。
+     * rag 为空则整段不加（留空的"参考资料："会诱导模型编造）。 */
     let rag = aiRagContext(ragHits)
     if (rag.size > 0) {
         b = b + "\n参考资料（供措辞参考；**不要去哪个科室以系统判定为准**）：\n" + rag + "\n"
@@ -389,20 +203,10 @@ public func aiTriagePromptWith(complaint: String, v: TriageVerdict, template: St
     return b
 }
 
-/*
- * 模型输出 → 可给患者看的**安全文本**。
- *
- * 白名单式清理，顺序不能变：
- *   ① 只取第一行（多段一律丢掉，避免"建议…"藏在第 3 段）
- *   ② 去 Markdown 标记（`#`、`*`、`` ` ``、`>`、列表符）
- *   ③ 命中**禁用词** ⇒ 返回空串（**整条丢弃**，见文件头）
- *   ④ 按**字符**截断到 `AI_NOTE_MAX_CHARS`
- *   ⑤ 去掉控制字符（含换行 —— 已有"只取第一行"，这里是二道保险）
- *
- * ⚠ 返回空串是**合法结果**，调用方必须处理（把 source 标成 `model:invalid`）。
- */
+/* 模型输出 → 可给患者看的安全文本；白名单清理，顺序不能变：
+ * 取首行 → 去 Markdown → 命中禁用词整条丢弃 → 按字符截断 → 去控制字符。
+ * 返回空串是合法结果，调用方必须处理（标 model:invalid）。 */
 public func aiSanitizeNote(raw: String): String {
-    /* ① 第一行 */
     var line = raw
     let nl = raw.indexOf("\n")
     match (nl) {
@@ -410,33 +214,24 @@ public func aiSanitizeNote(raw: String): String {
         case None => ()
     }
     line = line.trimAscii()
-    /* ② 去 Markdown */
     line = aiStripMarkdown(line)
-    /* ③ 禁用词（大小写不敏感：模型会写 "Take 500mg"） */
     let low = line.toAsciiLower()
     for (w in AI_NOTE_DENY) {
         if (low.contains(w.toAsciiLower())) {
             return ""
         }
     }
-    /* ④ 按字符截断 */
     if (previsitCharLen(line) > AI_NOTE_MAX_CHARS) {
         line = aiTruncateChars(line, AI_NOTE_MAX_CHARS)
     }
-    /* ⑤ 控制字符（防"第一行"判断被 \r 之类绕过） */
     if (baseHasControlChar(line)) {
         return ""
     }
     return line.trimAscii()
 }
 
-/*
- * 这段文本是否含"疑似诊断/用药"的词汇。
- *
- * ⚠ 为什么做成产品侧函数而不是让测试自己遍历 `AI_NOTE_DENY`：
- *   那是**实现细节**（清单本身会变），测试依赖它的形状会让"改清单"变成
- *   "改测试"。对外只暴露"这段文本安全吗"这一个**语义**问题。
- */
+/* 文本是否含疑似诊断/用药词：对外只暴露"这段文本安全吗"这一语义问题。
+ * 不暴露 AI_NOTE_DENY 的形状，避免改清单变成改测试。 */
 public func aiNoteHasDenyWord(s: String): Bool {
     let low = s.toAsciiLower()
     for (w in AI_NOTE_DENY) {
@@ -447,7 +242,7 @@ public func aiNoteHasDenyWord(s: String): Bool {
     return false
 }
 
-/* 去掉常见的 Markdown 标记（只做**去标记**，不做解析）。 */
+/* 去掉常见 Markdown 标记（只做去标记，不做解析）。 */
 public func aiStripMarkdown(s: String): String {
     var out = s
     for (m in ["**", "__", "##", "#", "*", "`", ">", "- ", "· ", "1. ", "2. "]) {
@@ -456,7 +251,7 @@ public func aiStripMarkdown(s: String): String {
     return out.trimAscii()
 }
 
-/* 按**字符**截断（`String` 字节下标的坑见 triage.cj 里那段注释）。 */
+/* 按字符截断（String 字节下标的坑见 triage.cj）。 */
 public func aiTruncateChars(s: String, maxChars: Int64): String {
     if (previsitCharLen(s) <= maxChars) {
         return s

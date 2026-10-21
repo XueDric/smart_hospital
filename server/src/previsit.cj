@@ -2,32 +2,9 @@
  * SPDX-License-Identifier: MIT
  *
  * 智慧医院智能导诊就诊系统 · 服务端
+ * previsit.cj —— 预问诊：六槽位多轮采集 + SSE 流式（不接模型，追问文本由规则生成）。
  *
- * ===== previsit.cj —— P2 智能预问诊（多轮采集 + SSE 流式）==================
- *
- * ── 本文件的核心纪律（brief §5.2 那张表，必须分清两件事）──────────────────
- *
- *   | 场景 | 是否流式 | 理由 |
- *   | 预问诊**对话文本** | ✅ 可以流式 | 它就是自然语言，**不是业务值** |
- *   | 抽取出的**业务值**（问诊单） | ❌ **必须非流式 + 校验后返回** | 同分诊结论 |
- *
- *   这条区分是 brief 明确点名"最容易做错的地方"。所以本文件在结构上就把它分开：
- *     · `previsitAssistantLines()` 产出的是**要流出去的对话文本**（自然语言）
- *     · `PrevisitForm` 是**结构化业务值**（有类型、有校验、只走 JSON 一次性返回）
- *   两者**不共用**任何"拼字符串返回给客户端"的路径。
- *
- * ⚠⚠ 本轮**不接真模型**（与分诊同一个阻塞：brief §10 Q6 合规待决）。
- *   所以"追问文本"是**规则生成**的（固定的问诊顺序 + 按主诉微调措辞），
- *   而**不是**模型生成的。这一点在读代码时不会有歧义：
- *   文件里没有任何出站 HTTP 调用，也没有"模型"字样出现在产物上。
- *   接上模型时只需替换 `previsitAssistantLines()` ——
- *   会话状态机、业务值校验、流式帧格式**一行都不用改**。
- *
- * ── 为什么"对话文本"可以流式而"业务值"不行（把理由写下来，免得将来被"优化"掉）──
- *   对话文本流错了，患者看到半句话 —— 他只会再问一次，**无害**。
- *   业务值流错了（比如"过敏史：青霉素"先流出去、再改成"无过敏史"），
- *   客户端可能已经把它写进病历草稿 —— **那是医疗记录污染**。
- *   所以业务值**只有在完整、校验通过之后**才允许出现在响应里。
+ * 铁律：对话文本可流式；业务值（PrevisitForm）必须完整校验后一次性 JSON 返回，禁止流式。
  */
 
 package qingzhou
@@ -36,133 +13,43 @@ import std.collection.*
 import stdx.encoding.json.*
 
 /*
- * "问诊单**未采完**"的 SQL 片段 —— 由 `intakeSlots()` **生成**，不手写。
- *
- * ⚠⚠ 为什么必须生成、且判据不是"表单空不空"（我第一版写 `form_json = ''`，实测无效）：
- *
- *   我原以为"被放弃的会话"就是 `form_json = ''`。**错** ——
- *   `GET /previsit/stream?chief_complaint=...` 会**立刻把主诉写进表单**，
- *   于是刚开的会话 `form_json` 就已经是 `{"chief":"咳嗽"}`（非空）。
- *   实测连开 42 次 ⇒ 42 行全都 `form_json <> ''`，那条 DELETE 一行都匹配不到。
- *
- *   ⇒ 真正的判据是"**六个槽位齐不齐**"，不是"表单空不空"。
- *
- * ── 为什么用字符串包含来数槽位（而不是 JSON 函数）──────────────────────
- *   ① 本项目起步就定"不依赖 DB 高级特性"的路线（brief §5.1）；
- *      用 `JSON_CONTAINS_PATH` 会把"能不能跑"绑在 MySQL 的 JSON 支持上。
- *   ② 六个 key 都是英文字段名，且**两两不是彼此的子串**
- *      （chief / duration / severity / associated / history / allergy）
- *      ⇒ 用 `LIKE '%key%'` 数出现次数是安全的。
- *      ⚠ 这个前提必须成立：加新槽位时若取了别人的子串（如加 `chief2`），
- *      计数会偏大 ⇒ **`rpIncompleteRule` 用例会变红**（按类别扫，不靠人记）。
- *   ③ 片段由 `intakeSlots()` 生成 ⇒ 加槽位只改一处（"口径只留一处"）。
+ * 未采完判据：IFNULL(JSON_LENGTH(JSON_KEYS(form_json)), 0) < 槽位数 —— 数真实 JSON 键，与值内容无关。
+ * 不能用 form_json = ''（开流即写入主诉），也不能 LIKE '%key%'（答案文本可含槽位名，误判成已完成）。
+ * 不能省 IFNULL：坏 JSON 时 JSON_KEYS 返回 NULL，驱动 getInt 抛异常，会中断 create() 连带新会话建不出。
  */
 func previsitSlotCountSql(): String {
-    /*
-     * ★★ 判据的**两次**修正（都记下来，因为这是"判据被内容影响"的典型）：
-     *
-     * ── 第一版（错）：`form_json = ''` ────────────────────────────────────
-     *   我以为"被放弃的会话"就是空表单。**错** ——
-     *   `GET /previsit/stream?chief_complaint=...` 会**立刻把主诉写进表单**，
-     *   所以刚开的会话 `form_json` 已经是 `{"chief":"咳嗽"}`（非空）。
-     *   实测连开 42 次 ⇒ 42 行全 `form_json <> ''`，那条 DELETE 一行都匹配不到。
-     *
-     * ── 第二版（也错）：`LIKE '%槽位名%'` 计数 ────────────────────────────
-     *   我用"六个 key 两两不是彼此的子串"论证 LIKE 计数安全。那个前提**成立**，
-     *   但它**不足** —— 第七份复查指出：**答案文本里可以出现槽位名**。
-     *   我实测复现：
-     *       `{"chief":"咳嗽 duration severity associated history allergy"}`
-     *       ⇒ 真实键数 = **1**，LIKE 计数 = **6** ⇒ 被判成"已完成"
-     *   ⇒ 一个只答 1 项、内容里塞了 5 个槽位名的会话**永远不被压实**，
-     *     存储上限可被**对抗性绕过**。（业务正确性不受影响：HTTP 层读的是
-     *     内存里解析后的表单，仍正确地报 complete=false / filled=1。）
-     *
-     * ── 第三版（当前）：`JSON_LENGTH(JSON_KEYS(form_json))` ──────────────
-     *   数的是**真实的 JSON 键个数**，与**值的内容完全无关**。
-     *
-     *   ⚠ 为什么用 `JSON_KEYS` 而不是直接 `JSON_LENGTH(form_json)`：
-     *     我实测确认 `JSON_LENGTH` 对**空串与非法 JSON 返回 NULL**。
-     *     NULL 参与 `<` / `>=` 比较得 NULL ⇒ 条件为假 ⇒
-     *     **一条坏 JSON 的会话会被当成"已完成"而永不清理**（静默的正确性洞）。
-     *     `JSON_KEYS` 对同样输入返回 **0**（也已实测），是干净的整数比较。
-     *
-     *   ⚠ 这引入了对 MySQL/MariaDB **JSON 函数**的依赖 —— 与之前"不依赖 DB
-     *     高级特性"的偏好在方向上相反。这是**权衡后的选择**：正确性 > 可移植性，
-     *     而且我们本来就用 JSON 语义存 `form_json`，依赖 JSON 函数不新增约束面。
-     *
-     *   ★ `IFNULL(..., 0)` 不是装饰 —— 它修掉一个**实测炸出来的**洞：
-     *     `JSON_KEYS('{坏 JSON')` 返回 **NULL**（我实测确认），于是
-     *     `NULL >= 6` 得 NULL ⇒ 该列是 NULL ⇒ 驱动层 `getInt` 抛
-     *     `The part of value convert failed.` ⇒ **整个验收用例崩掉**。
-     *     ⇒ 而且这不只是测试问题：**生产里一条坏 JSON 就能让"清理陈旧会话"
-     *       这条路径抛异常**，而它跑在 `create()` 里 —— **于是新会话也建不出来**。
-     *       那是一条坏数据升级成"整个预问诊不可用"的路径。
-     *     加 `IFNULL` 后：坏 JSON ⇒ 键数 0 ⇒ 判为"未采完" ⇒ **会被正常清理**
-     *       （坏数据该被清掉，而不是把功能拖死）。
-     */
     return "IFNULL(JSON_LENGTH(JSON_KEYS(form_json)), 0)"
 }
 
-/* "问诊单**未采完**"（槽位没齐）。 */
+/* 未采完：已填槽位数 < 总槽位数。 */
 func previsitIncompleteSql(): String {
     return previsitSlotCountSql() + " < ${intakeSlots().size}"
 }
 
-/* "问诊单**已采完**"（槽位齐了）—— 与上面互补。 */
 func previsitCompleteSql(): String {
     return previsitSlotCountSql() + " >= ${intakeSlots().size}"
 }
 
-/* ===================== 卫生阈值（会话清理）===================== */
+/* 会话清理阈值 */
 
-/*
- * 被放弃会话的 TTL（秒）：30 分钟。
- *
- * 取值理由：患者中途离开后**不会再回来接着答**（他没有可恢复的入口，
- * 会话 id 只在当次前端的流里），所以未完成会话的"追问价值"很快归零。
- * 30 分钟与"一次门诊候诊"同量级，足够覆盖"答到一半去缴费再回来"。
- */
+/* 未采完会话 TTL 30 分钟：患者不会回来续答，与一次门诊候诊同量级。 */
 public let PREVISIT_ABANDONED_TTL: Int64 = 1800
 
-/*
- * 同一患者**未完成**会话的保留上限。
- *
- * ⚠ 这个上限防的是**滥用**：反复 `GET /previsit/stream` 但不作答
- *   （复查实测连续 12 次就新增 12 行）。取 5 —— 正常患者不会有 5 个
- *   同时进行中的问诊；而连开 5 次以上的基本是脚本。
- */
+/* 同患者未完成会话上限 5：防反复开流不作答的滥用。 */
 public let PREVISIT_MAX_OPEN: Int64 = 5
 
-/*
- * 同一患者**已完成**问诊单的保留上限。
- *
- * ⚠ 这是**安全阀**，不是保留策略：真实归档属 P4 病历域（要有明确的
- *   数据保留期与审计要求）。这里只保证"不会无界增长"。
- *   取 50：覆盖一个患者相当长一段时间的就诊记录。
- */
+/* 同患者已完成问诊单上限 50：安全阀，只防无界增长；真实归档属病历域。 */
 public let PREVISIT_MAX_DONE: Int64 = 50
 
-/* ===================== 问诊槽位（静态表）===================== */
+/* 问诊槽位 */
 
-/*
- * 一个问诊槽位（要采集的一项信息）。
- *
- * ⚠ 这是**静态表**（照 `deptRules()` / `aiToolSpecs()` 的纪律）：
- *   顺序有意义 —— 采集顺序就是表里的顺序，先问"多久了"再问"多严重"，
- *   符合临床问诊习惯（现病史：起病时间 → 严重程度 → 伴随症状 → 诊疗经过）。
- */
+/* 一个采集槽位（静态表）。顺序即采集顺序：病程 → 程度 → 伴随症状 → 既往史 → 过敏史。 */
 public class IntakeSlot {
     public let key: String          // 落库用的字段名（英文，稳定）
     public let question: String     // 给患者看的问题
     public let hint: String         // 可选的作答提示（示例）
     public let maxLen: Int64        // 该字段允许的最大**字符**数
-    /*
-     * ★ 给**医生**看的短名（2026-10-14 增，改进 1）。
-     * ⚠ 与 `question` 是两套文案、不是冗余：患者看的是"您这次主要哪里不舒服？"，
-     *   医生摘要里要的是"主诉"。拿 question 当标签会让摘要变成一串问句。
-     * ⚠ 取值与 `intakePrefill()` 拼现病史用的段名**逐字一致**（病程/程度/伴随）——
-     *   否则同一项信息在"摘要"和"病历正文"里会叫两个名字。
-     */
+    /* 给医生看的短名：与 question 两套文案；取值必须与 intakePrefill() 的段名逐字一致。 */
     public let label: String
 
     public init(key: String, question: String, hint: String, maxLen: Int64, label: String) {
@@ -175,47 +62,28 @@ public class IntakeSlot {
 }
 
 /*
- * 问诊单的六个槽位。
- *
- * ⚠ 为什么是这六项（可解释，不是随手列的）：
- *   主诉 / 病程 / 程度 / 伴随症状 / 既往史 / 过敏史 ——
- *   这是门诊问诊的**最小可用集**：缺"过敏史"会开错药，缺"病程"无法判断急慢，
- *   缺"伴随症状"无法鉴别诊断。再少就不足以支撑医生接诊。
- *   刻意**不问**身份证号/住址等与本次就诊无关的信息 —— 最小必要原则。
- *
- * ⚠ 过敏史有 `none` 语义（"无过敏史"是**有效答案**，不是"没答"）：
- *   所以下面 `previsitFormComplete` 只判断"槽位是否有值"，
- *   而"无"会被当作一个合法的值存下来 —— 这与"留空"必须区分开。
+ * 六个槽位：主诉/病程/程度/伴随/既往史/过敏史 —— 门诊最小可用集；不问身份证、住址（最小必要）。
+ * 过敏史的「无」是有效答案（存值），与留空不同。
  */
 public func intakeSlots(): Array<IntakeSlot> {
     return [
         IntakeSlot("chief", "您这次主要哪里不舒服？", "例如：咳嗽、胃痛、头晕", 200, "主诉"),
         IntakeSlot("duration", "这个情况持续多久了？", "例如：3 天、2 周、半年", 60, "病程"),
         IntakeSlot("severity", "对日常生活影响大吗？", "例如：轻微 / 影响睡眠 / 无法工作", 60, "程度"),
-        /*
-         * ⚠ 提示语里的"无"用 **CJK 直角引号**（「」）而不是 ASCII 双引号：
-         *   ASCII `"` 在仓颉里是**字符串定界符** ⇒ 写在字符串中间会把字面量提前结束
-         *   （实测报 `unclosed delimiter: '('`）。中文文案里嵌引用一律用「」，
-         *   既避开这个问题，排版上也更规范。
-         */
+        /* 文案用「」而非 ASCII 双引号：后者是字符串定界符，写在字符串中间会提前结束字面量。 */
         IntakeSlot("associated", "还有其它不舒服吗？（没有就写「无」）", "例如：发热、恶心、乏力", 200, "伴随"),
         IntakeSlot("history", "以前有没有得过什么病、或长期吃药？", "例如：高血压 5 年，服降压药；或写「无」", 300, "既往史"),
         IntakeSlot("allergy", "有没有药物或食物过敏？", "例如：青霉素过敏；或写「无」", 200, "过敏史")
     ]
 }
 
-/* ===================== 业务值：问诊单 ===================== */
-
 /*
- * ★ 结构化问诊单 —— **业务值**，只在**全部槽位齐备并校验通过后**才返回。
- *
- * ⚠ 它绝不流式（见文件头）。`answers` 的键就是 `IntakeSlot.key`。
+ * 结构化问诊单（业务值）：只在校验通过后返回；answers 的键即 IntakeSlot.key。
  */
 public class PrevisitForm {
     public var answers: Map<String, String> = HashMap<String, String>()
     public var updatedAt: Int64 = 0
 
-    /* 已填项数 / 总项数（进度给客户端用）。 */
     public func filled(): Int64 {
         var n: Int64 = 0
         for (s in intakeSlots()) {
@@ -236,28 +104,17 @@ public class PrevisitForm {
     }
 }
 
-/* 一个会话的状态。 */
 public class PrevisitSession {
     public var id: String = ""
     public var patientId: Int64 = 0
-    /*
-     * ★ 绑定的挂号单（2026-10-14 增，改进 1）。`0` = 尚未绑定。
-     *   ⚠ 这是"患者答的这张问诊单属于哪一次就诊"的**服务端**事实 ——
-     *   此前它只存在于客户端本机的 `SessionStore` 里（换设备就断）。
-     */
+    /* 绑定的挂号单 id，0 = 未绑定（服务端事实，不再依赖客户端本机存储）。 */
     public var appointmentId: Int64 = 0
     public var turn: Int64 = 0
     public var createdAt: Int64 = 0
     public var updatedAt: Int64 = 0
     public var form: PrevisitForm = PrevisitForm()
 
-    /*
-     * 下一个待采集的槽位；全部采完返回 None。
-     *
-     * ⚠ 判定依据是"**槽位是否有值**"，而不是 `turn`。
-     *   用 `turn` 推进序号会让"重复提交同一槽位"（网络重试）跳过一个字段 ——
-     *   而按值判定天然幂等：重试同一个答案不会改变状态。
-     */
+    /* 下一个待采集槽位。按"槽位是否有值"判定而非 turn：重试同一槽位天然幂等。 */
     public func nextSlot(): ?IntakeSlot {
         for (s in intakeSlots()) {
             if (!form.answers.contains(s.key)) {
@@ -268,23 +125,13 @@ public class PrevisitSession {
     }
 }
 
-/* ===================== 仓储 ===================== */
-
-/*
- * 答案写入结果。
- *
- * ⚠ 三种失败必须**各自成字段**（我第一版把"未知字段"塞进 `tooLong` 复用，
- *   结果实现里给未知字段返回了 ok=true ⇒ 客户端可以往表单塞任意键）。
- *   教训：**用"复用字段"表达不同语义，迟早会在某个分支上漏判。**
- */
+/* 答案写入结果：三种失败各自成字段（复用字段表达不同语义会漏判）。 */
 public class PrevisitAnswerOutcome {
     public var ok: Bool = false
     public var noSuchSession: Bool = false
     /* 非空 = 该字段名不是已知槽位（客户端塞了自造键）。 */
     public var unknownSlot: String = ""
-    /* 非空 = 该字段超长（字段名）。 */
     public var tooLong: String = ""
-    /* 非空 = 该字段值为空（不算失败，只是没写入；留档便于调用方解释）。 */
     public var emptyValue: String = ""
 
     public func succeeded(): Bool {
@@ -293,17 +140,7 @@ public class PrevisitAnswerOutcome {
 }
 
 /*
- * 预问诊会话仓储。
- *
- * ⚠ 会话**落库**而不是放内存：
- *   ① 多进程/重启后会话不丢（本项目已定"不做 Redis"的路线，见 brief §5.1）；
- *   ② 问诊单本身就是**要长期保留的医疗数据**（属于患者档案的一部分），
- *      迟早要落库 —— 现在落库，将来不必迁移。
- *
- * ⚠ 它**不属于**号源域，也不属于内存 Store 负责的配套域：
- *   它是**直接 SQL** 路径（与 `schedule`/`appointment` 同一范式），
- *   且**不参与** ADR-0001 §4.3 的范围锁死（那里锁的是"哪张表归谁写"）。
- *   所以它有自己的表 `previsit_session`（见 schema.cj）。
+ * 会话落库 previsit_session（见 schema.cj）：多进程/重启不丢，且问诊单本身是要长期保留的医疗数据。
  */
 public class PrevisitRepo {
     private let db: DbBackend
@@ -313,26 +150,8 @@ public class PrevisitRepo {
     }
 
     /*
-     * 建会话。返回会话 id（32 字节随机 = 64 hex，与令牌同强度，猜不到别人的会话）。
-     *
-     * ★ 顺手做两件**卫生**工作（2026-10-07 按第六份复查补）：
-     *   ① `pruneStale()` —— 清理陈旧会话；
-     *   ② 限制同一患者的**未完成**会话数，超出则丢掉最旧的。
-     *
-     * ── 原缺陷（复查实测，我也复现了）────────────────────────────────────────
-     *   连续 12 次 `GET /previsit/stream` ⇒ `previsit_session` **新增 12 行**，
-     *   而全仓**没有任何地方**清理它（唯一的 DELETE 在测试夹具里）。
-     *   反复开流但不作答的客户端会让这张表**永久堆积**。
-     *
-     *   ⚠ 与本仓既有的卫生习惯不一致：`pruneTokens`（签发令牌时顺手清过期）
-     *     与 `pruneAttempts`（登录成功时顺手清陈旧计数）都是这么做的。
-     *     **同一类问题在别处已有解法，新表就该照做** —— 这正是"按类别扫"该覆盖到的。
-     *
-     * ── 为什么阈值分两档（可解释，不是拍脑袋）──────────────────────────────
-     *   · **未采完**会话（槽位没齐，见 previsitIncompleteSql）：患者中途放弃的，30 分钟后没有任何
-     *     追问价值（他不会再回来接着答），且它们数量最大 ⇒ TTL 短。
-     *   · **已完成**会话（有表单）：是**患者档案素材**，要留得久 ⇒ TTL 长，
-     *     且**由保留上限**约束（不是无限留）。真实归档属 P4 病历域，这里只防无界增长。
+     * 建会话，返回 32 字节随机 id（64 hex，猜不到别人的会话）。顺手 pruneStale() + capSessions()：
+     * 反复开流不作答会让这张表永久堆积。
      */
     public func create(patientId: Int64, now: Int64): String {
         let _p = pruneStale(now)
@@ -344,13 +163,7 @@ public class PrevisitRepo {
         return sid
     }
 
-    /*
-     * 清理陈旧会话（返回删除行数）。
-     *
-     * ⚠ 只删**未采完**的（判据见 `previsitIncompleteSql`）：已完成的问诊单
-     *   **不在这里删** —— 它是医疗记录素材，删除属于"数据保留策略"，
-     *   不该由一个顺手 prune 决定。已完成会话的增长由 `capSessions` 的上限约束。
-     */
+    /* 清理陈旧未采完会话；已完成的不在此删（属数据保留策略，由 capSessions 上限约束）。 */
     public func pruneStale(now: Int64): Int64 {
         return db.exec(
             "DELETE FROM previsit_session WHERE " + previsitIncompleteSql() + " AND updated_at < ?",
@@ -358,12 +171,7 @@ public class PrevisitRepo {
     }
 
     /*
-     * 把某患者的会话数压到上限内（返回删除行数）。
-     *
-     * ⚠ 只压**未采完**会话：已完成的问诊单是医疗记录，不能因为"开了太多新会话"
-     *   而被顶掉。所以两个上限是**分开**的：
-     *     · 未采完：`PREVISIT_MAX_OPEN`（防滥用：反复开流）
-     *     · 已完成：`PREVISIT_MAX_DONE`（防无界增长；安全阀，不是保留策略）
+     * 把患者的会话按类型压到上限：未采完 PREVISIT_MAX_OPEN，已完成 PREVISIT_MAX_DONE。
      */
     public func capSessions(patientId: Int64, now: Int64): Int64 {
         var removed: Int64 = 0
@@ -372,14 +180,7 @@ public class PrevisitRepo {
             "SELECT COUNT(*) FROM previsit_session WHERE patient_id = ? AND " + previsitIncompleteSql(),
             [DbInt(patientId)])
         if (openRows.rowCount() > 0 && openRows.getInt(0, 0) >= PREVISIT_MAX_OPEN) {
-            /*
-             * 删掉"除了最新 N-1 条之外"的未采完会话。
-             *
-             * ⚠ `LIMIT` 不能直接用在带子查询的 DELETE 里（MySQL 限制），
-             *   所以用 `id NOT IN (子查询取最新 N-1 条)` 的写法。
-             *   子查询按 `updated_at DESC, id DESC` 排序 —— 加 `id` 是为了
-             *   **同秒内也确定**（否则同一时间戳的多条顺序随机，测试会抖）。
-             */
+            /* LIMIT 不能直接用在带子查询的 DELETE：改 id NOT IN (最新 N-1 条)；ORDER BY updated_at DESC, id DESC 保证同秒也确定。 */
             removed = removed + db.exec(
                 "DELETE FROM previsit_session WHERE patient_id = ? AND " + previsitIncompleteSql() + " " +
                 "AND id NOT IN (SELECT id FROM (SELECT id FROM previsit_session " +
@@ -387,7 +188,6 @@ public class PrevisitRepo {
                 "ORDER BY updated_at DESC, id DESC LIMIT ?) t)",
                 [DbInt(patientId), DbInt(patientId), DbInt(PREVISIT_MAX_OPEN - 1)])
         }
-        // ② 已完成会话：安全阀（超出则丢最旧的）
         let doneRows = db.query(
             "SELECT COUNT(*) FROM previsit_session WHERE patient_id = ? AND " + previsitCompleteSql(),
             [DbInt(patientId)])
@@ -414,13 +214,7 @@ public class PrevisitRepo {
         return Some(rowToSession(rs, 0))
     }
 
-    /*
-     * 会话是否属于该患者（**不区分**"不存在"与"不是你的"）。
-     *
-     * ⚠ 调用方（挂号 handler）据此报 400 而不是 404/403：
-     *   `previsit_id` 是**请求体里的可选字段**，不是路径资源 ——
-     *   区分两种失败会让它变成一个"枚举别人会话 id"的 oracle。
-     */
+    /* 是否属于该患者（不区分"不存在"和"不是你的"）：区分会变成枚举会话 id 的 oracle。 */
     public func ownedBy(sid: String, patientId: Int64): Bool {
         if (sid.size == 0) {
             return false
@@ -429,21 +223,8 @@ public class PrevisitRepo {
     }
 
     /*
-     * ★ 把会话绑定到挂号单（2026-10-14，改进 1）。
-     *
-     * 语义与幂等：
-     *   · 只绑**属于该患者**的会话（`patient_id` 条件写进 UPDATE 里，
-     *     与 `answer` 同一条纪律：安全性不能依赖"上一步查过了"）；
-     *   · 允许"未绑定 → 绑定"与"已绑同一单 → 再绑一次"（幂等重放路径会重复执行）；
-     *   · **不允许改绑到另一张单**（`appointment_id = 0 OR appointment_id = ?`）——
-     *     否则一次误传就能把患者的自述挂到别人的就诊上（那是病历污染）。
-     * ⚠ **返回值的语义是"现在它是不是绑在这张单上"**，不是"本次是否写了行"：
-     *   MySQL 的 UPDATE 在"新值 = 旧值"时返回 **0 行受影响**（不是错误）。
-     *   而幂等重放（同一 token 再提一次 → AlreadyBooked → 再绑一次）走的正是这条路，
-     *   若把 0 行当失败，重放响应就会谎报 `previsit_bound = false` ——
-     *   **AC-P4-5 ① 抓到的就是这个**（第一版 `return n > 0` 被判 FAIL）。
-     *   ⇒ 0 行时回读一次确认后置条件（这次查询只在"没写任何行"时发生，非热路径）。
-     * false = 会话不存在 / 不属于该患者 / 已绑在**别的**单上。
+     * 绑定挂号单：只绑属于该患者的会话（patient_id 写进 UPDATE）；允许重复绑同一单，禁止改绑到另一张单。
+     * 返回"现在是否绑在这张单上"—— MySQL 在值不变时返回 0 行受影响，故 0 行时回读确认（幂等重放走这里）。
      */
     public func bindAppointment(sid: String, patientId: Int64, appointmentId: Int64): Bool {
         if (sid.size == 0 || appointmentId <= 0) {
@@ -462,13 +243,7 @@ public class PrevisitRepo {
         }
     }
 
-    /*
-     * ★ 按挂号单取会话（医生读摘要用，2026-10-14 改进 1）。
-     *
-     * ⚠ 为什么带 `patientId` 参数：会话属于患者，而"这张单是谁的"由
-     *   调用方从**挂号单**读出（不是从请求里拿）。SQL 里带 patient_id 条件
-     *   ⇒ 即使路由层的归属校验将来被改错，这里也不会把别人的问诊单漏出去。
-     */
+    /* 按挂号单取会话（医生读摘要）：SQL 带 patient_id，路由层校验失效也不漏别人的问诊单。 */
     public func findByAppointment(appointmentId: Int64, patientId: Int64): ?PrevisitSession {
         let rs = db.query(
             "SELECT id, patient_id, turn, form_json, created_at, updated_at, appointment_id " +
@@ -481,13 +256,7 @@ public class PrevisitRepo {
         return Some(rowToSession(rs, 0))
     }
 
-    /*
-     * 该患者**最近一次已完成**的会话（存量兼容的回退路径，改进 1）。
-     *
-     * ⚠ 只在"本单没有绑定会话"时用它：改进 1 之前挂号从不上报 `previsit_id`，
-     *   那些历史单永远绑不上，医生端若只认绑定就会对老单显示"没有预问诊"。
-     *   HTTP 层用响应里的 `bound` 区分这两种来源，前端文案不同。
-     */
+    /* 该患者最近一次已完成会话（存量兼容）：只在本单未绑定时用；HTTP 响应 bound 区分两种来源。 */
     public func latestCompleteForPatient(patientId: Int64): ?PrevisitSession {
         let rs = db.query(
             "SELECT id, patient_id, turn, form_json, created_at, updated_at, appointment_id " +
@@ -514,13 +283,8 @@ public class PrevisitRepo {
     }
 
     /*
-     * 记一个答案。
-     *
-     * 校验（三条，缺一条都会让业务值不可信）：
-     *   ① 会话存在且属于该患者（否则 noSuchSession —— HTTP 层映射 404，**不是 403**：
-     *      用 403 会泄露"这个 id 存在但不属于你"，那是枚举 oracle）；
-     *   ② 字段名必须是**已知槽位**（防止客户端塞任意键进表单）；
-     *   ③ 长度上限（按**字符**数，见 `previsitTruncateChars` —— 按字节会撕裂汉字）。
+     * 记一个答案。校验三条：会话属于该患者（否则 noSuchSession → 404，不用 403：403 泄露 id 存在）、
+     * 字段名是已知槽位、长度按字符数计（按字节会撕裂汉字）。
      */
     public func answer(sid: String, patientId: Int64, key: String, value: String,
                        now: Int64): PrevisitAnswerOutcome {
@@ -531,7 +295,6 @@ public class PrevisitRepo {
             return out
         }
         let s = found.getOrThrow()
-        // ② 已知槽位
         var slot: ?IntakeSlot = None
         for (x in intakeSlots()) {
             if (x.key == key) {
@@ -539,27 +302,17 @@ public class PrevisitRepo {
             }
         }
         if (slot.isNone()) {
-            /*
-             * ★ 未知槽位必须**明确拒绝**（不能静默成功）。
-             *   静默成功 = 客户端可以往 `form_json` 里塞任意键，
-             *   而问诊单是**要给医生看的医疗记录** —— 里面出现没人认识的字段，
-             *   轻则困惑、重则被误读成有效的临床信息。
-             */
+            /* 未知槽位必须明确拒绝：静默成功 = 客户端能往医疗记录里塞任意键。 */
             out.unknownSlot = key
             return out
         }
         let sl = slot.getOrThrow()
         let v = value.trimAscii()
-        // ③ 长度上限（按**字符**数，不按字节 —— 按字节会误判中文并可能切坏）
         if (previsitCharLen(v) > sl.maxLen) {
             out.tooLong = key
             return out
         }
-        /*
-         * ⚠ 空值**不写入**：空串在语义上是"没答"，与 `无`（明确的"没有"）不同。
-         *   若把空串当答案存下，问诊单会出现"既往史 = 空"这种无法解释的值 ——
-         *   而医生看到空值会以为"问了但患者拒答"，看到"无"才知道是阴性。
-         */
+        /* 空值不写入：空 = 没答，与「无」（明确阴性）不同；否则医生会以为患者拒答。 */
         if (v.size == 0) {
             out.emptyValue = key
             out.ok = true
@@ -568,12 +321,7 @@ public class PrevisitRepo {
         s.form.answers[key] = v
         s.turn = s.turn + 1
         /*
-         * ★ 复查第 6 份第 4 条：`WHERE` 原来只带 `id`，靠前一步 `find(sid, patientId)`
-         *   把关。会话归属**不可变**（`patient_id` 建表后从不更新），所以那一步之后
-         *   `sid` 确实属于该患者 —— **不可利用**。但"安全性依赖两步之间的隐含前提"
-         *   是脆的：将来谁把 `find` 换成别的查询、或加了"会话可转移"的功能，
-         *   这里就会变成一个**真正的越权写**。
-         *   ⇒ 补上 `patient_id` 条件，让这条 UPDATE **自己**就是安全的。
+         * UPDATE 自己带 patient_id：不依赖前一步 find 的隐含前提，否则将来改 find 就是真正的越权写。
          */
         db.exec("UPDATE previsit_session SET form_json = ?, turn = ?, updated_at = ? " +
                 "WHERE id = ? AND patient_id = ?",
@@ -584,14 +332,7 @@ public class PrevisitRepo {
     }
 }
 
-/* ===================== 表单序列化（业务值的持久化形式）===================== */
-
-/*
- * 把问诊单序列化成 JSON 字符串（存库用）。
- *
- * ⚠ 用框架的 `JsonObject` 而不是手工拼字符串 —— 手工拼就必须自己处理转义，
- *   而"忘了转义引号"会让一个含 `"` 的答案把整张表单写坏（且很难查）。
- */
+/* 序列化成 JSON 存库：用 JsonObject 而非手拼，否则忘了转义双引号会写坏整张表单。 */
 public func previsitFormJson(f: PrevisitForm): String {
     let o = JsonObject()
     for (s in intakeSlots()) {
@@ -602,12 +343,7 @@ public func previsitFormJson(f: PrevisitForm): String {
     return o.toString()
 }
 
-/*
- * 从 JSON 字符串还原问诊单。
- *
- * ⚠ 解析失败**不抛异常**，返回空表单：库里一条坏 JSON 不该让整个会话不可用
- *   （患者可以重新作答；而抛异常会让"查看问诊单"这个只读操作也 500）。
- */
+/* 解析失败不抛异常、退化为空表单（患者可重新作答；抛异常会让只读操作 500），但要留日志。 */
 public func previsitParseForm(json: String): PrevisitForm {
     let f = PrevisitForm()
     if (json.size == 0) {
@@ -619,7 +355,6 @@ public func previsitParseForm(json: String): PrevisitForm {
         for (s in intakeSlots()) {
             match (o.get(s.key)) {
                 case Some(x) =>
-                    // 只接受字符串；其它类型视作脏数据丢弃（不猜、不强制转换）
                     if (x is JsonString) {
                         f.answers[s.key] = x.asString().getValue()
                     }
@@ -628,16 +363,7 @@ public func previsitParseForm(json: String): PrevisitForm {
         }
     } catch (e: Exception) {
         /*
-         * ★ 坏数据 → 空表单（见上面说明：这是**有意**的，避免只读操作 500）。
-         *
-         * ⚠ 复查第 6 份第 5 条指出：**静默**返回空表单会丢审计留痕 ——
-         *   患者说"我明明答了，怎么是空的"时，运维查不出原因。
-         *   ⇒ 保留"不抛异常"的行为（那是对的），但**留下日志**：
-         *     谁（哪条会话）的 form_json 坏了、坏成什么样（截断到 200 字符）。
-         *
-         * ⚠ 日志里**不放完整原文**：`form_json` 含既往史/过敏史 —— 那是敏感医疗数据，
-         *   打全量等于把病历抄进日志文件（日志的访问控制通常比库弱）。
-         *   200 字符 + 明显截断标记足够定位问题，且不足以泄露一份完整病史。
+         * 坏数据 → 空表单是有意的；日志只留前 200 字符：form_json 含既往史/过敏史，全量等于把病历抄进日志。
          */
         let head = if (json.size > 200) { previsitTruncateChars(json, 200) + "…(已截断)" } else { json }
         println("[WARN] previsit form_json 解析失败，已退化为空表单（患者会看到未作答）。" +
@@ -646,24 +372,9 @@ public func previsitParseForm(json: String): PrevisitForm {
     return f
 }
 
-/* ===================== 对话文本（可流式的那一半）===================== */
-
 /*
- * 生成"助手这一轮要说的话"，按**句子**切成若干行 —— 这就是要流出去的对话文本。
- *
- * ★ 返回 `Array<String>` 而不是一个 String，是为了让"流式"这件事有内容可分：
- *   一次写完整个文本不算流式（那是伪装成 SSE 的普通响应）。
- *
- * ⚠ 本轮**不接模型**：这些文本是规则生成的（见文件头）。
- *   接模型时只替换本函数，其余（会话状态机 / 流式帧 / 业务值校验）都不动。
- *
- * 三条规则（都可解释）：
- *   ① 首次进入：先回应主诉（**复述**患者的话，让他确认没被误解），再问下一个槽位；
- *   ② 中途：直接问下一个槽位，并带上进度（"第 3/6 项"）让患者知道还要多久；
- *   ③ 全部采完：明确告诉患者"已生成问诊单"，并说明它**不替代医生诊断**。
- *
- * ⚠ 第 ③ 条那句免责不是客套：预问诊的输出是**给医生看的素材**，
- *   不是诊断结论。不写清楚，患者会以为系统已经"看完病了"。
+ * 助手本轮要说的话，按句子切行 —— 可流式的那一半（返回 Array 才有内容可分）。
+ * 规则：首次先复述主诉；中途带「第 N/6 项」进度；采完明确声明不替代医生诊断。
  */
 public func previsitAssistantLines(s: PrevisitSession, justAnswered: ?String): Array<String> {
     let out = ArrayList<String>()
@@ -677,14 +388,12 @@ public func previsitAssistantLines(s: PrevisitSession, justAnswered: ?String): A
     }
     let sl = next.getOrThrow()
 
-    // ① 首次进入：先复述主诉
     if (s.turn == 0 && s.form.answers.contains("chief")) {
         out.add("明白了，您主要是「${s.form.answers["chief"]}」。")
         out.add("为了帮医生更快了解情况，我再问几个问题，一共 ${intakeSlots().size} 项。")
     } else {
         match (justAnswered) {
             case Some(k) =>
-                // 对"无"这类否定答案给一句确认，避免患者以为没收到
                 if (k == "associated" || k == "history" || k == "allergy") {
                     out.add("好的，记下了。")
                 } else {
@@ -693,7 +402,6 @@ public func previsitAssistantLines(s: PrevisitSession, justAnswered: ?String): A
             case None => ()
         }
     }
-    // ② 问下一个槽位（带进度）
     out.add("第 ${s.form.filled() + 1}/${intakeSlots().size} 项：${sl.question}")
     if (sl.hint.size > 0) {
         out.add("（${sl.hint}）")
@@ -701,19 +409,9 @@ public func previsitAssistantLines(s: PrevisitSession, justAnswered: ?String): A
     return out.toArray()
 }
 
-/* ===================== SSE 帧 ===================== */
-
 /*
- * 构造一个 SSE 帧（`data: <json>\n\n`）。
- *
- * ⚠ 为什么 data 用 **JSON** 而不是裸文本：
- *   SSE 协议里换行是**帧分隔符**，裸文本里的 `\n` 会把一帧拆成两帧
- *   （患者会看到半句话，而且客户端解析出的 JSON 也断了）。
- *   JSON 把换行转义成 `\n` 两个字符 ⇒ 帧里永远没有裸换行。
- *   已由 `previsit-test` 断言"帧内不含裸换行"。
- *
- * ⚠ 必须**恰好**以 `\n\n` 结尾：`\n` 只是行结束，`\n\n` 才是"事件结束"。
- *   少一个 `\n` 客户端会一直等下一行（表现为"卡住不动"）。
+ * data 用 JSON 而非裸文本：SSE 里换行是帧分隔符，裸 \n 会把一帧拆成两帧。
+ * 结尾必须恰好 \n\n：少一个客户端会一直等下一行。
  */
 public func sseFrame(event: String, payload: JsonObject): String {
     let o = JsonObject()
@@ -722,13 +420,7 @@ public func sseFrame(event: String, payload: JsonObject): String {
     return "data: ${o.toString()}\n\n"
 }
 
-/*
- * 把一个字符串按**字符**截断到 n 个字符。
- *
- * ⚠ 存在的唯一理由：`String` 的切片是**字节**偏移，直接 `[0..n]` 会在多字节
- *   字符中间切断 ⇒ 非法 UTF-8。这与 `triageTruncateChars` 是同一个坑
- *   （本项目已为此吃过一次 500）——**凡是要按长度截断用户输入，都必须走字符空间**。
- */
+/* 按字符截断：String 切片是字节偏移，[0..n] 会在多字节字符中间切断 ⇒ 非法 UTF-8。 */
 public func previsitTruncateChars(s: String, n: Int64): String {
     let buf = ArrayList<Rune>()
     for (r in s.runes()) {

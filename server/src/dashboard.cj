@@ -5,38 +5,10 @@
  *
  * ===== dashboard.cj —— P4 运营看板（**只出聚合，绝不出明细**）==============
  *
- * 对应 brief §2.1 第 5 块「运营看板：科室医生患者规模、挂号趋势、号源使用率、
- * 分诊命中率、AI 调用概览」。
- *
- * ── ★★ 本文件唯一的硬约束：隐私 ──────────────────────────────────────────
- *
- *   看板是**跨患者**的视图 —— 这正是隐私最容易漏的地方（"就看一下聚合"）。
- *   所以这里立的规矩是**机制性**的，不是"我们记得别写"：
- *
- *     ① 本文件**所有**查询的 SELECT 列表只允许 `COUNT(*)` / `SUM(...)` /
- *        分组键（科室名、日期），**不允许出现任何 id 或联系方式列**；
- *     ② 分组键只允许用 `department.name` 与 `visit_date`（都不是个人数据）；
- *     ③ 响应里**不含任何** `patient_id` / `doctor_id` / `phone` / `name`
- *        （科室名例外 —— 它是机构信息，不是个人数据）；
- *     ④ 上述三条由验收测试**逐字段**钉住（AC-P4-*：把响应当字符串搜这些键）。
- *
- *   ⚠ 一个**刻意的遗漏**，写在这里免得将来有人"补齐"：
- *     看板**没有**"按患者年龄/性别分布"这类指标。它们看起来是聚合，
- *     但在小科室里等价于个人识别（某科室当天只有 1 个患者时，
- *     "60 岁以上 1 人"就等于说出他/她的年龄）。
- *     📌 小样本下的聚合会退化成个体信息 —— 这是"k-匿名"的朴素版本，
- *       在没有明确的 k 阈值之前，不提供这类维度。
- *
- * ── AI 调用概览做到了哪一步（诚实标注）──────────────────────────────────
- *   ★ 2026-10-09：**真模型已接入**（`ai_call.cj` + `ai_triage.cj`），
- *     所以这里报的是**真实的**调用分布，不再是"诚实地说 0"：
- *       `ai.model_calls` / `ai.rules_calls` / `ai.model_invalid_calls`
- *     三者来自 `triage_stat.source` 的分布 —— 可自证（三个数加起来 = 分诊总次数）。
- *   ⚠ **口径边界（必须写清，否则数字会被误读）**：
- *     这三个数只覆盖**分诊**；**不含预问诊** —— 预问诊的采集槽位是
- *     **确定性规则流程**（P2 的设计），**根本不调模型**。
- *   ⚠ 仍然**不编造**：`ai.model_calls` 为 0 时就是"这段时间没有模型调用"，
- *     而不是"我们没统计"。区别在于前者可被 `triage_stat` 的行数核对。
+ * 职责：规模、挂号趋势与取消率、号源使用率、分诊命中率、预问诊/病历进度、AI 与知识库概览
+ * 对外：DashboardRepo.build(now, aiSettings) → JsonObject、dashCutoffDate()
+ * 硬约束：所有 SELECT 只允许 COUNT/SUM/分组键（department.name、visit_date），不得出现任何 id 或联系方式
+ * 不变量：每项指标独立容错（取不到给 0，不整页 500）；不提供按年龄/性别分布 —— 小样本聚合等价于个人识别
  */
 
 package qingzhou
@@ -44,10 +16,7 @@ package qingzhou
 import std.collection.*
 import stdx.encoding.json.*
 
-/*
- * 一个"计数 + 标签"的行（分组统计的通用形状）。
- * ⚠ 标签只允许放**非个人**的分组键（科室名 / 日期 / 状态码）。
- */
+/* 一行"标签 + 计数"。标签只允许放非个人的分组键（科室名 / 日期 / 状态码）。 */
 class CountRow {
     var label: String = ""
     var n: Int64 = 0
@@ -104,38 +73,18 @@ public class DashboardRepo {
     }
 
     /*
-     * 组装整块看板。
-     *
-     * ⚠ 所有指标都**独立容错**（`count1` / `group2` 内部 catch）：
-     *   看板某张表还不存在（例如全新库）时应该是"这一项为 0"，
-     *   而不是整页 500 —— 看板的用途恰恰是"看清全局"，
-     *   它自己挂掉会让人以为整个系统坏了。
-     *   📌 代价：一个真故障会被显示成 0。所以每块都带 `source` 字段说明
-     *     数据从哪来，并在 selftest 里另有一组"表都在"的断言兜底。
+     * 组装整块看板。所有指标独立容错（count1 / group2 内部 catch）：表还不存在时该项为 0。
+     * 每块带 source 说明数据来源 —— 容错的代价是真故障也显示成 0。
      */
     public func build(now: Int64, aiSettings: AiSettingsRepo): JsonObject {
         let o = JsonObject()
 
         /* ---------- ① 规模（科室 / 医生 / 患者）---------- */
-        /*
-         * ⚠ 口径变更史（当前口径见下面 rev.7 那段）：rev.7 之前这三张表属**内存 Store**，
-         *   生产路径上不刷盘 ⇒ 读到的是「上次刷盘的快照」，所以旧文案标过「可能滞后」；
-         *   rev.7 拆掉 Store 后改直接 SQL 读，那句标注已撤掉 —— 保留此说明，
-         *   是为了让读到历史文档里旧文案的人知道它为什么曾经那样写。
-         */
         let scale = JsonObject()
         scale.put("departments", JsonInt(count1("SELECT COUNT(*) FROM department", Array<DbValue>())))
         scale.put("doctors", JsonInt(count1("SELECT COUNT(*) FROM doctor", Array<DbValue>())))
         scale.put("patients", JsonInt(count1("SELECT COUNT(*) FROM patient", Array<DbValue>())))
-        /*
-         * ★ ADR-0001 rev.7：内存 Store 已整体拆除 ⇒ 这三张表现在是**直接 SQL 读**，
-         *   **不再是「上次刷盘的快照」**，所以原先那句「可能滞后」的标注已不成立。
-         *   ⚠ 但「能不能维护」仍要标注，而且要标准：科室/医生由 P5 的 bb0e792 补上了
-         *     管理端 CRUD（`http_base.cj` 的 /api/v1/admin/departments|doctors），
-         *     患者档案至今**没有写入端点**，只能靠人工 SQL / 导入维护。
-         *   📌 看板读者要分清「库里有数据」与「系统会自动积累数据」——前者是现状，
-         *     后者对 patient 不成立，这两句话都不能省。
-         */
+        /* 三张表直接 SQL 读，无滞后；患者档案至今没有写入端点，只能靠人工 SQL / 导入维护。 */
         scale.put("source", JsonString(
             "mysql 直接读（rev.7 起不再经内存 Store，无滞后）；" +
             "科室/医生有管理端 CRUD，患者档案靠人工 SQL ⇒ 数字反映库中现有数据"))
@@ -145,12 +94,7 @@ public class DashboardRepo {
         let total = count1("SELECT COUNT(*) FROM appointment", Array<DbValue>())
         let booked = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_BOOKED)])
         let visiting = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_VISITING)])
-        /*
-         * ★ 2026-10-15（改进 6）：到院/候诊两态也进看板。
-         *   为什么必须有这两个数字：它们回答"现在有多少人**在现场等**" ——
-         *   这是运营最关心的一个量（等太久要加开诊室），而原口径里
-         *   这些人全都挤在 `booked` 里，与"还没出门的患者"混在一起，看不出来。
-         */
+        /* arrived / waiting 也入看板：回答"现在有多少人在现场等"，否则这些人全混在 booked 里看不出来。 */
         let arrived = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_ARRIVED)])
         let waiting = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_WAITING)])
         let done = count1("SELECT COUNT(*) FROM appointment WHERE status = ?", [DbStr(VISIT_DONE)])
@@ -165,32 +109,17 @@ public class DashboardRepo {
         appt.put("done", JsonInt(done))
         appt.put("cancelled", JsonInt(cancelled))
         appt.put("no_show", JsonInt(noShow))
-        /*
-         * ⚠ 取消率**用整数千分比**（`permille`）而不是浮点：
-         *   · 仓颉侧的浮点格式化在本项目没验过（不想为了一个百分比引入未测路径）；
-         *   · 千分比精度足够（0.1%），且客户端除以 10 即可。
-         *   ⚠ 分母为 0 时给 0，**不给 NULL、不抛** —— "没有挂号"时取消率是 0 很自然。
-         */
+        /* 取消率用整数千分比（permille）而非浮点：精度够 0.1%，客户端除以 10；分母为 0 时给 0。 */
         appt.put("cancel_permille", JsonInt(if (total > 0) { cancelled * 1000 / total } else { 0 }))
         appt.put("no_show_permille", JsonInt(if (total > 0) { noShow * 1000 / total } else { 0 }))
         appt.put("permille_note", JsonString("取消率/爽约率是**千分比**（除以 10 得百分比）"))
         o.put("appointments", appt)
 
         /* ---------- ③ 挂号趋势（按就诊日，最近 N 天）---------- */
-        /*
-         * ⚠ 分组键是 `visit_date`（日期字符串）—— 不是个人数据。
-         *   限定窗口是为了"响应大小可预期"（不限窗口时，一个跑了三年的库
-         *   会返回上千行，看板反而看不清）。
-         */
+        /* 分组键是 visit_date（日期字符串，非个人数据）；限定窗口让响应大小可预期。 */
         let days = 14
         o.put("trend_days", JsonInt(days))
-        /*
-         * ★★ 2026-10-18 三端联调修：原 SQL **只有下界**（`visit_date >= 截止日`），
-         *   于是"未来日期的挂号"也被算进「近 N 日趋势」—— 实测库里只有一条
-         *   2026-12-24 的号，看板就画出了 2026-12-24 这一根柱子（今天 2026-10-18）。
-         *   趋势是"过去 N 天发生了什么"，未来号应该由「号源/排班」表达，不是趋势。
-         *   现在补上界 `visit_date <= 今天`。
-         */
+        /* 上下界都要有：只有下界时"未来日期的挂号"会被算进近 N 日趋势（未来号由号源/排班表达）。 */
         o.put("trend", rowsToJson(group2(
             "SELECT visit_date, COUNT(*) FROM appointment " +
             "WHERE visit_date >= ? AND visit_date <= ? " +
@@ -198,11 +127,7 @@ public class DashboardRepo {
             [DbStr(dashCutoffDate(now, days)), DbStr(dashCutoffDate(now, 0)), DbInt(days)])))
 
         /* ---------- ④ 科室分布（挂号量 / 号源使用率）---------- */
-        /*
-         * ⚠ 这里 JOIN 了 department 拿**科室名**做分组键。
-         *   科室名是机构信息（管理员本来就在管理它），不是个人数据 ——
-         *   这一点与"不给患者姓名"是两回事，刻意区分。
-         */
+        /* JOIN department 只为拿科室名做分组键：科室名是机构信息，不是个人数据。 */
         o.put("by_department", rowsToJson(group2(
             "SELECT d.name, COUNT(*) FROM appointment a " +
             "JOIN department d ON d.id = a.department_id " +
@@ -218,24 +143,14 @@ public class DashboardRepo {
         o.put("slots", cap)
 
         /* ---------- ⑤ 分诊命中（**source 由数据推导**，不写死）---------- */
-        /*
-         * ★★ 2026-10-17 评审 P2-7：这里原本写死 `source = "rules"`。
-         *   真模型 2026-10-09 就接进来了，写死的值会**一直骗人**：
-         *   看板说"全走规则"，而 triage_stat 里明明躺着 source=model 的行。
-         *   现在 source 由 `triage_stat.source` 的分布**推出来**
-         *   （只有一类报那一类 / 两类都有报 mixed / 无记录报 none），
-         *   并额外给出 `by_source` 逐项计数 —— 数字能自证，不靠一句注释。
-         */
+        /* source 由 triage_stat.source 的分布推出（单类报该类 / 两类报 mixed / 无记录报 none），
+         * 不写死；by_source 逐项计数，三个数加起来等于分诊总次数，可自证。 */
         let triage = JsonObject()
         let srcRows = group2(
             "SELECT source, COUNT(*) FROM triage_stat GROUP BY source ORDER BY COUNT(*) DESC LIMIT ?",
             [DbInt(10)])
-        /*
-         * ★★ 2026-10-17 复查：原来按 `label == "model"` **精确匹配**，于是
-         *   `model:invalid`（模型返回了但解析失败）落进 other 桶，只剩它一类时
-         *   会被推成 `mixed` —— 与同一响应里单列的 `model_invalid_calls` 自相矛盾。
-         *   现在按**前缀**归类：`model` / `model:invalid` / `model:*` 都算模型家族。
-         */
+        /* 按前缀归类：model / model:invalid / model:* 都算模型家族 —— 精确匹配 "model"
+         * 会把 model:invalid 落进 other，与单列的 model_invalid_calls 自相矛盾。 */
         var modelN: Int64 = 0
         var rulesN: Int64 = 0
         var otherN: Int64 = 0
@@ -323,20 +238,8 @@ public class DashboardRepo {
         }
         ai.put("prompts_total", JsonInt(promptCount))
         ai.put("prompts_customized", JsonInt(customized))
-        /*
-         * ★★ 2026-10-09：**真模型已接入** ⇒ 这里从"诚实地说 0"改成"报真实的数"。
-         *
-         * ── 口径（必须写清，否则数字会被误读）────────────────────────────
-         *   `model_calls` / `rules_calls` / `model_invalid_calls` 来自
-         *   `triage_stat.source` 的分布 —— 即**分诊**这件事的真实留痕。
-         *   ⚠ **不含预问诊**：预问诊的采集问题是**确定性的规则流程**
-         *     （P2 的设计：槽位顺序固定、校验在规则里），**不调模型**。
-         *     所以这两个数加起来**不等于**"系统全部 AI 调用"，
-         *     而是"分诊的调用分布"。`model_calls_note` 里写明这一点。
-         *   📌 为什么坚持按 source 分布报、而不是合成一个"总调用数"：
-         *     合成的那个数**无法自证**（谁也说不清它统计了什么），
-         *     而分布能自证 —— 三个数加起来就是分诊总次数（可核对）。
-         */
+        /* 三个数来自 triage_stat.source 的分布，只覆盖分诊，不含预问诊（预问诊是确定性规则流程，
+         * 不调模型）⇒ 不等于"系统全部 AI 调用"。按分布报而不合成总数，因为分布能自证。 */
         let srcRepo = TriageStatRepo(db)
         let modelCalls = srcRepo.countBySource("model")
         let rulesCalls = srcRepo.countBySource("rules")
@@ -352,31 +255,9 @@ public class DashboardRepo {
 
         /* ---------- ⑥ P5 知识库规模 ---------- */
         /*
-         * ★★ 这一块为什么必须存在（而不是"知识库自己有 stats 接口就够"）：
-         *   `GET /admin/kb/stats` 只有**知道要去看**的人才会调；而看板的用途是
-         *   **"看清全局"** —— 知识库是分诊说明文案的来源，它的规模与
-         *   **向量覆盖率**直接决定"RAG 增强还能不能更强"。
-         *   放在看板上，运维在例行巡检时就会看到"覆盖率长期 0%"，
-         *   而不是等到有人抱怨"模型说的和院内须知不一致"才发现。
-         *
-         * ⚠ 口径（照 `ai` 那一块的做法，每个数都要能自证）：
-         *   · `docs` / `chunks` —— 库里现有行数（**真实计数，不编造**）
-         *   · `embedding_coverage_pct` —— 有向量的块占比。**0% 是当前常态**
-         *     （DeepSeek 无 embeddings 端点），所以**必须带说明**，
-         *     否则看到 0% 的人会以为"功能坏了"。
-         *   · ★ `scan_limit_reached` —— **布尔结论**：块数是否已超过检索上限
-         *     （`KB_SCAN_LIMIT`）。超了之后**后面的块静默检索不到**，
-         *     这是本仓最忌的形态 ⇒ 必须在看板上**一眼可见**，不能让人自己去比。
-         *
-         * ⚠ 独立容错（与整块看板同一纪律）：`kb_doc` / `kb_chunk` 表不存在
-         *   （例如全新库、或 P5 建表还没跑）时显示 0，而**不是整页 500**。
-         *   ⇒ 用本文件**自带**的 `count1`（内部 catch），
-         *     而**不是** `kb_repo.cj` 的 `kbCount1` —— 后者是裸查询，表的缺失会直接抛。
-         *   📌 教训（写下来免得下一个人顺手换掉）：**同名/近名的两个取数助手，
-         *     容错语义可能完全不同。** 看板这一块的契约是"任何一项取不到都给 0"，
-         *     所以要选**明确带 catch 的那个**，不能按名字像就挑。
-         *     这不只是洁癖：看板恰恰是"系统出问题时给人看的那一页"，
-         *     它自己 500 会让人以为**整个系统**坏了。
+         * 知识库规模放进看板，让"向量覆盖率长期 0%"在例行巡检时就可见。
+         * docs / chunks 是真实行数；embedding_coverage_pct 当前常态为 0（DeepSeek 无 embeddings）。
+         * scan_limit_reached 是布尔结论：块数超过 KB_SCAN_LIMIT 后，后面的块静默检索不到。
          */
         let kbStats = JsonObject()
         let kbDocs = count1("SELECT COUNT(*) FROM kb_doc", Array<DbValue>())
@@ -408,16 +289,8 @@ public class DashboardRepo {
 }
 
 /*
- * 趋势窗口的起始日期（now - days 天，YYYY-MM-DD）。
- *
- * ⚠ 复用 `civilFromDays` / `triagePad2`（hTodayDate 的实现）而不是另写一份日期换算：
- *   日期换算是最容易写错且"错了也看不出来"的一类代码（闰年、月末边界），
- *   本仓只有一处实现，这里沿用。
- * ⚠ 2026-10-12：天序改用 `hDaysFromSecondsShanghai`（Asia/Shanghai，UTC+8）——
- *   与 `hTodayDate()` 同一口径。此前这里按 UTC 算，
- *   会让看板趋势的窗口边界与"今天"的定义**不一致**（差 8 小时，
- *   而统计是按 `visit_date` 这类**本地日期字符串**分组的）。
- *   📌 两处口径分家正是本次要修的病灶，所以这里必须同一个函数。
+ * 趋势窗口起始日期（now - days 天，YYYY-MM-DD）。日期换算复用 civilFromDays / triagePad2，
+ * 天序用 hDaysFromSecondsShanghai，与 hTodayDate 同口径（按 UTC 算窗口边界会差 8 小时）。
  */
 func dashCutoffDate(now: Int64, daysBack: Int64): String {
     let days = hDaysFromSecondsShanghai(now) - daysBack

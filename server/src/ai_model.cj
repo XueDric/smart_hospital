@@ -1,39 +1,19 @@
 /*
- * ★★ 管理台「AI 模型配置」的后端（2026-10-14 新增）。
+ * ai_model 表（命名模型配置）的仓储、校验与连通性测试。
+ * 对外：AiModel、AiModelWriteOutcome、AiModelProbeResult，仓储 AiModelRepo（list/get/defaultOf/
+ * create/update/remove/invalidate），aiModelValidate、aiModelRequestUrl、aiModelProbe、
+ * aiModelSeedDefaults、aiModelJson。
  *
- * ── 这个文件解决什么问题 ──
- *
- * 管理台要能看到**多条命名模型配置**（默认对话模型 / 默认向量模型），
- * 每条有：类型（CHAT / EMBEDDING）、提供方、接口地址、模型名、温度、
- * max_tokens、启停，并且能：新增 / 编辑 / 删除 / **连通性测试** /
- * **一键失效配置缓存**（"保存后自动失效缓存，下一次 AI 请求动态构建模型实例，
- * 无需重启服务" —— 这一句是需求原文，也是本文件所有设计的约束）。
- *
- * ── 三条边界（都是**刻意**的，不是省事）──
- *
- * ① **密钥本体绝不入库**：`key_ref` 存的是 `env:名` / `file:路径` 引用，
- *    与 `ai_setting.ai.key_ref` 同一条纪律（brief §5.3），由 `aiModelValidate`
- *    复用 `validateKeyRef` 机制性保证。接口回显时也只给"设置了没有 + 引用类型"。
- * ② **不改旧表 `ai_setting`**：`ai.enabled` 仍是总开关；旧 KV 的
- *    endpoint/model/max_tokens 仍可读，作为"一条默认模型都没有"时的回退
- *    （见 ai_settings.cj 的 aiRuntimeResolve）。这样**升级顺序自由**：
- *    先升服务端、后建配置，中间不会出现"AI 静默不可用"的窗口。
- * ③ **解析是动态的**：每次 AI 请求都问 `defaultOf(kind)`（5 秒 TTL 内存缓存 +
- *    写操作主动失效），所以改配置**不需要重启**。这正是需求里那句话的落点。
- *
- * ⚠ 为什么 `base_url` 允许写"基址"也允许写"完整 URL"：见 `aiModelRequestUrl`。
+ * 约束：key_ref 只存引用（env:/file:/builtin:），密钥本体禁止入库；base_url 必须 https://；
+ * 改配置立即失效缓存，下一次 AI 请求动态构建实例，不需重启。
  */
 package qingzhou
 
 import std.collection.*
 import stdx.encoding.json.*
-/*
- * ⚠ `std.sync.*` 是给 `Mutex` 用的（缓存锁）。`AiSettingsRepo` 在 2026-10-14
- *   上游那次修复里也加了同一个 import —— 两边口径保持一致。
- */
 import std.sync.*
 
-/* ===================== 常量 ===================== */
+/* 常量 */
 
 public let AI_MODEL_KIND_CHAT: String = "CHAT"
 public let AI_MODEL_KIND_EMBEDDING: String = "EMBEDDING"
@@ -44,20 +24,17 @@ public let AI_MODEL_BASE_URL_MAX_CHARS: Int64 = 512
 public let AI_MODEL_MODEL_MAX_CHARS: Int64 = 128
 public let AI_MODEL_KEY_REF_MAX_CHARS: Int64 = 512
 
-/*
- * 温度范围 0..2（OpenAI 兼容协议的实际取值范围）。
- * ⚠ 与 `ai.max_tokens` 的 64..8192 一样，**范围要在写入那一刻拦住**：
- *   温度写成 30 不会报错，只会让输出变成胡言乱语 —— 那是最难查的一类问题。
- */
+/* 温度 0..2（OpenAI 兼容协议取值范围）；与 max_tokens 的 64..8192 一样，必须在写入那一刻拦住：
+ * 写成 30 不报错，只会让输出变成胡言乱语。 */
 public let AI_MODEL_TEMPERATURE_MIN: Float64 = 0.0
 public let AI_MODEL_TEMPERATURE_MAX: Float64 = 2.0
 public let AI_MODEL_MAX_TOKENS_MIN: Int64 = 64
 public let AI_MODEL_MAX_TOKENS_MAX: Int64 = 8192
 
-/* 与 `AI_SETTINGS_CACHE_TTL_SECS` 同口径：写操作主动失效，多实例靠 TTL 收敛。 */
+/* 与 AI_SETTINGS_CACHE_TTL_SECS 同口径：写操作主动失效，多实例靠 TTL 收敛。 */
 public let AI_MODEL_CACHE_TTL_SECS: Int64 = 5
 
-/* 连通性测试的超时（比业务调用短：它是**人在等**的一次交互）。 */
+/* 连通性测试超时：比业务调用短，因为这是人在等的一次交互。 */
 public let AI_MODEL_PROBE_TIMEOUT_SECS: Int64 = 15
 public let AI_MODEL_PROBE_MAX_TOKENS: Int64 = 8
 public let AI_MODEL_PROBE_SAMPLE_MAX_CHARS: Int64 = 160
@@ -65,7 +42,7 @@ public let AI_MODEL_PROBE_SAMPLE_MAX_CHARS: Int64 = 160
 public let AI_MODEL_LIST_DEFAULT_LIMIT: Int64 = 50
 public let AI_MODEL_LIST_MAX_LIMIT: Int64 = 200
 
-/* 列顺序**一处定义**：SELECT 与行解析共用，避免"加了列忘了改解析"（test-evidence 类事故）。 */
+/* 列顺序一处定义：SELECT 与行解析共用，避免"加了列忘了改解析"。 */
 public let AI_MODEL_COLUMNS: String =
     "id, name, kind, provider, base_url, model, temperature, max_tokens, " +
     "key_ref, enabled, is_default, created_at, updated_at, updated_by"
@@ -87,13 +64,8 @@ let AI_MODEL_C_UPDATED_AT: Int64 = 12
 let AI_MODEL_C_UPDATED_BY: Int64 = 13
 
 /*
- * 播种用的默认两行（只在表**完全为空**时写入）。
- *
- * ★ 2026-10-17 评审整改：对话模型默认改成 **DeepSeek**（与 `ai_builtin.cj` 里
- *   内置的演示凭据配套 —— 开箱即用必须"默认行指向那把 key 能用的服务"）。
- *   向量模型**不跟着改**：DeepSeek 没有 `/embeddings` 端点，硬指过去只会 404，
- *   所以向量行仍指百练（需要时由运维填它自己的 `key_ref`）。
- *   ⚠ 这一行"不假装能用"是刻意的：向量检索的真实 provider 未接入（评审 P2-6）。
+ * 播种用的默认两行（只在表完全为空时写入）。对话指向 DeepSeek（与 ai_builtin.cj 的内置演示凭据配套）；
+ * 向量仍指百练 —— DeepSeek 无 /embeddings 端点，硬指过去只会 404，故不假装能用。
  */
 public let AI_MODEL_SEED_CHAT_NAME: String = "默认对话模型"
 public let AI_MODEL_SEED_EMBEDDING_NAME: String = "默认向量模型"
@@ -105,8 +77,6 @@ public let AI_MODEL_SEED_EMBEDDING_BASE_URL: String = "https://dashscope.aliyunc
 public let AI_MODEL_SEED_EMBEDDING_MODEL: String = "text-embedding-v3"
 public let AI_MODEL_SEED_CHAT_TEMPERATURE: Float64 = 0.3
 public let AI_MODEL_SEED_MAX_TOKENS: Int64 = 2048
-
-/* ===================== 数据结构 ===================== */
 
 public class AiModel {
     public var id: Int64 = 0
@@ -147,11 +117,7 @@ public class AiModel {
 }
 
 /*
- * 写操作结果。
- *
- * ⚠ 用**字段**区分失败原因而不是抛异常：仓颉里 `UserFacingError` 会变成
- *   400 VALIDATION_FAILED，但"同名已存在"要给 **409**、"不存在"要给 **404**
- *   —— 一个异常类型表达不了三种 HTTP 状态（这正是 base/kb/notice 用 outcome 的理由）。
+ * 写操作结果。用字段区分失败原因而非抛异常：一个异常类型表达不了 400/404/409 三种 HTTP 状态。
  */
 public class AiModelWriteOutcome {
     public var ok: Bool = false
@@ -166,7 +132,7 @@ public class AiModelWriteOutcome {
     public init() {}
 }
 
-/* 连通性测试结果（**不抛异常**：测试失败是"结果"，不是"服务端故障"）。 */
+/* 连通性测试结果（不抛异常：测试失败是"结果"，不是服务端故障）。 */
 public class AiModelProbeResult {
     public var ok: Bool = false
     public var kind: String = ""
@@ -176,13 +142,11 @@ public class AiModelProbeResult {
     public var httpStatus: Int64 = 0
     public var reason: String = ""
     public var sample: String = ""
-    /* 用的是哪来的密钥引用：model / global / ""。 */
+    /* 密钥来自哪里：model / global / ""。 */
     public var keySource: String = ""
 
     public init() {}
 }
-
-/* ===================== 校验与派生 ===================== */
 
 /* 类型规范化：大小写不敏感，非法返回 ""。 */
 public func aiModelKindNormalize(kind: String): String {
@@ -207,11 +171,8 @@ public func aiModelKindLabel(kind: String): String {
 }
 
 /*
- * 文本字段检查：非空 / 限长 / **不许含控制字符**。
- *
- * ⚠ 最后一条对本文件格外重要：`base_url` 会被直接拼进 HTTP 请求头之外的 URL，
- *   一个换行就能**注入额外的头**（CRLF injection）。所以它不是"顺手校验"，
- *   而是这个接口的**安全边界**（与公告标题禁控制字符同源）。
+ * 文本字段检查：非空 / 限长 / 不许含控制字符。最后一条是安全边界 —— base_url 会被拼进 URL，
+ * 一个换行就能注入额外的请求头（CRLF injection）。
  */
 func aiModelCheckText(v: String, what: String, maxChars: Int64, allowEmpty: Bool): String {
     if (v.size == 0) {
@@ -236,12 +197,7 @@ func aiModelCheckText(v: String, what: String, maxChars: Int64, allowEmpty: Bool
     return ""
 }
 
-/*
- * 校验一条模型配置。返回 "" = 通过，否则是**可直接给运维看**的原因。
- *
- * ⚠ 这里**只读配置、不出站**：它回答"这条配置写得对不对"，
- *   不回答"这个模型能不能连上" —— 后者是 `aiModelProbe`（人主动点"连通性测试"）。
- */
+/* 校验一条配置：返回 "" = 通过，否则是可直接给运维看的原因。只读配置、不出站（连不连得上归 aiModelProbe）。 */
 public func aiModelValidate(name: String, kind: String, provider: String, baseUrl: String,
                             model: String, temperature: Float64, maxTokens: Int64,
                             keyRef: String): String {
@@ -261,10 +217,7 @@ public func aiModelValidate(name: String, kind: String, provider: String, baseUr
     if (why.size > 0) {
         return why
     }
-    /*
-     * ⚠ https 强制：与 `aiRuntimeValidate` 同一条理由（明文调用大模型 = 密钥裸奔），
-     *   而且这里**更早**拦住 —— 配错的代价是"密钥在网络上裸奔"，不是"报个错"。
-     */
+    /* 强制 https：明文调用大模型 = 密钥裸奔，且必须在这里更早拦住，而不是等运行时。 */
     if (!startsWithAscii(url.toAsciiLower(), "https://")) {
         return "接口地址必须是 https://（明文调用大模型 = 密钥裸奔）"
     }
@@ -272,11 +225,8 @@ public func aiModelValidate(name: String, kind: String, provider: String, baseUr
     if (why.size > 0) {
         return why
     }
-    /*
-     * ⚠ NaN / Infinity 必须单独拦：`NaN` 与任何数比较都是 false，
-     *   于是它**能穿过**范围判断（`t < min || t > max` 两个都是 false）。
-     *   自己与自己比较是唯一可靠的 NaN 判定。
-     */
+    /* NaN 必须单独拦：NaN 与任何数比较都为 false，能穿过 t < min || t > max 的范围判断；
+     * 自己与自己比较是唯一可靠的 NaN 判定。 */
     if (temperature != temperature) {
         return "温度不能是 NaN"
     }
@@ -286,10 +236,7 @@ public func aiModelValidate(name: String, kind: String, provider: String, baseUr
     if (maxTokens < AI_MODEL_MAX_TOKENS_MIN || maxTokens > AI_MODEL_MAX_TOKENS_MAX) {
         return "max_tokens 必须在 ${AI_MODEL_MAX_TOKENS_MIN}..${AI_MODEL_MAX_TOKENS_MAX} 之间（收到 ${maxTokens}）"
     }
-    /*
-     * 密钥引用可以**留空**（= 回退到全局 `ai.key_ref`），但一旦填了就必须是合法引用。
-     * ⚠ 校验复用 `validateKeyRef`：密钥引用的形状只允许有一处定义。
-     */
+    /* 密钥引用可留空（回退全局 ai.key_ref）；填了就必须合法，校验复用 validateKeyRef —— 引用形状只允许一处定义。 */
     let kr = keyRef.trimAscii()
     if (kr.size > 0) {
         if (kr.size > AI_MODEL_KEY_REF_MAX_CHARS) {
@@ -303,7 +250,7 @@ public func aiModelValidate(name: String, kind: String, provider: String, baseUr
     return ""
 }
 
-/* 密钥引用的类型（env / file / builtin / ""），**不回显引用本体**（同 aiSettingsJson 的纪律）。 */
+/* 密钥引用的类型（env / file / builtin / ""），不回显引用本体（同 aiSettingsJson 的纪律）。 */
 public func aiModelKeyRefKind(keyRef: String): String {
     if (keyRefEnvName(keyRef).isSome()) {
         return "env"
@@ -318,22 +265,9 @@ public func aiModelKeyRefKind(keyRef: String): String {
 }
 
 /*
- * ★ 由 `base_url` + 类型派生出**真正的请求 URL**。
- *
- * 为什么要做这一步：运维在管理台填的地址有两种习惯 ——
- *   ① 填**基址**（`https://dashscope.aliyuncs.com/compatible-mode/v1`，
- *      截图上的样子就是这种）；
- *   ② 填**完整端点**（`.../v1/chat/completions`，旧 `ai.endpoint` 的习惯）。
- * 两种都常见，**让填的人记住"必须填完整"是设计缺陷**（填错的表现是
- * "连通性测试失败"，而原因藏在字符串拼接里，最难查）。
- *
- * ⇒ 规则（**显式、可预测、两种都认**）：
- *   · 结尾已经是 `/chat/completions`（CHAT）或 `/embeddings`（EMBEDDING）⇒ 原样用；
- *   · 否则：CHAT 追加 `/chat/completions`，EMBEDDING 追加 `/embeddings`；
- *   · 末尾多余的 `/` 先去掉（`.../v1/` + `/chat/completions` 会拼出 `//`）。
- *
- * ⚠ 这个派生结果会**回显**在接口里（`request_url`）并进连通性测试的结论 ——
- *   "实际请求了哪个 URL"必须能从管理台看到，否则排查只能靠猜。
+ * 由 base_url + 类型派生真正的请求 URL。运维两种填法都认：结尾已是 /chat/completions（CHAT）或
+ * /embeddings（EMBEDDING）⇒ 原样用，否则追加；末尾多余的 / 先去掉（否则拼出 //）。
+ * 派生结果回显为 request_url 并进连通性结论：实际打了哪个地址必须能从管理台看到。
  */
 public func aiModelRequestUrl(baseUrl: String, kind: String): String {
     var u = baseUrl.trimAscii()
@@ -373,9 +307,7 @@ func aiModelDropLast(s: String): String {
 }
 
 /*
- * 后缀判断（stdx 没有 endsWith 的 ascii 版；本项目只在这里需要）。
- * ⚠ 逐字节比较：中文按 UTF-8 多字节比，但这里的后缀全是 ascii，
- *   所以"字节数 = 字符数"的前提成立。
+ * 后缀判断（stdx 无 ascii 版 endsWith）。逐字节比较：后缀全是 ascii，故字节数 = 字符数。
  */
 func aiModelEndsWithAscii(s: String, tail: String): Bool {
     if (tail.size > s.size) {
@@ -407,30 +339,15 @@ public func aiModelClampLimit(limit: Int64): Int64 {
 /* ===================== 仓储 ===================== */
 
 /*
- * 模型配置仓储。
- *
- * ── 缓存（与 `AiSettingsRepo` 同款，理由也一样）──
- *   读走内存缓存（避免每个 AI 请求都查库），写**主动失效**。
- *   `invalidate()` 只置 `cacheAt = 0`（不塞新值）：下一次读自然重查 ——
- *   这样"写"与"刷新"不会各写一半。
- *
- * ⚠ 多实例部署时，别的实例最迟 `AI_MODEL_CACHE_TTL_SECS` 秒后跟上。
- *   要做到"立刻全局失效"需要一个共享的失效通道（本项目还没有，也不假装有）。
+ * 模型配置仓储。读走内存缓存（避免每个 AI 请求都查库），写主动失效：invalidate() 只置 cacheAt = 0，
+ * 下一次读自然重查，这样"写"与"刷新"不会各写一半。
+ * 多实例部署靠 AI_MODEL_CACHE_TTL_SECS 秒后收敛（无共享失效通道，不假装有）。
  */
 public class AiModelRepo {
     private let db: DbBackend
     /*
-     * ★ 2026-10-14（第三方复查 B4 修）：缓存必须与 `AiSettingsRepo` 同款地加锁。
-     *
-     * 原实现**没有任何锁**：`ensureCache()` 直接给共享的 `cache` 赋值，
-     * 而 `list`/`get`/`defaultOf` 同时在迭代同一个对象。
-     * 本服务端当前不含 `spawn`（见 acceptance.cj），所以这不是已证实的竞态 ——
-     * 但"同一个进程里两个仓储，一个加锁一个不加"本身就是纪律分裂：
-     * 谁把 AI 调用挪到工作线程，谁就会踩到那个"只有一半的锁"。
-     *
-     * 锁序与 `AiSettingsRepo` **完全一致**（仓储锁 → 数据库连接锁，可重入）：
-     *   `ensureCache` 在仓储锁内调 `reload()`；写操作在 `db.exec` 返回后才 `invalidate()`，
-     *   不持有连接锁反向获取仓储锁。
+     * 缓存必须与 AiSettingsRepo 同款加锁：ensureCache 给共享 cache 赋值，list/get/defaultOf 同时迭代它。
+     * 锁序一致（仓储锁 → 数据库连接锁，可重入）：写操作在 db.exec 返回后才 invalidate()，不反向获取。
      */
     private let cacheLock = Mutex()
     private var cache: ArrayList<AiModel> = ArrayList<AiModel>()
@@ -516,12 +433,8 @@ public class AiModelRepo {
     }
 
     /*
-     * 解析"某类型的生效模型"。
-     *
-     * 口径（**刻意宽容**，理由：宁可"有一就能用"，也不要"必须手工指定默认"）：
-     *   ① 优先 `enabled = 1 AND is_default = 1`（多条时取 id 最小的）；
-     *   ② 没有默认行 ⇒ 取该类型下 `enabled = 1` 的**第一条**（id 最小）；
-     *   ③ 该类型一条启用的都没有 ⇒ None（调用方回退旧 KV，见 aiRuntimeResolve）。
+     * 解析某类型的生效模型：① enabled=1 AND is_default=1（多条取 id 最小）② 否则该类型第一条启用的
+     * ③ 都没有 ⇒ None，调用方回退旧 KV（见 ai_settings.cj 的 aiRuntimeResolve）。
      */
     public func defaultOf(kind: String, now: Int64): ?AiModel {
         ensureCache(now)
@@ -567,14 +480,7 @@ public class AiModelRepo {
         return false
     }
 
-    /*
-     * 把"某类型只应有一条默认"这条**集合级不变量**做出来。
-     *
-     * ⚠ 为什么不用事务：本项目其余仓储也都是"多条语句顺序执行"的风格，
-     *   而且这里失败的最坏后果只是"同一 kind 有两条 is_default=1"——
-     *   而 `defaultOf` 取 id 最小 ⇒ **结果仍然确定**。
-     *   ⇒ 用一条确定性规则兜住一个非原子写入，比引入本项目还没有的事务更划算。
-     */
+    /* "某类型只应有一条默认"是集合级不变量：用确定性规则（defaultOf 取 id 最小）兜住一个非原子写入，不引入项目里还没有的事务。 */
     private func clearOtherDefaults(kind: String, keepId: Int64, now: Int64): Unit {
         let _ = db.exec("UPDATE ai_model SET is_default = 0, updated_at = ? " +
                         "WHERE kind = ? AND id <> ?",
@@ -599,25 +505,13 @@ public class AiModelRepo {
             return r
         }
         /*
-         * ★★ 2026-10-14（第三方复查 B6 修）：把唯一键冲突**接住**，回 409 而不是 500。
-         *
-         * 上面那句 `nameTaken` 是"先查后写"——两个请求同时查、都没有同名，
-         * 然后一起 INSERT：真正的唯一性由 `uk_ai_model_name` 保证，于是**第二个** INSERT
-         * 抛驱动异常。原实现没人接它 ⇒ 冒到全局兜底 ⇒ 客户端拿到 500「服务器内部错误」，
-         * 而契约与测试声明的是 **409 AI_MODEL_NAME_TAKEN**（"同名配置已存在，是你选的冲突"）。
-         *
-         * 500 与 409 的差别在这里是**可操作性**：500 让人去查服务端日志，
-         * 409 让人改个名字重试。既然表上已经有唯一键，就该让它的语义传到客户端。
+         * 唯一键冲突要接住并回 409，而不是 500：上面 nameTaken 是先查后写，两个请求同时插入时，真正的唯一性由
+         * uk_ai_model_name 保证，第二个 INSERT 抛驱动异常。500 让人去翻日志，409 让人改名重试。
          */
         var id: Int64 = 0
         try {
-            /*
-             * ⚠ 用 `execInsert` 而不是 `exec` + `SELECT LAST_INSERT_ID()`：
-             *   新框架的 exec/query **不保证落在同一条连接**（上游因此把两处裸读 LAST_INSERT_ID
-             *   全换成 execInsert，见 domain_booking.cj 的踩坑注释）。分开调用时读到的可能是
-             *   别的连接的上一次自增值，或者干脆是 0 —— 表现是"新建配置成功但 id=0"，
-             *   接着 `clearOtherDefaults` 会把**所有**行都当成别的行处理。
-             */
+            /* 用 execInsert 而非 exec + SELECT LAST_INSERT_ID()：exec/query 不保证同一条连接，
+             * 分开调用会读到别的连接的自增值或 0，表现是"新建成功但 id=0"，接着 clearOtherDefaults 会误判所有行。 */
             id = db.execInsert("INSERT INTO ai_model (name, kind, provider, base_url, model, temperature, " +
                                "max_tokens, key_ref, enabled, is_default, created_at, updated_at, updated_by) " +
                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -627,11 +521,7 @@ public class AiModelRepo {
                                 DbInt(if (m.isDefault) { 1 } else { 0 }),
                                 DbInt(now), DbInt(now), DbInt(byUserId)])
         } catch (e: Exception) {
-            /*
-             * ⚠ 这里**只**把"同名"这一种解释成 409，其余异常照旧上抛（退化成 500）——
-             *   把任何写失败都说成"重名"会让真正的故障（库断了、列类型改了）
-             *   显示成"改个名字再试"，那比 500 更难排查。
-             */
+            /* 只把"确实重名"解释成 409，其余异常照旧上抛（退化为 500）：否则真故障会被显示成"改个名字再试"。 */
             if (nameTaken(name, 0)) {
                 r.duplicate = true
                 return r
@@ -648,12 +538,8 @@ public class AiModelRepo {
     }
 
     /*
-     * 改一条配置。
-     *
-     * ⚠ 语义是 **PATCH（缺省 = 保持原值）**，不是 PUT（缺省 = 回默认）：
-     *   管理部门最怕的是一次"只想改温度"的保存把密钥引用清空 ——
-     *   而清空后 AI **静默不可用**（表现是"AI 突然不工作了"）。
-     *   📌 与公告的 `published_at`（缺省 = 该行原值）同一条理由。
+     * 语义是 PATCH（缺省 = 保持原值）而非 PUT：一次"只想改温度"的保存不能把 key_ref 清空，
+     * 清空后 AI 静默不可用（表现是"AI 突然不工作了"）。
      */
     public func update(id: Int64, name: ?String, kind: ?String, provider: ?String, baseUrl: ?String,
                        model: ?String, temperature: ?Float64, maxTokens: ?Int64, keyRef: ?String,
@@ -694,16 +580,8 @@ public class AiModelRepo {
                     return r
                 }
                 /*
-                 * ★ 2026-10-14（第三方复查 B3 修）：**不许把影响行数丢进 `let _`**。
-                 *
-                 * 原实现 UPDATE 之后直接 `r.ok = true`。若这一行在
-                 * `get()`（上面的 match）与 UPDATE 之间被别人删掉，UPDATE 影响 0 行，
-                 * 而接口仍然回 200「改成功了」—— **响应在撒谎**。
-                 *
-                 * 这正是本仓为 `setPassword` 明确修过的同类 bug
-                 * （auth_repo.cj 注释："AUTH 先查存在性，否则 UPDATE 影响 0 行却回 200 —— 那是撒谎"）。
-                 * 同一条纪律必须落到这里：0 行受影响 ⇒ 当"没这行"处理（404），
-                 * 由调用方映射成 `AI_MODEL_NOT_FOUND`。
+                 * 不许把 UPDATE 的影响行数丢进 let _：该行可能在 get() 与 UPDATE 之间被删掉，影响 0 行仍回 200
+                 * = 响应在撒谎。0 行受影响 ⇒ 当"没这行"处理（404），由调用方映射成 AI_MODEL_NOT_FOUND。
                  */
                 var affected: Int64 = 0
                 try {
@@ -716,7 +594,7 @@ public class AiModelRepo {
                                      DbInt(if (nDefault) { 1 } else { 0 }),
                                      DbInt(now), DbInt(byUserId), DbInt(id)])
                 } catch (e: Exception) {
-                    /* 与 create 同一条口径：**只有**"确实重名了"才解释成 409，其余照旧上抛。 */
+                    /* 与 create 同一条口径：只有"确实重名了"才解释成 409，其余照旧上抛。 */
                     if (nameTaken(nName, id)) {
                         r.duplicate = true
                         return r
@@ -748,23 +626,10 @@ public class AiModelRepo {
     }
 }
 
-/* ===================== 播种（表为空时）===================== */
-
 /*
- * 表**完全为空**时写入初始配置。两种情形分开处理：
- *
- *   ① 存量库（旧 KV 已配好 endpoint + model）⇒ 把它**搬成一条默认对话模型**。
- *      为什么：升级后 AI 必须**继续能用**。若这时什么都不建，
- *      解析逻辑虽然会回退旧 KV（所以也不会坏），但管理台上会**一条都没有** ——
- *      运维会以为"配置丢了"（体验问题，也是可解释性问题）。
- *   ② 全新库 ⇒ 写入与产品截图一致的两行示例（对话 + 向量），`enabled = 1`。
- *      ★ 2026-10-17（评审整改）：密钥引用现在**默认就有**（`ai.key_ref` 默认
- *      `builtin:demo`，见 `server/src/ai_builtin.cj`），所以全新库装完即能真调模型
- *      —— 评审原话是"默认零模型调用，智能深度无法现场证明"。两行里的 `key_ref`
- *      仍留空（= 用全局那把内置引用），换真实密钥时只改 KV 一处即可。
- *      要停用 AI，把 `ai.enabled` 置 0（`docs/Q6-合规决策记录.md` 的口径不变）。
- *
- * ⚠ 只判"表空不空"，**不覆盖任何已有行**（幂等，可重复调用）。
+ * 表完全为空时写入初始配置（幂等，可重复调用，不覆盖任何已有行）。
+ * 存量库（旧 KV 已配 endpoint + model）⇒ 搬成一条默认对话模型：否则管理台一条都没有，运维会以为配置丢了。
+ * 全新库 ⇒ 写对话 + 向量两行示例。要停用 AI，把 ai.enabled 置 0。
  */
 public func aiModelSeedDefaults(repo: AiModelRepo, settings: AiSettingsRepo, now: Int64): Int64 {
     if (repo.countAll() > 0) {
@@ -773,13 +638,8 @@ public func aiModelSeedDefaults(repo: AiModelRepo, settings: AiSettingsRepo, now
     var n: Int64 = 0
     let ep = settings.get(SET_AI_ENDPOINT, now).trimAscii()
     let md = settings.get(SET_AI_MODEL, now).trimAscii()
-    /*
-     * ★ 2026-10-17（评审整改）：**必须同时要求"库里有这一行"**。
-     *   原来只判 `ep.size > 0 && md.size > 0` —— 在默认值为空串的年代这恰好等价于
-     *   "存量库配过"；现在默认值是内置 DeepSeek 端点/模型，全新库也会落到这个分支，
-     *   于是只播 1 行、provider 还写"（继承自旧配置）"，向量模型直接缺失。
-     *   判据改成"真有行 + 非空"，两个条件都满足才算存量配置。
-     */
+    /* 必须同时要求"库里有这一行"：只判非空的话，默认值非空的今天会让全新库落到存量分支，
+     * 只播 1 行且向量模型缺失。 */
     if (ep.size > 0 && md.size > 0 && settings.hasRow(SET_AI_ENDPOINT) &&
         settings.hasRow(SET_AI_MODEL)) {
         let m = AiModel()
@@ -818,7 +678,7 @@ public func aiModelSeedDefaults(repo: AiModelRepo, settings: AiSettingsRepo, now
     emb.provider = AI_MODEL_SEED_EMBEDDING_PROVIDER
     emb.baseUrl = AI_MODEL_SEED_EMBEDDING_BASE_URL
     emb.model = AI_MODEL_SEED_EMBEDDING_MODEL
-    /* 向量模型没有温度语义 ⇒ 存 0（并在页面上不展示温度列，见 admin-web）。 */
+    /* 向量模型没有温度语义 ⇒ 存 0（页面上也不展示温度列）。 */
     emb.temperature = 0.0
     emb.maxTokens = AI_MODEL_SEED_MAX_TOKENS
     emb.enabled = true
@@ -829,14 +689,9 @@ public func aiModelSeedDefaults(repo: AiModelRepo, settings: AiSettingsRepo, now
     return n
 }
 
-/* ===================== JSON 视图 ===================== */
-
 /*
- * 一条配置的可回显视图。
- *
- * ★★ 安全要点（与 `aiSettingsJson` 同源）：`key_ref` 是**引用**，不回显引用本体，
- *    只回"引用了没有 + 引用类型 + 生效来源（本条 / 全局）"。
- *    连 `env:变量名` 也不回：变量名会泄露部署约定（同 ai.key_ref 的处理）。
+ * 一条配置的可回显视图。key_ref 是引用，不回显本体：只给 key_ref_set / key_ref_kind / key_source。
+ * 连 env:变量名 也不回 —— 变量名会泄露部署约定（同 ai.key_ref 的处理）。
  */
 public func aiModelJson(m: AiModel, globalKeyRefSet: Bool, inUse!: Bool = false): JsonObject {
     let o = JsonObject()
@@ -846,7 +701,7 @@ public func aiModelJson(m: AiModel, globalKeyRefSet: Bool, inUse!: Bool = false)
     o.put("kind_label", JsonString(aiModelKindLabel(m.kind)))
     o.put("provider", JsonString(m.provider))
     o.put("base_url", JsonString(m.baseUrl))
-    /* ★ 实际会请求的 URL（派生结果）—— 排查时必须看得到它。 */
+    /* 实际会请求的 URL（派生结果）—— 排查时必须看得到它。 */
     o.put("request_url", JsonString(aiModelRequestUrl(m.baseUrl, m.kind)))
     o.put("model", JsonString(m.model))
     o.put("temperature", JsonFloat(m.temperature))
@@ -865,15 +720,9 @@ public func aiModelJson(m: AiModel, globalKeyRefSet: Bool, inUse!: Bool = false)
     o.put("enabled", JsonBool(m.enabled))
     o.put("is_default", JsonBool(m.isDefault))
     /*
-     * ★★ `in_use`：**运行时实际会选中的那一行**（`defaultOf` 的答案）。
-     *
-     * 它与 `is_default` 会分叉，且分叉不是异常情况：
-     *   · 默认行被停用 ⇒ defaultOf 退到"该类型第一条启用的行"
-     *   · 默认行被删除 ⇒ 同上（删除不自动改嫁默认位）
-     * 此时若 UI 只按 `is_default` 画「默认」标记，页面会出现
-     * **一行标记都没有、但 AI 确实在用某一行**的状态 —— 用户永远找不到
-     * 自己在用的到底是哪条配置，只能靠猜。所以把"谁在生效"也作为事实回给页面。
-     *   口径：`is_default` = 用户指定的默认；`in_use` = 运行时真正选中的。
+     * in_use = 运行时实际会选中的那一行（defaultOf 的答案），与 is_default 会分叉：默认行被停用或被删除时，
+     * UI 只按 is_default 画标记会出现"一行标记都没有、但 AI 确实在用某一行"。口径：is_default = 用户指定，
+     * in_use = 运行时真正选中。
      */
     o.put("in_use", JsonBool(inUse))
     o.put("created_at", JsonInt(m.createdAt))
@@ -882,11 +731,7 @@ public func aiModelJson(m: AiModel, globalKeyRefSet: Bool, inUse!: Bool = false)
     return o
 }
 
-/*
- * 这一行是不是**运行时实际会选中**的那条（见 `aiModelJson` 的 `in_use` 说明）。
- * 单独抽成函数：列表、新建、修改三条回显路径都要用同一个口径算，
- * 三处各写一遍就会分叉（而"哪个在生效"正是最不能分叉的事实）。
- */
+/* 这一行是不是运行时实际会选中的那条：列表/新建/修改三条回显路径共用同一口径，各写一遍会分叉。 */
 public func aiModelInUse(repo: AiModelRepo, m: AiModel, now: Int64): Bool {
     match (repo.defaultOf(m.kind, now)) {
         case Some(d) => d.id == m.id
@@ -894,18 +739,10 @@ public func aiModelInUse(repo: AiModelRepo, m: AiModel, now: Int64): Bool {
     }
 }
 
-/* ===================== 连通性测试 ===================== */
 /*
- * 对一条配置做**真实出站**的连通性测试。
- *
- * ★ 三个刻意的设计决定（都会体现在返回里）：
- *   ① **不受 `ai.enabled` 总开关影响**：这是**诊断**动作 ——
- *      如果测试必须先打开总开关，运维就得"先放它上线再验证"，顺序反了。
- *      （其余安全闸一个不少：https 强制 + 密钥必须能解析出来。）
- *   ② **不抛异常**：连不上是**结果**，不是服务端故障 —— 返回 `ok=false` + 原因，
- *      HTTP 仍然 200（管理台据此显示"连通性测试：失败 + 为什么"）。
- *   ③ 把**实际请求的 URL** 与**用了哪来的密钥**一起回显：
- *      排查时"到底打了哪个地址 / 用的谁的密钥"是最常被问的两件事。
+ * 真实出站的连通性测试。① 不受 ai.enabled 总开关影响：这是诊断动作，否则运维得先上线再验证；
+ * ② 不抛异常：连不上是结果不是故障（ok=false + reason，HTTP 仍 200）；
+ * ③ 回显实际请求 URL 与用了哪来的密钥。
  */
 public func aiModelProbe(m: AiModel, settings: AiSettingsRepo, now: Int64): AiModelProbeResult {
     let out = AiModelProbeResult()
@@ -951,15 +788,8 @@ public func aiModelProbe(m: AiModel, settings: AiSettingsRepo, now: Int64): AiMo
 }
 
 /*
- * 按**字符**截断探活样本（2026-10-14 修 B5）。
- *
- * ⚠ 原实现取 `s.toArray()` —— 那是 **UInt8 字节数组**，参数名却叫 `maxChars`：
- *   中文样本（`AI_MODEL_PROBE_SAMPLE_MAX_CHARS = 160`）会在字符中间被切开，
- *   `String.fromUtf8` 得到非法 UTF-8，再往响应里塞就是坏 JSON / 前端乱码。
- *
- * 本仓对同一个坑已有三处成文证据（`triageTruncateChars` / `previsitTruncateChars`
- * 以及 `triage_redflag.cj` 的"错误做法 `for (ch in text.toArray())`"）——
- * 这里改成同一口径：逐 `Rune` 收集到第 n 个为止，天然落在字符边界上。
+ * 按字符截断探活样本：s.toArray() 是 UInt8 字节数组，会在中文字符中间切开，得到非法 UTF-8；
+ * 改逐 Rune 收集，天然落在字符边界上。
  */
 func aiModelTruncate(s: String, maxChars: Int64): String {
     var count: Int64 = 0

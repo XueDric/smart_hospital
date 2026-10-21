@@ -6,55 +6,21 @@ import stdx.encoding.json.*
 /*
  * SPDX-License-Identifier: MIT
  *
- * ===== kb_repo.cj —— P5 知识库仓储（文档 CRUD + 切块 + 两条检索路）=====
- *
- * 核心算法在 `domain_kb.cj`（切块/余弦/关键词打分，**纯逻辑、无 DB 无网络**）；
- * 本文件只管**持久化与检索编排**。
- *
- * ---------------------------------------------------------------------------
- * ## ★★ 本文件最要紧的一件事：**重新切块的 upsert 语义**
- *
- * 改一篇文档的正文时，块会**重新切**。这里必须保证：
- *   **旧的块全部消失**（否则检索会召回**已被改掉的旧内容** ——
- *   而那种错误的表现是"模型引用了文档里已经删掉的句子"，极难发现）。
- *
- * 做法（两步，**都在同一个语义里**）：
- *   ① 按 `(doc_id, seq)` **upsert** 新块（利用 `uk_kb_chunk_doc_seq`）；
- *   ② **删掉 `seq >= 新块数` 的旧块** —— 文档变短时，尾部旧块不会被 ① 覆盖。
- * ⚠ 只做 ① 会让"文档变短"留下尾部幽灵块；只做 ②（先删后插）会在中途失败时
- *   **丢掉整篇文档的块**。⇒ ①+② 的顺序是刻意的：**新块先落，再清多余**。
- *
- * ## ★★ 第二条要紧的事：**两条检索路不混排**
- *
- *   · `searchKeyword` —— 不需要 embedding，**永远可用**（默认路径）
- *   · `searchVector`  —— 需要传入查询向量；库里没有向量的块**跳过**
- * ⚠ 分数**量纲不同**（覆盖比例 vs 余弦）⇒ **绝不混排**
- *   （详见 `domain_kb.cj` 踩坑表 AJ）。选哪条路由调用方按"有没有 embedding"决定。
+ * 智慧医院智能导诊就诊系统 · 服务端
+ * kb_repo.cj —— 知识库仓储：文档 CRUD、切块落库、两条检索路；算法在 domain_kb.cj。
+ * 改正文必须让旧块全部消失：先按 (doc_id, seq) upsert 新块，再删 seq >= 新块数的尾部旧块。
+ * 只做前者会留幽灵块（召回已删内容），只做后者中途失败会丢整篇块；两条路的分数不可混排。
  */
 
-/* ===================== 常量 ===================== */
+/* 常量 */
 
 /*
- * 一次检索最多扫描多少个块。
- *
- * ⚠⚠ **这是一条硬性上限，必须写进文档**（2026-10-09 复查要求）：
- *   超过 5000 块时，检索**只扫前 5000 个**（按 `c.id` 升序），
- *   **后面的块静默地永远不会被检索到** —— 这是本仓最忌的"静默失效"形态，
- *   所以：
- *     ① 响应里带 `scanned`（调用方可以自己发现 `scanned == 5000`）；
- *     ② 上限值在这里**只有一处定义**，且 `stats()` 会回报总块数
- *        ⇒ "块数 > 5000" 这件事**是可观测的**，不是暗坑。
- *
- * ⚠ 5000 怎么来的：brief §5.5 说"单院区知识库几千 chunk 完全够用；
- *   上万 chunk 才需要降维/分片"。**5000 正好落在这个区间的上沿** ——
- *   也就是说：到了该做分片的时候，`scanned` 会顶到 5000 提醒你。
- *   📌 一个"刚好等于设计容量"的上限，比一个"很大所以看起来不会碰到"的上限有用。
+ * 一次检索最多扫描的块数；超出部分不会被检索到，且不报错。
+ * 响应带 scanned、stats() 回报 scan_limit_reached —— 触顶必须可观测。
  */
 public let KB_SCAN_LIMIT: Int64 = 5000
 
-/* ===================== 结果类型 ===================== */
-
-/* 知识库文档（`kb_doc` 的一行）。 */
+/* 知识库文档（kb_doc 的一行）。 */
 public class KbDoc {
     public var id: Int64 = 0
     public var title: String = ""
@@ -68,12 +34,12 @@ public class KbDoc {
     public var chunkCount: Int64 = 0
 }
 
-/* 文档写入结果（**不抛异常**：可预期的业务拒绝靠返回值表达）。 */
+/* 写入结果；不抛异常，可预期的业务拒绝靠返回值表达。 */
 public class KbWriteOutcome {
     public var ok: Bool = false
     public var id: Int64 = 0
     public var notFound: Bool = false
-    /* `title` 唯一键冲突 ⇒ 409。 */
+    /* title 唯一键冲突 ⇒ 409。 */
     public var duplicate: Bool = false
     public var invalid: Bool = false
     public var detail: String = ""
@@ -91,18 +57,18 @@ public class KbWriteOutcome {
     }
 }
 
-/* 检索结果（含**来源标注**，调用方必须如实透传）。 */
+/* 检索结果；来源标注调用方必须如实透传。 */
 public class KbSearchResult {
     public var hits: Array<KbHit> = Array<KbHit>()
-    /* "keyword" | "vector" —— **不可省**（见 domain_kb.cj 的说明）。 */
+    /* "keyword" | "vector"，不可省。 */
     public var source: String = KB_SOURCE_KEYWORD
-    /* 扫过多少个块（看板/排障用：能看出"知识库多大、检索多贵"）。 */
+    /* 扫过多少个块（排障用）。 */
     public var scanned: Int64 = 0
-    /* 库里有多少块**没有**向量（向量路的覆盖度；关键词路恒为 0）。 */
+    /* 没有向量的块数（向量路覆盖度；关键词路恒为 0）。 */
     public var missingVectors: Int64 = 0
 }
 
-/* ===================== 仓储 ===================== */
+/* 仓储 */
 
 public class KbRepo {
     private let db: DbBackend
@@ -111,14 +77,7 @@ public class KbRepo {
         this.db = db
     }
 
-    /* ---------- 文档 CRUD ---------- */
-
-    /*
-     * 列表。
-     *
-     * ⚠ 块数用**一次 GROUP BY** 取回，不是逐行查（N+1 —— 本仓在 `baseDepartmentNameMap`
-     *   那里已经踩过一次并写在注释里）。
-     */
+    /* 列表；块数用一次 GROUP BY 取回，不能逐行查（N+1）。 */
     public func listDocs(includeDisabled!: Bool = true): Array<KbDoc> {
         var sql = "SELECT d.id, d.title, d.category, d.body, d.enabled, d.updated_by, " +
                   "d.created_at, d.updated_at, IFNULL(c.n, 0) AS chunk_count " +
@@ -152,12 +111,7 @@ public class KbRepo {
         return Some(kbFillDoc(rs, 0))
     }
 
-    /*
-     * 建文档：**落库 + 立刻切块**。
-     *
-     * ⚠ 校验放在仓储里（不只放 HTTP 层）：这样测试、将来的 CLI 也走同一套 ——
-     *   "同一语义只留一处实现"（本仓铁律）。
-     */
+    /* 建文档：落库后立刻切块；校验放在仓储里，测试与 CLI 才走同一套语义。 */
     public func create(title: String, category: String, body: String,
                        actorId: Int64, now: Int64): KbWriteOutcome {
         let out = KbWriteOutcome()
@@ -166,8 +120,7 @@ public class KbRepo {
             return out.markInvalid(why)
         }
         /*
-         * ⚠ 直接 INSERT，**不先查**（先查后插是 TOCTOU）：靠 `uk_kb_doc_title` 兜底，
-         *   冲突由 `kbClassifyDuplicate` 分类 —— 与 `domain_base.cj` 同一手法。
+         * 直接 INSERT、不先查（先查后插是 TOCTOU）：靠 uk_kb_doc_title 兜底，冲突交给 kbClassifyDuplicate 分类。
          */
         let ins = kbExecTolerant(db,
             "INSERT INTO kb_doc (title, category, body, enabled, updated_by, created_at, updated_at) " +
@@ -183,11 +136,7 @@ public class KbRepo {
     }
 
     /*
-     * 改文档：**标题/分类/正文都可改**；改正文 ⇒ **重新切块**。
-     *
-     * ⚠ 显式返回 `changedBody`（由调用方/测试判定是否需要重新向量化）——
-     *   其实 `kbRechunk` 内部已经处理，这里只是把"正文变没变"这个事实**暴露出来**，
-     *   免得将来有人想"没变就不重新切"时无处判断。
+     * 改文档；改正文即重新切块。changedBody 由本函数内部处理，这里只把「正文变没变」暴露给调用方。
      */
     public func update(id: Int64, title: String, category: String, body: String,
                        enabled: Bool, actorId: Int64, now: Int64): KbWriteOutcome {
@@ -211,22 +160,14 @@ public class KbRepo {
             return kbClassifyDuplicate(up.message, title.trimAscii(), out)
         }
         /*
-         * ★★ 重新切块 —— **这是本文件最容易出错的地方**（见文件头）。
-         * ⚠ 无条件重切（不做"正文没变就跳过"的优化）：那个优化需要**比较正文**，
-         *   而正文可能上万字 ⇒ 比较成本与重切相当，却多一条"比较逻辑写错就漏切"的风险。
-         *   宁可多切一次。📌 "不做无收益的优化，尤其当它引入新的出错面"。
+         * 无条件重切：不做「正文没变就跳过」的优化 —— 比较上万字的正文成本与重切相当，却多一条漏切风险。
          */
         kbRechunk(id, body, now)
         return out.markOk(id)
     }
 
     /*
-     * 删文档。
-     *
-     * ⚠ 连带删块（**真删**，不是软删）—— 与 `department`/`doctor` 的软删策略**不同**，
-     *   理由必须写清：科室/医生被**历史业务数据**引用（挂号/病历要能解析出名字），
-     *   而知识库块**不被任何业务数据引用**（它只是检索的原料）⇒
-     *   留着停用文档的块**只会污染检索**。要停用请用 `enabled = 0`。
+     * 删文档连带真删块：块不被任何业务数据引用，留着只会污染检索。要停用请用 enabled = 0。
      */
     public func remove(id: Int64): KbWriteOutcome {
         let out = KbWriteOutcome()
@@ -241,12 +182,8 @@ public class KbRepo {
         return out.markOk(id)
     }
 
-    /* ---------- 切块（upsert + 清尾部）---------- */
-
     /*
-     * 重新切块并落库。**旧块必须消失**（见文件头）。
-     *
-     * 返回落库后的块数。
+     * 重新切块并落库，返回落库后的块数；旧块必须消失（见文件头）。
      */
     public func kbRechunkPublic(docId: Int64, body: String, now: Int64): Int64 {
         return kbRechunk(docId, body, now)
@@ -255,9 +192,7 @@ public class KbRepo {
     private func kbRechunk(docId: Int64, body: String, now: Int64): Int64 {
         let pieces = kbChunk(body)
         /*
-         * ① 先 upsert 新块。
-         * ⚠ `chars` 存**字符数**（`previsitCharLen`）而不是 `size`（字节数）——
-         *   本仓为"字节/字符混用"栽过三次，而这个字段会被用来判断块长度是否合理。
+         * 先 upsert 新块；chars 存字符数而不是字节数 —— 该字段用来判断块长是否合理。
          */
         var i: Int64 = 0
         for (p in pieces) {
@@ -265,31 +200,25 @@ public class KbRepo {
                 "INSERT INTO kb_chunk (doc_id, seq, content, chars, embedding, embedded_at, created_at) " +
                 "VALUES (?, ?, ?, ?, NULL, 0, ?) " +
                 "ON DUPLICATE KEY UPDATE content = VALUES(content), chars = VALUES(chars), " +
-                /* ⚠ 正文变了 ⇒ **旧向量必须作废**（它对应的是旧文本！）。 */
+                /* 正文变了 ⇒ 旧向量必须作废（它对应的是旧文本）。 */
                 "embedding = NULL, embedded_at = 0",
                 [DbInt(docId), DbInt(i), DbStr(p), DbInt(previsitCharLen(p)), DbInt(now)])
             i = i + 1
         }
-        /* ② 再清掉"文档变短"留下的尾部旧块（`seq >= 新块数`）。 */
+        /* 再清掉文档变短留下的尾部旧块（seq >= 新块数）。 */
         db.exec("DELETE FROM kb_chunk WHERE doc_id = ? AND seq >= ?", [DbInt(docId), DbInt(i)])
         return i
     }
 
-    /* ---------- 检索 ---------- */
-
     /*
-     * 关键词检索（**默认路径，永远可用**）。
-     *
-     * ⚠ **一次把候选块读回来**再在内存里打分（不是逐块查）。
-     *   理由：本用途下块数有限（几千），一次读回 + 内存打分**比 N 次查询快得多**，
-     *   而且**结果一致**（N 次查询之间文档可能被改 ⇒ 同一个响应里出现两个版本）。
+     * 关键词检索（默认路径，永远可用）；一次读回候选块再内存打分：比 N 次查询快，且同一响应内结果一致。
      */
     public func searchKeyword(query: String, topN!: Int64 = KB_SEARCH_TOP_N): KbSearchResult {
         let res = KbSearchResult()
         res.source = KB_SOURCE_KEYWORD
         let qTokens = kbTokens(query)
         if (qTokens.size == 0) {
-            /* 查询里没有任何可检索成分（如纯标点）⇒ 空结果，**不是**返回随机块。 */
+            /* 查询里没有可检索成分（如纯标点）⇒ 空结果，不返回随机块。 */
             return res
         }
         let rows = kbLoadChunks()
@@ -308,11 +237,7 @@ public class KbRepo {
     }
 
     /*
-     * 向量检索（需要传入查询向量）。
-     *
-     * ⚠ 库里**没有向量**的块**跳过**（它们是"还没向量化"的正常状态）；
-     *   同时回报 `missingVectors` —— 让调用方能判断"是不是大部分都没向量"
-     *   （那说明该走关键词路，而不是拿少数几块算余弦）。
+     * 向量检索；没有向量的块跳过并计入 missingVectors，让调用方能判断是否该改走关键词路。
      */
     public func searchVector(queryVec: Array<Float64>, topN!: Int64 = KB_SEARCH_TOP_N): KbSearchResult {
         let res = KbSearchResult()
@@ -331,10 +256,7 @@ public class KbRepo {
             }
             let s = kbCosine(queryVec, r.embedding)
             /*
-             * ⚠ 阈值 0（而不是 > 0）：余弦可能是负的（不相关）。
-             *   保留 `> 0` 只是"至少方向一致"的粗筛 —— 真正的排序由分数决定，
-             *   而 TopN 会取最高的几个。**不设更高阈值**是刻意的：
-             *   阈值定高了会"什么都检索不到"，而定多少合适取决于具体 embedding 模型。
+             * 粗筛阈值 > 0（余弦可为负）；不设更高阈值：定高了会什么都检索不到，合适值取决于 embedding 模型。
              */
             if (s > 0.0) {
                 r.score = s
@@ -348,9 +270,7 @@ public class KbRepo {
     }
 
     /*
-     * 写入某块的向量（向量化流程用）。
-     * ⚠ 只更新 `embedding`/`embedded_at`，**不动 content** ——
-     *   若这里顺手写 content，就会让"向量对应哪个文本"变得不可信。
+     * 写入某块向量；只改 embedding/embedded_at，不动 content，否则「向量对应哪个文本」不可信。
      */
     public func setEmbedding(chunkId: Int64, vec: Array<Float64>, now: Int64): Bool {
         if (vec.size == 0) {
@@ -394,8 +314,7 @@ public class KbRepo {
         o.put("chunks", JsonInt(all))
         o.put("chunks_embedded", JsonInt(embedded))
         /*
-         * ⚠ 向量覆盖率如实给出：它直接决定"向量路能不能用"。
-         *   0% 时调用方应当走关键词路（并如实标注 source）。
+         * 向量覆盖率如实给出：它直接决定向量路能不能用；0% 时调用方应走关键词路。
          */
         var pct: Int64 = 0
         if (all > 0) {
@@ -403,11 +322,7 @@ public class KbRepo {
         }
         o.put("embedding_coverage_pct", JsonInt(pct))
         /*
-         * ★ 把**检索上限**一并回报，并明确"是否已触顶"（2026-10-09 复查要求）。
-         *   ⚠ 理由：`KB_SCAN_LIMIT` 一旦触顶，超出的块**静默检索不到**。
-         *     只回报总块数是不够的 —— 运维看到 "chunks: 6000" 未必联想到
-         *     "检索只扫前 5000"。⇒ 这里直接给出**布尔结论**，不让人自己去比。
-         *   📌 判据：**能被静默触发的上限，就必须有一个显式的"已触顶"信号。**
+         * 检索上限一并回报，并直接给出「是否触顶」的布尔结论：能被静默触发的上限必须有显式信号。
          */
         o.put("scan_limit", JsonInt(KB_SCAN_LIMIT))
         o.put("scan_limit_reached", JsonBool(all > KB_SCAN_LIMIT))
@@ -415,15 +330,8 @@ public class KbRepo {
             "检索最多扫描 scan_limit 个块（按 id 升序）；chunks 超过它时，后面的块**不会被检索到**。" +
             "scan_limit_reached=true 表示已触顶，需要分片或缩库。"))
         /*
-         * ★★ `embedding_note` **放在这里**，而不是放在 HTTP 端点的 handler 里
-         *   （2026-10-09 由 AC-KB-5 ⑨ 抓到：端点里有一份、`stats()` 里没有，
-         *    于是"同一口径说明"有了**两处**——而其中一处会被看板/别的调用方漏掉）。
-         *
-         * ⚠ 为什么口径说明必须跟着数据走：`embedding_coverage_pct` 为 0 是**当前常态**
-         *   （DeepSeek 无 embeddings 端点），不解释的话看到 0% 的人会以为**功能坏了**。
-         *   把说明与数字**放在同一个对象里**，任何拿到这份数据的调用方
-         *   都自动带上解释 —— 而"记得在每个使用点补一句"迟早会漏。
-         *   📌 判据：**口径说明应当与被解释的数据同源**，不能靠调用方自觉。
+         * 口径说明必须与数据同源：embedding_coverage_pct 为 0 是当前常态（DeepSeek 无 embeddings 端点），
+         * 不解释会被当成功能故障；放在同一对象里，任何调用方都自动带上解释。
          */
         o.put("embedding_note", JsonString(
             "embedding_coverage_pct 为 0 表示尚无向量（当前检索走关键词路，source=keyword）。" +
@@ -431,13 +339,8 @@ public class KbRepo {
         return o
     }
 
-    /* ---------- 内部：读块 / 取前 N ---------- */
-
     /*
-     * 一次读回**启用文档**的所有块（含向量）。
-     *
-     * ⚠ 只读 `d.enabled = 1`：停用文档不该被检索到（那是"停用"的定义）。
-     *   ⇒ `kb_doc.enabled` 因此是**检索语义的一部分**，不是装饰字段。
+     * 一次读回启用文档的所有块；只读 enabled = 1 —— 停用文档不该被检索到，这是检索语义的一部分。
      */
     private func kbLoadChunks(): Array<KbHit> {
         let rs = db.query(
@@ -454,10 +357,7 @@ public class KbRepo {
             h.content = rs.getString(i, 3)
             h.title = rs.getString(i, 4)
             h.category = rs.getString(i, 5)
-            /*
-             * ⚠ `embedding` 列可为 NULL ⇒ 用 `getNullable`（本仓 DbResultSet 有它）。
-             *   直接用 `getString` 拿 NULL 会得到什么取决于驱动实现 —— 不赌。
-             */
+            /* embedding 列可为 NULL ⇒ 用 getNullable；不赌驱动对 NULL 的 getString 行为。 */
             match (rs.getNullable(i, 6)) {
                 case Some(s) => h.embedding = kbVectorFromJson(s)
                 case None => ()
@@ -479,17 +379,9 @@ public class KbRepo {
     }
 }
 
-/* ===================== 共用工具 ===================== */
-
 /*
- * 文档字段校验。返回空串表示通过。
- *
- * ⚠⚠ 这里也**机制性拒绝明显的个人信息形态**：
- *   知识库文档由本院人员维护（文档本身不出站），但**检索命中片段会随 Prompt
- *   出站给第三方模型**（见 docs/Q6-合规决策记录.md）⇒ 知识库里**不得放患者信息**。
- *   ⚠ 这条**无法用代码保证**（文档是自由文本）—— 这里只挡**最明显的形态**
- *     （身份证号 / 手机号），并在 Q6 里如实列为"仍需人工把关"。
- *   📌 不假装"代码保证了合规"：能挡的挡住，挡不住的说清。
+ * 文档字段校验，空串表示通过；同时挡最明显的个人信息形态（身份证/手机号）。
+ * 检索命中片段会随提示词出站给第三方模型 ⇒ 知识库不得放患者信息；自由文本无法用代码保证，姓名等仍靠人工把关。
  */
 public func kbValidate(title: String, category: String, body: String): String {
     let t = title.trimAscii()
@@ -524,13 +416,7 @@ public func kbValidate(title: String, category: String, body: String): String {
 }
 
 /*
- * 是否含**明显**的个人信息形态。
- *
- * ⚠ 只做两件很窄的事（刻意窄：**误报会让人无法写正常文档**）：
- *   · 11 位连续数字且以 1 开头（手机号形态）
- *   · 18 位（末位可为 X）连续数字/字母（身份证形态）
- * ⚠ **不做**姓名识别（中文姓名无法可靠区分于普通词），
- *   那部分如实列为"人工把关"（见 Q6 记录）。
+ * 是否含明显的个人信息形态：只认手机号与身份证两种，刻意窄 —— 误报会让人写不了正常文档。
  */
 public func kbLooksLikePersonalInfo(text: String): String {
     let digits = ArrayList<Rune>()
@@ -556,21 +442,8 @@ public func kbLooksLikePersonalInfo(text: String): String {
         return "18 位数字串（身份证形态）"
     }
     /*
-     * ★★ 「17 位数字 + X」也是身份证（**末位校验码为 X 是最常见的一种**）。
-     *
-     * ⚠⚠ 这一条是 2026-10-09 复查抓到的**真漏判**：上面的循环只累加 `0-9`，
-     *   所以 `11010119900307123X` 里的数字段只有 **17 位** ⇒ 不触发 `maxRun >= 18`
-     *   ⇒ **放行**。实测：纯 18 位数字被拒（400），而「17 位 + X」返回 **201**。
-     *
-     * ⚠ 为什么这条尤其要紧（不是"顺手补个边界"）：
-     *   本仓 `docs/Q6-合规决策记录.md` 把"管理端拒绝明显的个人信息形态"
-     *   **列为一条合规缓解手段**。而合规手段**漏掉最常见的一种写法**，
-     *   比没有这条检查更糟 —— 它会让人以为"已经挡住了"。
-     *   📌 判据：**声称"已挡住"的东西，必须挡住常见写法**；否则它只是心理安慰。
-     *
-     * ⚠ 实现上**不把 X 计入 `maxRun`**（那是数字串的长度，语义不同），
-     *   而是单独判"恰好 17 位数字 + 紧随 X/x"这个形状。
-     *   顺带覆盖小写 `x`（录入时都常见）。
+     * 「17 位数字 + X」也是身份证；上面的循环只累加 0-9，会把这种最常见写法放行。
+     * 单独判「恰好 17 位数字 + 紧随 X/x」；不把 X 计入数字串长度，语义不同。
      */
     if (maxRun == 17 && kbHasIdTailX(text)) {
         return "17 位数字 + X（身份证形态）"
@@ -581,12 +454,7 @@ public func kbLooksLikePersonalInfo(text: String): String {
     return ""
 }
 
-/*
- * 文里是否存在「恰好 17 位连续数字，且紧随其后是 X / x」。
- *
- * ⚠ 用逐字符扫描而不是正则：仓颉的 `Regex` 在本仓另有用途（redflag），
- *   这里保持与上面同一手法（一次 `runes()` 扫描），免得引入第二套匹配语义。
- */
+/* 逐字符扫描而非正则，与 kbLooksLikePersonalInfo 保持同一套匹配语义。 */
 public func kbHasIdTailX(text: String): Bool {
     var run = 0
     for (r in text.runes()) {
@@ -629,15 +497,8 @@ public func kbExecTolerant(db: DbBackend, sql: String, args: Array<DbValue>,
 }
 
 /*
- * 把唯一键冲突分类。
- * 与基础域使用同一唯一键证据；空消息或未知故障不按重复/参数错误处理。
- *
- * ⚠⚠ `title` 参数是**必须的**，不是装饰（2026-10-09 实测发现）：
- *   原来这里只置 `duplicate = true`、不填 `detail`，于是 HTTP 层拼出的 409 消息是
- *   **「已存在同名文档：」后面空着** —— 用户看不到**是哪个名字**冲突了。
- *   一个"说了等于没说"的错误消息会让调用方只能靠猜（尤其批量导入时）。
- *   📌 一般化：**报错要带上"足以定位"的信息** —— 只说"冲突了"而不说"和谁冲突"，
- *     是把定位成本推给调用方。
+ * 把唯一键冲突分类；title 参数是必须的：detail 要带上冲突的标题，只说「冲突了」会让调用方靠猜。
+ * 空消息或未知故障不按重复/参数错误处理。
  */
 public func kbClassifyDuplicate(message: String, title: String, out: KbWriteOutcome): KbWriteOutcome {
     if (!message.startsWith("Duplicate entry ")) {
@@ -663,7 +524,7 @@ private func kbFillDoc(rs: DbResultSet, i: Int64): KbDoc {
     return d
 }
 
-/* 单个计数（看板用）。⚠ 收 db 参数（不是全局）—— 本仓没有全局连接。 */
+/* 单个计数；db 以参数传入，本仓没有全局连接。 */
 public func kbCount1(db: DbBackend, sql: String): Int64 {
     let rs = db.query(sql, Array<DbValue>())
     if (rs.rowCount() == 0) {

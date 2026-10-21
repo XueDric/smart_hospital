@@ -3,32 +3,10 @@
  *
  * 智慧医院智能导诊就诊系统 · 服务端
  *
- * ===== triage.cj —— 智能分诊：先取证、后结论，结论必过校验 ================
- *
- * ── 本文件的核心纪律（照搬迁前的 `ai_client.cj` 设计口径 2）──────────────
- *   「**绝不把没校验过的内容当业务值返回**」
- *
- * 分诊结论是**业务值**（要拿它去挂号），所以它必须：
- *   ① **非流式**（brief §5.2）：分诊结论不能边生成边推给客户端 ——
- *      那样客户端会先拿到"推荐心内科"再拿到"其实推荐呼吸科"，
- *      而它可能已经拿第一句去挂 号了。**结论只有一个，且必须校验后才存在。**
- *   ② **经过验证**：推荐的科室/医生**必须真的有号**（AC-P2-2）。
- *      否则患者拿着推荐去挂号，发现没号 —— 那比不推荐更坏。
- *
- * ── 分层（每层都能单独测，这是本项目一贯做法）────────────────────────────
- *   `triage_redflag.cj`  纯规则保险丝，不碰库不调模型（已独立成文件）
- *   本文件：
- *     · 科室判定（规则实现；接口留好给将来接模型）
- *     · **验证**（唯一会碰 `schedule` 的地方）—— 绝不给没号的推荐
- *     · 结论装配（三态来源 + 稳定 reason 码）
- *
- * ⚠⚠ **本轮不接真模型** —— Q6（AI 模型选型与合规）仍是**待决问题**
- *   （brief §10：患者主诉属敏感信息，出境/第三方处理需评估）。
- *   所以本文件把"科室判定"抽成**可替换的接口**，默认用**关键词规则**实现，
- *   并在结论里用 `source` 如实标注是规则还是模型。
- *   这样做的价值：**所有与模型无关的纪律（保险丝、校验、三态、可观测）
- *   都能落地并有测试**；将来接上模型时只换一个实现，其余不动。
- *   📌 不假装"AI 已完成"：`TRIAGE_SOURCE_RULES` 就是规则，不是 AI。
+ * triage.cj —— 智能分诊：先取证、后结论，结论必过校验。
+ * 暴露 deptRules / guessDepartment / TriageRepo / triageComplaint 及 TriageVerdict 等类型。
+ * 约束：选项（科室 + 医生 + 号源）永远由规则与数据库决定，模型只贡献解释文字，改不了它。
+ * 约束：只有验证到真的有号才给出选项，绝不返回没号的推荐（AC-P2-2）；结论非流式。
  */
 
 package qingzhou
@@ -37,20 +15,11 @@ import std.collection.*
 
 /* ===================== 来源与原因码 ===================== */
 
-/*
- * 三态来源（照搬迁前的 `ai_client.cj` 的 `AI_SOURCE_*`）。
- * ⚠ 这里**只会有两个值**：`rules`（本轮唯一的真实实现）与将来可能出现的 `model`。
- *   刻意不设 `"none"` —— 照搬迁前 R-8 的口径：规则兜底**不得为空**，
- *   所以"AI 没配置"时的正确表现是 `rules` + 有内容的结论，而不是"什么都没有"。
- */
+/* 来源只有 rules 与 model 两值，刻意不设 "none"：没配模型时是 rules 兜底，不是空结论。 */
 public let TRIAGE_SOURCE_RULES: String = "rules"
 public let TRIAGE_SOURCE_MODEL: String = "model"
 
-/*
- * 稳定的原因码（进审计与测试断言用）。
- * ⚠ 用**码**而不是句子：句子会被改（改文案 → 测试假红），码不会。
- *   患者可见的说明另有一份文案（见 `TriageVerdict.patientNote`）。
- */
+/* 原因码用稳定码而非句子：改文案不会弄红测试，码变了才说明语义变了。 */
 public let TR_RED_FLAG: String = "RED_FLAG"                  // 命中危急征象 → 转急诊/人工
 public let TR_NO_COMPLAINT: String = "NO_COMPLAINT"          // 主诉为空/太短
 public let TR_NEED_CLARIFY: String = "NEED_CLARIFY"          // 无法判定，需补充信息
@@ -59,7 +28,7 @@ public let TR_NO_BOOKABLE: String = "NO_BOOKABLE"            // 认出的科室*
 public let TR_ALTERNATIVES: String = "ALTERNATIVES"          // 首选没号，但给出了**有号的**备选
 public let TR_OK: String = "OK"                              // 推荐且**已验证有号**
 
-/* ===================== 结论类型 ===================== */
+/* 结论类型：一个已验证可挂号的选项，一份结论；结论是业务值，字段划分见下。 */
 
 /* 一个"已验证可挂号"的选项：科室 + 医生 + 号源事实。 */
 public class TriageOption {
@@ -78,13 +47,8 @@ public class TriageOption {
 }
 
 /*
- * ★ 分诊结论（**业务值**，因此必须非流式且校验后才存在）。
- *
- * 字段设计的两条理由：
- *   · `reasonCode` 稳定可断言；`patientNote` 是给患者看的话 —— 两者分离，
- *     这样改文案不会弄红测试，而改**语义**会（因为码变了）。
- *   · `redFlag` 单独成字段而不是塞进 reasonCode：客户端**必须**能一眼判断
- *     "这是不是要去急诊"，不该靠解析错误码来推断。
+ * 分诊结论（业务值）：reasonCode 稳定可断言，patientNote 是给患者的纯文本，两者分离；
+ * redFlag 单独成字段，客户端不必靠解析错误码判断是否去急诊。
  */
 public class TriageVerdict {
     /* OK / ALTERNATIVES 时非空 —— 且**一定**是已验证有号的。 */
@@ -96,66 +60,26 @@ public class TriageVerdict {
     public var redFlagEvidence: String = ""
     /* 给患者看的一句话（可为空）。 */
     public var patientNote: String = ""
-    /*
-     * ★ 2026-10-09 接真模型：模型给的**解释文字**。
-     *
-     * ⚠⚠ 它与 `options` 是**两回事**，这个划分是刻意且不可让步的：
-     *   `options`（科室 + 排班 + 号源）**永远由规则 + 数据库决定**，
-     *   模型**一个字节都改不了它** —— 于是 P2 立的"**绝不给没有号的推荐**"
-     *   这条硬性验证层**不可能被模型绕过**（模型幻觉推荐一个没号的科室，
-     *   是比规则出错更难发现的失败形态：它看起来很有道理）。
-     *   ⇒ 模型只让"给患者的说明"更好读，不让"能不能挂号"发生变化。
-     */
+    /* 模型只贡献解释文字：options 由规则 + 数据库决定，模型改不了它，幻觉推荐绕不过验证层。 */
     public var aiNote: String = ""
     /* 为什么没用上模型（给运维看；不含密钥）。 */
     public var aiReason: String = ""
-    /*
-     * ★ 2026-10-15 增（改进 7）：**排障遥测**（随结论一起回给 http 层落 `triage_stat`）。
-     *
-     * ⚠⚠ 这五个全部是"**调用事实**"，没有一个是患者输入：
-     *   `aiElapsedMs` 是模型这次实际花了多少毫秒（0 = 根本没调），
-     *   `aiDegradeReason` 是降级原因的**稳定码**
-     *     （`RED_FLAG` / `CONFIG_READ_FAILED` / `AI_DISABLED` / `INVALID_OUTPUT` /
-     *      `CALL_FAILED`；空串 = 真的用上了模型），
-     *     它**刻意与 `aiReason` 分开**：`aiReason` 是给人看的一句话（会改文案），
-     *     而这个码要进库按原因**聚合**（改一个字，历史聚合就断成两段），
-     *   `aiUsedKb` 是这次是否用了知识库检索命中，
-     *   `aiModelId`/`aiModelName` 是**当时**那个默认对话模型的标识。
-     *
-     * ⚠ 为什么模型标识要**随结论带走**（而不是落库时再去查一次配置）：
-     *   落库与调用之间可能隔着一次配置修改（管理员改模型是**零重启**生效的），
-     *   再去查就会把"A 模型的结果"记成"B 模型" ——
-     *   排障日志最不能容忍的就是"事后看到的事实与当时不同"。
-     *   📌 `aiModelName` 冗余存名字（不只存 id）：模型行可以被改名或删除，
-     *     只存 id 会让历史聚合的**含义**悄悄变化（同 `triage_stat.department` 存名字）。
-     */
+    /* 遥测五项随结论走（耗时/降级码/是否用知识库/模型 id 与名字），全是调用事实，不含患者输入；名字冗余存一份，否则模型改名会让历史聚合变义。 */
     public var aiElapsedMs: Int64 = 0
     public var aiDegradeReason: String = ""
     public var aiUsedKb: Bool = false
     public var aiModelId: Int64 = 0
     public var aiModelName: String = ""
-    /*
-     * 本次带给模型的**知识库文档 id**（逗号分隔；空 = 没用知识库）。
-     * ⚠ 存的是文档 id 而不是文档正文：排障要回答的是"这个结论是不是被某篇
-     *   （可能过期的）文档带偏的"，那只需要**能定位到文档**，不需要把正文抄一遍。
-     */
+    /* 带给模型的文档 id（逗号分隔，空 = 未用知识库）：存 id 不存正文，够定位即可。 */
     public var aiKbDocIds: String = ""
-    /* 是否**真的**给出了可挂号的推荐。 */
     public func hasBookable(): Bool {
         return options.size > 0
     }
 }
 
-/* ===================== 科室判定 ===================== */
+/* 科室判定：静态规则表 + 关键词匹配，模型不能新增科室、不能改关键词语义。 */
 
-/*
- * 一个科室的分诊口径：本院科室名 + 主诉关键词 + 医生专长词。
- *
- * ⚠ 这是**静态表**（照搬迁前的 `aiToolSpecs` 的"静态白名单"纪律）：
- *   模型**不能新增科室**，也不能改关键词语义。
- *   将来 P3「AI 能力中心」会把它改成 DB 驱动（brief §5.3），那时
- *   本表变成"出厂默认值"，而**变更入口仍只有一处**。
- */
+/* 一个科室的分诊口径：本院科室名 + 主诉关键词 + 医生专长词；本表是唯一变更入口。 */
 public class DeptRule {
     public let deptName: String
     public let keywords: Array<String>
@@ -168,15 +92,7 @@ public class DeptRule {
     }
 }
 
-/*
- * 分诊规则表（示例级，覆盖本院常见主诉）。
- *
- * ⚠ 三条如实标注：
- *   · **不是临床指南**，是把"最常见的主诉 → 科室"写成可测的映射；
- *   · 词表**示例级**（与弱口令表/红牌词表同一处置口径），要更全需临床输入；
- *   · 顺序有意义：**靠前的先匹配**（同一主诉命中多科时取更专的那个），
- *     所以"心血管内科"要排在"内科"之前 —— 这是刻意排序，不是随手排。
- */
+/* 分诊规则表（示例级，非临床指南）：越靠前越专，先匹配到的胜出，心血管内科必须排在"内科"之前。 */
 public func deptRules(): Array<DeptRule> {
     return [
         DeptRule("心血管内科",
@@ -236,14 +152,7 @@ public class DeptGuess {
     }
 }
 
-/*
- * ★ 按主诉猜科室（**规则实现**）。
- *
- * 判定：遍历 `deptRules()`，第一个"任一关键词被命中"的科室胜出。
- * ⚠ **命中数不作为打分依据** —— 用"命中几个词"打分会让长主诉天然偏向
- *   词表大的科室（"内科"词表有 8 个词，很容易压过只有 2 个词的专科）。
- *   "**先匹配到的更专**"这条顺序纪律，比一个拍脑袋的分数更可解释。
- */
+/* 按主诉猜科室（规则实现）：第一个关键词被命中的科室胜出；命中数不作打分，否则词表大的科室占优。 */
 public func guessDepartment(chiefComplaint: String): DeptGuess {
     let g = DeptGuess()
     let segs = redFlagSegments(chiefComplaint)
@@ -251,29 +160,7 @@ public func guessDepartment(chiefComplaint: String): DeptGuess {
         let hits = ArrayList<String>()
         for (kw in rule.keywords) {
             for (seg in segs) {
-                /*
-                 * ★★ 必须走 `redFlagHit`（**带否定判定**），不能写裸 `seg.contains(kw)`。
-                 *
-                 * ── 原缺陷（第五份复查抓出，我已实测复现）─────────────────────────
-                 * 红色保险丝那条路处理了否定，但**科室判定这条路用的是裸 contains**，
-                 * 于是患者**明确否认**的症状会主导推荐。实测（让心血管内科有号后）：
-                 *     '不胸闷，只是咳嗽'   -> 推荐【心血管内科】   ✗
-                 *     '没有胸闷，就是咳嗽' -> 推荐【心血管内科】   ✗
-                 *     '否认胸闷，主要咳嗽' -> 推荐【心血管内科】   ✗
-                 *     '咳嗽'（对照）       -> 推荐【呼吸内科】     ✓
-                 *
-                 * 危害比"分错科"更隐蔽：因为**有号校验是通过的**，响应 `reason=OK`、
-                 * 还附了真实医生与号源 ⇒ **看起来非常权威**，患者很可能照着去挂错科。
-                 *
-                 * ── 为什么是"复用"而不是"再写一套否定判断"────────────────────────
-                 * 两条路（保险丝 / 科室判定）需要的是**同一个语义**："这个词有没有被否定"。
-                 * 写成两处实现，就是又一次"同一件事两处口径" —— 本项目已为此吃过多次
-                 * （登录名归一、连接参数、文档数字）。所以这里**直接复用同一套函数**：
-                 * 同一个分句（redFlagSegments）+ 同一个字符空间否定窗口（redFlagHit）。
-                 *
-                 * `negated` 传 `None`：科室判定**不需要**留"被否定的依据"档
-                 *   （那是保险丝给审计用的），传 None 让这个意图显式化。
-                 */
+                /* 必须走 redFlagHit（带否定判定），不能写裸 seg.contains(kw)：否则"不胸闷，只是咳嗽"会被推到心血管内科，且校验照样通过。 */
                 if (redFlagHit(seg, kw, hits, None)) {
                     // 命中即记（redFlagHit 已保证去重）
                 }
@@ -290,10 +177,7 @@ public func guessDepartment(chiefComplaint: String): DeptGuess {
 
 /* ===================== 验证（唯一碰 schedule 的地方）===================== */
 
-/*
- * 一个"可挂号"的候选（库里查出来的事实，不含任何推测）。
- * 字段全部来自 SQL 结果，没有一个是模型生成的。
- */
+/* 一个可挂号的候选：字段全部来自 SQL 结果，没有一个是模型生成的。 */
 public class BookableSlot {
     public var scheduleId: Int64 = 0
     public var departmentId: Int64 = 0
@@ -307,14 +191,7 @@ public class BookableSlot {
     public var remainNum: Int64 = 0
 }
 
-/*
- * ★★ 分诊的**验证层** —— 只读 `schedule` / `doctor` / `department`，绝不写。
- *
- * ADR-0001 §4.3「范围锁死」要求：直接 SQL 只准落在 `BookingRepo` 拥有的表上。
- * `schedule` 正是其中之一，所以本类**必须**只在读语义下使用它，
- * 且**不得**在这里做任何写操作（写只能经 `BookingRepo`）。
- * 这是刻意把"读"与"写"分开：分诊永远不该改变号源状态。
- */
+/* 验证层：只读 schedule/doctor/department，绝不写（写只能经 BookingRepo）。 */
 public class TriageRepo {
     private let db: DbBackend
 
@@ -323,19 +200,8 @@ public class TriageRepo {
     }
 
     /*
-     * 查某科室**当前可挂号**的号源（按就诊日/时段升序）。
-     *
-     * 过滤条件：共同可售谓词守住排班/科室/医生启用、归属与真实日期时段，
-     *   再要求余额与调用方的医院日期：
-     *   · `s.remain_num > 0` —— **真的有余额**（这就是 AC-P2-2 的根）
-     *   · `s.work_date >= today` —— 别把过期排班推给患者
-     *
-     * ⚠ `today` 由**调用方**传入而不是在 SQL 里 `CURDATE()`：
-     *   后者会让"同一天的测试"依赖数据库时区，测起来会偶发红。
-     *   传参后测试可以固定日期，行为完全可复现。
-     *
-     * 排序：`work_date ASC, period ASC` —— 给患者"最早能看的"，
-     *   而不是"号最多的"（患者要的是尽快看上病）。
+     * 查某科室当前可挂号的号源：谓词守启用与真实日期，再要求 s.remain_num > 0（AC-P2-2 的根）、s.work_date >= today。
+     * today 传参而不用 CURDATE()（否则同日测试依赖时区）；排序 work_date, period 升序：给最早能看的。
      */
     public func bookableSlotsInDepartment(deptName: String, today: String,
                                           limit!: Int64 = 20): Array<BookableSlot> {
@@ -369,14 +235,7 @@ public class TriageRepo {
         return out.toArray()
     }
 
-    /*
-     * 某科室名在本院**是否存在**（用于区分两种失败：
-     * "规则认出的科室本院没有" vs "科室有但当前没号"）。
-     *
-     * ⚠ 这个区分对患者没有意义（两种都只能换科室），但对**运维**有意义：
-     *   前者说明**规则表与本院子集不一致**（该改规则表），
-     *   后者只是"暂时没号"（什么都不用改）。混在一起会让规则表长期漂移而无人发现。
-     */
+    /* 科室名在本院是否存在：区分规则表与本院科室不一致（该改规则表）与暂时没号（无需改）。 */
     public func departmentExists(deptName: String): Bool {
         let rs = db.query("SELECT COUNT(*) FROM department WHERE name = ?", [DbStr(deptName)])
         if (rs.rowCount() < 1) {
@@ -398,15 +257,9 @@ public class TriageRepo {
     }
 }
 
-/* ===================== 结论装配 ===================== */
+/* 结论装配：按医生归并，同一医生只留最早排班。 */
 
-/*
- * 把一组 `BookableSlot` 归并成"按医生"的选项（同一医生多个排班只留最早的）。
- *
- * ⚠ 为什么按**医生**归并而不是按排班：患者要选的是"看哪个医生"，
- *   一次给他 5 个同一医生的不同日期只是噪音。首个（最早）的那个作为推荐排班，
- *   其余数量汇总进 `totalRemain`。
- */
+/* 把号源归并成按医生的选项：同一医生多个排班只留最早的那个，其余余额累加进 totalRemain。 */
 func toOptions(slots: Array<BookableSlot>): Array<TriageOption> {
     let byDoctor = ArrayList<TriageOption>()
     for (s in slots) {
@@ -440,29 +293,14 @@ func toOptions(slots: Array<BookableSlot>): Array<TriageOption> {
 }
 
 /*
- * ★★ 分诊主流程 —— **先取证、后结论，结论必过校验**。
- *
- * 执行顺序（顺序本身就是纪律，不能调换）：
- *   ① **危急征象兜底**（纯规则，不碰库不调模型）：命中 ⇒ 立即返回 RED_FLAG，
- *      后面所有步骤**都不执行** —— 危急时不做分诊，直接转急诊/人工。
- *   ② 主诉有效性：为空/太短 ⇒ NO_COMPLAINT（不猜）。
- *   ③ 科室判定（规则/将来的模型）⇒ 得到科室名。
- *   ④ **验证**：
- *        · 科室不存在 → NO_SUCH_DEPT
- *        · 有科室但**无号** → 在其它科室里找有号的 → 有则 ALTERNATIVES，无则 NO_BOOKABLE
- *        · 有号 → OK
- *   ⑤ 只有 ③④ 都给出**已验证有号**的选项，`options` 才非空。
- *      ⇒ **任何情况下都不会返回"没号的推荐"**（AC-P2-2）。
- *
- * `today` 传参（YYYY-MM-DD）：让"过期排班不算可用"这条可被确定性测试。
+ * 分诊主流程：顺序不可调换 —— 保险丝 → 主诉有效性 → 科室判定 → 验证 → 装配；验证不到有号就不给选项（AC-P2-2）。
  */
 public func triageComplaint(repo: TriageRepo, chiefComplaint: String, today: String,
                             limit!: Int64 = 3, redFlagComplaint!: ?String = None): TriageVerdict {
     let v = TriageVerdict()
     v.source = TRIAGE_SOURCE_RULES
 
-    // ① 保险丝：危急征象**优先于一切**
-    // 危急检测使用完整、有请求体上限保护的原文；仅常规检索/模型输入允许截断。
+    // ① 保险丝：危急征象优先于一切；检测用完整原文，仅检索与模型输入可截断。
     let rf = detectRedFlag(match (redFlagComplaint) {
         case Some(full) => full
         case None => chiefComplaint
@@ -503,11 +341,7 @@ public func triageComplaint(repo: TriageRepo, chiefComplaint: String, today: Str
     }
 
     // 该科室没号（或本院没有这个科室）→ 如实区分，并尽力给出**有号的**备选
-    /*
-     * ⚠ 这个判断结果要**留到下面用**（2026-10-17 W1 修）：备选分支会把
-     *   `v.reasonCode` 覆盖成 TR_ALTERNATIVES，之后就再也分不出"科室不存在"了，
-     *   所以先存进局部变量，别靠回读 `v.reasonCode` 判断。
-     */
+    /* 先存 deptMissing 再用：备选分支会把 reasonCode 覆盖成 TR_ALTERNATIVES，之后就分不出科室不存在了。 */
     let deptMissing = !repo.departmentExists(guess.deptName)
     if (deptMissing) {
         v.reasonCode = TR_NO_SUCH_DEPT
@@ -516,7 +350,6 @@ public func triageComplaint(repo: TriageRepo, chiefComplaint: String, today: Str
     }
 
     let alts = ArrayList<BookableSlot>()
-    // ⚠ 仓颉的 for 必须带括号：`for (x in ...)` —— 实测漏了报 `expected '(', found 'name'`
     for (name in repo.allDepartmentNames()) {
         if (name == guess.deptName) {
             continue
@@ -534,32 +367,8 @@ public func triageComplaint(repo: TriageRepo, chiefComplaint: String, today: Str
         v.options = toOptions(alts.toArray())
         v.reasonCode = TR_ALTERNATIVES
         /*
-         * ★ 2026-10-12：去掉 `**`（原为 Markdown 粗体标记）。
-         *
-         * 实测：患者端把这句**原样**显示成
-         *   「以下是**其它有号**的科室，如需尽快就诊可考虑。」
-         * —— 两个星号直接怼在字上，看着像出错或漏转义。
-         * 根因：`patientNote` 是**给人看的纯文本**（客户端不做 Markdown 渲染，
-         * 它只 `Text()` 直出），而这里按"Markdown 源文"写。
-         *   ⇒ 契约是"纯文本"，那强调就**不该用标记**表达：
-         *     纯文本里的强调靠**用词与语序**（本句改成"以下这些科室当前有号"
-         *     已经足够清楚），而不是靠符号。
-         * 📌 一般规律：**输出格式由消费方决定**。
-         *    本字段的消费方是原生 UI 文本控件，不是 Markdown 渲染器。
-         */
-        /*
-         * ★ 2026-10-17（W1 修）：措辞必须区分"科室存在但暂时没号"与"本院没有这个科室"。
-         *
-         * 实测（2026-10-16，安卓端真机 + curl 双证）：主诉"咳嗽三天，晚上更明显"时
-         *   规则表把科室猜到 `呼吸内科`，而本院 `department` 表只有 `内科` 一行 ——
-         *   原措辞却统一说"建议就诊：呼吸内科（**该科当前无可挂号源**）"，
-         *   等于告诉患者"本院有这个科，只是暂时没号，过几天再来"。
-         *   事实是**本院根本没开这个科**，患者会白跑一趟。
-         *   :506-510 专门算出的 `TR_NO_SUCH_DEPT` 在这里被无条件覆盖成 ALTERNATIVES，
-         *   而 :555 那句正确的"在本院暂未开诊"因此**几乎不可达**。
-         * ⚠ 这不只是文案问题：它把"换个科可行"误导成"等等就行"。
-         * ⚠ 只改**文案**、不改 `reasonCode`：`acceptance_triage.cj:226-229` 明确接受
-         *   ALTERNATIVES（"给出**有号的**备选"才是真实意图），改码会打翻那条断言。
+         * 措辞必须区分"科室存在但暂时没号"与"本院没有这个科室"：混为一谈会让患者白跑一趟。
+         * 只改文案不改 reasonCode —— 断言接受 ALTERNATIVES（给出有号的备选才是真实意图）。
          */
         if (deptMissing) {
             v.patientNote = "本院暂未开诊「${guess.deptName}」，建议咨询导诊台确认科室。" +
@@ -572,10 +381,6 @@ public func triageComplaint(repo: TriageRepo, chiefComplaint: String, today: Str
     }
 
     // 全院都没号 —— **不给任何推荐**（宁可空手，也不给挂不上的号）
-    /*
-     * ⚠ `let x = if (…) {…} else {…}` **不是**仓颉的合法写法（实测报
-     *   `expected pattern, found ')'` —— if 是语句不是表达式）。改成先赋值再返回。
-     */
     if (v.reasonCode == TR_NO_SUCH_DEPT) {
         v.patientNote = "建议就诊的科室（${guess.deptName}）在本院暂未开诊，请咨询导诊台。"
     } else {

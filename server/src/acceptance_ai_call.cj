@@ -5,31 +5,19 @@ import std.env.*
 /*
  * SPDX-License-Identifier: MIT
  *
- * ===== acceptance_ai_call.cj —— AC-AICALL-1…3：真模型出站 ============
- *
- * ## 为什么这三个用例的**重心**在"不该发出去的东西"
- *
- * 接模型之后，最危险的不是"调不通"（那会降级回规则，患者无感），而是：
- *   · 模型输出**医疗建议**（药名/剂量/诊断）被原样转给患者；
- *   · 密钥出现在**响应体或错误消息**里；
- *   · 模型绕过"绝不给没号的推荐"这条硬性验证层。
- * ⇒ 所以断言几乎都是**否定式**的（"不得出现""必须被丢弃""必须降级"）。
- *
- * ## 网络用例的取舍（诚实标注）
- *
- * 真实出站调用**只在环境变量就位时**才跑（`AI_CALL_LIVE_TEST`），
- * 否则**跳过并说明原因**，而不是假装通过、也不是失败。
- * 📌 理由：验收测试必须能在**没有外网、没有密钥**的机器上跑绿 ——
- *   否则它会在 CI 里变成"永远红"，然后被人加 `--skip` 绕过去，
- *   最后**连它守的是什么都没人记得**。跳过时**打印出来**，不静默。
+ * acceptance_ai_call.cj —— AC-AICALL-1…3：真模型出站
+ * 重心是"不该发出去的东西"：医疗建议、密钥、绕过校验层都不得出现在出站/返回内容里。
+ * 真实出站仅在 AI_CALL_LIVE_TEST 就位时跑，否则跳过并打印原因，不假装通过。
  */
 
-/* ---------- AC-AICALL-1：可调用性判定与密钥引用解析 ---------- */
+/* ---------- AC-AICALL-1：可调用性判定与密钥引用解析 ----------
+ * acAiCall1：可调用性 / 密钥引用 / 重试判据 / 内置密钥白名单与有效期；db 未用。
+ */
 public func acAiCall1(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-AICALL-1 ★★ 可调用性判定 + 密钥引用解析（**不含密钥本体**）===")
     let now = hNowEpoch()
 
-    /* ① 未启用 ⇒ 不可调用，且**给出原因**（只给 false 会逼人去猜）。 */
+    /* ① 未启用 ⇒ 不可调用，且给出原因（只给 false 会逼人去猜）。 */
     let off = AiRuntimeOptions()
     off.enabled = false
     off.disabledReason = "总开关关着"
@@ -37,7 +25,7 @@ public func acAiCall1(runner: TestRunner, db: DbBackend): Unit {
     runner.check("① 未启用 ⇒ 不可调用", !can1)
     runner.check("① 且原因非空（排障需要知道为什么）", why1.size > 0)
 
-    /* ② 启用但缺 endpoint / model / key_ref ⇒ 各自给出**不同的**原因。 */
+    /* ② 启用但缺 endpoint / model / key_ref ⇒ 各自给出不同的原因。 */
     let e1 = AiRuntimeOptions()
     e1.enabled = true
     let (can2, why2) = aiCanCall(e1)
@@ -59,16 +47,14 @@ public func acAiCall1(runner: TestRunner, db: DbBackend): Unit {
     runner.check("② 缺 key_ref ⇒ 不可调用", !can4)
     runner.check("★ ② 原因指向 key_ref", why4.contains("key_ref"))
 
-    /* ③ ★★ 密钥引用解析：**环境变量不存在** ⇒ None（不是空串、不是抛异常）。 */
+    /* ③ 密钥引用解析：环境变量不存在 ⇒ None（不是空串、不是抛异常）。 */
     let missing = "SMART_HOSPITAL_AC_TEST_NO_SUCH_VAR_${now}"
     match (aiResolveKey("env:${missing}")) {
         case Some(_) => runner.check("★★ ③ 不存在的环境变量 ⇒ 不得解析出值", false)
         case None => runner.check("★★ ③ 不存在的环境变量 ⇒ None（不抛异常、不返回空串）", true)
     }
-    /*
-     * ★ 失败原因必须**能指导处置**：要点明"环境变量要设在**服务进程**上"。
-     *   这是本仓最容易被忽略的一条 —— 用了 `$env:X=...` 然后重启服务就没了，
-     *   而症状是"配了却不生效"，看起来像配置没读进去。
+    /* ★ 失败原因必须能指导处置：点明"环境变量要设在服务进程上"。
+     *   用 $env:X=... 后重启服务就没了，症状是"配了却不生效"。
      */
     let problem = aiKeyRefProblem("env:${missing}")
     runner.check("★ ③ 原因点明是环境变量问题", problem.contains("环境变量"))
@@ -77,7 +63,7 @@ public func acAiCall1(runner: TestRunner, db: DbBackend): Unit {
     runner.check("★★ ③ 原因里**不含**任何看起来像密钥的串（无 sk- 前缀）",
                  !problem.contains("sk-"))
 
-    /* ④ 非 env:/file: 的引用（不该发生，但要如实回报而不是静默）。 */
+    /* ④ 非 env:/file: 的引用（不该发生）：如实回报而不是静默。 */
     runner.check("④ 既非 env: 也非 file: 的引用 ⇒ 解析失败",
                  aiResolveKey("plainvalue").isNone())
     runner.check("④ 且原因说明这一点",
@@ -85,10 +71,7 @@ public func acAiCall1(runner: TestRunner, db: DbBackend): Unit {
 
     /* ⑤ ★ 真实环境变量能被解析（用本用例自己设的变量，不依赖任何真实密钥）。 */
     let probeName = "SMART_HOSPITAL_AC_KEYREF_PROBE"
-    /*
-     * ⚠ 仓颉 std **没有 setenv**（只能读）⇒ 这里无法在进程内设变量。
-     *   所以这条只能在**启动前**由外部设置；未设时**如实跳过**。
-     */
+    /* ⚠ 仓颉 std 没有 setenv，只能在启动前由外部设置；未设时如实跳过。 */
     match (aiResolveKey("env:${probeName}")) {
         case Some(_) =>
             runner.check("★ ⑤ 环境变量存在时能解析出值（且已 trim）", true)
@@ -96,13 +79,8 @@ public func acAiCall1(runner: TestRunner, db: DbBackend): Unit {
             println("  [SKIP] ⑤ 环境变量 ${probeName} 未设置 —— 跳过（不是失败）")
     }
 
-    /*
-     * ⑥ ★★ 重试判据（2026-10-17 评审 P2-8 增，网络无关、纯逻辑）。
-     *
-     * ⚠ 为什么要把这四条边界**单独钉住**：重试写错的两个方向都很危险 ——
-     *   · 太宽（连 401/400 也重试）⇒ 白白多打一次服务商接口，配额与延迟双输；
-     *   · 太窄（网络异常也不重试）⇒ 评审要的东西等于没做。
-     *   而这两类错误**在真实环境里都表现为"偶尔失败"**，靠手工测不出来。
+    /* ⑥ ★★ 重试判据：401/400 不重试，网络异常必须重试；边界用逻辑断言钉死。
+     *   太宽白打一次服务商，太窄等于没做，两类错误在真实环境都表现为"偶尔失败"。
      */
     let t1 = AiCallResult()
     t1.reason = "出站调用异常：connect reset"
@@ -140,12 +118,8 @@ public func acAiCall1(runner: TestRunner, db: DbBackend): Unit {
     runner.check("⑥ 重试上限是一个可审计的常量（${AI_CALL_MAX_ATTEMPTS} 次尝试）",
                  AI_CALL_MAX_ATTEMPTS == 2)
 
-    /*
-     * ⑦ ★★ 内置密钥的**出站白名单**（2026-10-17 复查增，纯逻辑）。
-     *
-     * 场景：`ai.key_ref = builtin:demo` 是全局配置，而 `ai_model` 每行自带 base_url。
-     * 种子里的**向量行**指向百炼（DeepSeek 没有 /embeddings）—— 若不做这道校验，
-     * DeepSeek 的密钥会被发给阿里云。这既是"必定失败"，也是一次凭据外泄。
+    /* ⑦ ★★ 内置密钥出站白名单：builtin:demo 只允许发往 DeepSeek 域名。
+     *   全局 key_ref 配各行 base_url，不校验会把 DeepSeek 密钥发给阿里云（凭据外泄）。
      */
     let hc1 = aiBuiltinKeyHostCheck("builtin:demo", "https://api.deepseek.com/chat/completions")
     runner.check("★ ⑦ 内置密钥发往官方端点 ⇒ 放行", hc1[0])
@@ -159,13 +133,7 @@ public func acAiCall1(runner: TestRunner, db: DbBackend): Unit {
     let hc4 = aiBuiltinKeyHostCheck("", "https://api.deepseek.com")
     runner.check("⑦ 没有引用（走别的来源）不受影响", hc4[0])
 
-    /*
-     * ⑧ ★ 内置演示密钥的**有效期**（2026-10-18 增，纯逻辑）。
-     *
-     * 为什么这条值得单独断言：负责人决定保留这把写死的 key 供评审窗口使用，
-     * 那么"限时"就必须是**代码行为**而不是文档承诺 —— 否则文档写着"到期失效"、
-     * 代码却永远可用，是最坏的一种状态（比没写更糟：它让人以为已经处理了）。
-     */
+    /* ⑧ ★ 内置演示密钥有效期必须是代码行为而非文档承诺，到期即不可调用。 */
     let until = aiBuiltinValidUntil(AI_BUILTIN_DEMO)
     runner.check("⑧ 内置演示密钥登记了有效期（${until}）", until.size == 10 && until.contains("-"))
     runner.check("⑧ 窗口内可取到密钥（today=${until}）",
@@ -184,16 +152,14 @@ public func acAiCall1(runner: TestRunner, db: DbBackend): Unit {
                  aiBuiltinExpiredMessage(AI_BUILTIN_DEMO).contains("key_ref"))
 }
 
-/* ---------- AC-AICALL-2：★★ 安全清理层（网络无关，CI 稳定）---------- */
+/* ---------- AC-AICALL-2：★★ 安全清理层（网络无关，CI 稳定）----------
+ * acAiCall2：医疗建议整条丢弃、Markdown / 控制字符 / 长度清理，全部网络无关。
+ */
 public func acAiCall2(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-AICALL-2 ★★★ 模型输出安全检查：**医疗建议一律丢弃** ===")
 
-    /*
-     * ★★★ 最要紧的一组：命中**诊断/用药**的词 ⇒ **整条丢弃**（返回空串）。
-     *
-     * ⚠ 为什么是"丢弃"而不是"过滤掉那个词"：我们**没有能力**把一句医疗建议
-     *   改成安全的 —— 去掉药名留下的句子可能仍有误导性（"每天两次，饭后"）。
-     *   能做的是**不让它出去**，回退到规则文案。
+    /* ★★★ 命中诊断/用药词 ⇒ 整条丢弃（返回空串），回退到规则文案。
+     *   没能力把医疗建议改安全 —— "每天两次，饭后"去掉药名仍有误导。
      */
     let denyCases: Array<(String, String)> = [
         ("建议服用阿莫西林", "服药动词"),
@@ -216,7 +182,7 @@ public func acAiCall2(runner: TestRunner, db: DbBackend): Unit {
     runner.check("★★★ ① 8 条疑似诊断/用药的输出**全部被丢弃**（实漏 ${leaked} 条）",
                  leaked == 0)
 
-    /* ② 对照：**正常**的解释性文字必须能通过（否则安全层就是"一律拒绝"的假绿）。 */
+    /* ② 对照：正常解释性文字必须能通过（否则是"一律拒绝"的假绿）。 */
     let okCases: Array<String> = [
         "建议您到呼吸内科就诊，就诊前可记录咳嗽的持续时间和诱因。",
         "这个科室主要看呼吸道相关的不适，您可以先准备好既往就诊记录。",
@@ -231,14 +197,14 @@ public func acAiCall2(runner: TestRunner, db: DbBackend): Unit {
     runner.check("★★ ② 对照：正常解释文字**不被误杀**（否则①是「一律拒绝」的假绿）",
                  blocked == 0)
 
-    /* ③ Markdown 标记必须去掉（前端按纯文本渲染，`##` 会直接显示出来）。 */
+    /* ③ Markdown 标记必须去掉（前端按纯文本渲染）。 */
     let md = aiSanitizeNote("## 建议\n**去呼吸内科**就诊")
     runner.check("③ 去掉 Markdown 标题标记（实得「${md}」）", !md.contains("#"))
     runner.check("③ 去掉粗体标记", !md.contains("*"))
     runner.check("★ ③ **只取第一行**（防止「建议…」藏在第 3 段里绕过检查）",
                  !md.contains("\n"))
 
-    /* ④ 超长输出按**字符**截断（本仓三次踩过字节/字符混用）。 */
+    /* ④ 超长输出按字符截断（本仓三次踩过字节/字符混用）。 */
     let long = aiSanitizeNote(hRepeatChar("好", 400))
     runner.check("④ 超长输出被截断到 ≤${AI_NOTE_MAX_CHARS} 字（实得 ${previsitCharLen(long)}）",
                  previsitCharLen(long) <= AI_NOTE_MAX_CHARS)
@@ -253,7 +219,9 @@ public func acAiCall2(runner: TestRunner, db: DbBackend): Unit {
     runner.check("★ ⑥ 含控制字符（制表/退格）⇒ 丢弃", aiSanitizeNote("建议就诊\t再联系").size == 0)
 }
 
-/* ---------- AC-AICALL-3：响应解析 + 真实出站（可选）---------- */
+/* ---------- AC-AICALL-3：响应解析 + 真实出站（可选）----------
+ * acAiCall3：严格判类型；真实出站仅在 AI_CALL_LIVE_TEST 开启时跑。
+ */
 public func acAiCall3(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-AICALL-3 ★★ 响应解析（严格判类型）+ 真实出站（可选）===")
 
@@ -264,12 +232,8 @@ public func acAiCall3(runner: TestRunner, db: DbBackend): Unit {
         case None => runner.check("① 标准形状能取到 content", false)
     }
 
-    /*
-     * ② 各种**畸形**形状必须返回 None（而不是抛异常）。
-     *   ⚠ 这是"模型是不可信输入源"的具体体现：它可能返回任何东西。
-     *   ⚠⚠ 每一层都必须先判类型 —— `asObject()`/`asArray()` 在类型不符时
-     *     **抛异常**而不是返回 None（这条语言坑记录过），所以
-     *     `if (v is JsonObject)` 这类判断**不能省**。
+    /* ② 畸形形状必须返回 None 而不是抛异常：模型是不可信输入源。
+     *   asObject()/asArray() 类型不符会抛异常，所以 is JsonObject 判断不能省。
      */
     let badCases: Array<(String, String)> = [
         ("not json at all", "根本不是 JSON"),
@@ -311,15 +275,8 @@ public func acAiCall3(runner: TestRunner, db: DbBackend): Unit {
     runner.check("★ ③ 短于 8 字符的「密钥」不替换（避免把普通词切碎）",
                  aiRedact("hello world", "abc") == "hello world")
 
-    /*
-     * ④ 真实出站：**仅在显式开启时**跑。
-     *
-     * ⚠ 需外部在**启动前**设两个环境变量：
-     *     AI_CALL_LIVE_TEST=1          打开
-     *     DEEPSEEK_API_KEY=sk-...      真密钥（**只经环境变量，绝不落库/落盘**）
-     *   未开时**跳过并打印**，不假装通过、也不失败。
-     *   📌 理由见文件头：验收必须能在无外网/无密钥的机器上跑绿，
-     *     否则它会变成"永远红"然后被人绕过去。
+    /* ④ 真实出站仅在显式开启时跑：启动前设 AI_CALL_LIVE_TEST=1 与 DEEPSEEK_API_KEY。
+     *   密钥只经环境变量，绝不落库/落盘；未开时跳过并打印，不假装通过、也不失败。
      */
     let live = getVariable("AI_CALL_LIVE_TEST") ?? ""
     if (live != "1") {
@@ -333,7 +290,7 @@ public func acAiCall3(runner: TestRunner, db: DbBackend): Unit {
         runner.check("④ 缺密钥时**如实跳过**（不失败、不假装成功）", true)
         return
     }
-    /* 用**真实**的 ai_setting 仓储读配置（而不是在测试里硬编码 endpoint/model）。 */
+    /* 用真实 ai_setting 仓储读配置（不在测试里硬编码 endpoint/model）。 */
     let repo = AiSettingsRepo(db)
     let now = hNowEpoch()
     var opt: AiRuntimeOptions
@@ -356,16 +313,12 @@ public func acAiCall3(runner: TestRunner, db: DbBackend): Unit {
     runner.check("④ 且取到了非空文本（长度 ${previsitCharLen(r.text)} 字）",
                  previsitCharLen(r.text) > 0)
     runner.check("④ 且耗时被记录（${r.elapsedMs} ms > 0）", r.elapsedMs >= 0)
-    /*
-     * ★★★ 最关键的一条：**密钥绝不出现在结果里**。
-     *   连 reason（失败原因）也要查 —— 那是密钥最容易漏出去的地方
-     *   （库把整个请求头拼进异常消息）。
-     */
+    /* ★★★ 密钥绝不出现在结果里，连 reason 也要查（库把整个请求头拼进异常消息）。 */
     runner.check("★★★ ④ 成功结果里不含密钥", !r.text.contains(key) && !r.reason.contains(key))
     let bad = aiCallChat(opt, hRepeatChar("测", 10), now)
     runner.check("★★★ ④ 失败/成功的结果里都不含密钥（reason 也查）",
                  !bad.reason.contains(key) && !bad.text.contains(key))
-    /* 安全层对**真实**模型输出的效果（这条才是端到端的价值所在）。 */
+    /* 安全层对真实模型输出的效果（端到端价值所在）。 */
     let sanitized = aiSanitizeNote(r.text)
     println("         模型原文：${r.text}")
     println("         清理之后：${sanitized}")

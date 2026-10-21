@@ -3,26 +3,9 @@
  *
  * 智慧医院智能导诊就诊系统 · 服务端
  *
- * ===== acceptance_p4.cj —— P4 验收：电子病历 + 接诊队列 + 运营看板 ==========
- *
- * ── 本文件守护的四条不变量（按重要性排序）──────────────────────────────
- *
- *   ① ★★ **看板绝不出明细**（隐私）：
- *      它是"跨患者聚合"，是最容易泄露的地方。断言把响应当字符串搜
- *      `patient_id` / `doctor_id` / `phone` / 姓名，一个都不许有。
- *      并且**逐条检查所有数字都是计数**（不给"某人的"任何东西）。
- *
- *   ② ★★ **分诊统计绝不落库主诉原文**：
- *      `TriageStatRepo.record` 的签名里就没有主诉参数（类型层面做不到），
- *      但断言仍要**实测**：写一条后去搜主诉片段，必须搜不到。
- *
- *   ③ ★★ **病历锁定后不可改**：
- *      "提交锁定"的全部意义。锁定 → 再保存草稿必须被拒（`locked`），
- *      且**库里的内容没变**（不是"返回了错误但其实写进去了"）。
- *
- *   ④ ★★ **越权一律当"不存在"**：
- *      医生 B 读/写医生 A 的号 ⇒ 404（不是 403 —— 403 会变成
- *      "这张单是否存在"的枚举 oracle）。患者读别人的病历同理。
+ * ===== acceptance_p4.cj —— 电子病历 + 接诊队列 + 运营看板验收 =====
+ * 四条不变量：看板绝不出明细；分诊统计不落主诉原文；病历锁定后不可改；
+ * 越权一律当"不存在"（404，避免 403 变成存在性 oracle）。
  */
 
 package qingzhou
@@ -31,88 +14,18 @@ import std.collection.*
 /* 看板计数断言要读 JSON（AC-P4-8）。 */
 import stdx.encoding.json.*
 
-/*
- * 造一张"某医生名下的挂号单"，返回 appointment_id。
- *
- * ⚠⚠ 这个 fixture 我写错过一次，值得记：**必须为每个"种子实体"用唯一 id**。
- *   我第一版所有挂号单共用一个科室 id（8801）⇒ 第二次调用时 `hSeedTriageDept`
- *   的纯 `INSERT` 撞主键 ⇒ 报 `Duplicate entry`。
- *   ⚠ 而**驱动把那条消息吞成了空串**（只给 `SqlException: errorCode: 0`）
- *     ⇒ 从异常上完全看不出是主键冲突，只能靠手工重放 SQL 才定位到。
- *   📌 本仓既有约定就是"每个 seed 用唯一 id"（见 acceptance_triage.cj 的
- *     9101 / 9111 / 9122 …）。这里照办：由 `doctorId`+`patientId` 派生唯一 id。
- */
-/*
- * 造一张"某医生名下的挂号单"，返回 appointment_id。
- *
- * ⚠⚠ 这个 fixture 我改过三次，每一次的失败都值得记下来：
- *
- *   ① 起初所有调用共用一个科室 id ⇒ 第二次调用时 `hSeedTriageDept` 的纯
- *      `INSERT` 撞主键。而**驱动把 `Duplicate entry` 的消息吞成了空串**
- *      （只给 `SqlException: errorCode: 0`）⇒ 从异常完全看不出原因。
- *   ② 改成"每张单一个医生 id"后，同一医生下的多张单又不够用
- *      （我要测"一个医生有多张单"）。
- *
- *   ⇒ 现在：**一个 `seedId` 派生全部四个 id**，彼此不撞，且同一 `seedId`
- *     的多张单共享同一个医生（这正是"接诊队列有多条"要的形态）。
- *     需要"另一个医生"的用例显式传 `asDoctorId`（他名下没有单 → 用于归属测试）。
- *   ⚠ 约定：**每个 `seedId` 只属于一个用例**（本仓既有约定，见 acceptance_triage.cj）。
- *   📌 教训升级：这里是**数据造错的失败被驱动的空消息掩盖**。
- *     所以本 fixture 后来加了"步骤探针"才定位到 —— 而真正的修复是让 id 不可能撞。
- */
+/* 造一张某医生名下的挂号单，返回 appointment_id。
+ * 每个 seedId 派生 dept/schedule/doctor/patient 四个互不重叠的 id 前缀，且先清后插。
+ * 约定：每个 seedId 只属于一个用例，否则重复 INSERT 必撞主键。 */
 func hSeedAppointmentForDoctor(db: DbBackend, seedId: Int64, patientId: Int64,
                                status: String, asDoctorId!: Int64 = 0): Int64 {
-    /*
-     * ★★ **每类实体各占一个互不重叠的 id 前缀**（这是本 fixture 的真正修复）。
-     *
-     * ⚠ 我在这里连撞三次，每次都只得到「Duplicate entry」+ 空消息：
-     *   ① 所有调用共用一个科室 id ⇒ 第二次 seed 撞 department 主键；
-     *   ② 科室 id 与医生 id 同值（都用 `880000+seedId`）⇒ 撞；
-     *   ③ 科室 id 与**排班** id 同值（同一个表达式）⇒ 排班那行也撞。
-     *   ⇒ 根因只有一个：**我拿同一个值去插不同的表/重复插同一张表**。
-     *     注意 ②③ 的形态：`dept=880000+seed` 与 `doctor=880000+seed` 值相同，
-     *     但 department 与 doctor 是**两张表**，值相等本身不冲突 ——
-     *     真正冲突的是"同一张表被插两次同 id"。
-     *     之所以仍然撞，是因为 `hSeedTriageDept` 会**同时**插
-     *     department 与 doctor，而不同 seed 之间前缀重叠了。
-     *   ⇒ 彻底解决：dept / schedule / doctor / patient **四个前缀互不重叠**，
-     *     每个都由 `seedId` 派生。这样任一 seed 组合都不会撞。
-     */
     let deptId = 810000 + seedId
     let scheduleId = 820000 + seedId
-    /*
-     * ★★ **先清后插 —— 让 fixture 幂等**（这是本 fixture 的真正修复）。
-     *
-     * ⚠ 我在这一处连撞四次，前三次都在改 id 前缀，治的都是症：
-     *   `hSeedTriageDept` 是**纯 INSERT**，而我在**同一个 criterion 内**用
-     *   同一个 `seedId` 调它多次（"同一医生名下多张单"正是要测的形态）
-     *   ⇒ 第二次插入同一 `deptId` 必撞主键。
-     *   ⇒ id 怎么分前缀都治不了这个 —— **根因是"重复插入"本身**。
-     *
-     * 📌 教训：`Duplicate entry` 出现时，先问"**是不是我不该插第二次**"，
-     *   而不是急着换 id。前者是幂等性问题，后者只是把碰撞推到更远。
-     *   ⚠ 而驱动把消息吞成空串，让"哪个键撞了"都看不出来
-     *     （只能看到 `Duplicate entry '810002' for key 'PRIMARY'` 里的 id）——
-     *     这也是我前三次误判方向的原因之一。
-     */
-    /*
-     * ⚠ 只清**会被重复插入的那三张表**（dept / doctor / schedule）——
-     *   **不碰 appointment**。
-     *   我第一版顺手把该医生的 appointment 也删了，结果"先清后插"变成了
-     *   "把前一次 seed 插入的挂号单删掉" ⇒ 队列长度变成 0（实测）。
-     *   📌 又一次"清理范围过大"：幂等清理要**只清自己会重复写的那部分**。
-     */
+    /* 先清后插让 fixture 幂等：只清会被重复写的三张表，不碰 appointment。 */
     let effDoctorId = if (asDoctorId > 0) { asDoctorId } else { 900000 + seedId }
     db.exec("DELETE FROM schedule WHERE id = ?", [DbInt(scheduleId)])
     db.exec("DELETE FROM doctor WHERE id = ?", [DbInt(effDoctorId)])
     db.exec("DELETE FROM department WHERE id = ?", [DbInt(deptId)])
-    /*
-     * ⚠ **科室 id 与医生 id 必须落在不同命名空间** —— 我第一版让两者都是
-     *   `880000 + seedId`，于是 `department(900002)` 与 `doctor(900002)`
-     *   撞主键（两张表各自唯一，但我在同一表达式里复用了同一个值去插两张表，
-     *   而 `hSeedTriageDept` 的 INSERT 是纯 INSERT ⇒ Duplicate）。
-     *   ⇒ 科室 88xxxx、医生 90xxxx，互不重叠。
-     */
     let doctorId = if (asDoctorId > 0) { asDoctorId } else { 900000 + seedId }
     hSeedTriageDept(db, deptId, "P4测试科${seedId}", doctorId, "P4测试医生${doctorId}", "测试",
                     scheduleId, 50, "2026-12-20")
@@ -129,7 +42,7 @@ func hSeedAppointmentForDoctor(db: DbBackend, seedId: Int64, patientId: Int64,
                           DbStr("2026-12-20"), DbStr(status)])
 }
 
-/* 造一个**名下没有挂号单**的医生（用于"不属于我"的归属测试）。 */
+/* 造一个**名下没有挂号单**的医生（归属测试用：从未接诊过该患者）。 */
 func hSeedIdleDoctor(db: DbBackend, doctorId: Int64): Unit {
     let deptId = 899000 + (doctorId % 1000)
     hSeedTriageDept(db, deptId, "P4闲置科${doctorId}", doctorId, "P4闲置医生${doctorId}", "测试",
@@ -153,7 +66,9 @@ func hFillAllSections(emr: MedicalRecordRepo, apptId: Int64, doctorId: Int64,
     return emr.saveDraft(apptId, doctorId, patch, now, actor)
 }
 
-/* ===================== AC-P4-1：病历基本写入与锁定 ===================== */
+/* AC-P4-1：病历基本写入与锁定 —— 草稿允许半成品，必填不齐不许锁，
+ * 锁定后再保存必须被拒且库内容不变；单次就诊只能有一份病历（唯一键兜底）。
+ * 写路径严格：未知段 unknownSection、超长段 tooLong。 */
 
 public func acP4_1(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-P4-1 ★★ 病历：草稿 / 锁定 / 锁定后不可改 ===")
@@ -211,10 +126,7 @@ public func acP4_1(runner: TestRunner, db: DbBackend): Unit {
         // ⑥ 重复锁定 ⇒ 如实说"已锁定"，不当成功
         let l3 = emr.lock(apptId, now + 20, 9901, "doctor")
         runner.check("⑥ 重复提交锁定时 locked=true（不假装成功）", l3.locked && !l3.ok)
-        /*
-         * ★ 改进 3 新增：幂等路径**自愈**快照 —— 重复 lock 不该悄悄什么都不做。
-         *   （第一次成功锁定已经落下 v1，这里复查它仍在、且没有多出重复版本。）
-         */
+        /* 重复 lock 不该悄悄什么都不做：快照仍只有 1 版，且不多出重复版本。 */
         runner.check("★ ⑥ 重复锁定后仍只有 1 版快照（实得 ${emr.revisions(apptId).size}）",
                      emr.revisions(apptId).size == 1)
 
@@ -247,7 +159,9 @@ public func acP4_1(runner: TestRunner, db: DbBackend): Unit {
     })
 }
 
-/* ===================== AC-P4-2：接诊状态机 ===================== */
+/* AC-P4-2：接诊状态机 —— 到院→候诊→接诊→完成，跳步与重复一律 badTransition。
+ * 病历未锁定不许完成；退号只允许从 booked，且队列里不再出现。
+ * 医生 B 对医生 A 的单做任何一步都返回 notFound（不是 403）。 */
 
 public func acP4_2(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-P4-2 ★★ 接诊队列状态机（含「完成前必须已锁定病历」）===")
@@ -264,8 +178,8 @@ public func acP4_2(runner: TestRunner, db: DbBackend): Unit {
         runner.check("① 到院登记（booked → arrived）成功", arr1.ok)
         runner.check("① 且 arrived_at 落库（= 本次调用的时间）",
                      visit.findForDoctor(apptId, 900002).getOrThrow().arrivedAt == now)
-        // ①-b ★ 重复到院 ⇒ 状态冲突（**不静默成功**：静默成功会让界面显示"已到院"
-        //      而 arrived_at 还是第一次的时间，使用者以为刚才那一下生效了）
+        // ①-b ★ 重复到院 ⇒ 状态冲突（静默成功会让界面显示"已到院"，
+        //      而 arrived_at 还是第一次的时间）
         runner.check("★ ① 重复到院登记 ⇒ badTransition（不静默成功）",
                      visit.arriveVisit(apptId, 900002, now + 5).badTransition)
         // ② 进入候诊（arrived → waiting）
@@ -366,12 +280,9 @@ public func acP4_2(runner: TestRunner, db: DbBackend): Unit {
         }
         runner.check("★★ ⑪ 队列**不含**已退号的单", !hasCancelled)
         runner.check("⑪ 队列长度 >= 2（长度 ${q.size}）", q.size >= 2)
-        /*
-         * ★★ 排序：先按状态优先级（到院/候诊优先），再按 visit_date/period/seq_no。
-         * ⚠ 断言方式刻意是"用 visitQueueRank 预测、再与实际返回逐项比对" ——
-         *   SQL 里的 CASE 与那个函数是同一件事的两处表述，两者分歧必须在这里变红
-         *   （否则队列会悄悄按错序展示，而使用者只会觉得"怎么又是这个顺序"）。
-         */
+        /* 排序：先按状态优先级，再按 visit_date/period/seq_no。
+         * 断言方式是用 visitQueueRank 预测再与实际逐项比对 —— SQL 的 CASE 与该函数是
+         * 同一件事的两处表述，两者分歧必须在这里变红。 */
         var orderOk = true
         var prevRank = -1
         var prevKey = ""
@@ -400,7 +311,9 @@ public func acP4_2(runner: TestRunner, db: DbBackend): Unit {
     })
 }
 
-/* ===================== AC-P4-3：看板隐私红线 ===================== */
+/* AC-P4-3：看板隐私红线 —— 响应里不许出现任何 id/联系方式/姓名，
+ * 且每个数字都必须是计数，聚合为空时要如实为 0 而不是缺字段。
+ * 同一患者反复刷新看板不得改变任何计数（只读、幂等）。 */
 
 public func acP4_3(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-P4-3 ★★ 运营看板：只出聚合、绝不出明细 ===")
@@ -487,7 +400,9 @@ public func acP4_3(runner: TestRunner, db: DbBackend): Unit {
     })
 }
 
-/* ===================== AC-P4-4：分诊统计不落主诉原文 ===================== */
+/* AC-P4-4：分诊统计只存结论 —— 主诉原文类型层不收，实测也搜不到。
+ * 表结构里没有自由文本列：不是"存了再脱敏"，而是根本不存。
+ * 陈旧统计按 TRIAGE_STAT_TTL_DAYS 由 prune 清理。 */
 
 public func acP4_4(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-P4-4 ★★ 分诊统计：只存结论，绝不落库主诉原文 ===")
@@ -495,12 +410,8 @@ public func acP4_4(runner: TestRunner, db: DbBackend): Unit {
         db.exec("DELETE FROM triage_stat", Array<DbValue>())
         let ts = TriageStatRepo(db)
         let now = hNowEpoch()
-        /*
-         * ⚠ 这里用一个**独一无二的字符串**当"主诉" —— 它是敏感自由文本的替身。
-         *   写完统计后去全表搜它，必须搜不到。
-         *   （主诉参数压根不在 `record()` 的签名里，所以这条其实是**双重**保证：
-         *     类型层面做不到 + 实测确认没落库。）
-         */
+        /* 用独一无二的字符串当"主诉"替身：写完统计后全表搜它，必须搜不到。
+         * 主诉参数压根不在 record() 的签名里，所以这是类型 + 实测双重保证。 */
         let marker = "ZZUNIQUECOMPLAINT" + hNowEpoch().toString()
         ts.record("OK", false, "P4测试科", false, "rules", now)
         let rs = db.query("SELECT COUNT(*) FROM triage_stat WHERE reason_code LIKE ? " +
@@ -530,25 +441,10 @@ public func acP4_4(runner: TestRunner, db: DbBackend): Unit {
     })
 }
 
-/* ============ AC-P4-5：预问诊 → 病历的桥（2026-10-14 改进 1）============ */
 
-/*
- * 本用例守护的四条不变式：
- *
- *   ① ★★ **一次问诊单只能绑一张挂号单**（`appointment_id = 0 OR = ?`）：
- *      允许多绑就等于"一次误传能把患者的自述挂到别人的就诊上"——
- *      那是**病历污染**，比读到不该读的更坏（写坏的东西会被当成诊疗依据）。
- *
- *   ② ★★ **会话归属由 SQL 里的 patient_id 保证**，不靠调用方"上一步查过了"：
- *      别的患者既绑不走、也读不到、也预填不进自己名下那张单。
- *
- *   ③ ★★ **来源痕迹只记"患者答的段"**：医生在同一次请求的 patch 里写过的段
- *      不算患者自述。否则病历上会挂着一个名不副实的"患者自述"角标 ——
- *      而病历是**法律文书**，来源标注错了比没有标注更坏。
- *
- *   ④ ★ **预填只填空段、不覆盖已写内容**（2026-10-21 修）：病历是否已存在不是前提，
- *      医生写过的段一字不动；来源痕迹是"初值来源"的快照，后补段不会改写它。
- */
+/* AC-P4-5：预问诊 → 病历的桥。一次问诊单只能绑一张挂号单（防病历污染）；
+ * 归属靠 SQL 里的 patient_id，不靠调用方"上一步查过了"；来源痕迹只记患者答的段；
+ * 预填只填空段，医生已写的内容一字不动。 */
 public func acP4_5(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-P4-5 ★★ 预问诊 → 病历：绑定唯一、归属严格、来源如实 ===")
     runner.section("AC-P4-5", { =>
@@ -635,12 +531,8 @@ public func acP4_5(runner: TestRunner, db: DbBackend): Unit {
                      out3.ok && emr.findByAppointment(a3).getOrThrow().chiefComplaint.size == 0)
         runner.check("★★ ⑦ 且这张单的来源痕迹为空（不会凭空宣称有患者自述）",
                      emr.findByAppointment(a3).getOrThrow().previsitRef.size == 0)
-        /*
-         * ⑧ ★★ 客户端真实行为回归（2026-10-21 缺陷：一键预填是假复制）：
-         *   医生端点"一键预填"时发的是**七段全量的 patch**（没写的段是空串），
-         *   原实现用 `patch.contains(k)` 当判据 ⇒ 一段都预填不进，还顺手建了张空病历。
-         *   这里就按客户端的真实请求形状复现。
-         */
+        /* 客户端一键预填发的是七段全量 patch（没写的段是空串），按真实请求形状复现。
+         * 判据必须按"值非空"而不是 patch.contains(k)，否则一段都预填不进。 */
         let clientPatch = HashMap<String, String>()
         for (k in ["chief_complaint", "present_illness", "past_history", "allergy_history",
                    "physical_exam", "diagnosis", "treatment"]) {
@@ -656,9 +548,7 @@ public func acP4_5(runner: TestRunner, db: DbBackend): Unit {
         runner.check("★ ⑧ 医生要写的段不被预填（诊断/体格检查仍为空）",
                      rec4.diagnosis.size == 0 && rec4.physicalExam.size == 0)
 
-        /*
-         * ⑨ ★★ 病历**已存在**时再点"一键预填"，空段也要补齐（这才叫"预填"，不是"仅首次"）。
-         */
+        /* 病历已存在时再点预填，空段也要补齐。 */
         let a5 = hSeedAppointmentForDoctor(db, 9, 9505, VISIT_BOOKED)
         let out5a = emr.saveDraft(a5, 900009, clientPatch, now, 9901)   // 先落一张空病历
         let out5b = emr.saveDraftWithIntake(a5, 900009, sid, 9505, clientPatch, now, 9901)
@@ -667,9 +557,6 @@ public func acP4_5(runner: TestRunner, db: DbBackend): Unit {
                      out5a.ok && out5b.ok && rec5.chiefComplaint == "答-chief")
         runner.check("★ ⑨ 且来源痕迹记了下来（后补的段也算患者自述）", rec5.previsitRef.contains(sid))
 
-        /*
-         * ⑩ ★★ 医生已写的内容**一字不动**（预填只填空段，不覆盖）。
-         */
         let a6 = hSeedAppointmentForDoctor(db, 10, 9505, VISIT_BOOKED)
         let docPatch = HashMap<String, String>()
         for (k in ["chief_complaint", "present_illness", "past_history", "allergy_history",
@@ -686,15 +573,9 @@ public func acP4_5(runner: TestRunner, db: DbBackend): Unit {
     })
 }
 
-/*
- * AC-P4-6（★ 2026-10-15 改进 3）：病历修订历史 —— 定稿留痕、解锁需理由、逐段可比。
- *
- * 独占 id 段：seed 8 / 患者 9608、9609，医生 900008（由 seed 派生）。
- *
- * ⚠ 这一组测的是**审计的可信度**，不是"功能有没有"：
- *   审计行的价值全在"它说的是真的"——所以每条断言都在反着问
- *   "这条痕迹有没有可能说谎"（锁没锁成却留了痕？解锁没给理由？版本号乱跳？）。
- */
+/* AC-P4-6：病历修订历史 —— 定稿留痕、解锁需理由、逐段可比。
+ * 独占 id：seed 8 / 患者 9608、9609，医生 900008。
+ * 测的是审计可信度：每条断言都反问"这条痕迹有没有可能说谎"。 */
 public func acP4_6(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-P4-6 ★★ 病历修订历史（改进 3：定稿留痕 / 解锁需理由 / 逐段可比）===")
     runner.section("AC-P4-6", { =>
@@ -797,10 +678,7 @@ public func acP4_6(runner: TestRunner, db: DbBackend): Unit {
         /* ⑦ ★★ 存量兼容：锁定但没有审计行的病历，迁移会补一版，且幂等 */
         let legacy = hSeedAppointmentForDoctor(db, 9, 9609, VISIT_VISITING)
         let _w = hFillAllSections(emr, legacy, 900009, now, 9901)
-        /*
-         * 绕过 `lock` 直接改状态 ⇒ 模拟「改进 3 上线前就已锁定的存量病历」
-         * （它没有审计行 —— 这正是迁移要补的那一批）。
-         */
+        /* 绕过 lock 直接改状态：模拟上线前就已锁定、没有审计行的存量病历。 */
         db.exec("UPDATE medical_record SET status = ? WHERE appointment_id = ?",
                 [DbStr(EMR_LOCKED), DbInt(legacy)])
         runner.check("⑦ 造出「已锁定但零审计行」的存量病历", emr.revisions(legacy).size == 0)
@@ -820,18 +698,9 @@ public func acP4_6(runner: TestRunner, db: DbBackend): Unit {
     })
 }
 
-/*
- * AC-P4-7（★ 2026-10-15 改进 2）：医生工作台 —— 既往病历的隐私边界 + 草稿保存的乐观锁。
- *
- * 独占 id 段：seed 10 / 11 / 12（患者 9610，医生 900010 / 900011）、seed 13（患者 9613，医生 900013）。
- *
- * ⚠ 这一组测的是**隐私边界与并发**，不是"接口通不通"：
- *   ① 医生读既往病历是本系统**唯一**一处"跨患者读取"，所以每条断言都在反问
- *      "有没有一条路能让医生读到不该读的病历"（别人的患者 / 别人的号 / 草稿）；
- *   ② 乐观锁的价值全在"两个人同时改时**后提交的那个**必须被挡住"，
- *      所以断言必须覆盖"陈旧版本 ⇒ 冲突"**以及**"冲突之后库里的内容没被改动"——
- *      只断言返回了 conflict 而不查库，等于相信一个可能撒谎的返回值。
- */
+/* AC-P4-7：医生工作台 —— 既往病历的隐私边界 + 草稿保存的乐观锁。
+ * 独占 id：seed 10/11/12（患者 9610，医生 900010/900011）、seed 13。
+ * 必须覆盖"陈旧版本冲突"与"冲突后库里内容没变"，不能只信返回值。 */
 public func acP4_7(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-P4-7 ★★ 医生工作台（改进 2：既往病历 / 乐观锁）===")
     runner.section("AC-P4-7", { =>
@@ -848,13 +717,9 @@ public func acP4_7(runner: TestRunner, db: DbBackend): Unit {
                      hFillAllSections(emr, a11, 900011, now, 9902).ok &&
                      emr.lock(a11, now + 6, 9902, "doctor").ok)
 
-        /* ② 隐私闸门：只有"在我这儿挂过号"的患者才算我的患者 */
-        /*
-         * ⚠ 必须用一个**真实存在但没接诊过这位患者**的医生来测第三条：
-         *   我第一版这里传的是 900012（那个医生**根本没被造出来**），
-         *   于是"不放行"可能只是因为"医生不存在" —— 断言看起来绿了，
-         *   实际没测到"存在但没挂号"这条路径（假绿）。
-         */
+        /* ② 隐私闸门：只有"在本医生这儿挂过号"的患者才算本医生的患者 */
+        /* 必须用"真实存在但没接诊过这位患者"的医生来测：用不存在的医生测，
+         * "不放行"可能只是因为医生不存在，断言会假绿。 */
         hSeedIdleDoctor(db, 900012)
         runner.check("★★ ② 该患者在我这儿挂过号 ⇒ 放行（实得 ${emr.patientTreatedByDoctor(900010, 9610)}）",
                      emr.patientTreatedByDoctor(900010, 9610))
@@ -863,7 +728,7 @@ public func acP4_7(runner: TestRunner, db: DbBackend): Unit {
         runner.check("★★ ② 医生存在、患者也存在，但**没在我这儿挂过号** ⇒ 同样不放行",
                      !emr.patientTreatedByDoctor(900012, 9610))
 
-        /* ③ 只给"我的那些次"（另一位医生看同一患者，看到的是他自己那份） */
+        /* ③ 只给"本医生的那些次"（另一位医生看同一患者，看到的是他自己那份） */
         let mine = emr.listLockedForDoctorPatient(900010, 9610, 5)
         runner.check("★★ ③ 医生 900010 只看到自己的那 1 份（实得 ${mine.size}）", mine.size == 1)
         runner.check("★★ ③ 而且正是 a10，不是同一位患者的 a11",
@@ -872,7 +737,7 @@ public func acP4_7(runner: TestRunner, db: DbBackend): Unit {
         runner.check("★★ ③ 医生 900011 看到的是 a11（实得 ${other.size} 份）",
                      other.size == 1 && other[0].appointmentId == a11)
 
-        /* ④ 草稿**永不外泄**：另一位医生看不到我没定稿的工作稿 */
+        /* ④ 草稿**永不外泄**：另一位医生看不到本医生未定稿的工作稿 */
         let a12 = hSeedAppointmentForDoctor(db, 12, 9610, VISIT_VISITING, asDoctorId: 900010)
         runner.check("④ 医生 900010 在 a12 上只写了草稿",
                      hFillAllSections(emr, a12, 900010, now + 10, 9901).ok)
@@ -884,11 +749,7 @@ public func acP4_7(runner: TestRunner, db: DbBackend): Unit {
 
         /* ⑤ exclude：正在写的这一份不能算"既往" */
         let excl = emr.listLockedForDoctorPatient(900010, 9610, 5, excludeAppointmentId: a10)
-        /*
-         * ⚠ 这里**先算好**再拼提示语，不在插值里写 `if`：
-         *   仓颉的字符串插值里嵌表达式块（`${if (…) { … } else { … }}`）会与
-         *   外围的大括号、内层字符串定界符互相干扰（本仓"文案里嵌引用一律用「」"同理）。
-         */
+        /* 先算好再拼提示语：仓颉字符串插值里嵌 if 会与外围大括号互相干扰。 */
         var exclFirst = "无"
         if (excl.size > 0) {
             exclFirst = excl[0].appointmentId.toString()
@@ -898,27 +759,15 @@ public func acP4_7(runner: TestRunner, db: DbBackend): Unit {
         runner.check("★ ⑤ exclude 传 0 = 不排除（向后兼容）",
                      emr.listLockedForDoctorPatient(900010, 9610, 5, excludeAppointmentId: 0).size == 2)
 
-        /*
-         * ⑥ 上限与"并列兜底"：a10 与 a12 的 visit_date 都是夹具默认的 2026-12-20，
-         *   就诊日相同时用 `id DESC` 兜底（否则同一秒内的行会让列表顺序抖动）。
-         *   ⚠ 2026-10-16 改口径（医生端复核 ★★ 第 3 条）：排序键是**就诊时间**，
-         *     不再是 `updated_at` —— 本行的名字原来写"最近定稿的在前"，那是旧语义。
-         */
+        /* 同一就诊日并列时用 id DESC 兜底，否则同一秒的行会让顺序抖动。
+         * 排序键是就诊时间，不是 updated_at。 */
         let limited = emr.listLockedForDoctorPatient(900010, 9610, 1)
         runner.check("★ ⑥ limit=1 只回 1 份（实得 ${limited.size}）", limited.size == 1)
         runner.check("★ ⑥ 同一就诊日内的并列行用 id DESC 兜底（a12 在前）",
                      limited.size == 1 && limited[0].appointmentId == a12)
 
-        /*
-         * ★★ ⑧ 既往病历排序 = **就诊时间**倒序（2026-10-16 增，复核 ★★ 第 3 条）。
-         *
-         * ⚠ 这个用例必须让"就诊时间序"与"updated_at 序"**相反**才有效：
-         *   否则旧实现（`updated_at DESC`）也能通过 —— 那就等于没测到这次的修复。
-         *   a14 = 更早就诊（改写成 2026-11-01）但**最后**才被锁定（updated_at 最大）；
-         *   a15 = 更晚就诊（改写成 2026-12-25）但先被锁定。
-         *   ⇒ 正确顺序 = [a15, …(12-20 的 a12/a10)…, a14]；
-         *     按 updated_at 排会得到 [a14, a15, …]（正好反了）。
-         */
+        /* 必须让"就诊时间序"与 updated_at 序相反才有效，否则旧实现也能通过。
+         * a14 更早就诊但最后锁定，a15 更晚就诊但先锁定 ⇒ 期望 [a15, …, a14]。 */
         let a14 = hSeedAppointmentForDoctor(db, 14, 9610, VISIT_VISITING, asDoctorId: 900010)
         let a15 = hSeedAppointmentForDoctor(db, 15, 9610, VISIT_VISITING, asDoctorId: 900010)
         db.exec("UPDATE appointment SET visit_date = ? WHERE id = ?", [DbStr("2026-11-01"), DbInt(a14)])
@@ -944,17 +793,8 @@ public func acP4_7(runner: TestRunner, db: DbBackend): Unit {
         runner.check("★★ ⑧ 且**不是**按 updated_at 排：最后锁定的 a14 排在**最后**（实得末条 ${tail1}）",
                      ordered.size >= 4 && ordered[ordered.size - 1].appointmentId == a14)
 
-        /*
-         * ★★ ⑨ 患者基本标识批量读（2026-10-16 增，复核 ★★★ 第 2 条）。
-         *
-         * 医生端三个端点的 `patient_name` / `patient_gender` 都由它供数，
-         * 所以这里钉住四件事：去重、未知 id 不返回、空输入不查库、性别原样带出。
-         */
-        /*
-         * ⚠ 批量读在 `VisitRepo` 上（见 domain_emr.cj 的注释：医生侧三个端点都在
-         *   `visit` 的作用域里，所以不新建 PatientRepo）。验收里 `emr` 是病历 repo，
-         *   这里单独持一个 `VisitRepo` 只用来调它。
-         */
+        /* 患者标识批量读：去重、未知 id 不返回、空输入不查库、性别原样带出。 */
+        /* 批量读挂在 VisitRepo 上（医生侧三个端点都在 visit 作用域），不新建 PatientRepo。 */
         let vrepo = VisitRepo(db)
         let briefs = vrepo.patientBriefs([9610, 9610, 999998, 0, -5])
         runner.check("★★ ⑨ 去重 + 丢掉未知/非法 id 后只剩 1 条（实得 ${briefs.size}）", briefs.size == 1)
@@ -973,20 +813,9 @@ public func acP4_7(runner: TestRunner, db: DbBackend): Unit {
                      vrepo.patientBriefs(Array<Int64>()).size == 0 &&
                      vrepo.patientBriefs([0, -1]).size == 0)
 
-        /*
-         * ★★ ⑩ 异常分类：只有**已确认的唯一键冲突**才算冲突（2026-10-16 增，复核 ★★★ 第 1 条）。
-         *
-         * ⚠ `saveDraft` 的 INSERT catch 用来把"并发撞唯一键"翻译成冲突；它此前
-         *   `catch (e: Exception)` 吞掉**所有**异常。真正那条路径只有真并发才走得到
-         *   （验收里造不出确定性竞态），所以这里直接钉住它依赖的判据函数：
-         *   库故障/空消息 ⇒ None（原样上抛），重复键 ⇒ Some（转成冲突）。
-         *
-         * 📌 2026-10-16（复核 N3）：那条**真实路径**已由 HTTP 层门禁端到端覆盖 ——
-         *   `server/tests/emr-check.ps1` 的 `[8] 真并发` 段用 8 轮 × 6 个独立 curl 进程
-         *   同时首建同一张单的病历（实测 8/8 轮撞上），断言"任何 409 都必须带
-         *   error.fields、每张单终态恰好 1 行、存下来的必须是某个赢家的原文"。
-         *   本文件这里仍是单线程**判据**级断言，两者不重复：一个钉真值表，一个钉端到端。
-         */
+        /* 只有"已确认的唯一键冲突"才算冲突：库故障/空消息必须原样上抛。
+         * 真并发路径验收里造不出，故直接钉判据函数；真实路径由
+         * emr-check.ps1 的 [8] 真并发段端到端覆盖（8 轮 × 6 个 curl 进程）。 */
         runner.check("★★ ⑩ 重复键异常被识别（`Duplicate entry` 前缀）",
                      baseDuplicateMessage(Exception("Duplicate entry '7001' for key 'uk_medical_record_appointment'")).isSome())
         runner.check("★★ ⑩ 别的库故障**不**被当成冲突（原样上抛）",
@@ -994,16 +823,12 @@ public func acP4_7(runner: TestRunner, db: DbBackend): Unit {
         runner.check("★ ⑩ 空消息也不算冲突（不凭空消息猜）",
                      baseDuplicateMessage(Exception("")).isNone())
 
-        /* ========== ⑦ 乐观锁（本项的核心） ========== */
+        /* ⑦ 乐观锁（本项的核心）：陈旧版本必须被挡住，且库里内容一个字都不能变。 */
         let a13 = hSeedAppointmentForDoctor(db, 13, 9613, VISIT_VISITING)
         let p1 = HashMap<String, String>()
         p1["chief_complaint"] = "首诊主诉"
-        /*
-         * ⚠ 建单时**不需要**乐观锁：此刻还没有"别人改过的版本"可言。
-         *   所以这里故意传一个离谱的 expectedUpdatedAt，行为必须是"照常建单"
-         *   （如果这里回 conflict，说明服务端把"记录不存在"错当成了"版本冲突"，
-         *     那会让**每一位新患者**都存不了草稿 —— 最坏的一种错）。
-         */
+        /* 建单时不需要乐观锁：此刻还没有"别人改过的版本"。
+         * 故意传离谱的 expectedUpdatedAt，行为必须是照常建单，否则新患者都存不了草稿。 */
         let w1 = emr.saveDraft(a13, 900013, p1, now + 20, 9901, expectedUpdatedAt: 12345)
         runner.check("★★ ⑦ 建单不受乐观锁影响（新病历没有「上一版」可冲突）", w1.ok)
         let ver1 = emr.findByAppointment(a13).getOrThrow().updatedAt
@@ -1041,21 +866,9 @@ public func acP4_7(runner: TestRunner, db: DbBackend): Unit {
     })
 }
 
-/*
- * ============ AC-P4-8：就诊时间线（2026-10-15 改进 6）============
- *
- * 独占 id 段：seed 20–27（患者 9620–9627，医生 900020；另有 900021 作为"别人"）。
- *
- * ⚠ 这一组测的是**四件容易做成假的**事：
- *   ① 队列排序：必须按状态优先级，**不是**按 seq_no —— 所以夹具故意让
- *      `seq_no` 与状态优先级**相反**（已挂号的 seq_no 最小）：若实现偷懒只按
- *      seq_no 排，断言会立刻红。而且同优先级内必须**确定**（否则测试会抖）。
- *   ② 时间戳是**真的落库并且能算出差值**（"等了多久/看了多久"是本改进的产出，
- *      只断言"状态变成 arrived"等于没测到它存在的理由）。
- *   ③ 每一步**只能走一次**、且**不能跳步**（到院→候诊→接诊→完成），
- *      否则"实际等了多久"里会出现没有起点的洞。
- *   ④ 越权一律 notFound（医生 B 对医生 A 的单做**任何**一步）。
- */
+/* AC-P4-8：就诊时间线 —— 到院/候诊/接诊/完成四步 + 时间戳 + 队列排序。
+ * 独占 id：seed 20–27（患者 9620–9627，医生 900020；900021 是"别人"）。
+ * 排序按状态优先级而非 seq_no；每步只能走一次、不能跳步；越权一律 notFound。 */
 public func acP4_8(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-P4-8 ★★ 就诊时间线（改进 6：到院 / 候诊 / 时间戳 / 队列排序）===")
     runner.section("AC-P4-8", { =>
@@ -1073,11 +886,8 @@ public func acP4_8(runner: TestRunner, db: DbBackend): Unit {
         let aDone = hSeedAppointmentForDoctor(db, 24, 9624, VISIT_DONE, asDoctorId: doc)
         let aNoShow = hSeedAppointmentForDoctor(db, 25, 9625, VISIT_NO_SHOW, asDoctorId: doc)
         let aCancelled = hSeedAppointmentForDoctor(db, 26, 9626, VISIT_CANCELLED, asDoctorId: doc)
-        /*
-         * ⚠ 行内 seq_no 是 seed 固定的 1 —— 那样"同优先级内"的顺序就没判据了
-         *   （MySQL 对完全并列的行不保证顺序，测试会抖）。这里逐行改写 seq_no，
-         *   并让**状态优先级越靠前的单 seq_no 越大**：只有真的按状态排序才会是期望顺序。
-         */
+        /* 逐行改写 seq_no，并让状态优先级越靠前的单 seq_no 越大：只有真按状态排才是期望序。
+         * 完全并列的行 MySQL 不保证顺序，测试会抖。 */
         let seqOf: Array<(Int64, Int64)> = [(aBooked, 1), (aArrived, 6), (aWaiting, 5),
                                            (aVisiting, 4), (aDone, 3), (aNoShow, 2)]
         for (pair in seqOf) {
@@ -1190,11 +1000,7 @@ public func acP4_8(runner: TestRunner, db: DbBackend): Unit {
                      !view.toString().contains("patient_id") &&
                      !view.toString().contains("doctor_id") &&
                      !view.toString().contains("9620"))
-        /*
-         * ★ 2026-10-18（评审整改 §6 遗留第 1 条）：就诊日期门槛的**纯判断**部分。
-         * 拦未来日期这件事的完整链路在 HTTP 层（p4RequireVisitNotFuture），
-         * 这里只钉住"什么算未来"，因为它是唯一有分支的地方。
-         */
+        /* 完整链路在 HTTP 层（p4RequireVisitNotFuture），这里只钉"什么算未来"。 */
         let todayStr = hDateStringOf(now)
         runner.check("★★ ⑧ 日期门槛：今天的号放行",
                      !visit.visitIsFuture(todayStr, now))
@@ -1207,11 +1013,8 @@ public func acP4_8(runner: TestRunner, db: DbBackend): Unit {
     })
 }
 
-/*
- * 读看板响应里 `o[section][key]` 的整数（AC-P4-8 用）。
- * ⚠ 缺字段 / 类型不符 ⇒ 回 **-1**（"不可能的值"），绝不回 0：
- *   回 0 会让「字段压根没写进响应」被断言悄悄放过（本项目已有的教训）。
- */
+/* 读看板 o[section][key] 的整数；缺字段/类型不符回 -1，绝不回 0 ——
+ * 回 0 会让"字段没写进响应"被断言悄悄放过。 */
 func h8Int(o: JsonObject, section: String, key: String): Int64 {
     match (o.get(section)) {
         case Some(sv) =>

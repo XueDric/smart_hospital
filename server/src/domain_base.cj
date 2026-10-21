@@ -1,74 +1,37 @@
 package qingzhou
 
-/*
- * ⚠ `ArrayList` 来自 std.collection —— 本仓踩过"漏 import 报 undeclared identifier"
- *   （见 domain_booking.cj 的同类注释），所以这里显式写上。
- */
+/* ArrayList 来自 std.collection，须显式 import（仓颉没有隐式导入）。 */
 import std.collection.*
 import std.database.sql.*
 
 /*
  * SPDX-License-Identifier: MIT
  *
+ *
  * ===== domain_base.cj —— 基础数据域（科室 / 医生）=================
  *
- * ## 为什么会有这个文件（ADR-0001 rev.7 的直接后果）
- *
- * rev.7 拆掉内存 Store 时，我给 `department`/`doctor`/`patient` 定了新归属
- * **「基础数据域」**，并如实记下一条边界：
- *
- *   ⚠ **它们（当时）没有写入端点** —— 靠人工 SQL 维护；科室与医生随后由本文件
- *   补上管理端 CRUD，**患者档案至今仍靠人工 SQL**，所以这条边界现在只对 patient 成立。
- *
- * 本文件就是来还这笔账的：给科室与医生补上**管理端 CRUD**。
- * 不补的话，"分诊推荐科室"这件事在生产上根本跑不起来 ——
- * 因为 `triage.cj` 查的就是 `department` 表，而没人能往里加数据。
- *
- * ## 本文件**只做科室与医生**，刻意不含患者
- *
- * `patient` 表存的是**敏感个人信息**（`docs/`brief §9 R-4：真实落地需个保法合规、
- * 实名、留存策略）。给患者开管理端 CRUD 是**合规决策**，不是工程便利 ——
- * 所以它**不在本次范围**，也**没有**顺手加进来。属后续范围。
- *
- * ## 两条刻意的设计
- *
- * ① **`department.name` 必须唯一**（补 `uk_department_name`）。
- *    ⚠ 理由不是"看起来该唯一"，而是**有一个真调用方按名字查**：
- *      `triage.cj` 用 `SELECT ... FROM department WHERE name = ?` 判断"该科室是否可挂号"。
- *      同名会让这条判断**分裂**（命中哪一行取决于存储顺序）——
- *      而它恰好是"分诊推荐"与"排班列表"两处口径的连接点。
- *    ⇒ 纪律要能被**数据库**兜底，而不是只靠应用层先查后写。
- *
- * ② **删除有两种语义，且必须由调用方明确选**（`?force=`）：
- *      · 默认（force=false）：**只允许删未被引用的**科室/医生。有引用 ⇒ `inUse`，
- *        回 409 并**说清是谁在用**。理由：真实系统里"删掉一个还有排班的医生"
- *        会让历史数据失去归属，而这类错误**事后无法用代码修**。
- *      · `force=true`：**软删**（`enabled = 0`），行保留。
- *    ⚠ **不存在硬删**。这是刻意的：`appointment`/`schedule`/`medical_record`
- *      都可能引用它，硬删要么失败要么破坏历史。所以"删"在数据层就是软删。
+ * 职责：department / doctor 两张表的管理端 CRUD（分页、软删、引用检查）
+ * 对外：DepartmentRepo / DoctorRepo / BaseWriteOutcome；写入不抛异常，业务拒绝靠返回值表达
+ * 不含 patient：患者档案是敏感个人信息，开 CRUD 属合规决策而非工程便利
+ * 错误码：BASE_NOT_FOUND 404、BASE_NAME_TAKEN / BASE_CODE_TAKEN / BASE_IN_USE 409、
+ *        VALIDATION_FAILED 400（映射在 http_base.cj）
+ * 不变量：name / code 由数据库唯一键兜底（uk_department_name / uk_department_code），不做先查后插
+ * 不变量：删除语义由 ?force= 显式选择 —— 默认只删未被引用者（409 说清谁在用），force=true 软删（enabled=0）
+ * 不变量：不存在硬删 —— appointment / schedule / medical_record 都可能引用，硬删会破坏历史
  */
 
 /* ===================== 科室 ===================== */
 
 /* 科室（`department` 表的一行）。 */
-/*
- * ⚠⚠ 常量与校验**必须定义在使用之前** —— 仓颉**没有 hoisting**。
- *   我第一版把它们放在文件末尾，实测报
- *     variable 'BASE_LOCATION_MAX' is used before being defined
- *   项目笔记里早就记过这条（"declare before use"），仍踩了一次，
- *   所以这里放在最前面并把原因写死。
- */
+/* 常量与校验函数必须在首次使用之前定义：仓颉没有 hoisting（declare before use）。 */
 public let BASE_NAME_MAX: Int64 = 64
 public let BASE_CODE_MAX: Int64 = 32
 public let BASE_LOCATION_MAX: Int64 = 128
 public let BASE_TITLE_MAX: Int64 = 32
 public let BASE_SPECIALTY_MAX: Int64 = 255
 
-/*
- * ⚠ 长度一律按**字符**数算，不按字节 —— 本仓踩过三次"字节/字符混用"的坑
- *   （见 server/README.md 踩坑表）。中文姓名 3 字 = 9 字节，
- *   若按字节判 64 就只剩 21 个汉字可用，而列是 VARCHAR(64)（64 字符）。
- */
+/* 长度按字符数算，不按字节：列是 VARCHAR(64)（64 字符），按字节判中文姓名只剩 21 字可用。
+ * 超长或为空 ⇒ invalid ⇒ 400。 */
 public func baseValidateName(v: String, what: String): String {
     let t = v.trimAscii()
     if (t.size == 0) {
@@ -77,10 +40,8 @@ public func baseValidateName(v: String, what: String): String {
     if (previsitCharLen(t) > BASE_NAME_MAX) {
         return "${what}最长 ${BASE_NAME_MAX} 字"
     }
-    /*
-     * ⚠ 拒绝控制字符（含换行/制表）：它们会破坏 JSON 输出与日志的单行假设，
-     *   而且没有一个合法用途。**明确拒绝比"存进去再想办法显示"好**。
-     */
+    /* 拒绝控制字符（含换行/制表）：会破坏 JSON 与日志的单行假设，且没有合法用途。
+     * 明确拒绝比"存进去再想办法显示"可靠。 */
     if (baseHasControlChar(t)) {
         return "${what}不能含控制字符（换行/制表等）"
     }
@@ -95,10 +56,8 @@ public func baseValidateCode(v: String, what: String): String {
     if (previsitCharLen(t) > BASE_CODE_MAX) {
         return "${what}最长 ${BASE_CODE_MAX} 字"
     }
-    /*
-     * 编码是给程序看的稳定标识（分诊/统计按它对齐），
-     * ⇒ 限定 `[A-Za-z0-9_-]`：不允许空格与中文，避免"看起来像名字"的编码。
-     */
+    /* 编码是给程序看的稳定标识（分诊/统计按它对齐）：限定 [A-Za-z0-9_-]，不允许空格与中文。
+     * 避免出现"看起来像名字"的编码。 */
     for (r in t.runes()) {
         let ok = (r >= r'a' && r <= r'z') || (r >= r'A' && r <= r'Z') ||
                  (r >= r'0' && r <= r'9') || r == r'_' || r == r'-'
@@ -173,12 +132,9 @@ public class BaseWriteOutcome {
 }
 
 /*
- * 科室仓储。
- *
- * ⚠ 与号源域不同，科室**没有并发热点**（不是每秒被抢的资源），
- *   所以这里**不用**条件 UPDATE 那套。唯一键由数据库兜底，
- *   应用层**不做**"先查再插"（那是 TOCTOU：查完到插入之间别人可能先插进去）。
- *   做法：直接 INSERT，靠**捕获唯一键冲突**来判定重复。
+ * 科室仓储。科室没有并发热点（不是每秒被抢的资源），所以不用条件 UPDATE 那套。
+ * 唯一键由数据库兜底，应用层不做先查后插（那是 TOCTOU）：直接 INSERT，捕获唯一键冲突判重复。
+ * 冲突分类见文件末尾 baseClassifyDuplicate。
  */
 public class DepartmentRepo {
     private let db: DbBackend
@@ -193,19 +149,9 @@ public class DepartmentRepo {
             sql = sql + " WHERE enabled = 1"
         }
         sql = sql + " ORDER BY sort ASC, id ASC"
-        /*
-         * ★ 2026-10-14（第三方复查 B9）新增分页。
-         *
-         * ⚠ `limit <= 0` = **不分页**（与全仓既有口径一致："0 表示不过滤"）——
-         *   所以 `baseDepartmentsForNames()` 这类"读全表建名字索引"的调用点
-         *   一个都不用改，也不会被误截断（名字索引截断 = 页面显示空科室名）。
-         *
-         * ⚠ `offset` 只在分页时才拼：单独 `OFFSET` 在 MySQL 里是**语法错误**
-         *   （它是 `LIMIT` 的子句）。负数一律夹到 0，不往 SQL 里透传。
-         *
-         * 📌 用 `LIMIT ? OFFSET ?` 参数化，而不是把数字拼进 SQL 字符串：
-         *   这是本函数唯一的注入面，参数化是纪律（全仓无一处手拼数值）。
-         */
+        /* 分页：limit <= 0 = 不分页（读全表建名字索引的调用点不会被误截断，截断 = 页面显示空科室名）。
+         * offset 只在分页时拼 —— 单独 OFFSET 在 MySQL 是语法错误；负数一律夹到 0，不透传进 SQL。
+         * LIMIT ? OFFSET ? 参数化：这是本函数唯一的注入面。total 由 countAll 给，两处 where 必须逐字一致。 */
         let args = ArrayList<DbValue>()
         if (limit > 0) {
             var off = offset
@@ -234,16 +180,9 @@ public class DepartmentRepo {
         return out.toArray()
     }
 
-    /*
-     * ★ 2026-10-14（B9）：与 `listAll` **同一套过滤条件**下的总数。
-     *
-     * ⚠ 为什么要单独一个 COUNT 而不是"再查一页看有没有剩下的"：
-     *   客户端要显示"共 N 条 / 当前第 M 页"，靠"多查一页"得到的只是
-     *   "还有更多"这个布尔量，翻到最后一页时还得再试一次。
-     *   ⚠ 过滤条件必须与 `listAll` **逐字对应** —— 两处不一致会出现
-     *     "total=3 但翻不到 3 条"这种最难查的分页 bug（本仓把这条写在
-     *     测试里：`base-check` 的分页断言会比较 total 与实际行数）。
-     */
+    /* 与 listAll 同一套过滤条件下的总数。要单独 COUNT 是因为客户端要显示"共 N 条 / 第 M 页"，
+     * 靠多查一页只能得到"还有更多"，翻到最后一页还得再试一次。过滤条件必须与 listAll 逐字对应，
+     * 否则会出现"total=3 但翻不到 3 条"这类分页 bug（base-check 的断言会比较两者）。 */
     public func countAll(includeDisabled!: Bool = true): Int64 {
         var sql = "SELECT COUNT(*) FROM department"
         if (!includeDisabled) {
@@ -273,12 +212,8 @@ public class DepartmentRepo {
         return d
     }
 
-    /*
-     * 建科室。
-     *
-     * ⚠ 校验放在仓储里而不是只放 HTTP 层：这样**数据层的调用方**（测试、将来的 CLI）
-     *   也走同一套校验 —— 同一语义只留一处实现。
-     */
+    /* 建科室。校验放在仓储里而不是只放 HTTP 层：测试与将来的 CLI 也走同一套语义。
+     * 返回 duplicate / invalid 由调用方映射为 409 / 400。 */
     public func create(d: Department, now: Int64): BaseWriteOutcome {
         let out = BaseWriteOutcome()
         let nameErr = baseValidateName(d.name, "科室名")
@@ -292,11 +227,8 @@ public class DepartmentRepo {
         if (d.location.size > BASE_LOCATION_MAX) {
             return out.markInvalid("科室位置最长 ${BASE_LOCATION_MAX} 字")
         }
-        /*
-         * ⚠ 直接 INSERT，**不先查**：先查后插在并发下会两个都通过检查、
-         *   然后一个撞唯一键 —— 那时再报"重复"就晚了（已经抛异常）。
-         *   靠数据库的唯一键兜底，并由下面捕获冲突转成 `duplicate`。
-         */
+        /* 直接 INSERT，不先查：先查后插在并发下两个都会通过检查，靠唯一键兜底并转成 duplicate。
+         * 先查后插的另一个问题是"报重复时异常已经抛出"。 */
         let ins = baseExecTolerant(db,
             "INSERT INTO department (name, code, location, sort, enabled, created_at) " +
             "VALUES (?, ?, ?, ?, ?, ?)",
@@ -308,7 +240,7 @@ public class DepartmentRepo {
         return out.markOk(ins.generatedId)
     }
 
-    /* 改科室。⚠ **不动 `created_at`**（它是"什么时候建的"，改它等于篡改历史）。 */
+    /* 改科室。不动 created_at（改它等于篡改历史）。重名 ⇒ duplicate ⇒ 409。 */
     public func update(id: Int64, d: Department): BaseWriteOutcome {
         let out = BaseWriteOutcome()
         match (findById(id)) {
@@ -337,12 +269,8 @@ public class DepartmentRepo {
         return out.markOk(id)
     }
 
-    /*
-     * 删科室（见文件头：默认只删未被引用的；`force=true` 时软删）。
-     *
-     * ⚠ 引用检查的顺序**刻意从"最硬的证据"开始**：排班 > 医生 > 挂号单。
-     *   只要有一条就拒，且**如实回报是哪一类**（使用者据此知道下一步做什么）。
-     */
+    /* 删科室（默认只删未被引用的；force=true 时软删）。引用检查按排班 > 医生 > 挂号单的顺序，
+     * 从最硬的证据开始；只要命中一条就拒，并如实回报是哪一类，使用者才知道下一步做什么。 */
     public func remove(id: Int64, force: Bool): BaseWriteOutcome {
         let out = BaseWriteOutcome()
         match (findById(id)) {
@@ -365,11 +293,8 @@ public class DepartmentRepo {
             db.exec("DELETE FROM department WHERE id = ?", [DbInt(id)])
             return out.markOk(id)
         }
-        /*
-         * force：**软删**（`enabled = 0`）。行保留 ⇒ 历史数据仍能解析出科室名。
-         * ⚠ 同时把该科室下的医生也软删 —— 否则会出现"科室已停用、医生仍可被排班"
-         *   这种自相矛盾的状态（排班接口按 enabled 筛，医生不筛就漏了）。
-         */
+        /* 软删：enabled = 0，行保留，历史数据仍能解析出科室名。同时软删本科室下的医生 ——
+         * 否则会出现"科室已停用、医生仍可被排班"。 */
         db.exec("UPDATE department SET enabled = 0 WHERE id = ?", [DbInt(id)])
         db.exec("UPDATE doctor SET enabled = 0 WHERE department_id = ?", [DbInt(id)])
         return out.markOk(id)
@@ -390,14 +315,9 @@ public class Doctor {
 }
 
 /*
- * 医生仓储。
- *
- * ⚠ 医生与科室的关键差别：医生**必须属于一个存在的科室**。
- *   本仓**没有外键**（`doctor.department_id` 只是普通索引）⇒ 这条约束
- *   必须由应用层守，且要**在插入前**查（否则会产生指向不存在科室的孤儿医生）。
- *   📌 为什么不用外键：本项目的迁移是"幂等加列/加表"式，
- *     加外键需要重建表（在已有数据上风险高）。所以这里**明确**用应用层校验 +
- *     一条验收断言兜住"不会产生孤儿医生"。
+ * 医生仓储。医生必须属于一个存在的科室，但本仓没有外键（doctor.department_id 只是普通索引），
+ * 所以这条约束只能由应用层在插入前守住，否则会产生指向不存在科室的孤儿医生。
+ * 不用外键的原因：迁移是幂等加列/加表式，加外键要重建表。
  */
 public class DoctorRepo {
     private let db: DbBackend
@@ -409,13 +329,8 @@ public class DoctorRepo {
     public func listAll(departmentId: Int64, includeDisabled!: Bool = true,
                         limit!: Int64 = 0, offset!: Int64 = 0): Array<Doctor> {
         var sql = "SELECT id, name, department_id, title, specialty, enabled, created_at FROM doctor"
-        /*
-         * ⚠ 参数用 `ArrayList<DbValue>` 而不是 `Array<DbValue>()`：
-         *   仓颉的 `Array<T>` **没有 `add`**（实测报 `'add' is not a member of
-         *   struct 'Array<...>'`），要动态攒参数必须用 ArrayList，最后 `toArray()`。
-         *   📌 本仓 domain_booking.cj 里已有一模一样的注释 —— 我又踩了一次，
-         *     所以这次把话写死在这里。
-         */
+        /* 参数用 ArrayList<DbValue>：Array<T> 没有 add（编译报 'add' is not a member），
+         * 动态攒参数必须 ArrayList，最后 toArray()。 */
         let args = ArrayList<DbValue>()
         if (departmentId > 0) {
             sql = sql + " WHERE department_id = ?"
@@ -429,11 +344,7 @@ public class DoctorRepo {
             }
         }
         sql = sql + " ORDER BY id ASC"
-        /*
-         * ★ 2026-10-14（第三方复查 B9）分页，口径与 `DepartmentRepo.listAll` 一致：
-         *   `limit <= 0` = 不分页；`offset` 只在分页时拼（单独 OFFSET 语法非法）、
-         *   负数夹到 0。见那里的长注释。
-         */
+        /* 分页口径同 DepartmentRepo.listAll：limit <= 0 不分页，offset 仅分页时拼，负数夹到 0。 */
         if (limit > 0) {
             var off = offset
             if (off < 0) {
@@ -461,10 +372,8 @@ public class DoctorRepo {
         return out.toArray()
     }
 
-    /*
-     * ★ 2026-10-14（B9）：与 `listAll` 同一套过滤（`department_id` + `enabled`）下的总数。
-     *   ⚠ 两处条件必须逐字对应，否则会出现"total 与实际可翻页数不符"的分页 bug。
-     */
+    /* 与 listAll 同一套过滤（department_id + enabled）下的总数。
+     * 两处条件必须逐字对应，否则出现"total 与实际可翻页数不符"。 */
     public func countAll(departmentId: Int64, includeDisabled!: Bool = true): Int64 {
         var sql = "SELECT COUNT(*) FROM doctor"
         let args = ArrayList<DbValue>()
@@ -553,13 +462,8 @@ public class DoctorRepo {
         return out.markOk(id)
     }
 
-    /*
-     * 删医生。
-     *
-     * ⚠ 引用检查里的 **`medical_record.doctor_id`** 是最要紧的一条：
-     *   病历是**临床留档**，它的"作者"必须一直可解析。若允许删掉有病历的医生，
-     *   历史病历就会指向一个不存在的作者 —— 这类损坏**事后无法用代码修**。
-     */
+    /* 删医生。medical_record.doctor_id 这条引用最要紧：病历是临床留档，作者必须一直可解析，
+     * 允许删会让历史病历指向不存在的作者，事后无法用代码修。 */
     public func remove(id: Int64, force: Bool): BaseWriteOutcome {
         let out = BaseWriteOutcome()
         match (findById(id)) {
@@ -582,13 +486,8 @@ public class DoctorRepo {
             db.exec("DELETE FROM doctor WHERE id = ?", [DbInt(id)])
             return out.markOk(id)
         }
-        /*
-         * force：**软删**。行保留 ⇒ 历史挂号单/病历仍能解析出医生名。
-         * ⚠ 同时**停掉该医生名下未来的排班**（`enabled = 0`），
-         *   否则"医生已停用、排班仍可挂"是自相矛盾的状态。
-         *   📌 注意这里只停**排班**，**不动**已有挂号单 ——
-         *     已挂患者不该因为医生离职而被取消（那要人工通知，不是数据层的事）。
-         */
+        /* 软删，行保留 ⇒ 历史挂号单/病历仍能解析出医生名。同时停掉该医生名下未来的排班（enabled = 0），
+         * 但不动已有挂号单 —— 已挂患者不该因医生离职被取消。 */
         db.exec("UPDATE doctor SET enabled = 0 WHERE id = ?", [DbInt(id)])
         db.exec("UPDATE schedule SET enabled = 0 WHERE doctor_id = ?", [DbInt(id)])
         return out.markOk(id)
@@ -627,10 +526,8 @@ public class BaseExecResult {
     public var generatedId: Int64 = 0
 }
 
-/* MariaDB 1062 是唯一键冲突。现有驱动可能只保留报错文本，
- * 此时只接受明确的 Duplicate entry 前缀，不凭索引名、空消息或未知故障猜测。
- * 不改变驱动接口或预编译产物；没有这些证据时让原异常上抛。
- */
+/* MariaDB 1062 是唯一键冲突。驱动只保留报错文本时，只接受明确的 Duplicate entry 前缀，
+ * 不凭索引名、空消息或未知故障猜测；拿不到这些证据就让原异常上抛（不改变驱动接口）。 */
 public func baseDuplicateMessage(e: Exception): ?String {
     if (e.message.startsWith("Duplicate entry ")) {
         return Some(e.message)
@@ -665,11 +562,8 @@ public func baseExecTolerant(db: DbBackend, sql: String, args: Array<DbValue>,
     return r
 }
 
-/*
- * 把唯一键冲突分类成"哪个字段重复"。
- *
- * 先确认唯一键冲突，再用错误消息里的索引名定位字段。
- */
+/* 把唯一键冲突分类成"哪个字段重复"：先确认冲突，再用错误消息里的索引名定位字段。
+ * 认不出的索引名落到通用文案，不猜字段。 */
 public func baseClassifyDuplicate(message: String, out: BaseWriteOutcome): BaseWriteOutcome {
     if (!message.startsWith("Duplicate entry ")) {
         throw Exception(message)
@@ -680,13 +574,8 @@ public func baseClassifyDuplicate(message: String, out: BaseWriteOutcome): BaseW
     if (message.contains("uk_department_code")) {
         return out.markDuplicate("code")
     }
-    /*
-     * 公告域（2026-10-12 新增）用的是同一个分类器 —— 不认它的索引名会落到下面的
-     * 兜底分支（`markDuplicate("")`），表现为"HTTP 层只能给通用文案"，
-     * 而这个字段存在的意义正是"**说清是哪个字段冲突**，便于使用者自己修"。
-     * ⚠ 教训：**加一张带唯一键的表，就要回来认它的索引名** ——
-     *   唯一键是各自定义的，分类器却是共用的一处。
-     */
+    /* 公告域共用同一分类器。加一张带唯一键的表，就要回来认它的索引名 —— 否则只会落到通用文案，
+     * 而这个字段存在的意义正是说清哪个字段冲突。 */
     if (message.contains("uk_notice_title")) {
         return out.markDuplicate("title")
     }

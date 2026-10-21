@@ -5,25 +5,10 @@ package qingzhou
  *
  * ===== acceptance_notice.cj —— AC-NOTICE-1…3：公告域 =====
  *
- * 这三个用例守的是 `notice` 表上**两条容易写错、且错了也看不出来**的规则：
- *
- *   ① **同名公告必须被拒**（`uk_notice_title`）。
- *      公告的"真相"是给人看的：同一个通知发两条，患者端会看到两条措辞不同、
- *      甚至互相矛盾的说法（"门诊 8 点开诊" / "门诊 9 点开诊"），
- *      而事后**无法用代码判断哪条对**。所以约束由数据库兜底。
- *
- *   ② **对患者可见 = `enabled = 1` 且 `published_at <= now`**，两个条件缺一不可。
- *      这是本仓唯一"可见性由两个字段共同决定"的域（科室/医生只有 enabled）：
- *        · 漏判 `enabled` ⇒ 下架的公告还在首页挂着；
- *        · 漏判 `published_at` ⇒ **提前写好的公告立刻曝光**（预排期形同虚设，
- *          而这类事故是"对外发布了还没定稿的内容"，不可撤回）。
- *      两个方向都要有断言，且**边界值**（恰好等于 now）必须钉住 ——
- *      `<=` 写成 `<` 只会让"准点发布"晚一秒，肉眼永远看不出来。
- *
- * 用例设计倾向与 `acceptance_base.cj` 一致：**多数断言是"拒绝/不可见"而不是"成功"**，
- * 因为 CRUD 的"能建能改"几乎不可能写错，而"该挡住没挡住"才是真会出事的地方。
- *
- * 夹具纪律：只清、只认自己造的公告（标题前缀 `ACNOTICE`），与别的用例零共享。
+ * 用途：守 notice 表上两条"写错了也看不出来"的规则
+ * ① 同名公告必须被拒：uk_notice_title 由数据库兜底（两条互相矛盾的公告事后无法判断哪条对）
+ * ② 对患者可见 = enabled = 1 且 published_at <= now，两个条件缺一不可；边界（= now）必须可见
+ * 夹具：只清自己造的公告（标题前缀 ACNOTICE），与别的用例零共享
  */
 
 import std.collection.*
@@ -62,7 +47,7 @@ func acNoticeClean(db: DbBackend): Unit {
     db.exec("DELETE FROM notice WHERE title LIKE 'ACNOTICE%'", Array<DbValue>())
 }
 
-/* ===================== AC-NOTICE-1：能建能读，且同名必须被拒 ===================== */
+/* ===== AC-NOTICE-1：能建能读，且同名必须被拒 ===== */
 
 public func acNotice1(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-NOTICE-1 ★★ 公告：能建能改，且**同名必须被拒** ===")
@@ -84,16 +69,13 @@ public func acNotice1(runner: TestRunner, db: DbBackend): Unit {
                          saved.category == "就诊提醒" && saved.sort == 10 &&
                          saved.publishedAt == now - 60)
             runner.check("① 新建默认启用（enabled = true）", saved.enabled)
-            /*
-             * ★ 时间戳是"历史"，由仓储统一落 now：
-             *   若哪天有人把 created_at 改成"读库时间"或漏写，这条会立刻红。
-             */
+            /* 时间戳由仓储统一落 now：若有人改成"读库时间"或漏写，这条会立刻红。 */
             runner.check("★★ ① created_at / updated_at 都落在传入的 now（仓储不自己取时间）",
                          saved.createdAt == now && saved.updatedAt == now)
         case None => runner.check("① 回读公告（不该找不到）", false)
     }
 
-    /* ② ★★ 同名必须被拒，且**说清是 title 冲突**、且**库里确实只有 1 行**。 */
+    /* ② 同名必须被拒，且说清是 title 冲突、库里确实只有 1 行。 */
     let dup = acNoticeMake("ACNOTICE-门诊调整", "另一份说法：9 点开诊。", "通知",
                            0, true, now, now)
     let rdup = repo.create(dup, now)
@@ -102,7 +84,7 @@ public func acNotice1(runner: TestRunner, db: DbBackend): Unit {
     runner.check("★★ ② 且确实没进库（同名仍只有 1 行 —— 否则患者会看到两条矛盾公告）",
                  hScalarCount(db, "SELECT COUNT(*) FROM notice WHERE id = ${c1.id}") == 1)
 
-    /* ③ 改名成功，且 **`created_at` 不被篡改**。 */
+    /* ③ 改名成功，且 created_at 不被篡改。 */
     match (repo.findById(c1.id)) {
         case Some(saved) =>
             let before = saved.createdAt
@@ -150,7 +132,7 @@ public func acNotice1(runner: TestRunner, db: DbBackend): Unit {
     acNoticeClean(db)
 }
 
-/* ===================== AC-NOTICE-2：对患者的可见性（两条件 + 边界） ===================== */
+/* ===== AC-NOTICE-2：对患者的可见性（两条件 + 边界） ===== */
 
 public func acNotice2(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-NOTICE-2 ★★ 患者可见性：enabled 与 published_at **两个条件缺一不可** ===")
@@ -180,11 +162,8 @@ public func acNotice2(runner: TestRunner, db: DbBackend): Unit {
 
     let visible = acNoticeMine(repo.listVisible(now, 100))
     /*
-     * 期望 **2** 条：`ACNOTICE-可见` 与 `ACNOTICE-准点`。
-     *   · 已停用的被 `enabled = 1` 挡掉；
-     *   · 预排期的被 `published_at <= now` 挡掉。
-     * ⚠ 这条"总数"断言是**下一条反向证明的对照**：若哪天有人把两个条件之一删了，
-     *   总数会变成 3 或 4，先在这里红，而不是等患者端首页多挂一条公告。
+     * 期望 2 条：ACNOTICE-可见 与 ACNOTICE-准点 —— 停用被 enabled = 1 挡掉，预排期被 published_at <= now 挡掉。
+     * 这条总数断言是下一条反向证明的对照：删掉任一条件，总数会变 3 或 4，先在这里红。
      */
     runner.check("★ ② 患者侧恰好看到 2 条（已发布 + 准点；停用与预排期都被挡）", visible.size == 2)
 
@@ -204,9 +183,7 @@ public func acNotice2(runner: TestRunner, db: DbBackend): Unit {
     runner.check("★★ ② 边界：`published_at == now` **可见**（`<=` 写成 `<` 会让准点发布晚一拍）", sawEdge)
 
     /*
-     * ★★ 反向证明：停用/预排期是**隐藏**而不是**删除**。
-     *   只断言"看不见"会让"其实被删了"也通过（假绿）——
-     *   管理员还得能查到它们才能改回来。
+     * 反向证明：停用/预排期是隐藏而不是删除 —— 只断言"看不见"会让"其实被删了"也通过（假绿）。
      */
     match (repo.findById(ro.id)) {
         case Some(saved) => runner.check("★★ ② 停用的公告**仍在库里**且 enabled = false（是下架不是删除）",
@@ -244,7 +221,7 @@ public func acNotice2(runner: TestRunner, db: DbBackend): Unit {
     acNoticeClean(db)
 }
 
-/* ===================== AC-NOTICE-3：limit 夹取 与 硬删 ===================== */
+/* ===== AC-NOTICE-3：limit 夹取 与 硬删 ===== */
 
 public func acNotice3(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-NOTICE-3 ★ limit 夹取（防一次拉全表）与硬删语义 ===")
@@ -253,9 +230,7 @@ public func acNotice3(runner: TestRunner, db: DbBackend): Unit {
     acNoticeClean(db)
 
     /*
-     * ① limit 夹取规则本身（纯函数，先钉住口径）：
-     *   <=0 ⇒ 默认 20；>200 ⇒ 200；其余原样。
-     *   ⚠ 这条断言的意义：`limit` 是**外部输入**，没有夹取就能被用来拉全表。
+     * limit 夹取口径：<=0 ⇒ 默认 20；>200 ⇒ 200；其余原样。limit 是外部输入，没有夹取就能拉全表。
      */
     runner.check("① limit <= 0 ⇒ 默认 ${NOTICE_LIST_DEFAULT_LIMIT}",
                  noticeClampLimit(0) == NOTICE_LIST_DEFAULT_LIMIT &&

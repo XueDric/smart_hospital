@@ -3,23 +3,20 @@ package qingzhou
 /*
  * SPDX-License-Identifier: MIT
  *
- * ===== acceptance_base.cj —— AC-BASE-1…3：基础数据域（科室/医生）=====
+ * ===== acceptance_base.cj —— AC-BASE-1…3：科室与医生基础数据 =====
  *
- * 这三个用例守的是 ADR-0001 rev.7 记下的那条边界：
- * 「department/doctor 没有写入端点，靠人工 SQL 维护」——本阶段把它还清。
- *
- * 用例设计上有一个刻意的倾向：**多数断言是"拒绝"而不是"成功"**。
- * 因为 CRUD 的"能建能改"几乎不可能写错，而**约束**（同名/孤儿医生/删有引用的）
- * 才是真正会出错、且事后无法用代码修的地方。
+ * 守数据约束：name/code 唯一、医生必须挂在存在且启用的科室、删除默认拒绝、
+ * force=true 才软删。多数断言针对"拒绝"，因为约束才是真正会出错的地方。
  */
 
-/* ---------- AC-BASE-1：科室 CRUD 与唯一性 ---------- */
+/* AC-BASE-1 科室 CRUD 与唯一性。
+ * 参数：runner 记录断言，db 造数据；失败码 duplicate / invalid / notFound。 */
 public func acBase1(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-BASE-1 ★★ 科室：能建能改，且**同名必须被拒** ===")
     let dept = DepartmentRepo(db)
     let now = hNowEpoch()
 
-    /* 造一个干净起点：只清本用例的 id 段（9_1xx），不碰别的用例。 */
+    /* 只清本用例的 id 段（91xxxx），不碰其它用例数据。 */
     db.exec("DELETE FROM doctor WHERE department_id >= 910000 AND department_id < 920000",
             Array<DbValue>())
     db.exec("DELETE FROM department WHERE id >= 910000 AND id < 920000", Array<DbValue>())
@@ -43,12 +40,8 @@ public func acBase1(runner: TestRunner, db: DbBackend): Unit {
             runner.check("① 回读科室（不该找不到）", false)
     }
 
-    /*
-     * ★★ 同名必须被拒 —— 这是本用例最要紧的一条。
-     * 理由（写在 schema.cj 的 uk_department_name 注释里）：
-     *   `triage.cj` 用 `WHERE name = ?` 判断"该科室是否可挂号"，
-     *   同名会让这条判断**分裂**。所以约束必须由**数据库**兜底。
-     */
+    /* 同名必须被拒：triage.cj 用 name 判断科室可挂号，重名会让判断分裂。
+     * 该约束由数据库 uk_department_name 兜底。 */
     match (dept.findById(c1.id)) {
         case Some(saved) =>
             let dup = Department()
@@ -58,9 +51,8 @@ public func acBase1(runner: TestRunner, db: DbBackend): Unit {
             runner.check("★★ ② 同名科室被拒（duplicate）", r.duplicate)
             runner.check("★★ ② 且指出冲突字段是 name（不是笼统报错）",
                          r.conflictField == "name")
-            /* ⚠ 用 id 计数，而且**直接 query** 而不是 `hTableRowCount`：
-            后者收的是**表名**，我把完整 SQL 传进去过 —— 实测把 accept 打崩
-            （已给它改名并写明参数性质，见 acceptance.cj 的注释）。 */
+            /* 按 id 直接 query 计数：hTableRowCount 收表名，传完整 SQL 会崩。
+             * 必须直接查库，才能证明"被拒且确实没进库"。 */
             runner.check("② 且确实没进库（该 id 仍只有 1 行）",
                          hScalarCount(db, "SELECT COUNT(*) FROM department WHERE id = ${c1.id}") == 1)
         case None =>
@@ -97,11 +89,8 @@ public func acBase1(runner: TestRunner, db: DbBackend): Unit {
                                  after.name == "AC测试内科（改名后）" &&
                                  after.location == "门诊楼 4 层" && after.sort == 6 &&
                                  !after.enabled)
-                    /*
-                     * ★ 这是一条**容易漏**的断言：`created_at` 是"什么时候建的"，
-                     *   改科室时若把它一起写回去（或忘了保留），历史就被篡改了。
-                     *   而这类损坏在数据上看不出来 —— 只能靠断言钉住。
-                     */
+                    /* created_at 是历史：改科室若把它写回即篡改，且数据上看不出损坏。
+                     * 只能靠断言钉住。 */
                     runner.check("★★ ③ created_at **未被篡改**（它是历史，不该随编辑变）",
                                  after.createdAt == before)
                 case None => runner.check("③ 改后回读", false)
@@ -109,7 +98,7 @@ public func acBase1(runner: TestRunner, db: DbBackend): Unit {
         case None => runner.check("③ 改科室（前置失败）", false)
     }
 
-    /* ④ 参数校验。 */
+    /* ④ 参数校验：空白名、非法编码、控制字符、超 64 字均 invalid。 */
     let badName = Department()
     badName.name = "   "
     badName.code = "ACBLANK"
@@ -138,11 +127,11 @@ public func acBase1(runner: TestRunner, db: DbBackend): Unit {
     let gone = dept.remove(919999, false)
     runner.check("⑤ 删不存在的科室 ⇒ notFound（不静默当成功）", gone.notFound)
 
-    /* 清理 */
     db.exec("DELETE FROM department WHERE id >= 910000 AND id < 920000", Array<DbValue>())
 }
 
-/* ---------- AC-BASE-2：医生 CRUD 与"不许有孤儿医生" ---------- */
+/* AC-BASE-2 医生 CRUD 与"不许有孤儿医生"。
+ * 参数：runner 记录断言，db 造数据；失败码 invalid / notFound。 */
 public func acBase2(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-BASE-2 ★★ 医生：必须属于存在的科室（不许产生孤儿医生）===")
     let dept = DepartmentRepo(db)
@@ -157,7 +146,7 @@ public func acBase2(runner: TestRunner, db: DbBackend): Unit {
     d.code = "ACBASE2"
     let cd = dept.create(d, now)
     runner.check("① 前置：建一个科室", cd.ok)
-    /* 需要一个**已停用**的科室来测"不能往停用科室挂医生"。 */
+    /* 需要一个已停用科室，验证"不能往停用科室挂医生"。 */
     let dOff = Department()
     dOff.name = "ACBASE2停用科"
     dOff.code = "ACBASE2OFF"
@@ -165,7 +154,7 @@ public func acBase2(runner: TestRunner, db: DbBackend): Unit {
     let cdOff = dept.create(dOff, now)
     runner.check("① 前置：建一个**已停用**的科室", cdOff.ok)
 
-    /* ② ★★ 孤儿医生必须被拒（本仓无外键，靠应用层守）。 */
+    /* 孤儿医生必须被拒：本仓无外键，只能靠应用层守。 */
     let orphan = Doctor()
     orphan.name = "孤儿医生"
     orphan.departmentId = 929999
@@ -181,7 +170,7 @@ public func acBase2(runner: TestRunner, db: DbBackend): Unit {
     runner.check("★ ② 往**已停用**科室挂医生也被拒（否则会出现自相矛盾的状态）",
                  ro2.invalid)
 
-    /* ③ 正常建医生。 */
+    /* ③ 正常建医生，并回读字段。 */
     let doc1 = Doctor()
     doc1.name = "AC测试医生甲"
     doc1.departmentId = cd.id
@@ -197,11 +186,11 @@ public func acBase2(runner: TestRunner, db: DbBackend): Unit {
         case None => runner.check("③ 回读医生", false)
     }
 
-    /* ④ 列表按科室过滤。 */
+    /* ④ 列表按科室过滤，且不混入其它科室。 */
     let inDept = doc.listAll(cd.id)
     runner.check("④ 按科室过滤只返回该科室的医生（实得 ${inDept.size} 位）",
                  inDept.size >= 1)
-    /* ⚠ `foreign` 是仓颉关键字（实测报 `expected identifier or pattern after var`）⇒ 换名。 */
+    /* foreign 是仓颉关键字，变量换名避开。 */
     var mismatched = 0
     for (x in inDept) {
         if (x.departmentId != cd.id) {
@@ -210,21 +199,21 @@ public func acBase2(runner: TestRunner, db: DbBackend): Unit {
     }
     runner.check("④ 且**没有**混入其它科室的医生", mismatched == 0)
 
-    /* ⑤ 名字校验同样生效。 */
+    /* ⑤ 名字校验在医生侧同样生效。 */
     let badDoc = Doctor()
     badDoc.name = ""
     badDoc.departmentId = cd.id
     runner.check("⑤ 医生空名被拒", doc.create(badDoc, now).invalid)
 
-    /* ⑥ 删不存在的 ⇒ notFound。 */
+    /* ⑥ 删不存在的医生 ⇒ notFound。 */
     runner.check("⑥ 删不存在的医生 ⇒ notFound", doc.remove(929999, false).notFound)
 
-    /* 清理 */
     db.exec("DELETE FROM doctor WHERE id >= 920000 AND id < 930000", Array<DbValue>())
     db.exec("DELETE FROM department WHERE id >= 920000 AND id < 930000", Array<DbValue>())
 }
 
-/* ---------- AC-BASE-3：删除的两种语义（引用保护 vs 软删） ---------- */
+/* AC-BASE-3 删除语义：引用保护 vs 软删。
+ * 参数：runner 记录断言，db 造数据；有引用返回 inUse，force 才软删。 */
 public func acBase3(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-BASE-3 ★★ 删除：有引用就拒，force 才软删（**绝不硬删**）===")
     let dept = DepartmentRepo(db)
@@ -251,9 +240,7 @@ public func acBase3(runner: TestRunner, db: DbBackend): Unit {
     let rd = doc.create(doc1, now)
     runner.check("① 前置：该科室下有 1 位医生", rd.ok)
 
-    /*
-     * ★★ 核心：默认删除**必须被拒**，且说清"被谁引用"。
-     */
+    /* 默认删除必须被拒，并说清被谁引用。 */
     let blocked = dept.remove(cd.id, false)
     runner.check("★★ ② 科室下有医生 ⇒ 默认删除被拒（inUse）", blocked.inUse)
     runner.check("★★ ② 且说清被谁引用（不是笼统「不能删」）",
@@ -261,11 +248,8 @@ public func acBase3(runner: TestRunner, db: DbBackend): Unit {
     runner.check("★★ ② 且**库里那行还在**（拒绝是真的拒绝，不是删了再报错）",
                  hScalarCount(db, "SELECT COUNT(*) FROM department WHERE id = ${cd.id}") == 1)
 
-    /*
-     * ★ 医生侧：被排班/挂号引用时同样拒。
-     * ⚠ 这里刻意用**真实**的 schedule + appointment 行（而不是只看计数），
-     *   因为"计数对不对"和"引用关系对不对"是两件事。
-     */
+    /* 用真实 schedule/appointment 行验证引用：计数对不等于引用关系对。
+     * 医生被排班/挂号引用时同样拒。 */
     db.exec("INSERT INTO schedule (id, doctor_id, department_id, work_date, period, " +
             "total_num, remain_num, version, enabled, created_at) " +
             "VALUES (930001, ?, ?, '2027-01-01', 'AM', 5, 5, 0, 1, 0)",
@@ -274,7 +258,7 @@ public func acBase3(runner: TestRunner, db: DbBackend): Unit {
     runner.check("★★ ③ 医生名下有排班 ⇒ 默认删除被拒", docBlocked.inUse)
     runner.check("③ 且说清是排班", docBlocked.inUseBy.contains("排班"))
 
-    /* ★★ 病历引用是最要紧的一条：作者必须可解析。 */
+    /* 病历引用最要紧：作者必须可解析，否则临床留档断链。 */
     db.exec("INSERT INTO appointment (id, schedule_id, patient_id, doctor_id, department_id, " +
             "visit_date, period, seq_no, status, slot_restored, created_at) " +
             "VALUES (930001, 930001, 1, ?, ?, '2027-01-01', 'AM', 1, 'done', 1, 0)",
@@ -284,7 +268,7 @@ public func acBase3(runner: TestRunner, db: DbBackend): Unit {
             "physical_exam, diagnosis, treatment, status, updated_by, created_at, updated_at) " +
             "VALUES (930001, 1, ?, 'x', '', '', '', '', 'd', 't', 'locked', 0, 0, 0)",
             [DbInt(rd.id)])
-    /* 先把排班删掉，让"病历"成为唯一剩下的引用 —— 这样能**单独**验证病历那条。 */
+    /* 先删排班，让病历成为唯一剩下的引用，单独验证病历那条。 */
     db.exec("DELETE FROM schedule WHERE id = 930001", Array<DbValue>())
     let recBlocked = doc.remove(rd.id, false)
     runner.check("★★★ ④ 医生名下有**病历** ⇒ 默认删除被拒（临床留档的作者必须可解析）",
@@ -292,11 +276,8 @@ public func acBase3(runner: TestRunner, db: DbBackend): Unit {
     runner.check("★★★ ④ 且说清是病历（这条损坏事后无法用代码修）",
                  recBlocked.inUseBy.contains("病历"))
 
-    /*
-     * ★★ ⑤ `force=true` ⇒ **软删**（不是硬删）。
-     *   两条断言缺一不可：① 行还在；② enabled 变 0。
-     *   只断言①会让"完全没动"也通过（假绿）。
-     */
+    /* force=true 是软删：行仍在且 enabled=0。
+     * 两条断言缺一不可，只断言行在会让"完全没动"也通过。 */
     let forced = doc.remove(rd.id, true)
     runner.check("★★ ⑤ force=true 时删除成功", forced.ok)
     runner.check("★★ ⑤ **行仍在库里**（软删；历史挂号/病历还能解析出医生名）",
@@ -309,7 +290,7 @@ public func acBase3(runner: TestRunner, db: DbBackend): Unit {
             runner.check("★★ ⑤ 软删后仍应能查到该医生", false)
     }
 
-    /* ★ ⑥ 科室 force 时，其下医生一并停用（避免"科室停了医生还能排班"）。 */
+    /* 科室 force 时其下医生一并停用，否则状态自相矛盾。 */
     db.exec("UPDATE doctor SET enabled = 1 WHERE id = ?", [DbInt(rd.id)])
     let fdept = dept.remove(cd.id, true)
     runner.check("★ ⑥ 科室 force=true ⇒ 软删成功", fdept.ok)
@@ -325,7 +306,6 @@ public func acBase3(runner: TestRunner, db: DbBackend): Unit {
         case None => runner.check("★ ⑥ 医生应仍在", false)
     }
 
-    /* 清理 */
     db.exec("DELETE FROM medical_record WHERE appointment_id = 930001", Array<DbValue>())
     db.exec("DELETE FROM appointment WHERE id = 930001", Array<DbValue>())
     db.exec("DELETE FROM doctor WHERE department_id >= 930000 AND department_id < 940000",

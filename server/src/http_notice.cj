@@ -6,48 +6,16 @@ import stdx.encoding.json.*
 /*
  * SPDX-License-Identifier: MIT
  *
- * ===== http_notice.cj —— 公告域接口（患者可读 + 管理员维护）==============
+ * 智慧医院智能导诊就诊系统 · 服务端
  *
- * ## 为什么会有这个文件（患者端联调实测出来的窟窿）
- *
- * 患者端首页有一块「医疗公告」。联调时它显示的是三条**写死的假数据**
- * （2026-10-08 / 2026-10-03），而查库发现：**服务端根本没有公告表、也没有这个端点**
- * （`hospital_test` 的 14 张表里没有 notice）。
- * ⇒ 客户端的 `PatientRepository.notices()` 只能无条件 `MockPatientRepository.notices()`
- *   ——**不是它偷懒**，是服务端没给。这是本次补的那一环。
- *
- * ## 与知识库（kb）的边界 —— 刻意不合并
- *
- * 两者都是"文本 + 标题"，但**用途与威胁模型不同**：
- *   · `kb_doc`：会被检索、命中后**随 Prompt 出站**给模型 ⇒ 属 AI 域，读写都要 `ManageKnowledgeBase`；
- *   · `notice`：只在**界面展示**给人看，永不进 Prompt。
- * 把它们合成一张表的后果是：**发布一条公告就改了 RAG 语料**（患者可能因此拿到
- * 一条"公告式"的模型答案）。所以宁可多一张表。
- *
- * ## 端点一览
- *
- *   GET    /api/v1/notices                  患者可读的公告列表（仅 enabled 且已到发布时刻）
- *   GET    /api/v1/admin/notices[?include_disabled=]  管理列表（默认含停用/预排期）
- *   POST   /api/v1/admin/notices            新建
- *   GET    /api/v1/admin/notices/:id        单个
- *   PUT    /api/v1/admin/notices/:id        修改
- *   DELETE /api/v1/admin/notices/:id        删除（硬删；要留痕就 PUT enabled=false）
- *
- * ⚠ 权限：读侧 `ViewNotice`（**三端都给**：公告本就是面向所有人的院内通知，
- *   患者端首页在用），写侧 `ManageNotice`（仅管理员）。读写分开与 P4/P5 同构。
- * ⚠ 与 `registerBaseRoutes` 一样，注册函数**在 http_app.cj 里被显式调用** ——
- *   让"路由注册"这件事仍然集中可见。
+ * http_notice.cj —— 公告域接口（患者可读 + 管理员维护）
+ * 端点：GET /api/v1/notices；GET/POST /api/v1/admin/notices；GET/PUT/DELETE /api/v1/admin/notices/:id
+ * 权限：读侧 ViewNotice（三端都给），写侧 ManageNotice（仅管理员）。
+ * notice 只在界面展示、永不进 Prompt，故与 kb_doc 分表。
  */
 
 /* 公告 → JSON。
- *
- * ⚠ `date` / `published_at` **两个都给**，不是冗余：
- *   客户端 `PatientNotice.date` 是要直接显示的 `YYYY-MM-DD`
- *   （`feature-patient/.../MockPatientRepository.ets` 里的形状），
- *   而 `published_at`（epoch 秒）给需要精确时刻/自己排序的调用方。
- *   ⚠ 日期用 `hDateStringOf`（Asia/Shanghai）—— 与 `hTodayDate()` 同一口径。
- *     若这里另写一份换算，公告显示的日期与"今天"的判定会**再次分家**
- *     （那正是本次修的病灶）。
+ * date（Asia/Shanghai，与 hTodayDate 同口径）与 published_at（epoch 秒）都给；管理侧才带 enabled/updated_by/时间戳。
  */
 public func noticeJson(n: Notice, forAdmin: Bool): JsonObject {
     let o = JsonObject()
@@ -58,11 +26,6 @@ public func noticeJson(n: Notice, forAdmin: Bool): JsonObject {
     o.put("date", JsonString(hDateStringOf(n.publishedAt)))
     o.put("published_at", JsonInt(n.publishedAt))
     o.put("sort", JsonInt(n.sort))
-    /*
-     * 管理侧才回 enabled/updated_by/时间戳：
-     * 患者侧**只需展示**（多给字段等于多给客户端"依赖内部状态"的机会，
-     * 而 enabled 对患者是恒真的 —— 停用的根本不在列表里）。
-     */
     if (forAdmin) {
         o.put("enabled", JsonBool(n.enabled))
         o.put("updated_by", JsonInt(n.updatedBy))
@@ -72,13 +35,8 @@ public func noticeJson(n: Notice, forAdmin: Bool): JsonObject {
     return o
 }
 
-/*
- * 写入结果的异常映射（与 `baseThrowOnFailure` 同构，但只有公告域自己的码）。
- *
- * ⚠ 公告只有**一个**唯一键（`uk_notice_title`）⇒ `duplicate` 不必再看
- *   `conflictField` 就能确定是标题重复。`baseClassifyDuplicate` 只认
- *   `uk_department_*` 的索引名，对 `uk_notice_title` 会退化成 `markDuplicate("")`
- *   ⇒ 这里**按域判定**，不去改基础数据域的分类函数（它不该知道公告）。
+/* 写入失败 → 错误码：NOTICE_NOT_FOUND / NOTICE_TITLE_TAKEN / VALIDATION_FAILED / INTERNAL_ERROR。
+ * 公告唯一键只有 uk_notice_title，duplicate 即标题重复。
  */
 public func noticeThrowOnFailure(out: BaseWriteOutcome): Unit {
     if (out.ok) {
@@ -96,36 +54,14 @@ public func noticeThrowOnFailure(out: BaseWriteOutcome): Unit {
     throw apiErrorMsg("INTERNAL_ERROR", "写入未成功且原因未知")
 }
 
-/*
- * 从请求体读公告。
- *
- * 缺省值都是**显式决定**的（不是随手给的）：
- *   · `category` 缺省 `"通知"` —— 界面要有分组标签，空标签会显示成空白块；
- *   · `sort` 缺省 0 —— 与 `department.sort` 同义（小的在前），人工权重；
- *   · `enabled` 缺省 **true** —— 新建即为启用（与科室新增同口径）；
- *   · `published_at` 缺省 = **`defaultPublishedAt`**（而不是 0）。
- *     ⚠ 给 0 的后果是"1970 年发布的公告"，虽然照样可见（`published_at <= now`），
- *       但客户端拿到的 `date` 会显示 `1970-01-01`。这是**会真的误导人**的默认值。
- *     ⚠⚠ 缺省值**由调用方给**（不是这里写死 `hNowEpoch()`）：新建时缺省=现在是对的，
- *       但**修改**时缺省必须是**该行原有的 `published_at`** —— 否则"改个错别字"
- *       会把一条预排期的公告**提前发布**（日期也一起被改掉）。这两件事必须分开。
- *
- * ⚠⚠ `existing` 决定语义，两种语义**必须**都在这里实现，不能靠调用方自觉：
- *   · `None`（POST，新建）= **整体替换**：`title`/`body` 必填，缺失即 400；
- *   · `Some(old)`（PUT，修改）= **PATCH**：缺失字段**保留旧值**。
- *
- *   为什么 PUT 必须是 PATCH：列表行上的「下架／重新发布」按钮只发
- *   `{enabled: false}`。若 PUT 仍强制 `title`/`body`，那个按钮**必然 400**
- *   —— 而编辑弹窗传全量字段所以看着是好的，于是这类"功能 100% 坏"能活到
- *   上线。同名前缀 `/api/v1/admin/...` 下一半是整体替换、一半是 PATCH
- *   （`ai/models/:id` 就是 PATCH）本身就是坑，这里把公告也对齐成 PATCH。
- *   📌 同理由见 `ai_model.cj` 的 `update`（"只想改温度"不该清空密钥引用）。
+/* 从请求体读公告；existing 决定语义。
+ * None（POST）整体替换，title/body 必填；Some(old)（PUT）为 PATCH，缺失字段保留旧值。
+ * published_at 缺省由调用方给：修改时必须传旧值，否则预排期公告会被提前发布。
  */
 public func noticeFromBody(ctx: Context, defaultPublishedAt: Int64, existing!: ?Notice = None): Notice {
     let n = Notice()
     match (existing) {
         case Some(old) =>
-            /* PATCH：只覆盖**确实传了**的字段。传空串仍会被域校验拒（标题不能为空）。 */
             n.title = (bodyStr(ctx, "title") ?? old.title).trimAscii()
             n.body = bodyStr(ctx, "body") ?? old.body
             n.category = (bodyStr(ctx, "category") ?? old.category).trimAscii()
@@ -153,7 +89,7 @@ public func noticeFromBody(ctx: Context, defaultPublishedAt: Int64, existing!: ?
     return n
 }
 
-/* 注册公告域的路由。 */
+/* 注册公告域路由（在 http_app.cj 里显式调用）。 */
 public func registerNoticeRoutes(r: Router, auth: AuthRepo, gate: DevAuthGate,
                                  notices: NoticeRepo): Unit {
     /* ---------- 患者可读 ---------- */
@@ -176,11 +112,7 @@ public func registerNoticeRoutes(r: Router, auth: AuthRepo, gate: DevAuthGate,
     r.get("/api/v1/admin/notices", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.ManageNotice)
-        /*
-         * ⚠ 管理列表默认**含**停用与预排期（`true`）：管理员要能看到全量才能维护
-         *   —— 与科室/医生列表的 `include_disabled` 同为**默认宽松**。
-         *   患者侧那条接口恒为严格，两者不会互相影响。
-         */
+        /* 管理列表默认含停用与预排期（include_disabled=true）；患者侧那条恒为严格。 */
         let includeDisabled = (ctx.queryParamOr("include_disabled", "true")) != "false"
         let limit = parseInt64Or(ctx.queryParamOr("limit", "0"), 0)
         let items = JsonArray()
@@ -196,9 +128,8 @@ public func registerNoticeRoutes(r: Router, auth: AuthRepo, gate: DevAuthGate,
     r.post("/api/v1/admin/notices", { ctx: Context, _: () -> Unit =>
         let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.ManageNotice)
-        /* 新建：`published_at` 缺省 = 现在（要预排期就显式传未来时间戳）。 */
         let n = noticeFromBody(ctx, hNowEpoch())
-        /* `updated_by` 记**是谁改的**（来自令牌，不接受请求体传入）。 */
+        /* updated_by 记是谁改的：来自令牌，不接受请求体传入。 */
         n.updatedBy = p.userId
         let out = notices.create(n, hNowEpoch())
         noticeThrowOnFailure(out)
@@ -215,7 +146,7 @@ public func registerNoticeRoutes(r: Router, auth: AuthRepo, gate: DevAuthGate,
         let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.ManageNotice)
         let id = parseInt64Or(ctx.paramOr("id", "0"), 0)
-        /* `id <= 0` 一律当"不存在"，不查库（理由同基础数据域：0 不是合法主键）。 */
+        /* id <= 0 一律当"不存在"，不查库。 */
         if (id <= 0) {
             throw apiErrorMsg("NOTICE_NOT_FOUND", "公告不存在")
         }
@@ -232,21 +163,14 @@ public func registerNoticeRoutes(r: Router, auth: AuthRepo, gate: DevAuthGate,
         let p = principalOf(ctx, gate, auth)
         requireCan(p.role, Action.ManageNotice)
         let id = parseInt64Or(ctx.paramOr("id", "0"), 0)
-        /*
-         * ⚠ 先读旧行，原因有两个：
-         *   1. `published_at` 的缺省值必须是**原有的发布时间**。若像新建那样缺省成
-         *      "现在"，改个错别字就会把预排期的公告**提前发布**，并把 `date`
-         *      （界面上的发布日期）一起改掉；
-         *   2. 修改是 **PATCH 语义**（缺失字段保留旧值）—— 列表行的
-         *      「下架／重新发布」只发 `{enabled: false}`，见 `noticeFromBody` 的注释。
-         */
+        /* 先读旧行：published_at 缺省取原值；PATCH 语义下改 enabled 不会提前发布。 */
         let existing = match (notices.findById(id)) {
             case Some(old) => old
             case None => throw apiErrorMsg("NOTICE_NOT_FOUND", "公告不存在")
         }
         let n = noticeFromBody(ctx, existing.publishedAt, existing: Some(existing))
         n.updatedBy = p.userId
-        /* `updated_at` 由调用方刷新（仓储不自己取时间，测试才能喂固定值）。 */
+        /* updated_at 由调用方刷新（仓储不自己取时间，测试才能喂固定值）。 */
         n.updatedAt = hNowEpoch()
         let out = notices.update(id, n)
         noticeThrowOnFailure(out)
@@ -267,7 +191,7 @@ public func registerNoticeRoutes(r: Router, auth: AuthRepo, gate: DevAuthGate,
         noticeThrowOnFailure(out)
         let data = JsonObject()
         data.put("id", JsonInt(id))
-        /* 硬删。要"下架留痕"改用 PUT enabled=false —— 两个语义都给，不让人猜。 */
+        /* 硬删；下架留痕改用 PUT enabled=false。 */
         data.put("soft_deleted", JsonBool(false))
         sendOk(ctx, data)
     })
