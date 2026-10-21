@@ -256,6 +256,39 @@ jobs:
           ./build-mysql-driver.ps1 -CangjieHome "$env:CANGJIE_HOME" -Stdx "$env:CANGJIE_STDX"
           ./build.ps1 -CangjieHome "$env:CANGJIE_HOME" -Stdx "$env:CANGJIE_STDX"
 
+      # exe 是动态链接的：缺 libcangjie-runtime / libboundscheck / libcrypto-3-x64 / libssl-3-x64
+      # 就会以 0xC0000135 静默退出（打印为空、退出码非 0），三件套全部"失败但没有输出"。
+      # SDK 自带前两个，OpenSSL 3 的 DLL 是独立发布物，从 release 资产取。
+      - name: 补齐运行期 DLL（否则 exe 起不来 ⇒ 三件套假失败）
+        if: steps.sdk-url.outputs.SDK_SOURCE != 'none'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $build = 'server/build'
+          if (-not (Test-Path $build)) { Write-Host "::error title=没有 build 目录::编译没成功"; exit 1 }
+          $rt = Join-Path $env:CANGJIE_HOME 'runtime\lib\windows_x86_64_cjnative'
+          foreach ($n in @('libcangjie-runtime.dll', 'libboundscheck.dll')) {
+            $src = Join-Path $rt $n
+            if (-not (Test-Path $src)) {
+              $src = Get-ChildItem $env:CANGJIE_HOME -Recurse -Filter $n | Select-Object -First 1 -ExpandProperty FullName
+            }
+            if ($src -and (Test-Path $src)) { Copy-Item $src $build -Force; Write-Host "✓ $n" } else { Write-Host "::error title=缺运行时::$n 找不到"; exit 1 }
+          }
+          $dl = Join-Path $env:RUNNER_TEMP 'ossl'
+          New-Item -ItemType Directory -Force $dl | Out-Null
+          gh release download sdk-cache-1.2.0 --pattern '*openssl*' --dir $dl --clobber
+          $zip = Get-ChildItem -LiteralPath $dl -File -Filter '*openssl*' | Sort-Object Length -Descending | Select-Object -First 1
+          if (-not $zip) { Write-Host "::error title=取不到 OpenSSL::release 资产下载失败"; exit 1 }
+          Expand-Archive -LiteralPath $zip.FullName -DestinationPath $dl -Force
+          foreach ($n in @('libcrypto-3-x64.dll', 'libssl-3-x64.dll')) {
+            $dll = Get-ChildItem -LiteralPath $dl -Recurse -Filter $n | Select-Object -First 1
+            if (-not $dll) { Write-Host "::error title=缺 OpenSSL::$n 不在包里"; exit 1 }
+            Copy-Item $dll.FullName $build -Force
+            Write-Host ("✓ " + $n + "（" + [Math]::Round($dll.Length/1MB, 1) + " MB）")
+          }
+          Get-ChildItem -LiteralPath $build -Filter '*.dll' | ForEach-Object { Write-Host ("  " + $_.Name + "  " + $_.Length) }
+
       - name: 跑三件套（纯逻辑，不需要数据库）
         if: steps.sdk-url.outputs.SDK_SOURCE != 'none'
         shell: pwsh
