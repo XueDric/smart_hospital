@@ -212,18 +212,31 @@ jobs:
       - name: 取 stdx 静态库（官方 SDK 不自带）
         if: steps.sdk-url.outputs.SDK_SOURCE != 'none'
         shell: pwsh
+        # 私有仓库的 release 资产要鉴权：gh 认 GH_TOKEN，curl 认 Authorization 头。
+        # 少了这段，gh 会报 "could not find any host configurations"，
+        # 而 Invoke-WebRequest 拿到的是 404（私有资产的未鉴权访问）。
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $dl = Join-Path $env:RUNNER_TEMP 'stdxdl'
           New-Item -ItemType Directory -Force $dl | Out-Null
           $url = "${{ vars.CANGJIE_STDX_URL }}"
           if (-not $url) { $url = 'https://github.com/XueDric/smart_hospital/releases/download/sdk-cache-1.2.0/cangjie-stdx-1.1.3.1-windows-x64-static.zip' }
-          $zip = Join-Path $dl 'stdx.zip'
           Write-Host "stdx 来源：$url"
-          try { gh release download sdk-cache-1.2.0 --pattern '*stdx*' --dir $dl --clobber } catch { Write-Host "gh 下载失败，改直连" }
-          if (-not (Test-Path $zip)) {
-            $found = Get-ChildItem -LiteralPath $dl -File -Filter '*stdx*' | Select-Object -First 1
-            if ($found) { $zip = $found.FullName } else { Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -TimeoutSec 900 }
+          $dlOk = $false
+          try {
+            gh release download sdk-cache-1.2.0 --pattern '*stdx*' --dir $dl --clobber
+            if ($LASTEXITCODE -eq 0) { $dlOk = $true }
+          } catch { $dlOk = $false }
+          $zip = Get-ChildItem -LiteralPath $dl -File -Filter '*stdx*' -ErrorAction SilentlyContinue |
+                 Sort-Object Length -Descending | Select-Object -First 1 | ForEach-Object { $_.FullName }
+          if (-not $zip) {
+            Write-Host "gh 下载没拿到文件，改用带鉴权的 curl"
+            $zip = Join-Path $dl 'stdx.zip'
+            curl.exe -sS -L --max-time 900 -H "Authorization: token $env:GH_TOKEN" -o $zip $url
+            if ($LASTEXITCODE -ne 0) { Write-Host "::error title=取不到 stdx::curl 也失败"; exit 1 }
           }
+          Write-Host ("stdx 包：" + $zip)
           if (-not (Test-Path $zip)) { Write-Host "::error title=取不到 stdx::下载失败"; exit 1 }
           $dst = Join-Path $env:RUNNER_TEMP 'cangjie-stdx'
           if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
