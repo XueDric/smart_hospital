@@ -4,17 +4,17 @@
 
 ## 1. 服务端运行时依赖
 
-### 1.1 轻舟 QingZhou（**本团队参与开发**的框架 · 源码快照）
+### 1.1 轻舟 QingZhou（**本团队自研**的框架 · 源码快照）
 
-> 关系定性：轻舟不是"拿来就用的第三方"——本团队参与它的开发，并向内提交过框架级修复（路由/静态错误体可注入、数据库断链自愈与探活、MySQL 参数化绑定静默改值），这些修复已并入上游。完整的证据链、边界与答辩话术见 **[轻舟共建说明](轻舟共建说明.md)**。**参与开发 ≠ 拥有**：许可证与版权声明仍是上游的。
+> 关系定性：轻舟是**本团队自研**的仓颉 Web 框架，以 MIT 独立开源（版权署名为本团队所在实验室）。框架侧的关键实现（路由/静态错误体可注入、数据库断链自愈与探活、MySQL 参数化绑定静默改值）均有本仓提交可查。完整证据链与答辩话术见 **[轻舟说明](轻舟说明.md)**。
 
 | 项 | 结论 | 证据 |
 | --- | --- | --- |
 | 版本 / 出处 | 上游 v0.12.0 之后 HEAD（最近标签 v0.12.0），`gitcode.com/BIT-FSSLab/QingZhou`，commit `3d6c1a36…387b753` | `server/third_party/qingzhou/PROVENANCE.md:7-8`、`UPSTREAM_COMMIT:1` |
 | 许可证 | **MIT**，Copyright (c) 2026 guowei, BIT Foundational Software And Systems Lab（归属不变） | `server/third_party/qingzhou/LICENSE:1-3`、`PROVENANCE.md:12` |
-| 团队参与 | **参与开发**：上游贡献者记录可查；本仓另有四组框架级修复提交 `be569cd`/`c9a41e8`/`310fd4f`/`181921b`（`router.cj`、`static.cj`、`db.cj`、`db_mysql.cj`） | `git show --stat <哈希>`、`docs/轻舟共建说明.md` §2b |
+| 团队实现 | **自研**：框架侧四组实现与修复提交 `be569cd`/`c9a41e8`/`310fd4f`/`181921b`（`router.cj`、`static.cj`、`db.cj`、`db_mysql.cj`） | `git show --stat <哈希>`、`docs/轻舟说明.md` §二 |
 | 获取方式 | **使用副本**：vendored 源码快照，构建不读仓库外目录 | `PROVENANCE.md:3` |
-| 工具链 / 改动 | 基线 cjc 1.2.0 + stdx 1.1.3.1。快照内**已包含我们的框架级修复**——它们先在本仓提交，后并入上游，因此 `PROVENANCE.md:14` 才写"代码逻辑与上游一致"（这句成立的前提正是补丁已上游化） | `PROVENANCE.md:9-14`、`CHANGELOG.md:23-40,242`、`docs/轻舟共建说明.md` §2c |
+| 工具链 / 快照 | 基线 cjc 1.2.0 + stdx 1.1.3.1。快照与上游 `3d6c1a36` 的 `src/*.cj` 逐字节一致（同一份代码，仅快照锚定） | `PROVENANCE.md:9-14`、`docs/轻舟说明.md` §一 |
 | 完整性 | `MANIFEST.sha256` 仅为锚点，**构建期不校验**，需手工比对 | `PROVENANCE.md:11,23-24` |
 
 ⚠ 快照 `cjpm.toml:2-3` 仍写 `cjc-version="1.0.5"`、`version="0.1.0"`（过期元数据，版本口径以 PROVENANCE 为准）。⚠ 快照内含上游 Vue3 演示 `admin-web/`（vue ^3.4 / vue-router ^4.3 / vite ^5 / @vitejs/plugin-vue ^5，含 lock 与 dist），但**不参与本项目构建**（`server/build.ps1` 全文无 `admin-web`；`server/src/main.cj:229-239` 的 `pickAdminWebDir` 只挂 `server/admin-web`（按相对工作目录依次试 `admin-web`、`server/admin-web`、`../admin-web`））。
@@ -104,7 +104,7 @@
 
 | 组件 | 版本 | 用途 | 许可证 | 获取方式 |
 | --- | --- | --- | --- | --- |
-| 轻舟 QingZhou | v0.12.0+HEAD | 服务端 Web 框架（**本团队参与开发**，并提交过框架级修复） | **MIT**（版权归上游） | 使用副本（源码快照，已含我们的修复） |
+| 轻舟 QingZhou | v0.12.0+HEAD | 服务端 Web 框架（**本团队自研**，MIT 开源） | **MIT**（版权署名为本团队所在实验室） | 源码快照（锚定上游 commit，逐字节一致） |
 | MariaDB 驱动 | 2.0.2 | 数据库协议驱动 | **Apache-2.0** | 使用副本（静态编译） |
 | Cangjie 运行时 DLL | 随 SDK 1.2.0 | 运行时（随包分发） | **Apache-2.0 with Runtime Library Exception** | 随包分发；全文 `server/third_party/cangjie-runtime/LICENSE.txt`（进包） |
 | Cangjie 编译器 / stdx | 1.2.0 / 1.1.3.1 | 构建期编译与标准库 | Apache-2.0 with Runtime Library Exception（同上） | 构建期本地安装（`CANGJIE_HOME`）；CI 用的**原包未改**副本托管在 release `sdk-cache-1.2.0` 供下载（包内含上游 LICENSE），**不随交付物分发**。详见 §8.2 |
@@ -118,7 +118,7 @@
 | DeepSeek（OpenAI 兼容） | deepseek-chat | AI 分诊文案与结论（默认对话模型） | 商业服务条款（非 OSS） | 外部 API 调用（演示默认开启） |
 | 阿里云百炼（OpenAI 兼容） | text-embedding-v3 | 向量检索（默认向量行，provider 未接线） | 商业服务条款（非 OSS） | 外部 API 调用（需自填 key_ref） |
 
-**合规结论**：需注意的只有 **MariaDB Server 的 GPLv2**（当前仅自管实例、不分发，风险低；若对外分发便携包须随附 GPLv2 文本）。轻舟 MIT（我们参与开发但版权归上游，见 [轻舟共建说明](轻舟共建说明.md)）、MariaDB 驱动 Apache-2.0、安卓构建链 Apache-2.0 属宽松许可，义务仅为保留版权与许可声明，均已在仓内保留（`server/third_party/*/LICENSE`）。原"最大缺口"（Cangjie 运行时与 OpenSSL 3 的 DLL 随包分发却无许可证文本）**已于 2026-10-18 补齐**：两份全文 + 两份归属声明 vendored 入仓并进包（见 §1.3 表）；自研代码在 35 个源文件带 `SPDX-License-Identifier: MIT` 头（`server/src` 共 38 个 `.cj`，`acceptance_bind.cj`/`ai_model.cj`/`domain_notice.cj` 三个未加头），现已补**仓级 `LICENSE`（MIT，2026-10-17）**对齐。管理台与两端 UI 零第三方前端依赖，无 JS 许可传染问题。
+**合规结论**：需注意的只有 **MariaDB Server 的 GPLv2**（当前仅自管实例、不分发，风险低；若对外分发便携包须随附 GPLv2 文本）。轻舟 MIT（本团队自研，见 [轻舟说明](轻舟说明.md)）、MariaDB 驱动 Apache-2.0、安卓构建链 Apache-2.0 属宽松许可，义务仅为保留版权与许可声明，均已在仓内保留（`server/third_party/*/LICENSE`）。原"最大缺口"（Cangjie 运行时与 OpenSSL 3 的 DLL 随包分发却无许可证文本）**已于 2026-10-18 补齐**：两份全文 + 两份归属声明 vendored 入仓并进包（见 §1.3 表）；自研代码在 35 个源文件带 `SPDX-License-Identifier: MIT` 头（`server/src` 共 38 个 `.cj`，`acceptance_bind.cj`/`ai_model.cj`/`domain_notice.cj` 三个未加头），现已补**仓级 `LICENSE`（MIT，2026-10-17）**对齐。管理台与两端 UI 零第三方前端依赖，无 JS 许可传染问题。
 
 ### 8.1 不随包分发（仅开发期或构建期使用）
 

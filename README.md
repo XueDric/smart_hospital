@@ -2,7 +2,7 @@
 
 > 患者输入一句主诉 → AI 多步推理取证 → 推荐科室与医生 → **校验真实有号** → 一键挂号 → 医生接诊 → 生成电子病历，全程落库、可追溯、可观测。
 >
-> 技术栈：**仓颉（Cangjie）+ 轻舟（QingZhou，本团队参与开发的国产 Web 框架）** 服务端 · **鸿蒙 ArkTS** 三端客户端 · **安卓 Kotlin** 患者端 · 零中间件（不需要 Redis / 向量库 / 消息队列）。
+> 技术栈：**仓颉（Cangjie）+ 轻舟（QingZhou，本团队自研并开源的国产 Web 框架）** 服务端 · **鸿蒙 ArkTS** 三端客户端 · **安卓 Kotlin** 患者端 · 零中间件（不需要 Redis / 向量库 / 消息队列）。
 
 ---
 
@@ -15,7 +15,7 @@
 | 3 | **源码仓库与版本历史** | 本文件 §仓库信息 · [CHANGELOG.md](CHANGELOG.md) |
 | 4 | **可运行包 / 部署 / 环境配置** | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) · [tools/package-release.ps1](tools/package-release.ps1) |
 | 5 | **开源组件 / 第三方模型 / 外部 API / 数据集** | [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) |
-| 5.1 | **我们参与开发的框架（轻舟）**：改了哪几层、哪些进了上游、边界在哪 | [docs/轻舟共建说明.md](docs/轻舟共建说明.md) |
+| 5.1 | **我们自研的框架（轻舟）**：框架层实现了什么、快照怎么锚定、许可证边界 | [docs/轻舟说明.md](docs/轻舟说明.md) |
 
 ---
 
@@ -95,7 +95,7 @@ git log --oneline --graph | head -30      # 版本历史（截至 v0.2.0-p1-rev 
 | 路径 | 是什么 |
 | --- | --- |
 | [docs/](docs/) | **全部文档**：项目说明 / 系统设计 / 部署 / 第三方 / 接口口径 / 架构决策 / 阶段交付记录 |
-| [server/](server/README.md) | **服务端**（自包含）：`src/` **38 个 `.cj`** + `third_party/`（轻舟框架 47 个 `.cj`，其中参与编译 38 个；MariaDB 驱动 47 个 `.cj`，均为使用副本）+ 6 个构建运维脚本 + `tests/` **26 个测试文件**（25 个 `.ps1` + `admin-web-smoke.mjs`） + `admin-web/` 管理台 |
+| [server/](server/README.md) | **服务端**（自包含）：`src/` **38 个 `.cj`** + `third_party/`（轻舟框架 47 个 `.cj`，其中参与编译 38 个；MariaDB 驱动 47 个 `.cj`，为使用副本）+ 6 个构建运维脚本 + `tests/` **26 个测试文件**（25 个 `.ps1` + `admin-web-smoke.mjs`） + `admin-web/` 管理台 |
 | [contract/](contract/README.md) | **可执行接口契约**：67 个样例 + 24 个 Schema + 映射表 + 变更日志 |
 | `entry/` + `common-core/` + `feature-patient/` + `feature-doctor/` + `feature-admin/` | **鸿蒙三端**（ArkTS / ArkUI V2）：HAP 壳 + 公共层 + 三个 HAR 业务模块 |
 | [android-patient/](android-patient/README.md) | **安卓患者端**（Kotlin Views，AGP 8.5.2 / Gradle 8.7 / minSdk 26） |

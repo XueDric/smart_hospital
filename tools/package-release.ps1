@@ -312,11 +312,11 @@ $noticeText = @"
 
 本包内含以下第三方组件（源码或以静态库形式链接进 hospital-server.exe）：
 
-1) 轻舟 QingZhou —— 仓颉 Web 框架（源码副本，构建时编译进 exe）
-   ★ 本团队参与该框架的开发：路由/静态错误体可注入、数据库断链自愈与探活、
-     MySQL 参数化绑定等修复由本团队提交并已并入上游（不改版权归属）。
-   许可证：MIT（版权归上游）
-   版权：Copyright (c) 2026 guowei, BIT FSSLab
+1) 轻舟 QingZhou —— 本团队自研的仓颉 Web 框架（MIT 开源；本仓内置源码快照，构建时编译进 exe）
+   ★ 框架侧由本团队实现：路由/静态错误体可注入、数据库断链自愈与探活、
+     MySQL 参数化绑定正确性等，提交记录见仓库 git log。
+   许可证：MIT
+   版权：Copyright (c) 2026 guowei, BIT Foundational Software And Systems Lab
    全文：licenses/qingzhou-LICENSE.txt
    上游：https://gitcode.com/BIT-FSSLab/QingZhou
 

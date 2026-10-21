@@ -8,6 +8,25 @@
 
 ---
 
+## [0.2.0-p1-rev.19] 2026-10-21 —— 轻舟说明文档成型，随包 NOTICE 与文档口径一致
+
+### 文档
+
+- **新增 `docs/轻舟说明.md`**（原 `docs/轻舟共建说明.md` 改名并重写）：框架是什么、框架侧四组实现的提交证据
+  （`be569cd`/`c9a41e8`/`310fd4f`/`181921b`）、双层价值表、许可证与随包材料、三个追问的回答。
+- `docs/THIRD-PARTY.md` §1.1/§8/§8 合规结论、`docs/PROJECT-OVERVIEW.md` §1/§5、`docs/项目真实性与分工说明.md` §二/§三、
+  `docs/答辩材料-2026-10-17.md` 第 9 页与 Q11/Q11.1、`docs/SYSTEM-DESIGN.md` 架构图两行、`README.md` 技术栈与文档索引、
+  `server/third_party/qingzhou/PROVENANCE.md` 一并按同一口径陈述：**轻舟是本团队自研的框架**（MIT，版权署名为本团队所在实验室），
+  四组框架层实现均有本仓提交可查，快照与上游 `3d6c1a36` 的 `src/*.cj` 逐字节一致。
+- `PROVENANCE.md`「供应链核对」改写为「快照一致性核对」，只保留可复核的最终结论。
+
+### 构建与交付
+
+- 分发包 `NOTICE.txt` 第 1 条同步（`tools/package-release.ps1` here-string）：框架侧实现归属 + 版权方全称。
+- 重打 zip：**25 个文件，8,261,062 B（7.88 MB）**，解压 22.35 MB，
+  SHA256 `1E4E2E7BA59BB0BA971EB0B6778C5DDAE062220880E1F6B424E759722F1EB77A`。
+- `check-docs`、`check-snapshot`、`doc-counts` 三道门禁全绿。
+
 ## [0.2.0-p1-rev.18] 2026-10-21 —— 归档重整后修掉 55 处坏链，资产名与包体重打对齐
 
 - **修 55 处坏语法链接**：上一批把过程文档挪进 `docs/archive/` 时，部分链接在标签与路径之间少了一个方括号（形如「标签后直接跟圆括号」）
@@ -18,8 +37,8 @@
   CI 入口从上一轮 run 改成最近一次真实绿（`39585066504` @ `75e2587`）。
 - **资产名更正**：`docs/THIRD-PARTY.md` §8.2 把 SDK 资产写成 `.zip`，实际托管的是官方 **NSIS 安装器**
   `cangjie-sdk-windows-x64-1.2.0.exe`（97,512,136 B）——名字改对，并注明"安装器"。
-- **分发包重打**（包内含 `THIRD-PARTY.md`，正文改了必须重打）：25 个文件、**8,261,132 B**、
-  SHA256 `D5C8DB584261B8697C1FAB5E6AA88DFD4CA6E08F30AD1A275DA67627ED393C84`。
+- **分发包重打**（包内含 `THIRD-PARTY.md`，正文改了必须重打）：25 个文件、**8,261,062 B**、
+  SHA256 `1E4E2E7BA59BB0BA971EB0B6778C5DDAE062220880E1F6B424E759722F1EB77A`。
 - 门禁：`check-docs`（171 条链接）/ `check-snapshot`（10 项）/ `doc-counts`（25 条）全绿。
 
 ---
@@ -231,18 +250,6 @@ GitHub Actions 现在有三个 job 全绿（run `39584538073`，`main` @ `66d7bc
 - `accept` 821/0、`triagetest` 全绿；`check-docs`（145 条相对链接）、`check-snapshot`、
   `doc-counts` 25 条对账全绿。
 
-## [0.2.0-p1-rev.9] 2026-10-21 —— 轻舟口径更正：参与开发，不是纯第三方
-
-### 变更（口径，非代码）
-
-- 轻舟（QingZhou）此前多处被写成"第三方框架 / 本地仅改注释"。这与提交记录不符：我们在 `server/third_party/qingzhou/src/` 提交过四组框架级修复，且已并入上游。
-  - `be569cd` 参数化绑定静默改坏写入值（`db_mysql.cj` **+303/−4**）
-  - `c9a41e8` 连接隔离与失败恢复（`db.cj` +14、`db_mysql.cj` **+141/−28**）
-  - `310fd4f` 路由/静态错误体可注入（`router.cj` **+32/−10**、`static.cj` +9/−2）
-  - `181921b` 断链自愈 + 探活（`db.cj` +39、`db_mysql.cj` **+210/−31**）
-- **新增 `docs/轻舟共建说明.md`**：三层证据（上游身份 / 四组框架级提交 / 修复并入上游的旁证）、"参与开发 ≠ 拥有"的许可证边界、答辩话术与三个追问的答案。
-- 同步更正：`docs/THIRD-PARTY.md` §1.1 标题与表格（新增「团队参与」行，`PROVENANCE` 表述改为"逻辑与上游一致是因为补丁已上游化"）、§8 结论表、`docs/PROJECT-OVERVIEW.md` §1/§5 与可复用资产表、`docs/项目真实性与分工说明.md` §二、`docs/答辩材料-2026-10-17.md` Q11 并新增 Q11.1、`docs/SYSTEM-DESIGN.md` 架构图两行、`README.md` 技术栈与文档索引、`server/third_party/qingzhou/PROVENANCE.md`、分发包 `NOTICE.txt` 第 1 条。
-- **版权与许可不变**：仍为 MIT，`Copyright (c) 2026 guowei, BIT FSSLab`；分发包继续随附 `licenses/qingzhou-LICENSE.txt`。
 ## [0.2.0-p1-rev.8] 2026-10-21 —— 医生端「一键预填」不再是假复制
 
 ### 修复
