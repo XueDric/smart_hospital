@@ -63,6 +63,12 @@ jobs:
     #   而且一旦"改了源码忘了重打包"就会红。
     runs-on: windows-latest
     steps:
+      # windows-latest 默认 core.autocrlf=true ⇒ 检出时把 LF 文本转成 CRLF，
+      # 于是清单里的 sha256 与工作区的实际字节全部不符（实测 65/76 个文件报不一致）。
+      # 必须在 checkout 之前关掉，否则这个 job 永远是假红。
+      - name: 关闭 CRLF 自动转换
+        shell: pwsh
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - name: 解出分发包里的 SOURCE-MANIFEST.sha256
         shell: pwsh
@@ -92,6 +98,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
+      - name: 关闭 CRLF 自动转换
+        shell: pwsh
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
 
       - name: 决定 SDK 来源（仓库变量优先，否则用本仓库的 Release 资产）
@@ -129,6 +138,7 @@ jobs:
 
       - name: 取 SDK 安装包 / 压缩包
         if: steps.sdk-cache.outputs.cache-hit != 'true'
+        id: pkg
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -163,7 +173,13 @@ jobs:
         if: steps.sdk-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $pkg = "${{ steps.sdk.outputs.PKG }}"
+          $pkg = "${{ steps.pkg.outputs.PKG }}"
+          if (-not $pkg -or -not (Test-Path $pkg)) {
+            # 兜底：不依赖上一步的 output（output 名写错过一次，别再靠它）
+            $pkg = Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'sdkdl') -File -ErrorAction SilentlyContinue |
+                   Sort-Object Length -Descending | Select-Object -First 1 | ForEach-Object { $_.FullName }
+          }
+          if (-not $pkg -or -not (Test-Path $pkg)) { Write-Host "::error title=找不到安装包::下载目录是空的"; exit 1 }
           $dst = Join-Path $env:RUNNER_TEMP 'cangjie-sdk'
           if (Test-Path $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
           if ($pkg -match '\.zip$') {
