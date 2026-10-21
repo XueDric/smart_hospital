@@ -812,7 +812,7 @@ public let NOTICE_SCHEMA_DDL: Array<String> = [
  *
  *   在这之前，AI 出站所需的四件事（endpoint / model / max_tokens / key_ref）
  *   全是 `ai_setting` 里的**单份 KV** —— 也就是"全系统只有一个模型"。
- *   而真实需求（管理台「AI 模型配置」页，见 docs/ADMIN-WEB.md）是
+ *   而真实需求（管理台「AI 模型配置」页，见 docs/dev/ADMIN-WEB.md）是
  *   **多条命名配置**：默认对话模型 + 默认向量模型，各自有类型、提供方、
  *   接口地址、模型名、温度、max_tokens、启停。
  *

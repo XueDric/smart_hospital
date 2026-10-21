@@ -136,7 +136,7 @@ if ($useDriver) {
     Write-Host "[build] 驱动：$drvDir"
 } else {
     Write-Warning "未找到 MariaDB 驱动产物（$drvDir）。将**不带驱动**编译 —— 可以验证语法与类型，但运行时无法连库。"
-    Write-Warning "  生成驱动：先跑 server\build-mysql-driver.ps1（见 server/README.md 与 docs/DEV-DB.md）"
+    Write-Warning "  生成驱动：先跑 server\build-mysql-driver.ps1（见 server/README.md 与 docs/dev/DEV-DB.md）"
 }
 
 # stdx 各子包的 .a 要**逐个**链上（只给 -L 会报 undefined symbol: ...stdx.encoding.url...）

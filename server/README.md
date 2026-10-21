@@ -11,7 +11,7 @@
 | 编译器 | **cjc 1.2.0** | `C:\Users\ASUS\.cjenv\sdks\1.2.0\cangjie` |
 | ⚠ PATH 上的 cjc | **1.1.3**（`D:\Cangjie`） | **是旧版、不可用**。版本串台症状 = 编译中途 `LLVM ERROR: Broken module found` |
 | stdx | **1.1.3.1 静态** | `E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx` |
-| 数据库 | **仓库自管 MariaDB 11.4.13** @ `127.0.0.1:3317` | `server\devdb`（见 `../docs/DEV-DB.md.md`（本地开发手册，未入库））；启停 `.\devdb.ps1 start` |
+| 数据库 | **仓库自管 MariaDB 11.4.13** @ `127.0.0.1:3317` | `server\devdb`（见 `../docs/dev/DEV-DB.md.md`（本地开发手册，未入库））；启停 `.\devdb.ps1 start` |
 | 业务库 / 账号 | `hospital`（开发）/ `hospital_test`（**测试**，`accept` 只认它）/ 账号 `hospital` 口令 `hospital_dev_2026` | ⚠ 开发口令，**上生产必须换** |
 | Shell | **Windows PowerShell 5.1** | ⚠ 含中文的 `.ps1` **必须 UTF-8 with BOM**，否则 PS 5.1 按 ANSI 解析会**语法报错** |
 
@@ -228,7 +228,7 @@ $env:HOSP_ADMIN_PW = "<管理员口令>"
    `doctor`/`department`/`patient` 一起删。同一脚本里更细的夹具则都带
    `id >= 703000`/`704000`/`707000`。结论只有一句：
    **跑这些脚本的库必须是可以随时清空的测试库（`hospital_test`）**，
-   不要指向 `hospital`（开发库）。细则见 `../docs/DEV-DB.md.md`（本地开发手册，未入库） §四。
+   不要指向 `hospital`（开发库）。细则见 `../docs/dev/DEV-DB.md.md`（本地开发手册，未入库） §四。
 2. **登录被限流不中断整轮**：5 次失败锁 15 分钟是服务端的正常保护
    （`auth_repo.cj:90-92`：`LOGIN_FAIL_LIMIT=5` / `LOGIN_FAIL_WINDOW=900s` /
    `LOGIN_LOCK_SECONDS=900s`）。`common.ps1` 的 `Test-HospLoginRateLimited` 命中
@@ -261,7 +261,7 @@ start http://127.0.0.1:8091/admin
 | 密钥 | 配置里只存 `env:变量名` / `file:路径` 这类**引用**；列表接口只回 `key_ref_set` / `key_ref_kind`，**永不回显**引用本体 |
 | 改配置要重启吗 | 不用。写库后立即 `invalidate()`，下一次 AI 请求按新配置动态构建模型实例（页面上的「失效配置缓存」按钮是同一件事的手动兜底） |
 
-细节（页面 ↔ 接口映射、安全口径、为什么不用前端框架/不加构建步骤）见 `../docs/ADMIN-WEB.md.md`（本地开发手册，未入库）。
+细节（页面 ↔ 接口映射、安全口径、为什么不用前端框架/不加构建步骤）见 `../docs/dev/ADMIN-WEB.md.md`（本地开发手册，未入库）。
 
 ### 验收依据：源码哈希，不是产物哈希
 
@@ -311,9 +311,9 @@ cjc 的产物**不逐字节可复现**（同一份源码连续两次构建，exe
 | `tests/ai-model-check.ps1` | **AI 模型配置端到端**（46 项）：鉴权 / 播种 / 密钥不回显 / 校验闸门 / PATCH 语义 / 默认位唯一与 `in_use` / 连通性测试 / 缓存失效 / `settings` 登记表闸门 |
 | `tests/visit-timeline-check.ps1` | **就诊时间线端到端**（47 项）：到院/候诊鉴权与归属 / 全链路 `booked→arrived→waiting→visiting→done` / **三个时间戳逐字段**（只写自己那一个、被拒的流转一个都不写、`waiting` 不写戳）/ 非法流转（重复到院、跳步、终态回退）⇒ 409 `VISIT_BAD_STATE` / 未锁病历完成 ⇒ 409 `EMR_NOT_LOCKED` / 队列排序（待处理优先）与 `status_label` 同源 / **到院后退号 ⇒ 409 `APPOINTMENT_NOT_CANCELLABLE`，未到院退号 ⇒ 200** / **混合态排序真断言**（`waiting` 排在 `booked` 前）/ 夹具自清**只扫本夹具范围** |
 | `tests/ai-telemetry-check.ps1` | **分诊遥测与排障端到端**（53 项）：鉴权 / 参数闸门（`group_by` 白名单、`from>to`、**非数字与 >366 天跨度 ⇒ 400**、上限夹取）/ 一次真调用后按 `request_id` 捞全链路（**17 字段**齐 + `degraded` 与 `red_flag_bypass` **互补**）/ **超长 `X-Request-Id` 端到端**（写侧截 64、读侧同口径仍查得到）/ **隐私否定断言**（聚合与单次体里都搜不到主诉指纹）/ 聚合分位数与降级率**（`RED_FLAG` 不计入降级，另立 `red_flag`/`red_flag_rate`）**/ 版本号严格前进 / 夹具自清（残留为 0 会真的红） |
-| `tests/ai-eval/run-ai-eval.ps1` | **AI 分诊评测**：默认**回放**（读 `recorded/`，离线可重复，连跑两次指纹须一致）；`-Mode live [-Record]` 打真实服务端并录制样本；报告落 `../docs/ai-eval/<date>.md` + `.metrics.json`。**不进 `final-verify`**（依赖真实模型，见 `../docs/ai-eval/README.md.md`（本地开发手册，未入库）） |
+| `tests/ai-eval/run-ai-eval.ps1` | **AI 分诊评测**：默认**回放**（读 `recorded/`，离线可重复，连跑两次指纹须一致）；`-Mode live [-Record]` 打真实服务端并录制样本；报告落 `../docs/ai-eval/<date>.md` + `.metrics.json`。**不进 `final-verify`**（依赖真实模型，见 `../docs/dev/ai-eval/README.md.md`（本地开发手册，未入库）） |
 | `tests/admin-web-smoke.mjs` | **管理台前端冒烟**：无头 Edge + CDP，11 个页面逐个真实渲染 + 控制台/异常/`>=400` 全收集 + 逐页截图；任一项失败 `exit 1` |
-| `admin-web/` | **后台管理台的静态资源**（零构建：`index.html` + `css/` + `js/` 四个脚本），由服务端按 `/admin` 前缀托管；页面本身不鉴权，数据全走 `/api/v1/admin/*`（详见 `../docs/ADMIN-WEB.md.md`（本地开发手册，未入库）） |
+| `admin-web/` | **后台管理台的静态资源**（零构建：`index.html` + `css/` + `js/` 四个脚本），由服务端按 `/admin` 前缀托管；页面本身不鉴权，数据全走 `/api/v1/admin/*`（详见 `../docs/dev/ADMIN-WEB.md.md`（本地开发手册，未入库）） |
 
 **最小表集（17 张 / 9 类；下表按域合并，`kb_doc`/`kb_chunk` 属知识库域、`medical_record_revision` 属病历域）**：
 
@@ -418,7 +418,7 @@ cjc 的产物**不逐字节可复现**（同一份源码连续两次构建，exe
 | O | ★★ **不要在"字节空间"里做算术减法**（L 条的根因） | "字符减 4"与"字节减 4"是同一个错误：两种写法都假设"前面几个字符宽度均匀"。ASCII+汉字混排时 `from` 落进汉字中间 ⇒ 非法 UTF-8 ⇒ 普通主诉 **HTTP 500**（`CT显示没有胸痛`） | 把这类运算**全部收口到一个口径**：统一转 `Rune[]`，下标/窗口/切片一律在字符空间做，只在必要时显式换算字节（并对"不在字符边界"返回 -1 拒绝）。**别在同一个表达式里混用两种单位** |
 | P | ★★ **同一个语义只准有一处实现** | 红色保险丝处理了否定，科室判定用**裸 `contains`** ⇒ "不胸闷，只是咳嗽" 推荐**心血管内科**；因有号校验通过，响应 `reason=OK` **看起来权威** | `guessDepartment` 必须**复用** `redFlagSegments` + `redFlagHit`。同类：登录名归一、连接参数、文档数字 |
 | Q | **测试只覆盖一种形态 ⇒ 它验的是那种形态，不是那条规则** | 否定用例全是**等宽纯汉字**（"没有胸痛"），边界永不落在字符中间 ⇒ 上面那个 500 全漏。与"变异②漏掉"**同构** | 改成**按类别扫**：16 种前缀宽度 × 10 种否定写法 = **160 组**，反向再来 112 组。**补样例不如扫组合** |
-| AG | ★★ **"出错时的提示"里绝不写死部署事实**（端口/口令/路径）—— **从配置派生** | 把本机端口写进连接失败提示，值一变就把排查引向错的地方：本项目自管 devdb 是 **3317**，而 **3307** 是本机另一台便携实例，`devdb` 没起来时提示让人去查 3307。同类漂移会一路蔓延到 DEV-DB、README、脚本默认 DSN，**只有"出错才显示"的文案最容易被漏掉** —— 偏偏那是最需要准确的地方 | 提示回显 `${cfg.host}:${cfg.port}`（**实际用的那个**），并指向 `docs/DEV-DB.md` 作为唯一事实来源 —— **不复制那个数字，就没有第二次漂移的机会**。另：`MySqlConfig.port` 默认值 `3306`（`3307` 是**假默认**："没拿到 DSN"与"端口写错"会长得一模一样） |
+| AG | ★★ **"出错时的提示"里绝不写死部署事实**（端口/口令/路径）—— **从配置派生** | 把本机端口写进连接失败提示，值一变就把排查引向错的地方：本项目自管 devdb 是 **3317**，而 **3307** 是本机另一台便携实例，`devdb` 没起来时提示让人去查 3307。同类漂移会一路蔓延到 DEV-DB、README、脚本默认 DSN，**只有"出错才显示"的文案最容易被漏掉** —— 偏偏那是最需要准确的地方 | 提示回显 `${cfg.host}:${cfg.port}`（**实际用的那个**），并指向 `docs/dev/DEV-DB.md` 作为唯一事实来源 —— **不复制那个数字，就没有第二次漂移的机会**。另：`MySqlConfig.port` 默认值 `3306`（`3307` 是**假默认**："没拿到 DSN"与"端口写错"会长得一模一样） |
 | AC | ★★ **不要在一个项目里第一次使用某条 SQL 形态**（尤其当失败只给空消息时） | `INSERT ... SELECT` 让数据库把 `patient_id` 带进病历 —— 全仓（含搬迁前带进来的代码）**零处用过**这个形态，驱动的 `getOrBuildSql()` 那条路径没被验证过 ⇒ 仓颉侧必失败，而异常是 `SqlException: errorCode: 0`（**驱动把 MySQL 报错文本吞成空串**），同一条 SQL 用 mariadb 客户端手工重放却成功 | 改成「先读 `appointment` + 纯 `INSERT`」，不变量没变（`patient_id` 仍来自挂号单）。**先用项目跑熟的形态** |
 | AD | ★★ **新增错误码必须同时补 `apiErrorSpec`**（否则一律 500） | `EMR_LOCKED` / `EMR_NOT_LOCKED` / `VISIT_BAD_STATE` / `EMR_NOT_FOUND` 没登记 `apiErrorSpec` ⇒ 落到兜底 `(500,…)` ⇒ "病历已锁定不能改"这种**正常业务拒绝**被报成服务端故障。★ 而**纯逻辑层测试抓不到**（直接调仓储、不过 HTTP 映射） | 补 `apiErrorSpec` 四条（409/409/409/404）。**新错误码必须有走 HTTP 的用例** |
 | AE | ★★ **`Duplicate entry` 先问"是不是不该插第二次"** | `hSeedTriageDept` 是纯 `INSERT`，同一 criterion 内重复调用就撞 ⇒ 根因是**幂等性**，不是 id 撞车 | 换 id 只是把碰撞推到更远。夹具**先清后插，且只清自己会重复写的那几张表**（连 `appointment` 一起清 ⇒ 队列长度变 0） |

@@ -1,6 +1,6 @@
 ﻿# 仓库自管的开发数据库（server\devdb）—— 启停脚本
 #
-# 规格与理由见 docs\DEV-DB.md。
+# 规格与理由见 docs\dev\DEV-DB.md。
 # 与本机另一台实例（3307）**完全隔离**：本实例用 3317、独立数据目录。
 #
 # ⚠ 含中文的 PowerShell 脚本必须 UTF-8 with BOM（PS 5.1 否则按 ANSI 解析 → 语法报错）。
@@ -22,7 +22,7 @@
 #         现在口令来自参数，stderr 原样捕获并在失败时打印（附退出码）。
 #      ② `:91` 打印的 DSN 含**明文口令**（终端回滚、截图、CI 日志都会把它带走）。
 #         现在默认打码成 `mysql://hospital:***@…`，要明文得显式加 -ShowPassword。
-#         注：这**不是**在保护什么秘密（口令本来就写在 docs\DEV-DB.md 里），
+#         注：这**不是**在保护什么秘密（口令本来就写在 docs\dev\DEV-DB.md 里），
 #         而是不让它**顺手**漏进日志与截图 —— 少一次"无意的扩散"。
 
 param(
@@ -34,7 +34,7 @@ param(
     [int]$Port = 3317,
     # root 口令：给 init（mysql_install_db）用。
     [string]$RootPassword = "devroot2026",
-    # 应用账号：给 status 查询用（默认值与 docs\DEV-DB.md / docs\FRONTEND-INTEGRATION.md 一致）。
+    # 应用账号：给 status 查询用（默认值与 docs\dev\DEV-DB.md / docs\dev\FRONTEND-INTEGRATION.md 一致）。
     [string]$AppUser = "hospital",
     [string]$AppPassword = "hospital_dev_2026",
     # D3②：默认**打码**打印 DSN，显式加这个开关才打明文。
@@ -151,7 +151,7 @@ function Invoke-Start {
     }
     Write-Host "[devdb] 启动 mysqld（端口 $Port，仅绑 127.0.0.1）…"
     # ★ `--bind-address=127.0.0.1` 是**安全必需**，不是可选优化：
-    #   本实例的 root 口令**公开写在仓库文档里**（开发用，见 docs\DEV-DB.md），
+    #   本实例的 root 口令**公开写在仓库文档里**（开发用，见 docs\dev\DEV-DB.md），
     #   若监听 0.0.0.0，同一局域网内任何人都能用这串口令连上来。
     #   实测：不加此参数时它监听 `0.0.0.0:$Port`（`Get-NetTCPConnection` 可见），
     #   只靠账号的 host 授权（'hospital'@'localhost'）兜着 —— 那是**单层**防护，
@@ -204,7 +204,7 @@ function Invoke-Status {
 
     # D3①：口令来自参数（不再是写死的 -phospital_dev_2026），
     #       并且**不再吞 stderr** —— 失败时把退出码与客户端原文都报出来。
-    # 先按应用账号查；不行再退回 root（本机两套账号都在，见 docs\DEV-DB.md）。
+    # 先按应用账号查；不行再退回 root（本机两套账号都在，见 docs\dev\DEV-DB.md）。
     $accounts = @(
         @{ Name = '应用账号'; User = $AppUser; Pass = $AppPassword },
         @{ Name = 'root';     User = 'root';   Pass = $RootPassword }

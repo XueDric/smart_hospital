@@ -20,7 +20,7 @@ param(
     [int]$ScheduleTotal = 0,     # 0 = 用 Tokens 作为号源数
     [int]$SetupPort = 0,
     # ⚠ 默认指向**仓库自管 devdb**（server\devdb，端口 3317）——
-    #   与本机另一台实例（3307）隔离，见 docs\DEV-DB.md。
+    #   与本机另一台实例（3307）隔离，见 docs\dev\DEV-DB.md。
     [string]$Dsn = "mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital_test",
     [string]$AdminLogin = "admin",
     [string]$AdminPw = "",

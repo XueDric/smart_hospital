@@ -13,7 +13,7 @@
 | `set-ci-sdk-url.ps1` | **（可选）覆盖 CI 的 SDK 来源**：CI 默认从本仓库 release `sdk-cache-1.2.0` 下安装包，正常情况下不用配；想换别处托管的包时才用它——校验 URL 真能下到 zip/exe，再调 GitHub API 写/更新仓库变量 `CANGJIE_SDK_URL`。详见下文。 |
 | `check-snapshot.ps1` | **交付物一致性校验**：比对 `docs/交付快照.md` 里的版本/提交/HAP/APK/zip 的体积与 SHA256 与磁盘真值；`-Update` 用真值刷新快照。CI 每次 push 都跑（默认严格模式）。 |
 
-部署全流程（环境要求、起库、生产 TLS、探活语义、故障排查）见 **[../docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md)**；
+部署全流程（环境要求、起库、生产 TLS、探活语义、故障排查）见 **[../docs/部署说明.md](../docs/部署说明.md)**；
 本文件只讲上面这些脚本本身。
 
 ## package-release.ps1

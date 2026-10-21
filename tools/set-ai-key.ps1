@@ -132,6 +132,6 @@ if ($p.ok) {
 } else {
     Write-Warning "[3/3] 自检失败：$($p.reason)"
     Write-Host "     常见原因：endpoint 不是 https（除本机回环外强制 https）、模型名不对、密钥余额不足、"
-    Write-Host "              或这台机器访问不到 api.deepseek.com（需要代理或 CA 包，见 docs\DEPLOYMENT.md）。"
+    Write-Host "              或这台机器访问不到 api.deepseek.com（需要代理或 CA 包，见 docs\部署说明.md）。"
     exit 1
 }

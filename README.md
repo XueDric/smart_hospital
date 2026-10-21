@@ -10,11 +10,11 @@
 
 | # | 交付项 | 文档 |
 | --- | --- | --- |
-| 1 | **项目说明** —— 背景、需求分析、功能模块、创新点、应用价值 | [docs/PROJECT-OVERVIEW.md](docs/PROJECT-OVERVIEW.md) |
-| 2 | **系统设计** —— 总体架构、模块划分、接口设计、数据流转、关键技术 | [docs/SYSTEM-DESIGN.md](docs/SYSTEM-DESIGN.md) |
+| 1 | **项目说明** —— 背景、需求分析、功能模块、创新点、应用价值 | [docs/项目说明.md](docs/项目说明.md) |
+| 2 | **系统设计** —— 总体架构、模块划分、接口设计、数据流转、关键技术 | [docs/系统设计.md](docs/系统设计.md) |
 | 3 | **源码仓库与版本历史** | 本文件 §仓库信息 · [CHANGELOG.md](CHANGELOG.md) |
-| 4 | **可运行包 / 部署 / 环境配置** | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) · [tools/package-release.ps1](tools/package-release.ps1) |
-| 5 | **开源组件 / 第三方模型 / 外部 API / 数据集** | [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) |
+| 4 | **可运行包 / 部署 / 环境配置** | [docs/部署说明.md](docs/部署说明.md) · [tools/package-release.ps1](tools/package-release.ps1) |
+| 5 | **开源组件 / 第三方模型 / 外部 API / 数据集** | [docs/第三方许可说明.md](docs/第三方许可说明.md) |
 | 5.1 | **我们自研的框架（轻舟）**：框架层实现了什么、快照怎么锚定、许可证边界 | [docs/轻舟说明.md](docs/轻舟说明.md) |
 
 ---
@@ -26,7 +26,7 @@
 | 仓库地址 | <https://github.com/XueDric/smart_hospital.git>（默认分支 `main`） |
 | 版本 | `0.2.0-p1`（`server/src/main.cj:34`）= P0–P5 六阶段交付 + 第 1 个维护批次 |
 | 提交历史 | 107 个提交（截至 tag `v0.2.0-p1-rev`），2026-10-07 → 2026-10-17；6 位贡献者 |
-| 许可证 / 第三方 | 本项目 [MIT](LICENSE)；第三方组件清单见 [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) |
+| 许可证 / 第三方 | 本项目 [MIT](LICENSE)；第三方组件清单见 [docs/第三方许可说明.md](docs/第三方许可说明.md) |
 
 ```bash
 git clone https://github.com/XueDric/smart_hospital.git
@@ -62,7 +62,7 @@ git log --oneline --graph | head -30      # 版本历史（截至 v0.2.0-p1-rev 
 | 真编译 + 三件套 | 装 cjc 1.2.0 → 编 MariaDB 驱动 → 编服务端 → `selftest` / `authtest` / `triagetest` | 换一台机器也能编过、跑过，不是只在本机能跑 |
 
 > 编译层不搞"绿了但没编"：取不到 SDK 直链时打印 `::notice::编译层未执行` 并写进 job summary，**不伪装成通过**。
-> 三方构建件的托管边界见 [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) §8.2。
+> 三方构建件的托管边界见 [docs/第三方许可说明.md](docs/第三方许可说明.md) §8.2。
 
 ---
 
@@ -86,7 +86,7 @@ git log --oneline --graph | head -30      # 版本历史（截至 v0.2.0-p1-rev 
 > **自动门禁**：CI（`.github/workflows/repo-hygiene.yml`）每次 push/PR 跑 `tools/check-docs.ps1` ——
 > 查文档相对链接、脚本 UTF-8 BOM、批处理纯 ASCII、旧仓库路径残留。本地等价命令：
 > `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\check-docs.ps1`。
-> 服务端重活（`build.ps1` + `server/tests/` + `final-verify.ps1`）需 cjc 与 MariaDB 实例，仍按 `docs/DEPLOYMENT.md` 手工跑。
+> 服务端重活（`build.ps1` + `server/tests/` + `final-verify.ps1`）需 cjc 与 MariaDB 实例，仍按 `docs/部署说明.md` 手工跑。
 
 ---
 
@@ -148,10 +148,10 @@ cd smart_hospital
 > **未签名 HAP 可直接装进模拟器**（`hdc install -r …hap`），签名只在分发给真机时需要。
 >
 > ⚠ **仓库目录改名后必做**：`oh_modules/` 里指向模块的 junction 仍是旧绝对路径，需重新链接一次
-> （`ohpm install` 或按 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) §鸿蒙构建 的 `mklink /J` 重连），
+> （`ohpm install` 或按 [docs/部署说明.md](docs/部署说明.md) §鸿蒙构建 的 `mklink /J` 重连），
 > 否则会报 `10505001 ArkTS Compiler Error: Cannot find module 'common-core'`。
 
-完整步骤、生产模式（`--prod` + TLS）、鸿蒙/安卓构建、可运行程序包、故障排查见 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**。
+完整步骤、生产模式（`--prod` + TLS）、鸿蒙/安卓构建、可运行程序包、故障排查见 **[docs/部署说明.md](docs/部署说明.md)**。
 
 ---
 
@@ -159,12 +159,13 @@ cd smart_hospital
 
 | 你的目的 | 先读 |
 | --- | --- |
-| 了解项目是什么、做了什么创新 | [docs/PROJECT-OVERVIEW.md](docs/PROJECT-OVERVIEW.md) |
-| 看架构与技术实现 | [docs/SYSTEM-DESIGN.md](docs/SYSTEM-DESIGN.md) → [adr/ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) |
-| 把系统跑起来 / 交付部署 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
-| 写客户端 / 对接接口 | [contract/README.md](contract/README.md)（可执行契约 + 响应形状） |
-| 查决策与边界 | [docs/README.md](docs/README.md)（文档地图）· [ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) · [PROJECT-OVERVIEW](docs/PROJECT-OVERVIEW.md) |
-| 确认第三方合规 | [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) · [Q6-合规决策记录](docs/Q6-合规决策记录.md) |
+| 了解项目是什么、做了什么创新 | [docs/项目说明.md](docs/项目说明.md) |
+| 看架构与技术实现 | [docs/系统设计.md](docs/系统设计.md) → [adr/ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) |
+| 把系统跑起来 / 交付部署 | [docs/部署说明.md](docs/部署说明.md) |
+| 写客户端 / 对接接口 | [contract/README.md](contract/README.md)（可执行契约 + 响应形状）· [接口逐字段口径](docs/dev/FRONTEND-INTEGRATION.md) |
+| 跑起来做开发（库/管理台/视觉规范） | [docs/dev/](docs/dev/)（本地开发手册：DEV-DB / ADMIN-WEB / UI-DESIGN / 鸿蒙对接） |
+| 查决策与边界 | [docs/README.md](docs/README.md)（文档地图）· [ADR-0001](docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) · [项目说明](docs/项目说明.md) |
+| 确认第三方合规 | [docs/第三方许可说明.md](docs/第三方许可说明.md) · [Q6-合规决策记录](docs/Q6-合规决策记录.md) |
 | 答辩/评审材料 | [交付快照](docs/交付快照.md)（版本·体积·哈希的唯一锚点） |
 | 答辩演示幻灯片（11 页） | [docs/答辩演示-2026-10-21.pptx](docs/答辩演示-2026-10-21.pptx) |
 | 说明作品真实性与 AI 边界 | [docs/项目真实性与分工说明.md](docs/项目真实性与分工说明.md) · [AI 工具使用声明](docs/AI-工具使用声明.md) |
@@ -175,7 +176,7 @@ cd smart_hospital
 
 ## 未决问题
 
-见 [docs/PROJECT-OVERVIEW.md](docs/PROJECT-OVERVIEW.md) 的「范围边界（本期不做）」一节。
+见 [docs/项目说明.md](docs/项目说明.md) 的「范围边界（本期不做）」一节。
 
 | # | 问题 | 状态 |
 | --- | --- | --- |

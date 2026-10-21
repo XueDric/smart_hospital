@@ -62,7 +62,7 @@ export class VisitStatus {
    * 是否可退号。
    * ⚠ 这是**服务端语义的镜像**，权威在 `server/src/http_app.cj:575` 的 `canCancel()`
    *   —— 到院/候诊之后退号，服务端会回 409 `APPOINTMENT_NOT_CANCELLABLE`。
-   *   服务端一旦放宽或收紧，此处必须同步（属「契约变更知会清单」覆盖项，见 docs/UI-DESIGN.md）。
+   *   服务端一旦放宽或收紧，此处必须同步（属「契约变更知会清单」覆盖项，见 docs/dev/UI-DESIGN.md）。
    *   客户端**不得**为了让某个状态出现在退号入口里而放宽本谓词。
    */
   static isCancellable(status: string): boolean {

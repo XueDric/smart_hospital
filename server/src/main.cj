@@ -59,11 +59,11 @@ func usage(): Unit {
      *   usage 是使用者**第一眼**看到的东西，写一个本项目不用的端口
      *   （3307 是**本机另一台实例**，本项目自管 devdb 是 3317）会直接把人引到错地方 ——
      *   复查的人和我都真的被引过。
-     *   ⇒ 给**形状**示例，端口与口令等部署事实一律指向 `docs/DEV-DB.md`：
+     *   ⇒ 给**形状**示例，端口与口令等部署事实一律指向 `docs/dev/DEV-DB.md`：
      *     本提示不复制它们，就没有第二次漂移的机会。
      */
     println("  本机联调示例：mysql://hospital:<口令>@127.0.0.1:<端口>/hospital")
-    println("  ⚠ 端口与口令**以 docs/DEV-DB.md 为准**（那是唯一事实来源；本提示刻意不写死，免得漂移）")
+    println("  ⚠ 端口与口令**以 docs/dev/DEV-DB.md 为准**（那是唯一事实来源；本提示刻意不写死，免得漂移）")
     println("")
     println("⚠ --dev-auth 是**开发态**身份头（X-Role/X-Patient-Id），绕过全部认证；")
     println("  与 --prod 同时传会直接拒绝启动。")
@@ -189,7 +189,7 @@ func isTestDatabase(dbName: String): Bool {
      *   如果你连备份库也不许清，就把下面的形态再收紧成精确白名单。
      *
      * ⚠ 仍然允许 `hospital_test`（`*_test`）这种最常用写法，
-     *   所以 server/tests 下的脚本与 docs/DEPLOYMENT.md 里的命令都不需要改。
+     *   所以 server/tests 下的脚本与 docs/部署说明.md 里的命令都不需要改。
      */
     let low = dbName.toAsciiLower()
     if (low == "test") {
@@ -1043,7 +1043,7 @@ func serve(args: Array<String>): Int64 {
         } else {
             eprintln("AI：**未启用**（分诊将只走规则兜底，患者仍能拿到结论）")
             eprintln("    原因：${aiOpt.disabledReason}")
-            eprintln("    启用：管理台「AI 配置」设 ai.enabled=1 + ai.key_ref（env:变量名 或 file:路径），或见 docs/FRONTEND-INTEGRATION.md")
+            eprintln("    启用：管理台「AI 配置」设 ai.enabled=1 + ai.key_ref（env:变量名 或 file:路径），或见 docs/dev/FRONTEND-INTEGRATION.md")
         }
     } catch (e: Exception) {
         eprintln("[WARN] 检查 AI 状态失败（不影响启动）：${e.message}")

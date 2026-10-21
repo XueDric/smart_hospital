@@ -176,7 +176,7 @@ qingzhou/
 | [CAVEATS.md](docs/CAVEATS.md) | 仓颉语言坑 + stdx API 反直觉点 |
 | [PACKAGING.md](docs/PACKAGING.md) | 包拆分与发布方案 |
 | [BENCHMARK.md](docs/BENCHMARK.md) | 性能基准（微基准 + 端到端吞吐） |
-| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | 部署指南（启停 / 健康检查 / 优雅关闭） |
+| [部署说明.md](docs/部署说明.md) | 部署指南（启停 / 健康检查 / 优雅关闭） |
 | [openapi.yaml](docs/openapi.yaml) | 后台管理系统 API 的 OpenAPI 3.0 规范 |
 | [DATABASE.md](docs/DATABASE.md) | 多数据库支持与切换（DbBackend 抽象层） |
 | [CODE_STYLE.md](docs/CODE_STYLE.md) | 编码规范与仓颉注释避坑 |

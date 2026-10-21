@@ -3,7 +3,7 @@
 # ===== export-contract.ps1 —— 接口契约样例「导出机」（改进 5，服务端侧）=====
 #
 # 要解决的问题（见 docs/CLINIC-LOOP-IMPROVEMENTS-2026-10-14.md §改进 5）：
-#   "契约"目前只存在于**文档的字**里（docs/FRONTEND-INTEGRATION.md）。文档会漂：
+#   "契约"目前只存在于**文档的字**里（docs/dev/FRONTEND-INTEGRATION.md）。文档会漂：
 #   2026-10-14 那次第三方复查就发现 §3.2 写的框架 404 形状（平铺 `{"error":"Not Found"}`）
 #   与**当时的实测**（统一信封 `{"ok":false,"error":{"code":"ROUTE_NOT_FOUND"}}`）已经不一样了
 #   （**2026-10-17 更新**：文档 §3.2 已就地更正为统一信封 —— 框架层三种平铺错误体现在已全部改写信封，

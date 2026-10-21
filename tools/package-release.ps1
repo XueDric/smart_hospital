@@ -274,12 +274,12 @@ if (-not (Test-Path -LiteralPath $rootLicense)) { Fail "找不到 $rootLicense�
 Copy-Item -LiteralPath $rootLicense -Destination (Join-Path $stagingDir 'LICENSE.txt') -Force
 $licenseFiles += 'LICENSE.txt'
 
-$thirdPartyDoc = Join-Path $repoRoot 'docs\THIRD-PARTY.md'
+$thirdPartyDoc = Join-Path $repoRoot 'docs\第三方许可说明.md'
 if (Test-Path -LiteralPath $thirdPartyDoc) {
     Copy-Item -LiteralPath $thirdPartyDoc -Destination (Join-Path $stagingDir 'THIRD-PARTY.md') -Force
     $licenseFiles += 'THIRD-PARTY.md'
 } else {
-    Write-Warn2 '没有 docs\THIRD-PARTY.md —— 包内不会有第三方清单'
+    Write-Warn2 '没有 docs\第三方许可说明.md —— 包内不会有第三方清单'
 }
 
 # vendored 组件的许可证全文（Apache-2.0 要求随分发附带 LICENSE 与 NOTICE）

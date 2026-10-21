@@ -1,18 +1,18 @@
 # 文档导航
 
-> 本目录按**大赛要求的 6 项提交材料**组织，只放提交时要直接读的成品文档。
-> 写代码时要查的实现手册不在库里（见 §三），本地克隆后自行保留。
+> 本目录按**大赛要求的 6 项提交材料**组织，`docs/` 根下只放提交时要直接读的成品文档；
+> 写代码时要查的实现手册单独收在 [`dev/`](dev/) 里（见 §三），保留交叉链接但不算提交材料。
 
 ## 一、6 项提交材料 → 看哪份
 
 | 赛制要求 | 对应文档 |
 | --- | --- |
-| ① 项目说明（背景 / 需求分析 / 功能模块 / 创新点 / 应用价值） | [PROJECT-OVERVIEW.md](PROJECT-OVERVIEW.md) |
-| ② 系统设计（总体架构 / 模块划分 / 接口设计 / 数据流转 / 关键技术） | [SYSTEM-DESIGN.md](SYSTEM-DESIGN.md)、[adr/](adr/)（号源与挂号的独立 MySQL 路径） |
+| ① 项目说明（背景 / 需求分析 / 功能模块 / 创新点 / 应用价值） | [项目说明.md](项目说明.md) |
+| ② 系统设计（总体架构 / 模块划分 / 接口设计 / 数据流转 / 关键技术） | [系统设计.md](系统设计.md)、[adr/](adr/)（号源与挂号的独立 MySQL 路径） |
 | ③ 源代码仓库与版本历史 | 本仓库；版本与能力清单见 [../CHANGELOG.md](../CHANGELOG.md) |
-| ④ 可运行程序包 / 部署文档 / 环境配置 | [../release/](../release/)（分发包 + HAP + APK + 构建日志 + 实跑截图）、[DEPLOYMENT.md](DEPLOYMENT.md) |
+| ④ 可运行程序包 / 部署文档 / 环境配置 | [../release/](../release/)（分发包 + HAP + APK + 构建日志 + 实跑截图）、[部署说明.md](部署说明.md) |
 | ⑤ 演示视频（主要业务流程 + 核心智能功能） | 成片 `video/smart-hospital-demo-2026-10-21.mp4`（5:23 / 10,357,517 B / SHA256 `26E9AE54…D809C`，因体积**不入库**，随提交材料单独交）、[答辩演示-2026-10-21.pptx](答辩演示-2026-10-21.pptx)（11 页，备注页即讲稿） |
-| ⑥ 开源组件 / 第三方模型 / 外部 API / 数据集使用说明 | [THIRD-PARTY.md](THIRD-PARTY.md)、[轻舟说明.md](轻舟说明.md)（自研框架的实现与边界）、[向量检索说明.md](向量检索说明.md)（RAG 走关键词路，向量路未接） |
+| ⑥ 开源组件 / 第三方模型 / 外部 API / 数据集使用说明 | [第三方许可说明.md](第三方许可说明.md)、[轻舟说明.md](轻舟说明.md)（自研框架的实现与边界）、[向量检索说明.md](向量检索说明.md)（RAG 走关键词路，向量路未接） |
 
 ## 二、另外几份关键说明
 
@@ -24,25 +24,24 @@
 | [验收实跑-2026-10-21.md](验收实跑-2026-10-21.md) | 全部数字的现场复现记录（原文输出与复现步骤） |
 | [交付快照.md](交付快照.md) | 版本 / 体积 / 哈希的唯一锚点 |
 
-## 三、本地开发手册（不入库，评审无关）
+## 三、开发手册（`dev/`，给队友写代码用）
 
-这几份是**写代码时查的操作手册**，已在 `.gitignore` 里排除，只在本地克隆的工作区存在。
-仓库里不放它们：评审用不上，且会随源码一起漂。需要时向团队要，或按文件名在内部资料里取。
+这几份是**写代码时查的操作手册**，统一收在 [`dev/`](dev/) 子目录：不算提交材料，但和源码一起版本化，
+改接口口径时不会两边不同步。
 
-| 文件 | 覆盖 |
+| 文档 | 覆盖 |
 | --- | --- |
-| `docs/FRONTEND-INTEGRATION.md` | 客户端与服务端逐字段口径（前端唯一口径，体量最大） |
-| `docs/HARMONY-INTERFACE-GUIDE.md` | 鸿蒙端接口对接与平台能力取值 |
-| `docs/ADMIN-WEB.md` | 管理台（零框架单页）的页面与接口对照 |
-| `docs/UI-DESIGN.md` | 视觉规范：色板、字阶、间距、热区 |
-| `docs/DEV-DB.md` | 自管 MariaDB 的启停、账号与排障 |
-| `docs/ai-eval/README.md` | 分诊评测夹具与回放/实录两种跑法 |
+| [dev/FRONTEND-INTEGRATION.md](dev/FRONTEND-INTEGRATION.md) | 客户端与服务端逐字段口径（前端唯一口径，体量最大） |
+| [dev/HARMONY-INTERFACE-GUIDE.md](dev/HARMONY-INTERFACE-GUIDE.md) | 鸿蒙端接口对接与平台能力取值 |
+| [dev/ADMIN-WEB.md](dev/ADMIN-WEB.md) | 管理台（零框架单页）的页面与接口对照 |
+| [dev/UI-DESIGN.md](dev/UI-DESIGN.md) | 视觉规范：色板、字阶、间距、热区 |
+| [dev/DEV-DB.md](dev/DEV-DB.md) | 自管 MariaDB 的启停、账号与排障 |
+| [dev/ai-eval/README.md](dev/ai-eval/README.md) | 分诊评测夹具与回放/实录两种跑法 |
 
-> 代码注释里出现的 `docs/DEV-DB.md`、`docs/FRONTEND-INTEGRATION.md` 等，指的就是这几份本地手册。
 
 ## 四、数字的唯一来源
 
 [交付快照.md](交付快照.md) 是版本、体积、哈希的唯一锚点，由 `tools/check-snapshot.ps1` **机器校验**；
 断言数由 `server/tests/doc-counts.ps1` 对账。任何一处数字变动，先跑这两个脚本再提交。
 
-> ⚠ 这两个脚本硬编码了若干路径（`README.md`、`docs/PROJECT-OVERVIEW.md`、`docs/SYSTEM-DESIGN.md`、`docs/DEPLOYMENT.md`、`docs/adr/ADR-0001-号源与挂号独立MySQL路径.md`、`docs/交付快照.md`）—— **这几份不能挪位置**，挪了门禁会红。
+> ⚠ 这两个脚本硬编码了若干路径（`README.md`、`docs/项目说明.md`、`docs/系统设计.md`、`docs/部署说明.md`、`docs/adr/ADR-0001-号源与挂号独立MySQL路径.md`、`docs/交付快照.md`）—— **这几份不能挪位置**，挪了门禁会红。

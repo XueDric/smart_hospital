@@ -180,24 +180,24 @@ $checks = @(
     @{ File = "README.md";            Pattern = '`accept` \*\*(?<n>\d+) 条断言\*\*'; Want = 'accept' },
     @{ File = "README.md";            Pattern = '`triagetest` (?<n>\d+) \+'; Want = 'triagetest' },
     @{ File = "README.md";            Pattern = '`final-verify` (?<n>\d+)/\d+ 全绿'; Want = 'finalverify' },
-    @{ File = "docs\PROJECT-OVERVIEW.md"; Pattern = '`triagetest` (?<n>\d+) \+'; Want = 'triagetest' },
-    @{ File = "docs\PROJECT-OVERVIEW.md"; Pattern = '`accept` (?<n>\d+) 断言'; Want = 'accept' },
-    @{ File = "docs\PROJECT-OVERVIEW.md"; Pattern = '`final-verify` (?<n>\d+) 项门禁'; Want = 'finalverify' },
-    @{ File = "docs\SYSTEM-DESIGN.md";    Pattern = '(?<n>\d+) 条断言的验收套件'; Want = 'accept' },
-    @{ File = "docs\SYSTEM-DESIGN.md";    Pattern = '\| \*\*(?<n>\d+) 条断言\*\* \|'; Want = 'accept' },
-    @{ File = "docs\SYSTEM-DESIGN.md";    Pattern = '\| 全量门禁 \| `final-verify\.ps1` \| (?<n>\d+)/\d+ 全绿 \|'; Want = 'finalverify' },
-    @{ File = "docs\DEPLOYMENT.md";       Pattern = '全量验收（(?<n>\d+) 项）'; Want = 'accept' },
-    @{ File = "docs\DEPLOYMENT.md";       Pattern = '一次跑完 \*\*(?<n>\d+) 项\*\*'; Want = 'finalverify' },
+    @{ File = "docs\项目说明.md"; Pattern = '`triagetest` (?<n>\d+) \+'; Want = 'triagetest' },
+    @{ File = "docs\项目说明.md"; Pattern = '`accept` (?<n>\d+) 断言'; Want = 'accept' },
+    @{ File = "docs\项目说明.md"; Pattern = '`final-verify` (?<n>\d+) 项门禁'; Want = 'finalverify' },
+    @{ File = "docs\系统设计.md";    Pattern = '(?<n>\d+) 条断言的验收套件'; Want = 'accept' },
+    @{ File = "docs\系统设计.md";    Pattern = '\| \*\*(?<n>\d+) 条断言\*\* \|'; Want = 'accept' },
+    @{ File = "docs\系统设计.md";    Pattern = '\| 全量门禁 \| `final-verify\.ps1` \| (?<n>\d+)/\d+ 全绿 \|'; Want = 'finalverify' },
+    @{ File = "docs\部署说明.md";       Pattern = '全量验收（(?<n>\d+) 项）'; Want = 'accept' },
+    @{ File = "docs\部署说明.md";       Pattern = '一次跑完 \*\*(?<n>\d+) 项\*\*'; Want = 'finalverify' },
     # 2026-10-17：DEPLOYMENT 的耗时/项数表曾漏改 triagetest（110 → 139），加一条对账点钉住
-    @{ File = "docs\DEPLOYMENT.md";       Pattern = '`通过 (?<n>\d+) 项，失败 0 项`'; Want = 'triagetest' },
+    @{ File = "docs\部署说明.md";       Pattern = '`通过 (?<n>\d+) 项，失败 0 项`'; Want = 'triagetest' },
     # ── 提交数：三处都锚在 tag 上，用 tag 指向的提交数核对（见 $actual['commits'] 的注释）──
     @{ File = "README.md";                Pattern = '\| 提交历史 \| (?<n>\d+) 个提交'; Want = 'commits' },
-    @{ File = "docs\PROJECT-OVERVIEW.md"; Pattern = '共 (?<n>\d+) 个提交）'; Want = 'commits' },
+    @{ File = "docs\项目说明.md"; Pattern = '共 (?<n>\d+) 个提交）'; Want = 'commits' },
     # ── SYSTEM-DESIGN 的"51 + 17 + N 项"曾漏改 triagetest（110 → 139）──
-    @{ File = "docs\SYSTEM-DESIGN.md";    Pattern = '51 \+ 17 \+ (?<n>\d+) 项'; Want = 'triagetest' },
+    @{ File = "docs\系统设计.md";    Pattern = '51 \+ 17 \+ (?<n>\d+) 项'; Want = 'triagetest' },
     # ── HAP 字节数（带千位分隔，比较时剥掉逗号）──
     @{ File = "README.md";                Pattern = '`entry-default-unsigned\.hap`（(?<n>[\d,]+) B'; Want = 'hapsize' },
-    @{ File = "docs\DEPLOYMENT.md";       Pattern = '`entry-default-unsigned\.hap`（(?<n>[\d,]+) B'; Want = 'hapsize' }
+    @{ File = "docs\部署说明.md";       Pattern = '`entry-default-unsigned\.hap`（(?<n>[\d,]+) B'; Want = 'hapsize' }
 )
 
 # ── 3) 对账 ───────────────────────────────────────────────────────────────

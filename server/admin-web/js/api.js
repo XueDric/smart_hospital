@@ -111,7 +111,7 @@ const API = (() => {
        * （纯文本，`timeout.cj:46-48`）这类不由应用接管的出口。
        * ⚠ 历史：**未匹配路由**曾经也是这样（框架 `router.cj` 直写 `{"error":"Not Found"}`）；
        *   2026-10-17 起框架层 400/404/405/413/416 已全部改走统一信封
-       *   （见 `contract/CHANGELOG.md` 与 `docs/FRONTEND-INTEGRATION.md` §3.2）。
+       *   （见 `contract/CHANGELOG.md` 与 `docs/dev/FRONTEND-INTEGRATION.md` §3.2）。
        * 把原始 body 截断带上：这类问题基本都是**路径写错**，原文最能说明问题。
        */
       const brief = (text || '').slice(0, 200);

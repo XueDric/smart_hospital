@@ -409,7 +409,7 @@ public func sendError(ctx: Context, e: ApiError): Unit {
  *   （third_party/qingzhou/src/bodyparser.cj:50-54）自己写
  *   `{"code":400,"message":"Invalid JSON body","data":null}` —— 既没有 `ok` 字段，
  *   也没有 `error` 对象。而客户端严格按三段式信封读 `ok` / `error.code`
- *   （契约见 docs/HARMONY-INTERFACE-GUIDE.md；common-core 的 `HttpClient.parseResponse`
+ *   （契约见 docs/dev/HARMONY-INTERFACE-GUIDE.md；common-core 的 `HttpClient.parseResponse`
  *   也是这么实现的），于是"请求体不是合法 JSON"这种**客户端自己就能修**的错误，
  *   在界面上会退化成一个与真因毫无关系的报错。
  *

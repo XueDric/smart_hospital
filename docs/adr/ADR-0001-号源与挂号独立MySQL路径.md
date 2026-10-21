@@ -309,7 +309,7 @@ if (n == 1) {
 | 4 | 验收测试（本文 §5 的 AC-1…AC-10，加上 AC-P2-* / AC-P3-* / AC-P4-* / AC-Notice-* 各段，合计 821 条断言） | `server/src/acceptance.cj`（**不是** `server/tests/` —— 验收测试作为源文件编进 exe，经 `accept` 子命令运行；`server/tests/` 放的是**端到端脚本**，用途不同） |
 | 5 | 构建链（cjc 1.2.0 + stdx 1.1.3.1） | `server/build.ps1` |
 | 6 | 源码哈希清单（验收锚点，替代不可复现的产物哈希） | `server/build/SOURCE-MANIFEST.sha256`（由 `build.ps1` 生成） |
-| 7 | 仓库自管开发库（与本机其它项目隔离） | `server/devdb.ps1` + `docs/DEV-DB.md` |
+| 7 | 仓库自管开发库（与本机其它项目隔离） | `server/devdb.ps1` + `docs/dev/DEV-DB.md` |
 
 **幂等不设独立登记表**：幂等由 `appointment` 上的 `(patient_id, client_token)` 唯一索引完整保证 ——
 唯一索引是**数据库级**约束，比应用级登记表更硬（应用登记与业务写入之间仍有窗口）。

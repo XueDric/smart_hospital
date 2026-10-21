@@ -212,19 +212,19 @@ public func ensureDatabase(cfg: MySqlConfig): Unit {
          * ⚠⚠ **这条提示里绝不再写死端口号**（2026-10-07 修，第九份复查发现）。
          *   原文是「本机联调的便携版 MariaDB 是 127.0.0.1:**3307**」——
          *   而本项目自管 devdb 早已迁到 **3317**（3307 是**本机另一台实例**，
-         *   本项目不再依赖它，见 `docs/DEV-DB.md`）。
+         *   本项目不再依赖它，见 `docs/dev/DEV-DB.md`）。
          *   后果很实在：**复查的人、以及我自己在本项目里，都被它误导过** ——
          *   devdb 没起来时，提示让人去查 3307，而正确处置是启动 3317 的 devdb。
          *   📌 根因是"**同一件事两处口径**"：端口的事实来源是 `cfg`（DSN 里那个），
          *     提示里却又手写了一份 ⇒ 迟早漂移。而且**偏偏这是最需要准确的地方**
          *     （出错时的提示）。⇒ 改成**从 `cfg` 派生**：先回显实际用的 host:port，
-         *     再让使用者拿它去 `docs/DEV-DB.md` 核对 —— **本提示不复制那个数字**，
+         *     再让使用者拿它去 `docs/dev/DEV-DB.md` 核对 —— **本提示不复制那个数字**，
          *     从机制上消灭漂移。
          */
         throw Exception("连不上 MySQL（${cfg.describe()}）：${e.message}\n" +
             "  处置（按可能性排序）：\n" +
             "   ① **端口/主机不对**：把你启动实例的端口与上面回显的 ${cfg.host}:${cfg.port} 核对\n" +
-            "      ⚠ 本项目自管 devdb 的端口**以 docs/DEV-DB.md 为准**（本提示刻意不写死它，" +
+            "      ⚠ 本项目自管 devdb 的端口**以 docs/dev/DEV-DB.md 为准**（本提示刻意不写死它，" +
             "免得两处漂移）；MySQL 出厂默认是 3306\n" +
             "   ② **这条命令压根没拿到 DSN**：PowerShell 里引用未定义的变量不报错、只是空串\n" +
             "   ③ 账号/口令不对\n" +
@@ -558,7 +558,7 @@ public func openDatabase(cfg: MySqlConfig): DbBackend {
     } catch (e: Exception) {
         throw Exception("连接 MySQL 失败（${cfg.describe()}）：${e.message}\n" +
             "  处置：① 确认服务器在跑、且端口与上面回显的 ${cfg.host}:${cfg.port} 一致" +
-            "（本项目自管 devdb 的端口以 docs/DEV-DB.md 为准 —— 本提示刻意不写死它，" +
+            "（本项目自管 devdb 的端口以 docs/dev/DEV-DB.md 为准 —— 本提示刻意不写死它，" +
             "免得两处漂移）；" +
             "② 确认账号口令与库已建好；" +
             "③ 若报「未注册 mysql/mariadb 驱动」，说明驱动没被注册进链接产物 —— " +
