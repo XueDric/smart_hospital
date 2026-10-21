@@ -704,7 +704,7 @@ func serve(args: Array<String>): Int64 {
         return 2
     }
     let dsn = args[0]
-    var port: UInt16 = 8091  // ★ 2026-10-17 评审 P2-15：8080→8091，与客户端默认值对齐（理由见 docs/整改方案-2026-10-17.md）
+    var port: UInt16 = 8091  // ★ 2026-10-17：8080→8091，与客户端默认值对齐（改端口要同步改客户端默认 Base URL）
     var bindAddr = "127.0.0.1"
     var devAuth = false
     var prod = false

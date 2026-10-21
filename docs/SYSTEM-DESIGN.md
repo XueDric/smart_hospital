@@ -92,7 +92,7 @@
 | 目录 | 内容 |
 | --- | --- |
 | `contract/examples/` | 67 个**逐字节**样例（每个端点至少一例，含错误形状） |
-| `contract/schema/` | 24 个 JSON Schema（18 个 data 级 + 6 个 body 级） |
+| `contract/schema/` | 24 个 JSON Schema（18 个 data 级 + 6 个信封/响应级） |
 | `contract/schema-map.json` | 样例 → Schema 映射 |
 | `contract/CHANGELOG.md` | 契约变更（含"客户端要不要动"的判断） |
 
@@ -119,7 +119,7 @@
 | `/api/v1/admin/**` | 26 | 用户/科室/医生/排班/号源/患者/AI 配置/知识库/看板 |
 | `/api/v1/doctor/**` | 14 | 接诊队列、病历工作台、既往病历、修订历史、预问诊交接 |
 | `/api/v1/auth/**` | 6 | 登录、登出、会话列表/撤销、当前用户 |
-| `/api/v1/previsit/**` | 3 | 会话创建、SSE 流、补全 |
+| `/api/v1/previsit/**` | 3 | SSE 流、问答补全、按 id 取会话 |
 | `/api/v1/appointments/**` | 3 | 建单、退号、按幂等键回查 |
 | 其它 | 10 | `medical-records`(2) `schedules`(2) `triage` `doctors` `departments` `notices` `kb` `health` |
 
@@ -148,7 +148,7 @@
 
 ### 3.5 SSE（预问诊）
 
-`GET /api/v1/previsit/:id/stream` 返回 `text/event-stream`，帧为 `event:` + `data:`（JSON）。服务端在 handler 内 `streamStart()` → 多次 `writeChunk()` → 返回后自动写 last-chunk（`server/third_party/qingzhou/src/context.cj:301-325`）。原始帧样例见 [FRONTEND-INTEGRATION.md §6](FRONTEND-INTEGRATION.md)。
+`GET /api/v1/previsit/stream?chief_complaint=…` 返回 `text/event-stream`（主诉走 query，鉴权 `requireCan(role, Action.Book)`；`/api/v1/previsit/:id` 只取会话快照，非流式），帧为 `event:` + `data:`（JSON）。服务端在 handler 内 `streamStart()` → 多次 `writeChunk()` → 返回后自动写 last-chunk（`server/third_party/qingzhou/src/context.cj:301-325`）。原始帧样例见 [FRONTEND-INTEGRATION.md §6](FRONTEND-INTEGRATION.md)。
 
 ---
 
@@ -162,7 +162,7 @@ POST /api/v1/appointments {schedule_id, client_token, …}
   ├─ 先按 (patient_id, client_token) 回查 → 命中即直接返回旧单（幂等，不重复扣号）
   └─ withTransaction
        ① UPDATE schedule SET remain_num = remain_num - 1, version = version + 1
-              WHERE id = ? AND remain_num > 0 AND enabled = 1        -- 受影响行数=1 才算抢到
+              WHERE id = ? AND remain_num > 0 AND (工作日/时段/科室医生可用等条件)  -- 谓词见 bookingSchedulePredicate
        ② INSERT INTO appointment (…, client_token, visit_date 快照)
               -- 唯一键 uk_appointment_patient_token 兜底并发重复
        commit
@@ -206,6 +206,7 @@ POST /api/v1/triage {chief_complaint, …}
 PUT  /api/v1/doctor/visits/:id/record        保存草稿（status=draft，不落版本）
 POST /api/v1/doctor/visits/:id/record/lock   提交锁定（status=locked，写 revision 快照）
      └─ 前置：就诊状态必须允许（visitTransitionAllowed）；锁后 saveDraft 一律拒绝
+POST …/record/reopen                        管理员把已锁病历退回草稿（必带 reason 4–255 字；非管理员 403、未锁定 409 `EMR_NOT_LOCKED`）
 GET  …/record/revisions[/:version[/diff]]    修订历史与逐段对比（只读）
 ```
 
@@ -231,17 +232,17 @@ GET  …/record/revisions[/:version[/diff]]    修订历史与逐段对比（只
 | # | 技术点 | 做法 | 位置 |
 | --- | --- | --- | --- |
 | 1 | **原子扣号 + 幂等** | 带条件自减 + 唯一键 + 同事务 INSERT；先回查再扣号 | `domain_booking.cj` |
-| 2 | **就诊状态机** | 显式跃迁表，非法跃迁一律 409；到院/候诊/接诊三段时间戳 | `domain_emr.cj:visitTransitionAllowed` |
+| 2 | **就诊状态机** | 显式跃迁表（含 `no_show` 爽约），非法跃迁一律 409；到院/开诊/结束三列时间戳 `arrived_at` / `started_at` / `finished_at`；**到院/候诊/接诊还要求就诊日不是未来**（`VISIT_DATE_FUTURE`→409，过去日期放行以支持跨零点与补录） | `domain_emr.cj:visitTransitionAllowed`、`domain_emr.cj:visitIsFuture`、`http_p4.cj:p4RequireVisitNotFuture` |
 | 3 | **令牌与限流** | 不透明令牌 + PBKDF2 100k + 失败计数表（窗口 + 锁定期）+ 会话按设备 | `auth_crypto.cj`、`auth_repo.cj` |
 | 4 | **数据库断链自愈** | 链路级错误识别 → 重建 Datasource → 重做 session 变量；事务未结束拒绝自动重连；`/health` 探库并 503 | `third_party/qingzhou/src/db_mysql.cj`、`http_app.cj:healthBody` |
 | 5 | **自动建表与迁移** | 启动时 `CREATE TABLE IF NOT EXISTS` + 编号迁移（先查 `information_schema` 再 `ALTER`），重复执行安全 | `schema.cj`、`db_bootstrap.cj` |
-| 6 | **框架层错误体可注入** | `Router.errorBody` / `StaticOptions.{notFound,forbidden,rangeNotSatisfiable}Body` 暴露为可配置项（框架默认值不变），应用注入统一信封 | `third_party/qingzhou/src/router.cj`、`static.cj`；应用侧 `http_app.cj:2973`（`passOnNotFound`）、`:2986`（`errorBody`）、`:3099-3102`（静态三种 body） |
+| 6 | **框架层错误体可注入** | `Router.errorBody` / `StaticOptions.{notFound,forbidden,rangeNotSatisfiable}Body` 暴露为可配置项（框架默认值不变），应用注入统一信封 | `third_party/qingzhou/src/router.cj`、`static.cj`；应用侧 `http_app.cj:2984`（`passOnNotFound`）、`:2997`（`errorBody`）、`:3110-3112`（静态三种 body） |
 | 7 | **SSE / chunked 出站流式** | 服务端 `streamStart/writeChunk`；出站边读边转发并在结束时 `close()` | `context.cj`、`httpclient.cj`、`previsit.cj` |
 | 8 | **AI 三态降级 + 校验层** | 出站失败/超时/不合规 → 规则兜底且如实标注 `source`；校验层按真实号源复查 | `ai_call.cj`、`ai_triage.cj`、`triage.cj` |
 | 9 | **密钥不落库** | 只存 `env:NAME` / `file:path` 引用，裸密钥机制性拒收；设置页回显 `key_ref_kind` / `key_resolvable` | `ai_settings.cj` |
 | 10 | **零向量库 RAG** | 切块（按字符、带重叠、结构性不丢内容）→ MySQL JSON 存向量 → 纯仓颉余弦；无 embedding 时走关键词路 | `kb_repo.cj`、`domain_kb.cj` |
 | 11 | **契约即测试** | 导出机生成样例 → 逐字节比对 + Schema 结构校验双门禁 | `contract/`、`tests/contract-check.ps1`、`tests/export-contract.ps1` |
-| 12 | **全量 live 门禁** | 一条命令起三个实例跑 17 次运行（16 个脚本，含契约、AI、限流） | `tests/final-verify.ps1` |
+| 12 | **全量 live 门禁** | 一条命令起三个实例跑 18 次运行（17 个脚本；`health-check` 在 dev/prod 各跑一次，含契约、AI、限流） | `tests/final-verify.ps1` |
 
 ---
 
@@ -264,6 +265,6 @@ GET  …/record/revisions[/:version[/diff]]    修订历史与逐段对比（只
 | --- | --- | --- |
 | 单实例部署 | 未做水平扩展；会话在 DB，但扣号依赖单库事务 | 多实例需引入连接级限流或分库 |
 | DB 串行访问 | 单连接（断链可自愈，但吞吐受限于串行 SQL） | 引入连接池需先解决事务语义 |
-| 向量路未端到端验证 | 缺可用的 embedding 端点（DeepSeek 无 embeddings） | 配 DashScope/其它兼容端点即可启用；算法与仓储已有测试 |
+| 向量路未端到端验证 | DeepSeek 无 embeddings 端点；默认播种的向量端点（百练 `text-embedding-v3`）需要自备 key，且"生成→入库→检索→RAG"未做端到端验证 | 配自己的 embedding key 后跑通四步即可启用；算法与仓储已有测试 |
 | 无推送 | 就诊进度靠客户端轮询/拉取 | 接 WebSocket 或推送通道 |
 | 管理台零框架 | 原生 JS，无构建链 | 复杂交互再考虑引入框架 |

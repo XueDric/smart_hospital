@@ -11,13 +11,13 @@
 | 项 | 结论 | 证据 |
 | --- | --- | --- |
 | 版本 / 出处 | 上游 v0.12.0 之后 HEAD（最近标签 v0.12.0），`gitcode.com/BIT-FSSLab/QingZhou`，commit `3d6c1a36…387b753` | `server/third_party/qingzhou/PROVENANCE.md:7-8`、`UPSTREAM_COMMIT:1` |
-| 许可证 | **MIT**，Copyright (c) 2026 guowei, BIT FSSLab（归属不变） | `server/third_party/qingzhou/LICENSE:1-3`、`PROVENANCE.md:12` |
+| 许可证 | **MIT**，Copyright (c) 2026 guowei, BIT Foundational Software And Systems Lab（归属不变） | `server/third_party/qingzhou/LICENSE:1-3`、`PROVENANCE.md:12` |
 | 团队参与 | **参与开发**：上游贡献者记录可查；本仓另有四组框架级修复提交 `be569cd`/`c9a41e8`/`310fd4f`/`181921b`（`router.cj`、`static.cj`、`db.cj`、`db_mysql.cj`） | `git show --stat <哈希>`、`docs/轻舟共建说明.md` §2b |
 | 获取方式 | **使用副本**：vendored 源码快照，构建不读仓库外目录 | `PROVENANCE.md:3` |
 | 工具链 / 改动 | 基线 cjc 1.2.0 + stdx 1.1.3.1。快照内**已包含我们的框架级修复**——它们先在本仓提交，后并入上游，因此 `PROVENANCE.md:14` 才写"代码逻辑与上游一致"（这句成立的前提正是补丁已上游化） | `PROVENANCE.md:9-14`、`CHANGELOG.md:23-40,242`、`docs/轻舟共建说明.md` §2c |
 | 完整性 | `MANIFEST.sha256` 仅为锚点，**构建期不校验**，需手工比对 | `PROVENANCE.md:11,23-24` |
 
-⚠ 快照 `cjpm.toml:2-3` 仍写 `cjc-version="1.0.5"`、`version="0.1.0"`（过期元数据，版本口径以 PROVENANCE 为准）。⚠ 快照内含上游 Vue3 演示 `admin-web/`（vue ^3.4 / vue-router ^4.3 / vite ^5 / @vitejs/plugin-vue ^5，含 lock 与 dist），但**不参与本项目构建**（`server/build.ps1` 全文无 `admin-web`；`server/src/main.cj:203-220` 只挂 `server/admin-web`）。
+⚠ 快照 `cjpm.toml:2-3` 仍写 `cjc-version="1.0.5"`、`version="0.1.0"`（过期元数据，版本口径以 PROVENANCE 为准）。⚠ 快照内含上游 Vue3 演示 `admin-web/`（vue ^3.4 / vue-router ^4.3 / vite ^5 / @vitejs/plugin-vue ^5，含 lock 与 dist），但**不参与本项目构建**（`server/build.ps1` 全文无 `admin-web`；`server/src/main.cj:229-239` 的 `pickAdminWebDir` 只挂 `server/admin-web`（按相对工作目录依次试 `admin-web`、`server/admin-web`、`../admin-web`））。
 
 ### 1.2 MariaDB 驱动（源码副本，静态编译）
 
@@ -84,7 +84,7 @@
 - 协议为 **OpenAI 兼容**：`/chat/completions` 与 `/embeddings`；provider 是自由文本，任何兼容端点（DeepSeek / 百炼 / 自建）都能配（见 `server/src/ai_model.cj:98-107,338-356`、`server/src/ai_call.cj:306`）。
 - 种子默认行（表为空时播种）：**对话** provider `"DeepSeek"`、base_url `https://api.deepseek.com`、模型 `deepseek-chat`（温度 0.3、max_tokens 2048）；**向量** provider `"百练"`、base_url `https://dashscope.aliyuncs.com/compatible-mode/v1`、模型 `text-embedding-v3`。两者**故意不同源**：DeepSeek 没有 `/embeddings`，硬指过去只会 404（见 `ai_model.cj:98-107,786-824`）。
 - 端点推导：基址或完整端点均可，CHAT 追加 `/chat/completions`、EMBEDDING 追加 `/embeddings`；**强制 `https://`**（见 `ai_model.cj:338-356`、`ai_settings.cj:521-560`、`ai_call.cj:627`）。
-- 超时 **30s**（1..300）、并发 **4**（1..64），信号量闸门 + **失败重试（2 次尝试）** + **全链路墙钟硬上限**（含 DNS/connect，因为 stdx 本版本没有 connectTimeout，见 `ai_call.cj:306-420`）；密钥只存 `env:名` / `file:路径` / `builtin:demo` 三种**引用**；探活为 `aiProbeChat` / `aiProbeEmbedding` / `aiExtractEmbeddingDim`（见 `ai_settings.cj:171-186,521-560`、`ai_call.cj:219,814,889`）。
+- 超时 **30s**（1..300）、并发 **4**（1..64），信号量闸门 + **失败重试（2 次尝试）** + **全链路墙钟硬上限**（含 DNS/connect，因为 stdx 本版本没有 connectTimeout，见 `ai_call.cj:306-420`）；密钥只存 `env:名` / `file:路径` / `builtin:demo` 三种**引用**；探活为 `aiProbeChat`（`ai_call.cj:870`）/ `aiProbeEmbedding`（`:913`）/ `aiExtractEmbeddingDim`（`:951`），重试上限 `AI_CALL_MAX_ATTEMPTS=2`（`ai_call.cj:440`）（另见 `ai_settings.cj:171-186,521-560`）。
 - **已定型结论：DeepSeek 无 embeddings 端点** —— `/embeddings` 与 `/v1/embeddings` 实测均 404，故向量路未端到端验证、关键词检索为默认路（见 `docs/PHASE-HANDOFFS.md` 的「P5 遗留」与附录、`README.md:58`）；测试里出现 `deepseek-chat` 仅用于协议形状验证（`server/src/acceptance_ai.cj:164-166`）。
 - 出站合规：仅发现主诉 + 科室名 + 提示词 + KB 片段，不含 patient_id；**2026-10-17 起演示环境默认开启**（`ai.enabled=1` + `builtin:demo` + DeepSeek），生产发布前必须按 `docs/Q6-合规决策记录.md` §2.1 把密钥换成 `env:`/`file:` 引用并轮换、按 Q6 结论决定是否置回 `0`；**未完成** DPA/留存删除、知情同意、脱敏预处理、出站审计明细、境内外约束（见 `docs/Q6-合规决策记录.md:16-26,30-39,63-72`，`:85-86` 明示该页不代表 Q6 已获批准）。DeepSeek 与百炼均为**商业 API**，非 OSS，无许可证义务但受条款与数据合规约束。
 
@@ -118,7 +118,7 @@
 | DeepSeek（OpenAI 兼容） | deepseek-chat | AI 分诊文案与结论（默认对话模型） | 商业服务条款（非 OSS） | 外部 API 调用（演示默认开启） |
 | 阿里云百炼（OpenAI 兼容） | text-embedding-v3 | 向量检索（默认向量行，provider 未接线） | 商业服务条款（非 OSS） | 外部 API 调用（需自填 key_ref） |
 
-**合规结论**：需注意的只有 **MariaDB Server 的 GPLv2**（当前仅自管实例、不分发，风险低；若对外分发便携包须随附 GPLv2 文本）。轻舟 MIT（我们参与开发但版权归上游，见 [轻舟共建说明](轻舟共建说明.md)）、MariaDB 驱动 Apache-2.0、安卓构建链 Apache-2.0 属宽松许可，义务仅为保留版权与许可声明，均已在仓内保留（`server/third_party/*/LICENSE`）。原"最大缺口"（Cangjie 运行时与 OpenSSL 3 的 DLL 随包分发却无许可证文本）**已于 2026-10-18 补齐**：两份全文 + 两份归属声明 vendored 入仓并进包（见 §1.3 表）；自研代码在 34 个 `server/src/*.cj` 带 `SPDX-License-Identifier: MIT` 头，现已补**仓级 `LICENSE`（MIT，2026-10-17）**对齐。管理台与两端 UI 零第三方前端依赖，无 JS 许可传染问题。
+**合规结论**：需注意的只有 **MariaDB Server 的 GPLv2**（当前仅自管实例、不分发，风险低；若对外分发便携包须随附 GPLv2 文本）。轻舟 MIT（我们参与开发但版权归上游，见 [轻舟共建说明](轻舟共建说明.md)）、MariaDB 驱动 Apache-2.0、安卓构建链 Apache-2.0 属宽松许可，义务仅为保留版权与许可声明，均已在仓内保留（`server/third_party/*/LICENSE`）。原"最大缺口"（Cangjie 运行时与 OpenSSL 3 的 DLL 随包分发却无许可证文本）**已于 2026-10-18 补齐**：两份全文 + 两份归属声明 vendored 入仓并进包（见 §1.3 表）；自研代码在 35 个源文件带 `SPDX-License-Identifier: MIT` 头（`server/src` 共 38 个 `.cj`，`acceptance_bind.cj`/`ai_model.cj`/`domain_notice.cj` 三个未加头），现已补**仓级 `LICENSE`（MIT，2026-10-17）**对齐。管理台与两端 UI 零第三方前端依赖，无 JS 许可传染问题。
 
 ### 8.1 不随包分发（仅开发期或构建期使用）
 
@@ -135,7 +135,7 @@
 ## 9. 证据不足 / 需人工确认
 
 1. ~~**Cangjie 运行时 + OpenSSL 3 许可证文本缺失**~~ **已修（2026-10-18）**：`server/third_party/cangjie-runtime/` 与 `server/third_party/openssl/` 各含 LICENSE.txt + NOTICE.txt，`tools/package-release.ps1` 打进 `licenses/`，`NOTICE.txt` 指向包内全文。
-2. ~~**无根 `LICENSE`**~~ **已修（2026-10-17）**：新增仓库根 `LICENSE`（标准 MIT 文本，`Copyright (c) 2026 smart_hospital contributors`），与 34 个源文件的 SPDX 头一致。
+2. ~~**无根 `LICENSE`**~~ **已修（2026-10-17）**：新增仓库根 `LICENSE`（标准 MIT 文本，`Copyright (c) 2026 smart_hospital contributors`），与 35 个源文件的 SPDX 头一致。
 3. **MariaDB 生产版本无口径**（`docs/DEV-DB.md` 只有开发/测试 11.4.13）。
 4. **SDK 口径冲突**：`build-profile.json5:8` 的 `5.0.0(12)` vs `docs/FRONTEND-INTEGRATION.md:1775` 的 SDK 26.0.0/API 26。
 5. **快照元数据过期**：qingzhou `cjpm.toml` 的 `0.1.0`/`cjc 1.0.5`、驱动 `readme.md` 徽章 `v1.0.0`。

@@ -11,7 +11,7 @@
 | `server/tests/ai-eval/cases.jsonl` | 标注集：一行一个 JSON 用例（见 §3） |
 | `server/tests/ai-eval/run-ai-eval.ps1` | 跑评测并写报告（两种模式，见 §2） |
 | `server/tests/ai-eval/recorded/case-*.json` | **录制样本**：实时模式把每条响应与当时的判定落盘，回放模式只读它 |
-| `server/tests/ai-eval/recorded/env.json` | 录制当时的环境快照（"有号科室"清单） |
+| `server/tests/ai-eval/recorded/_env.json` | 录制当时的环境快照（"有号科室"清单） |
 | `docs/ai-eval/<date>.md` | 给人看的报告（自动生成，**不要手工改**） |
 | `docs/ai-eval/<date>.metrics.json` | 同一批数字的机器可读版本（给看板/趋势用） |
 
@@ -27,7 +27,7 @@
 & .\tests\ai-eval\run-ai-eval.ps1 -Mode live -Base ... -AdminPw ... -Record
 ```
 
-常用参数：`-Cases <path>`（默认 `cases.jsonl`）、`-Limit N`（只跑前 N 条，冒烟用）、`-Out <dir>`。
+常用参数：`-Cases <path>`（默认 `cases.jsonl`）、`-Limit N`（只跑前 N 条，冒烟用）、`-OutDir <dir>`。
 退出码：`0` 成功；`2` 回放时有用例**没有录制样本**；`3` 用例集为空。
 
 **回放可重复性自检**：回放模式连跑两次，两次打印的 `★ 指标指纹` 必须相同（实测

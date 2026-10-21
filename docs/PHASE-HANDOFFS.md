@@ -11,8 +11,8 @@
 | 阶段 | 主题 | 交付要点（≤40 字） | 验收方式与结果 | 遗留项数 |
 | --- | --- | --- | --- | --- |
 | P0 | 立项与骨架 | ADR-0001、build.ps1、schema.cj、锁号原子自减、验收套件 | `selftest`（无需库）+ `accept <dsn>` 当时「通过 32 项，失败 0 项」；变异 1 项被抓 | 5（全部移交 P1） |
-| P1 | 挂号闭环 + 鉴权 + HTTPS | 4 个挂号 REST、PBKDF2 令牌鉴权、自签 HTTPS | `accept` 794 项；压测 20/30/40/50 抢同数号源全部卖光；`auth-check`/`tls-check`/`rate-limit-check`/`p1-extra-check` 全绿 | 2 项运维（转 P1 运维交接）+ 5 条已知边界 |
-| P2 | AI 分诊 | 危急征象兜底、验证层、预问诊 SSE、三态原因码 | `triagetest` 108 项；`accept` 118 项；2 个 HTTP 脚本；6 项变异全被抓 | 6（原列 6 项，其中 1 项在本阶段完成） |
+| P1 | 挂号闭环 + 鉴权 + HTTPS | 4 个挂号 REST、PBKDF2 令牌鉴权、自签 HTTPS | `accept` 当时 794 项（现基线 801）；压测 20/30/40/50 抢同数号源全部卖光；`auth-check`/`tls-check`/`rate-limit-check`/`p1-extra-check` 全绿 | 2 项运维（转 P1 运维交接）+ 5 条已知边界 |
+| P2 | AI 分诊 | 危急征象兜底、验证层、预问诊 SSE、三态原因码 | `triagetest` 当时 108 项（现基线 150）；`accept` 当时 118 项；2 个 HTTP 脚本；6 项变异全被抓 | 6（原列 6 项，其中 1 项在本阶段完成） |
 | P3 | AI 能力中心（配置底座） | 配置库驱动、密钥只存引用、Prompt/工具开关 | `selftest` 39 项；`accept` 184 项；变异 11/11 被抓 | 5（原列 7 项，2 项收尾解决） |
 | P4 | 电子病历 + 运营看板 | 七段式病历、接诊状态机、只出聚合的看板 | `selftest` 43 项；`accept` 238 项；`emr-check` 54 项连跑三次一致 | 6（另有 3 条接线边界） |
 | P5 | RAG 知识库 | 零向量库轻量 RAG、关键词兜底、接进分诊 | `accept` 442 项连跑 2 次；`kb-check` 45 项；`ai-live-check` 24 项 | 6 |
@@ -30,12 +30,12 @@
 | `server/src/schema.cj` | 建表 DDL（最小表集，见下） |
 | `server/src/domain_booking.cj` | 锁号原子自减 + 幂等 |
 | `server/src/db_bootstrap.cj` | 建库/连库/迁移引导 |
-| `server/src/acceptance.cj` | AC-1…AC-6 验收套件（落点原本考虑 `server/tests/`，该目录不存在，故放 `src/`） |
+| `server/src/acceptance.cj` | AC-1…AC-6 验收套件（落点选 `src/`：验收测试要编进 exe 才能离线跑，`server/tests/` 放的是端到端 PowerShell 脚本） |
 | `server/README.md` | 服务端说明与踩坑表 |
 
-最小表集（8 张）：`schedule`★、`appointment`★（号源域业务状态，直接 SQL）、
+最小表集（当时 8 张，现 **16 张**，见 `server/src/schema.cj` 的 `TABLE_*`）：`schedule`★、`appointment`★（号源域业务状态，直接 SQL）、
 `booking_idem`◆（幂等基础设施，仅 `BookingRepo` 写）、`department`/`doctor`/`patient`/`medical_record`
-（基础数据/患者档案/病历，内存 Store 在 P1+ 落地）。
+（基础数据/患者档案/病历；内存 Store 在 P1+ 落地，rev.7 又整体拆除）。
 
 ### 验证
 
@@ -160,7 +160,7 @@ stdx @ `E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx`；MariaDB 11.4.13 �
 | 登录限流 / 锁定 | 5 次失败 / 15 分钟窗口 / 锁 15 分钟；锁定检查在 PBKDF2 之前（解冻期失败 t≈0.55s，锁定期拒绝 t≈0.02s，断言 <0.2s）；限流不是 oracle（admin 与 nobody 都是 401×4 → 429，计时比值 1.03）；登录名归一后 7 种写法全部 429 且库里只剩 1 份计数 |
 | TLS（`tests\tls-check.ps1`） | SAN 8 个条目（DNS=localhost + 7 个 IP）；TLS 1.2 真校验（链 + 主机名）协商 Tls12；TLS 1.3 协商 Tls13；TLS 1.0/1.1 被拒（服务端侧 SSPI 失败）；反向：不在 SAN 的主机名不覆盖 ✅、用不同 CA 验证必须失败 ✅；明文打 TLS 端口失败 000；HTTPS 下登录 + 带令牌 `/auth/me` 200 |
 | 绝不静默降级（4 条实测） | 证书不存在 FATAL exit=1；私钥不存在 exit=1；PEM 非法 FATAL exit=1；只给 cert 或只给 key 拒绝 exit=2；端口不会被误起成明文服务 |
-| 测试总览（时点值） | `selftest` 51 项、`authtest` 17 项、`accept`（AC-1…AC-P4-8）794 项、`auth-check` / `tls-check` / `rate-limit-check`（9 节）/ `p1-extra-check`（连跑 3 次）全绿、`doc-counts` 与实测一致、手工冒烟 401/403/404/409/400/201/200 |
+| 测试总览（时点值） | `selftest` 51 项、`authtest` 17 项、`accept`（AC-1…AC-P4-8）当时 794 项（现基线 801）、`auth-check` / `tls-check` / `rate-limit-check`（9 节）/ `p1-extra-check`（连跑 3 次）全绿、`doc-counts` 与实测一致、手工冒烟 401/403/404/409/400/201/200 |
 | 变异测试 | 扣号把 version 塞回 → AC 变红；退号把 version 塞回 → 8 项 FAIL |
 
 > **勘误（§3.1 的结论被推翻）**：原写"少卖已修复（把 `MAX_BOOKING_RETRY` 2→3、加 `HTTP_BOOKING_RETRY=6`）"是**假的** ——
@@ -448,7 +448,7 @@ $env:HOSP_ADMIN_PW = "<口令>"
 | --- | --- |
 | `selftest` | ✅ 39 项（表集分类扩到五类 + 两条否定断言） |
 | `accept` | ✅ 184 项（含 AC-P3-1…6 + 数值闸门 + 占位符/工具开关断言） |
-| `triagetest` | ✅ 108 项 |
+| `triagetest` | ✅ 当时 108 项（现基线 150） |
 | `previsit-check.ps1` | ✅ 全绿（第 [8] 节 34 项 P3 HTTP 断言，含数值写入闸门） |
 | 变异测试 | ✅ 11/11 被抓住（含"分派改回 `match` + String 常量 ⇒ 两条断言变红"） |
 | `doc-counts` | ✅ 文档数字与实测一致（AC 上限扩到三套体系） |
@@ -520,7 +520,7 @@ $env:HOSP_ADMIN_PW = "<口令>"
 | `src/triage_stat.cj` | 分诊结论留痕（**签名里没有主诉参数** —— 类型层面就存不进敏感文本） |
 | `src/schema.cj` | 新表 `triage_stat`；`medical_record` 加 `updated_by` + **存量库补列迁移** |
 
-接口层（`src/http_p4.cj`，11 个端点）：
+接口层（`src/http_p4.cj`，18 个端点）：
 
 ```
 GET  /api/v1/doctor/visits                      接诊队列（只含自己的号、不含已退号）
@@ -549,12 +549,12 @@ GET  /api/v1/admin/dashboard                    运营看板（仅管理员）
 
 | 层 | 结果 |
 | --- | --- |
-| `selftest` | ✅ 43 项（表集 12 张 = 7 域；含"基础数据域"归类与病历表名口径断言） |
+| `selftest` | ✅ 当时 43 项（现基线 51 项） |
 | `accept` | ✅ 238 项（P4 净增 54：AC-P4-1 病历锁定 / AC-P4-2 状态机 / AC-P4-3 看板隐私 / AC-P4-4 统计不落敏感文本；rev.7 后 AC-4 由 14 项精简为 6 项） |
 | `emr-check.ps1` | ✅ 54 项全绿，**连跑三次一致（exit 0）** —— 权限 / 队列 / 状态机 / 七段式 / 患者侧 / 越权 404 / 预问诊预填 |
 | AC-4（**范式唯一化**，rev.7 重写） | ✅ 6 项通过（分类 / 号源域锁死 / 搬迁前零交集 / 反向有数据） |
 | 其余 5 个 HTTP 脚本 + stress | ✅ 全绿 |
-| `doc-counts` | ✅ 一致（端点计数脚本本身也修了两个缺陷：只认 `del(` 漏 `delete(`、只扫 `http_app.cj` 漏 `http_p4.cj` —— 实测 27+11=38） |
+| `doc-counts` | ✅ 一致（端点计数脚本本身也修了两个缺陷：只认 `del(` 漏 `delete(`、只扫 `http_app.cj` 漏 `http_p4.cj` —— 实测 27+18+…=81 个 HTTP 路由） |
 | 变异测试 | ✅ 拆掉"锁定后不可改"的守门 ⇒ `AC-P4-1` 的 ⑤ 立刻变红 |
 | 卫生检查 | ✅ 17 个 `.ps1` 全带 BOM 且语法 0 错；`.cj` 注释全配平；文档链接 153 条全通 |
 
@@ -566,8 +566,8 @@ GET  /api/v1/admin/dashboard                    运营看板（仅管理员）
 
 | # | 边界 | 说明 |
 | --- | --- | --- |
-| 1 | ★ **基础数据域没有写入端点** | `department`/`doctor`/`patient` 是直接 SQL 读，但**没有任何端点能建科室/医生/患者**（靠人工 SQL 维护）。这是 rev.7 拆掉内存 Store 后**新记录**的边界（原先被"内存 Store 范式"这个说法掩盖了） |
-| 2 | **没有病历修订历史** | 只记 `updated_by`（最后修改人）；"谁在第几版改了什么"需要一张修订表 |
+| 1 | ★ **基础数据域没有写入端点**（2026-10-21 补记：现只剩 `patient`） | `department`/`doctor`/`patient` 是直接 SQL 读；记录这条边界时**没有任何端点能建科室/医生/患者**（靠人工 SQL 维护）。P5 的 `bb0e792` 已补上科室/医生管理端 CRUD（`server/src/http_base.cj`），本条现在只对 `patient` 成立。这是 rev.7 拆掉内存 Store 后**新记录**的边界（原先被"内存 Store 范式"这个说法掩盖了） |
+| 2 | ~~没有病历修订历史~~（**已补**） | 记录此边界时只记 `updated_by`；现已有 `medical_record_revision` 表 + `…/record/revisions[/:version[/diff]]` 三个只读端点 + `tests/revision-check.ps1` |
 | 3 | **看板未做"调用耗时/趋势对比"** | 真模型已接入 ⇒ `ai.model_calls` 是真实分布（`model`/`rules`/`model:invalid`）；仍未做**耗时**统计（`elapsedMs` 已能测，但未入库） |
 | 4 | **未做小样本抑制（k-匿名阈值）** | 已不提供年龄/性别维度，但科室维度在小科室下仍可能间接暴露就诊人数 |
 | 5 | **接诊队列无分页游标** | 只有 `limit`（上限 500）；跨科室/跨日的大列表需要游标 |
@@ -593,7 +593,7 @@ GET  /api/v1/admin/dashboard                    运营看板（仅管理员）
 | **刻意不提供"按年龄/性别分布"** | 看起来是聚合，但小科室里等价于个人识别（当天只有 1 个患者时"60 岁以上 1 人"等于说出年龄）—— k-匿名的朴素版本，在没有明确 k 阈值前不提供该维度 |
 | **`triage_stat` 不含主诉原文** | 分诊输入是患者自己写的一句话（最敏感的自由文本）；一旦落库就成了"一份没有病历的病情记录"，而看板只需要计数。**不是"存了再脱敏"，而是根本不存** —— `record()` 的签名里没有主诉参数，类型层面做不到 |
 | **rev.7 整体拆除内存 Store（三选一里选 B）** | A 补全（加写入口 + `loadAll` + 定时刷盘）会引入本项目迄今没有的后台定时器，且仍有"两次刷盘之间崩溃丢改动"的窗口；C 只改看板标注会让 ~490 行未接线代码继续误导读者。B 拆掉：生产行为几乎不变（三张表本就只被读），却消掉"两种范式并存"与"文档比实现先进"。**"不接线的东西"不是中立的**，是负资产；将来真需要缓存（ADR §8 横向扩展触发条件）再建 |
-| **消失的是"范式"，不是"表"** | 三张表仍在库里、仍在 `ALL_TABLES` 里、仍被人读 ⇒ `selftest` 不是删掉那一项，而是给它**新归属：基础数据域**（直接 SQL 读；目前没有写入端点，靠人工 SQL 维护） |
+| **消失的是"范式"，不是"表"** | 三张表仍在库里、仍在 `ALL_TABLES` 里、仍被人读 ⇒ `selftest` 不是删掉那一项，而是给它**新归属：基础数据域**（直接 SQL 读；当时没有写入端点，靠人工 SQL 维护；P5 起科室/医生已补端点） |
 | **AC-4 重写为"数据访问范式唯一化"** | 原断言"刷盘不波及号源域"没有对象了，但要保证的事仍在：没有第二条路径能碰号源域。四层：① 每张业务表都归属一个域（无孤儿表）② 号源域的表只准 `BookingRepo` 写 ③ 表名与搬迁前内存 Store 零交集 ④ 反向：号源域确实有数据（否则③是"空比空"的假绿） |
 | **刻意不写"没有内存 Store"这类运行期断言** | 按踩坑表 M 条：断言"没有 X"的前提是 X 真的存在；那些名字已不存在，硬写字符串比较是空洞的 ⇒ 交给**编译器**（引用 `MEM_TABLES`/`MemStore` 直接编译失败）。编译期保证比运行期断言硬 |
 | **提示里的端口从 `cfg` 派生** | 端口的事实来源是 DSN 里的 `cfg`；提示里再手写一份 = 同一件事两处口径 ⇒ 迟早漂移。**本提示不复制那个数字，就没有第二次漂移的机会** |
@@ -642,9 +642,9 @@ GET  /api/v1/admin/dashboard                    运营看板（仅管理员）
 ### 验证
 
 ```
-selftest      45 项 ✅（表集 12 -> 14 + 知识库域）
+selftest      当时 45 项 ✅（表集 12 -> 14 + 知识库域；现基线 51）
 authtest      17 项 ✅
-triagetest   108 项 ✅
+triagetest   当时 108 项 ✅（现基线 150）
 accept       442 项 ✅ **连跑 2 次一致**（AC-KB-1…5 + AC-BIND-1）
 kb-check      45 项 ✅（HTTP 端到端：权限/错误码/切块/停用/删除/**看板块**）
 ai-live-check 24 项 ✅（真模型：source=model、密钥不落库、模型绕不过验证层；**结尾自检残留为 0**）
@@ -725,27 +725,27 @@ doc-counts ✅ 一致（端点 48 -> 55、accept 442、selftest 45）
 | P1 | 按 IP 限流 / 验证码（消除账号级锁定的 DoS 面） | 未做（P2+） |
 | P1 | `SLOT_NOT_RESTORED` 从未真正抛出 | 未做（待办） |
 | P1 | 弱口令表仍是示例级（真正解法是外部字典） | 未做（发布/运维） |
-| P2 | 词表的临床完备性 | 部分推进：**已解决（见 docs/整改方案-2026-10-17.md）** 中的 P2-1/P2-2/P2-3（否定窗口 4→8、强度词拆分、词表扩 22 组，`triagetest` 150 项） |
+| P2 | 词表的临床完备性 | 部分推进：**已解决**的 P2-1/P2-2/P2-3（否定窗口 4→8、强度词拆分、词表扩 22 组，`triagetest` 150 项） |
 | P2 | 词表仍非临床完备集（需临床输入） | 未做 |
 | P2 | 分诊命中率回写 / `converted=1` 闭环 | 未做 |
 | P2 | 分诊结论落库审计 | 已解决（P4 `triage_stat`，不含主诉原文） |
 | P2 | RAG 知识库检索增强 | 已解决（P5） |
 | P3 | 配置变更审计表（"谁改的"没记） | 未做 |
 | P3 | 多实例下的缓存失效行为（只靠 TTL 收敛） | 未做（本机单实例，未被实测） |
-| P3 | 工具开关只是机制、没有 dispatcher | 未做（整改方案 P2-5 定为 ⏸，见 docs/整改方案-2026-10-17.md） |
-| P3 | Prompt 模板只存不用 | 未做（整改方案 P2-4 定为 ⏸，见 docs/整改方案-2026-10-17.md） |
+| P3 | 工具开关只是机制、没有 dispatcher | 未做（P2-5 定为 ⏸：机制已备但无 dispatcher） |
+| P3 | Prompt 模板只存不用 | 未做（P2-4 定为 ⏸：模板只存不用） |
 | P3 | 回显 endpoint 只给脱敏 host（内部仍用完整 URL） | 现状说明（加 `redacted` 字段告知，见 P5 的 `aiSafeHost` 改造） |
 | P3 | `create-db` 建库不可用 / `check-db` 未捕获异常 | 已解决（`ensureDatabaseUsable()` + `--admin-dsn` + `create-db-check.ps1` 17 项） |
-| P4 | 基础数据域（科室/医生/患者）没有写入端点 | 未做（靠人工 SQL 维护） |
-| P4 | 病历修订历史 | 未做 |
-| P4 | 看板"调用耗时/趋势对比"（`elapsedMs` 未入库） | 未做（`source` 分布已按整改方案 P2-7 改为真实分布 ✅） |
+| P4 | 基础数据域（科室/医生/患者）没有写入端点 | **部分完成**：科室/医生已由 P5 补上管理端 CRUD（`http_base.cj`）；`patient` 仍靠人工 SQL |
+| P4 | 病历修订历史 | **已完成**（`medical_record_revision` + 3 个只读端点 + `revision-check.ps1`） |
+| P4 | 看板"调用耗时/趋势对比"（`elapsedMs` 未入库） | 未做（`source` 分布已按 P2-7 改为真实分布 ✅） |
 | P4 | 小样本抑制（k-匿名阈值） | 未做 |
 | P4 | 接诊队列分页游标 | 未做（只有 `limit` 上限 500） |
 | P4 | "爽约"自动判定 | 未做（需定时任务） |
-| P4 | `ai.timeout_secs` 未接线 / 无 connect 超时 | 部分解决：**已解决（见 docs/整改方案-2026-10-17.md）** 的 P2-8（重试 1 次 + 全链路墙钟上限）；框架仍无 `connectTimeout`、请求级 `readTimeout` 未被采纳（实测 30 秒兜底） |
+| P4 | `ai.timeout_secs` 未接线 / 无 connect 超时 | 部分解决：**已解决**的 P2-8（重试 1 次 + 全链路墙钟上限）；框架仍无 `connectTimeout`、请求级 `readTimeout` 未被采纳（实测 30 秒兜底） |
 | P4 | `ai.ca_bundle_path` 无信任锚入口 | 已按"明确拒绝"处置（`unsupported`，`put()` 写入即 400） |
 | P4 | `ai.max_concurrent` 容量不随配置变 | 已知边界（启动后首次出站时定下） |
-| P5 | 向量路未真正跑通（无可用的 embedding 端点） | 部分解决：**已解决（见 docs/整改方案-2026-10-17.md）** 中的 P2-6 只做到"默认播种指向真实 embedding 端点（百练 `text-embedding-v3`）"，检索仍走演示向量，管理端与文档均标明"演示用假向量" |
+| P5 | 向量路未真正跑通（无可用的 embedding 端点） | 部分解决：**已解决**中的 P2-6 只做到"默认播种指向真实 embedding 端点（百练 `text-embedding-v3`）"，检索仍走演示向量，管理端与文档均标明"演示用假向量" |
 | P5 | 分片/降维（`KB_SCAN_LIMIT` 触顶即上限） | 未做（触顶已可观测） |
 | P5 | 中文分词库（现用 2-gram，仅 CJK 基本区） | 未做 |
 | P5 | 向量化任务 / 定时器 | 未做（`pendingChunks()`/`setEmbedding()` 已就绪） |
@@ -778,7 +778,7 @@ doc-counts ✅ 一致（端点 48 -> 55、accept 442、selftest 45）
 | # | 风险 | 级别 | 说明 / 缓解 |
 | --- | --- | --- | --- |
 | **R-2** | ~~架构债：双数据访问范式~~ | 🟢 **已消除** | 内存 Store 已于 P4 收尾整体拆除，全库只剩直接 SQL |
-| **R-3** | 手写 SQL 映射的人力成本 | 🟡 中 | 只建必要表（8 张），不做参考系统的 21 张 |
+| **R-3** | 手写 SQL 映射的人力成本 | 🟡 中 | 只建必要表（当时 8 张，现 16 张），不做参考系统的 21 张 |
 | **R-4** | **医疗合规**（病历/预问诊 = 敏感个人信息） | 🟠 中高 | 参考系统通篇未提合规。真实落地需个保法/等保/实名/留存；**有真实医院合作方时合规是第一优先级且工期不可压缩**。当前出站口径见 [Q6-合规决策记录.md](Q6-合规决策记录.md) |
 | **R-5** | 无真实 HIS/医保/支付对接 | 🟡 中 | 原型阶段用模拟数据，**留接口位** |
 | **R-6** | 仓颉生态迭代速度 | 🟢 低 | 统一走 OpenAI 兼容协议可缓解 |
@@ -789,7 +789,7 @@ doc-counts ✅ 一致（端点 48 -> 55、accept 442、selftest 45）
 | # | 问题 | 现状 |
 | --- | --- | --- |
 | **Q1** | 新建空仓再选择性搬运，还是 fork 既有仓库？ | ✅ 已决：新建工作区 + 选择性搬运（不带 `.git` 历史） |
-| **Q2** | 数据模型范围：先建哪几张表？ | ✅ 已决（P0）：最小 **8 张** = 业务 6（`department` `doctor` `schedule`★ `appointment`★ `patient` `medical_record`）+ 鉴权 2（`auth_user` `auth_token`）★ = 走直接 SQL |
+| **Q2** | 数据模型范围：先建哪几张表？ | ✅ 已决（P0）：当时最小 **8 张**（现 16 张）= 业务 6（`department` `doctor` `schedule`★ `appointment`★ `patient` `medical_record`）+ 鉴权 2（`auth_user` `auth_token`）★ = 走直接 SQL |
 | **Q3** | 患者端页面范围？ | ✅ 已决：主闭环 6 页；就诊记录/设备管理/自助注册不在本期（服务端暂无注册/改密端点）。口径见 [FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) |
 | **Q4** | 管理端看板前端是否复用既有 Vue 工程？ | ✅ 已决：管理台改用**零框架原生 JS**（`server/admin-web/`），不引前端工程 |
 | **Q5** | 单院区量级（日门诊量、号源峰值并发）？ | ⏳ 未决：决定扣号路径是否需要重试/排队，以及是否真不需要 Redis |

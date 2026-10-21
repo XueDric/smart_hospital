@@ -189,7 +189,7 @@ ai_call.cj：请求体 model / max_tokens / messages / **temperature**
 
 | 手段 | 覆盖 |
 | --- | --- |
-| `tests\ai-model-check.ps1`（**45 项**） | 模型配置全链路：鉴权（无令牌 401 / 患者 403）、播种的两条默认行与 `request_url` 拼接、密钥不回显、校验闸门（明文 http / 温度越界 / 空名 / 未知类型 / 非法 `key_ref` / 重名）、PATCH 语义、`is_default` 唯一、连通性测试恒 200 且不受 `ai.enabled` 影响、缓存失效**真的**读到库里的新值、`settings` 闸门（并断言库里没留下那行）、删除与夹具自清 |
+| `tests\ai-model-check.ps1`（**46 条断言**，含 2 条按条件执行） | 模型配置全链路：鉴权（无令牌 401 / 患者 403）、播种的两条默认行与 `request_url` 拼接、密钥不回显、校验闸门（明文 http / 温度越界 / 空名 / 未知类型 / 非法 `key_ref` / 重名）、PATCH 语义、`is_default` 唯一、连通性测试恒 200 且不受 `ai.enabled` 影响、缓存失效**真的**读到库里的新值、`settings` 闸门（并断言库里没留下那行）、删除与夹具自清 |
 | `tests\admin-web-smoke.mjs` | 无头 Edge + CDP：真实 boot 流程 + **11 个页面逐个渲染** + **写路径**（公告新建/下架/重新发布/删除、知识库 PATCH/空正文 400/重切块、必填校验、`DELETE ai/settings/:key` 收窄、`PUT` 不存在模型 404、未注册路径 404 信封、未带令牌 401、登出回登录页）；模态框能开能关；收集 `console.error` / 未捕获异常 / `>=400` 响应，逐页截图。**判定全部计入退出码**：登录遮罩未收起 / 侧栏项数少于页面清单 / `whoami` 为空 / 页脚"读取失败" / 某页正文过短 / 某页有错误框 / 侧栏无高亮 / **某页正文缺少必须出现的字眼**（`REQUIRED_TEXT`：科室页 `共 … 个科室`、医生页 `共 … 位医生`、排班页 `本页 … 条` —— 见 §4.1）——任一为真即 FAIL |
 | `tests\base-check.ps1` | 基础数据域 + 排班可改（不变量 400 / 版本冲突 409 / 停诊 PATCH / 404 / 空改动 400）+ **B8 权限动作**（AI 配置 403 且 message 是 `manage_ai`、`/admin/users` 是 `manage_user`、排班仍是 `manage_schedule` —— 证明动作名真的换了，而不是"权限被整体收紧"）+ **B9 分页**（`limit`/`offset` 真翻页、`total` 是**真总数**、`limit` 0/非数字/9999 ⇒ 200、`offset` 负数 ⇒ 0、`total` 跟着 `include_disabled` 与 `department_id` 过滤、公共选择器端点**没有** `total`） |
 | `tests\auth-check.ps1` | 令牌域 + 本轮新增的账号列表模式（分页 / 筛选 / 白名单外当不筛 / 不吐 `pw_hash`） |

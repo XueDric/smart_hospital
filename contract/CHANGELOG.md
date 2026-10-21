@@ -46,7 +46,7 @@
 复验报告 **S4**：DB 单连接、失败后 `usable=false` 永不复位 ⇒ 一次数据库重启就让服务端**永久 500**，
 而 `/health` 一直回 200 —— 探针摘不掉流量、运维也看不出"库断了"。修法：连接失败/`IsBroken` 时
 **自动重连**（计数进 `db.reconnects`），并让 `/health` **真去探一次库**：不通 → 503 + `ok:false`。
-（S4/S13 的完整记录见 `docs/REVERIFY-AND-FIXES-2026-10-17.md` §十一。）
+（S4 拔库自愈与 S13 客户端样本的验收记录见 `docs/SYSTEM-DESIGN.md` 数据层「断链自愈」段与 `docs/交付快照.md`。）
 
 ---
 

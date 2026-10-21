@@ -37,7 +37,7 @@
 | FR-2 | 危急征象必须先于 AI 结论命中（词表 + 否定 + 共现） | `server/src/triage_redflag.cj` + `triage-check.ps1` |
 | FR-3 | 预问诊多轮采集，**流式**回显（SSE） | `server/src/previsit.cj` + `previsit-check.ps1` |
 | FR-4 | 挂号：幂等（同 `client_token` 不重复建单）、并发不超卖、退号归还号源 | `domain_booking.cj` + `stress-booking.ps1`（20/30/40/50 进程抢同数号源） |
-| FR-5 | 接诊队列状态机：到院/候诊/接诊中/完成/取消，非法跃迁一律拒 | `domain_emr.cj:visitTransitionAllowed` + `visit-timeline-check.ps1` |
+| FR-5 | 接诊队列状态机：到院/候诊/接诊中/完成/取消/**爽约（`no_show`）** 共 7 态，非法跃迁一律拒（`booked`/`arrived`/`waiting`/`visiting` 均可转 `no_show`） | `domain_emr.cj:visitTransitionAllowed` + `visit-timeline-check.ps1` |
 | FR-6 | 七段式电子病历：草稿 → **提交锁定**，锁定后不可改；修订历史可查可对比 | `domain_emr.cj` + `emr-check.ps1` / `revision-check.ps1` |
 | FR-7 | 运营看板：科室/挂号趋势/号源使用率/分诊命中/预问诊完成率/病历进度/AI 概览 | `dashboard.cj` + 管理台页面 |
 | FR-8 | AI 能力中心：模型配置、Prompt 模板、密钥引用、工具开关**全部落库、改完即生效** | `ai_settings.cj` / `ai_prompt.cj` + `ai-model-check.ps1` |
@@ -122,7 +122,7 @@
 | 统一信封 + 错误码表 + 角色守卫 + 请求体上限统一封装 | `server/src/http_common.cj` |
 | 契约门禁（导出机 + Schema + 逐字节比对） | `contract/`、`server/tests/contract-check.ps1` |
 | AI 编排纪律（三态降级 / 校验层 / 密钥引用不落库） | `server/src/ai_*.cj` |
-| 全量 live 门禁（一条命令 17 次运行 / 16 个脚本） | `server/tests/final-verify.ps1` |
+| 全量 live 门禁（一条命令 18 次运行 / 17 个脚本，`health-check` 在 dev/prod 各一次） | `server/tests/final-verify.ps1` |
 
 ---
 
@@ -156,5 +156,5 @@
 | 开源组件 / 模型 / 外部 API / 数据集 | [THIRD-PARTY.md](THIRD-PARTY.md) |
 | 接口逐字段口径（前端唯一口径） | [FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) |
 | 架构决策记录 | [adr/ADR-0001](adr/ADR-0001-号源与挂号独立MySQL路径.md) |
-| 阶段交付与验收证据 | `P0`–`P5`-HANDOFF、[REVERIFY-AND-FIXES-2026-10-17.md](REVERIFY-AND-FIXES-2026-10-17.md) |
+| 阶段交付与验收证据 | [PHASE-HANDOFFS.md](PHASE-HANDOFFS.md)（P0–P5 合并稿）· [联调记录](联调记录-2026-10-18.md) |
 | AI 出站合规 | [Q6-合规决策记录.md](Q6-合规决策记录.md) |

@@ -126,7 +126,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\check-docs.ps1
 | 4 | 任何文件都不得再出现**旧的中文仓库绝对路径** | 2026-10-17 仓库改名为 `smart_hospital`；防止文档/脚本又写回旧路径 |
 | 5 | **源码注释正文里不得出现** `/*`（`.kt` / `.ets` / `.cj` / `.java` / `.ts`） | Kotlin 与仓颉的块注释**可嵌套**：注释里写一句 `shared_prefs/*.xml` 就会再开一层、原文的 `*/` 只关掉内层 ⇒ 整文件 `Unclosed comment`，还会连带别的文件报 `Unresolved reference`（2026-10-18 实测）。字符串字面量（如路由 `"/files/*"`）与 `//` 行注释里的 `/*` 不算 |
 
-例外（写死在脚本里、有注释说明）：评审原文存档 `docs/评审反馈-2026-10-17.md` 按"当时现场"保留不改；
+例外（写死在脚本里、有注释说明）：
 脚本自身要写出被查的路径模式。**新增例外请连理由一起写**，否则下次没人知道为什么放行。
 
 CI：`.github/workflows/repo-hygiene.yml` 在每次 push/PR 上跑同一条命令。

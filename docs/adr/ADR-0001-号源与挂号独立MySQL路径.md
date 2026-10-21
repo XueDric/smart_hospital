@@ -15,11 +15,12 @@
 | --- | --- | --- | --- |
 | rev.1 | 2026-10-07 | 初版 | P0 立项 |
 | **rev.2** | 2026-10-07 | ①§4.3 口径矛盾修订（拆「业务状态」/「幂等基础设施」两层）；②§4.3.2 新增并修掉与搬迁前 `idem` 撞名（→ `booking_idem`）；③§5 补 AC-7/AC-8，AC-4 扩大到全表比对；④§5.1 新增「源码哈希而非产物哈希」；⑤§7 修正验收测试落点笔误（`server/tests/` → `server/src/acceptance.cj`）；⑥§8 补第 5 条复审触发条件 | 用户复查提出的 5 项发现（口径打架、撞名、`cancel()` 边界缺陷、文档笔误、产物不可复现） |
-| **rev.5** | 2026-10-07 | ★ **落地配套域的内存 Store**（`mem_store.cj` + `sql_recorder.cj`），**AC-4 从"结构性"升级为"真跑一次刷盘"**（四层断言 + 两道变异测试）；§4.2 范式表补上"内存 Store 范式"的实现落点 | 用户决策：做「内存 Store + AC-4 完整回归」，还掉 P0 挂到 P1 的验证边界 |
+| **rev.3** | 2026-10-07 | ★ **扣号策略变更**：去掉 `version = ?` 乐观锁前置条件，改为**一次成功的原子自减**（§2.2 改写 + §8 触发条件已命中）；幂等键改为**按患者隔离**并**退号时释放**；`cancel()` 幂等路径改为按落库状态如实回报；§6 调参项与实际代码对齐；§7 落地清单更新 | 第三方复查：①`client_token` 跨患者泄露；②最穷工况少卖 15%~50%（**命中 §8 第 1 条复审阈值**）；③`--tls-files` 静默降级；④`cancel()` 重试路径吞告警；⑤`accept` 守卫漏洞 |
 | **rev.4** | 2026-10-07 | ★ **删除 `booking_idem` 表与 `idemKey`/`putIdem`/`pruneIdem` 实现**（含 AC-8）；表集 9→8（业务 7→6）；新增迁移步骤 DROP 遗留表；`isBookingInfraTable`/`BOOKING_INFRA_TABLES` 一并移除 | 用户决策：该表在生产路径上是死代码，幂等已由 `(patient_id, client_token)` 唯一索引完整保证（见 §7 第 7 条） |
+| **rev.5** | 2026-10-07 | ★ **落地配套域的内存 Store**（`mem_store.cj` + `sql_recorder.cj`），**AC-4 从"结构性"升级为"真跑一次刷盘"**（四层断言 + 两道变异测试）；§4.2 范式表补上"内存 Store 范式"的实现落点 | 用户决策：做「内存 Store + AC-4 完整回归」，还掉 P0 挂到 P1 的验证边界 |
 | **rev.6** | 2026-10-07 | ★★ **`medical_record` 移出内存 Store，改直接 SQL**（`domain_emr.cj` 的 `MedicalRecordRepo` 独占写入）。`MEM_TABLES` 4→3；删除 `MemMedicalRecord` 类与 `replaceMedicalRecords()`；`loadAll()` 不再读病历；`selftest` 加两条否定断言；AC-4 的"4 张表"改为**从 `MEM_TABLES` 派生**（不再硬编码数字）。**新增一类表**：`medical_record` = 病历域（临床数据、直接 SQL） | P4 落地时发现病历划错类（详见下面「rev.6 的核心」） |
 | **rev.7** | 2026-10-07 | ★★★ **内存 Store 整体拆除** —— 删除 `mem_store.cj`（~490 行）与 `sql_recorder.cj`（测试工具）；`MEM_TABLES` / `MemStore` / `isMemStoreTable` / `paradigmOverlap` 全部不复存在。AC-4 **重写**为"数据访问范式**唯一化**"；`selftest` 的表集分类里"配套域（内存 Store）"改为"**基础数据域**（直接 SQL、无写入端点）"。源码 24 → **22** 个 `.cj` | 核对"配套域生产不刷盘"时实测发现：该范式**在生产上从未接线**（详见下面「rev.7 的核心」） |
-| **rev.3** | 2026-10-07 | ★ **扣号策略变更**：去掉 `version = ?` 乐观锁前置条件，改为**一次成功的原子自减**（§2.2 改写 + §8 触发条件已命中）；幂等键改为**按患者隔离**并**退号时释放**；`cancel()` 幂等路径改为按落库状态如实回报；§6 调参项与实际代码对齐；§7 落地清单更新 | 第三方复查：①`client_token` 跨患者泄露；②最穷工况少卖 15%~50%（**命中 §8 第 1 条复审阈值**）；③`--tls-files` 静默降级；④`cancel()` 重试路径吞告警；⑤`accept` 守卫漏洞 |
+| **rev.7.1** | 2026-10-21 | 补记：`department`/`doctor` 已有管理端写入端点（P5 `bb0e792`，`http_base.cj`），rev.7 记的「无写入端点」**现在只对 `patient` 成立**；表集与访问范式均不变 | 文档整理时按路由表核对，发现 rev.7 的该断言已过期 |
 
 ### ★ rev.3 的核心：为什么去掉了乐观锁
 
@@ -133,7 +134,12 @@ P2 引入 `previsit_session` 时**特意**把它排除在内存 Store 之外，�
 `department` / `doctor` / `patient` **仍然在库里、仍在 `ALL_TABLES` 里、仍被人读**。
 它们只是不再经内存 Store。所以 `selftest` 的分类里：
 - ❌ **不是**删掉那一项（我第一版就那么干的，结果求和 = 9 而 `ALL_TABLES.size` = 12 —— **而那条断言恰好把它抓住了**）；
-- ✅ 而是给它**新的归属**：**基础数据域**（直接 SQL 读；⚠ **目前没有写入端点**，靠人工 SQL 维护）。
+- ✅ 而是给它**新的归属**：**基础数据域**（直接 SQL 读；⚠ **当时没有写入端点**，靠人工 SQL 维护）。
+
+  > **2026-10-21 补记**：P5（`bb0e792`）给 `department`/`doctor` 补上了管理端写入端点
+  > （`server/src/http_base.cj` 的 `/api/v1/admin/departments`、`/api/v1/admin/doctors`，
+  > GET/POST/PUT/DELETE），所以本条「没有写入端点」**现在只对 `patient` 成立**；
+  > 表集与访问范式本身不变。
 
 > 📌 教训：**删一个概念时，先问"挂在它下面的实体去哪"。**
 > 把实体一起删掉 = 数据丢失；连分类一起删掉 = 断言数不上账。
@@ -388,7 +394,7 @@ P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与
 | **AC-1** | 同一 `version` 的两个并发扣减，**恰好一个**成功（`n=1`），另一个 `n=0` | 单测：固定 version 连发两次 `UPDATE`，断言 `n` 序列为 `[1, 0]` | ✅ **PASS** |
 | **AC-2** | `remain_num = 0` 时扣减必然失败（`n=0`），**绝不出现负数** | 单测：置 `remain_num=0` 后扣减，断言 `n=0` 且库中仍为 0 | ✅ **PASS** |
 | **AC-3** | 同一 `client_token` 重复提交，**只产生一张挂号单** | 单测：同 token 连续两次 `book()`，断言第二次返回既有单、`COUNT(*)=1` | ✅ **PASS** |
-| **AC-4** | ★ **整体替换刷盘后，`schedule`/`appointment` 数据不变** | 回归测试：写新表 → 调 `writeDbToMysql` → 重读新表断言逐值相等 | 🟡 **部分**（结构性已验，完整回归待 P1） |
+| **AC-4** | ★ **整体替换刷盘后，`schedule`/`appointment` 数据不变** | 回归测试：写新表 → 调 `writeDbToMysql` → 重读新表断言逐值相等 | ✅（结构性 + 完整回归，见下方"AC-4 的验证边界"） |
 | **AC-5** | 挂号失败（`n=0`）时**不留下部分状态**（无挂号单、号源数不变） | 单测：制造 version 冲突后断言两表均未变 | ✅ **PASS** |
 | **AC-6** | `visit_date` **就诊日快照**：顺延排班后，已挂号单的 `visit_date` 不变 | 单测：挂号 → 改 `schedule.work_date` → 断言挂号单 `visit_date` 仍是原值 | ✅ **PASS** |
 | **AC-7** | ★ 退号：**取消成功必须如实上报** —— 归还失败时不得谎报"取消失败" | 单测：制造 `remain_num == total_num` 后 `cancel()`，断言返回 `SlotNotRestored` **且**挂号单确已 `cancelled` | ✅ **PASS** |
@@ -462,7 +468,7 @@ P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与
 | 对象 | 连续两次构建是否一致 |
 | --- | --- |
 | `hospital-server.exe` 的 SHA256 | ❌ **不同** |
-| `build/SOURCE-MANIFEST.sha256` 的 SHA256（当时 43 个源文件；现在是轻舟框架 38 + 业务 33 = **71**） | ✅ **相同** |
+| `build/SOURCE-MANIFEST.sha256` 的 SHA256（当时 43 个源文件；现在是轻舟框架 38 + 业务 38 = **76**） | ✅ **相同** |
 
 **因此：产物哈希不能当验收依据**，可复现的锚点是
 **`build/SOURCE-MANIFEST.sha256`（记录每个参与编译源文件的 SHA256 + cjc 版本 + stdx 路径 + 驱动产物哈希）
@@ -494,7 +500,7 @@ P1 引入内存 Store 后，整库刷盘的 `replaceBatched("idem", …)` 会与
 | 1 | 本 ADR | `docs/adr/ADR-0001-号源与挂号独立MySQL路径.md` |
 | 2 | 最小表集 DDL + **幂等迁移** | `server/src/schema.cj`（`SCHEMA_DDL` / `migrateSchema`） |
 | 3 | 号源/挂号域实现（含原子扣减 + 按患者隔离的幂等 + 三态取消） | `server/src/domain_booking.cj` |
-| 4 | 验收测试 AC-1…AC-12 | `server/src/acceptance.cj`（**不是** `server/tests/` —— 验收测试作为源文件编进 exe，经 `accept` 子命令运行；`server/tests/` 放的是**端到端脚本**，用途不同） |
+| 4 | 验收测试 AC-1…AC-17（含 AC-P2-* / AC-P3-* / AC-P4-* / AC-Notice-*） | `server/src/acceptance.cj`（**不是** `server/tests/` —— 验收测试作为源文件编进 exe，经 `accept` 子命令运行；`server/tests/` 放的是**端到端脚本**，用途不同） |
 | 5 | 构建链（cjc 1.2.0 + stdx 1.1.3.1） | `server/build.ps1` |
 | 6 | 源码哈希清单（验收锚点，替代不可复现的产物哈希） | `server/build/SOURCE-MANIFEST.sha256`（由 `build.ps1` 生成） |
 | 7 | ✅ **已决策并执行（rev.4，2026-10-07）**：`idemKey`/`putIdem`/`pruneIdem` + `booking_idem` 表**连同 AC-8 一起删除**。<br>**为什么删**：① 幂等已由 `(patient_id, client_token)` 唯一索引完整保证，而唯一索引是**数据库级**约束，比应用级登记表更硬（应用登记与业务写入之间仍有窗口）；② 它**从未**进入生产路径（`book()`/`cancel()` 全程不碰），只有 AC-8 在测 ⇒ 那是一个"绿色的假保证"；③ 它存在的理论价值是"操作本身不幂等"的场景（如支付，无天然唯一键），挂号有天然唯一键，用不上。<br>**代价（如实记录）**：失去"登记与业务写入解耦"的能力。若将来接入无天然唯一键的写操作，需**重新开 ADR**，而不是复活这张表。<br>**迁移**：`migrateSchema()` 里加了显式 `DROP TABLE booking_idem`（`CREATE TABLE IF NOT EXISTS` 只管建、不管删，老库不会自动消失） |

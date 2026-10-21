@@ -83,7 +83,7 @@
 
 - **状态**：`ThemeMode.AUTO | LIGHT | DARK`，存于 `KeyValueStore` 的 `theme_mode`，重启保持。
 - **系统跟随**：`AUTO` 下通过 `mediaquery.matchMediaSync('(prefers-color-scheme: dark)')` 监听，系统切换时自动刷新（`ThemeManager.initialize()` 注册）。
-- **刷新机制**：`AppColor` 是**静态 getter，非响应式**。`ThemeManager.setOnChange()` 触发后，`entry/src/main/ets/pages/Index.ets` 递增 `themeTick`，用奇偶双分支**销毁并重建整棵页面树**，使所有颜色重新取值。
+- **刷新机制**：`AppColor` 是**静态 getter，非响应式**。`ThemeManager` 已改为 `@ObservedV2` + `@Trace paletteVersion` 通知，`Index.ets` 不再靠 `themeTick` 奇偶双分支销毁重建整树；⚠ **BUG-2 未修**：已绘制的页面在切换主题后仍不重绘（数据取值正确，是依赖收集没触发），根治要改 `AppStorageV2`/`@Monitor`，见 `common-core/.../ThemeManager.ets` 的说明。
   - 因此：**新增页面无需关心主题**，只要颜色走 `AppColor` 就会自动生效；但页面内若有"一次性计算并存字段"的颜色变量，会在重建前保持旧值，应避免这种写法。
 - **用户入口**：患者端「我的 → 外观」提供 跟随系统 / 浅色 / 深色 三选一。
 
@@ -118,7 +118,7 @@
 
 ## 8. 路由与登录拦截
 
-- 路由常量集中在 `RouteName`（患者 10 / 医生 3 / 管理 7），跳转统一 `AppRouter.replace|push|back|reset`。
+- 路由常量集中在 `RouteName`（患者 10 / 医生 4 / 管理 8），跳转统一 `AppRouter.replace|push|back|reset`。
 - **统一守卫**：`AuthGuard.reroute()` 在 `AppRouter.replace()` 内生效（由 `AppBootstrap` 注册）：
   - 三个登录页免检；
   - `doctor-*` 需 `token + role=doctor`，否则回落 `doctor-login`；
@@ -169,7 +169,7 @@
 
 ## 11. 双端差异与对齐（鸿蒙 ArkTS ↔ Android Compose / MD3）
 
-`android-patient` 当前仅 5 个 `.kt`、无主题层，以下为**待落地时应遵守的映射**：
+`android-patient` 现为 13 个 `.kt`，已落地 `ui/ThemeController.kt` + `res/values{,-night}/colors.xml`（明暗色板复刻鸿蒙侧），以下为**已落地的映射**：
 
 | 语义 | 鸿蒙（vp / fp，`AppColor`/`AppText`） | Android（dp / sp，MaterialTheme） |
 |---|---|---|
@@ -194,6 +194,6 @@
 ## 12. 待办与需协助事项
 
 - **需 B（业务页面）协助**：管理端缺患者档案、症状标签库、AI 工具中心/Agent/AI 观测页；新增页面须按 §6 使用公共组件、按 §10 骨架排版。
-- **需 D（Android）协助**：按 §11 建立 `Theme/Color/Type`，并回传实际取值以修正映射表。
+- **已落地**：`ThemeController`（`isNight()` 统一判定）+ `values`/`values-night` 双色板；如取值有调整，回传后同步修正本表。
 - **需 A（服务端/联调）协助**：提供真机联调环境后，验证深色模式下 SSE 流式页、图表页的对比度。
 - **待 C 后续**：字符图标替换为矢量资源；为图表类页面补深色色序。

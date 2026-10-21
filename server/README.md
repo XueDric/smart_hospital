@@ -334,7 +334,7 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 | --- | --- | --- |
 | `schedule` | 号源域 · **业务状态** | 直接 SQL（仅 `BookingRepo` 写；**原子自减**，ADR-0001 范围锁死） |
 | `appointment` | 挂号域 · **业务状态** | 直接 SQL（仅 `BookingRepo` 写） |
-| `department` `doctor` `patient` | **基础数据域** | 直接 SQL 读；⚠ **无写入端点**（靠人工 SQL 维护 —— 见下方 rev.7 说明） |
+| `department` `doctor` `patient` | **基础数据域** | 直接 SQL；科室/医生可由管理端维护（P5 起 `/api/v1/admin/departments`、`/api/v1/admin/doctors` 的 GET/POST/PUT/DELETE）；⚠ `patient` 仍**无写入端点**（靠人工 SQL 维护 —— 见下方 rev.7 说明与 P5 补记） |
 | `auth_user` `auth_token` `auth_login_attempt` | **鉴权域** | 直接 SQL（仅 `AuthRepo` 写） |
 | `previsit_session` | **预问诊域** · 医疗数据 | 直接 SQL（仅 `PrevisitRepo` 写；★ P2 起**刻意不进**任何缓存范式） |
 | `ai_setting` | **AI 配置域** · 配置 | 直接 SQL（KV；写库即失效缓存 ⇒ 改配置零重启）；⚠ 密钥**只存引用**不存明文 |
@@ -348,9 +348,12 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 > 实测它**在生产上从未接线**（生产零实例化、零 `loadAll`、零 `flushToMysql`，
 > 且**没有"往内存里写"的入口方法**）⇒ 那三张表实际是**只读参考数据**。
 > ⇒ 因此 `department`/`doctor`/`patient` 归入新的**基础数据域**：
->   **直接 SQL 读，但目前没有写入端点**（靠人工 SQL 维护）。
->   ⚠ 这句话要留着 —— 否则读者会以为"系统会自动积累科室/医生数据"。
-> 详见 [../docs/adr/ADR-0001](../docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) rev.7。
+>   **直接 SQL 读**；当时这三张表都没有写入端点（靠人工 SQL 维护）。
+>   ⚠ 这句话要留着 —— 否则读者会以为「系统会自动积累科室/医生数据」。
+>   **P5 补记（2026-10-21）**：科室与医生的写入端点已在 P5 的 `bb0e792` 补上
+>   （`server/src/http_base.cj`：`GET/POST/PUT/DELETE /api/v1/admin/departments|doctors`），
+>   上面那句「没有写入端点」现在只对 `patient` 成立。
+> 详见 [../docs/adr/ADR-0001](../docs/adr/ADR-0001-号源与挂号独立MySQL路径.md) rev.7（补记为 rev.7.1）。
 
 > ⚠ `auth_token` **刻意不叫** `tokens`：搬迁前内存 Store 已占用该表名
 > （`mysql_store.cj:891`），列定义也不同。

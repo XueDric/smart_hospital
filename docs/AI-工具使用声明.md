@@ -1,8 +1,8 @@
 # AI 工具使用声明
 
 > 本文按赛事要求说明：**开发过程中用过哪些 AI 工具、用在什么范围、哪些部分由团队自己设计**，以及这些产出是如何被验证的。
-> 版本：`0.2.0-p1`（tag `v0.2.0-p1-rev`）｜最后更新：2026-10-18
-> 相关文档：[项目真实性与分工说明](项目真实性与分工说明.md)、[第三方依赖与外部服务审计](THIRD-PARTY.md)、[整改方案](整改方案-2026-10-17.md)
+> 版本：`0.2.0-p1`（tag `v0.2.0-p1-rev`）｜最后更新：2026-10-21
+> 相关文档：[项目真实性与分工说明](项目真实性与分工说明.md)、[第三方依赖与外部服务审计](THIRD-PARTY.md)
 
 ## 一、先说清两件不同的事
 
@@ -13,7 +13,7 @@
 | **产品内 AI** | 作品功能：调用 DeepSeek 做分诊文案与结论，规则引擎做保险丝 | `server/src/ai_*.cj`、`server/src/triage_*.cj`；配置见 `docs/Q6-合规决策记录.md` |
 | **开发期 AI** | 写代码/写文档/写测试时使用的助手 | 本文说明的范围 |
 
-**本文只声明"开发期 AI"。** 产品内 AI 是作品功能本身，其边界（只出主诉+科室名、不传患者身份、失败回落规则）写在 [Q6 合规决策记录](Q6-合规决策记录.md)。
+**本文只声明"开发期 AI"。** 产品内 AI 是作品功能本身，其边界（出站只有主诉原文、候选科室清单、系统提示词与命中的知识库片段；不含姓名/手机号/证件等身份信息；失败回落规则）写在 [Q6 合规决策记录](Q6-合规决策记录.md)。
 
 ## 二、开发期使用的 AI 工具
 
@@ -23,16 +23,16 @@
 | 其它成员的助手（如有） | — | — | 由各成员在 §六 自行登记；**申宇乐本人全程未使用**（见下） |
 | 无 | — | 临床规则词表、合规结论、评分与答辩口径 | 全部由团队决策，AI 只负责把决策写成文档 |
 
-⚠ 关于答辩录屏：视频**画面**是应用在模拟器上的真实渲染，**没有**用 AI 生成或替换画面内容；但该 mp4 是剪辑工具合成的产物，容器元数据带 `AIGC` 块（`ContentProducer` / `ProduceID`）——对应自动字幕/配音/合成一类工具处理。原片全程跑在 App 的「演示数据（Mock）」开关下，已在成品片头加 3 秒说明卡写明，详见 [录屏说明](录屏说明-2026-10-20.md)。
+⚠ 关于答辩录屏：视频**画面**是应用在模拟器上的真实渲染，**没有**用 AI 生成或替换画面内容；但该 mp4 是剪辑工具合成的产物，容器元数据带 `AIGC` 块（`ContentProducer` / `ProduceID`）——对应自动字幕/配音/合成一类工具处理。原片全程跑在 App 的「演示数据（Mock）」开关下，已在成品片头加 3 秒说明卡写明，详见 [录屏脚本](录屏脚本-2026-10-21.md) §6。
 仓库内位图只有 DevEco 模板默认图标（见 [THIRD-PARTY.md](THIRD-PARTY.md) §7）。
 
 ## 三、AI 参与的范围（做什么 / 不做什么）
 
 **参与（且可追溯到具体提交）**
 
-- 缺陷修复：挂号余量不刷新、登录 401 误踢端、危急征象否定判定漏报、看板假指标、趋势含未来日期、安卓契约字段错配等（逐条见 [联调记录](联调记录-2026-10-18.md)、[同事提交审查](审查-同事提交-2026-10-18.md)）。
+- 缺陷修复：挂号余量不刷新、登录 401 误踢端、危急征象否定判定漏报、看板假指标、趋势含未来日期、安卓契约字段错配等（逐条见 [联调记录](联调记录-2026-10-18.md)）。
 - 测试与门禁：`server/tests/*.ps1`、`tools/check-docs.ps1`、`tools/check-snapshot.ps1`、安卓 `ContractParserTest.kt`。
-- 文档：整改方案、答辩材料、联调记录、第三方审计、本声明、分工说明；数字对账（`server/tests/doc-counts.ps1` 自动核对文档与实测）。
+- 文档：答辩材料、联调记录、交付快照、第三方审计、本声明、分工说明；数字对账（`server/tests/doc-counts.ps1` 自动核对文档与实测）。
 - 构建与证据：`hvigorw.bat`、`tools/package-release.ps1` 的许可证段、`release/` 下的构建与截图证据。
 
 **不参与（团队决策）**
@@ -47,7 +47,7 @@
 每条 AI 参与的改动都必须过下面几道，任何一道红了就不许写进结论：
 
 1. **编译**：`server/build.ps1`（仓颉 1.2.0）、`hvigorw.bat assembleHap`、`android-patient/build.ps1 -Variant debug`。
-2. **断言**：`accept`（794 项）、`triagetest`（150 项）、`selftest`（51 项）、`authtest`（17 项）、`final-verify`（18 项 live 门禁，全绿才算完）、安卓 JVM 单测（10 项）。
+2. **断言**：`accept`（801 项）、`triagetest`（150 项）、`selftest`（51 项）、`authtest`（17 项）、`final-verify`（18 项 live 门禁，全绿才算完）、安卓 JVM 单测（10 项）。
 3. **文档一致性**：`server/tests/doc-counts.ps1` 把文档里的数字与实测逐条对账；`tools/check-docs.ps1` 查链接、编码、注释嵌套、旧路径残留；`tools/check-snapshot.ps1` 查交付物哈希与版本。
 4. **端到端**：鸿蒙模拟器（Pura 90 / HarmonyOS 6.1.1）与安卓模拟器（API 37）实跑，截图存 `release/harmony/screenshots/`、`release/android/`。
 5. **人工审阅**：每批提交由人看 diff 后再推；提交信息里写清"为什么"。
@@ -68,9 +68,9 @@ git show --stat <sha>                           # 任一提交改了哪些文件
 
 | 成员 | 工具与模型 | 主要使用范围 | 复核方式 |
 | --- | --- | --- | --- |
-| **申宇乐**（项目负责人） | DeepSeek 模型（`deepseek-flash` / `deepseek-chat`）驱动的编码代理，运行于 DSH 终端/编辑器环境 —— **全程只使用这一个 AI 工具**，未用其它编辑器补全、问答或生成式工具 | 2026-10-07 ～ 2026-10-18 全部开发期工作：需求落地与模块实现、缺陷定位与修复、测试与门禁脚本（`server/tests/*.ps1`、`tools/check-*.ps1`）、文档与数字对账、构建与打包、模拟器取证；提交说明与"为什么"由本人确认后落笔 | 每批改动跑全量门禁（`accept` / `triagetest` / `final-verify` / `doc-counts` / `check-docs` / `check-snapshot`）+ 鸿蒙与安卓模拟器实跑截图 + 本人逐条核对 diff 与结论后再提交；对外承诺的数字口径由本人拍板 |
-| **郭俊杰**（界面设计和鸿蒙 APP 开发） | WorkBuddy 编码代理（模型 `deepseek-V4.1-Flash`） | 2026-10-14 ～ 2026-10-16 客户端设计与公共层工作：① **界面设计** —— 医疗青绿主题的浅/深双色板、fp 字阶、4/8 基线间距、40vp 热区、公共组件库 10 件，并产出设计规范 `docs/DESIGN-SPEC.md`；② **鸿蒙 APP 开发** —— `common-core` 公共层（主题管理、键值/文件持久化、登录守卫）、患者/医生/管理三端页面收口与热区字号 token 化、就诊状态语义单一来源（`model/VisitStatus.ets`）与 Mock 夹具 7 态补齐；③ **git 版本控制与代码托管** —— 分支与 worktree 隔离、按主题拆分提交、main 快进同步与内容一致性核对 | 客户端语义层门禁 `scripts/client-status-check.ps1`（6 条判据，含"故意植入病征应报错"的正向验证）+ `common-core` 导出符号核对 + 逐文件 diff 比对 + 人工审阅 diff 后再提交 |
-| **lyz1679**（医生端 `feature-doctor`） | Claude Code 编码代理（终端 / VSCode 扩展），底层接入 DeepSeek 模型（`deepseek-v4-pro` / `deepseek-v4-flash`） | 2026-10-13 ～ 2026-10-19 医生端病历与队列工作：七段病历编辑器升级为工作台（乐观锁 `expected_updated_at` 回传、`EMR_CHANGED`/`EMR_LOCKED` 分流、七段 Scroller 锚点导航、脏标记与离开保护、提交前预览、冲突逐段核对、版本历史入口）、病历修订历史只读页（列表 → 详情 → 逐段对比）、接诊队列就诊状态机按钮与 `done` 单入口；公共层 `AppRouter` 参数栈修复与 `ErrorCode` 扩充；后端对接问题清单 `docs/DOCTOR-BACKEND-ISSUES-2026-10-16.md` 与 `FRONTEND-INTEGRATION.md` §5.29/§5.30 更正 | 乐观锁 409 语义、修订历史稀疏版本、患者身份字段等契约逐条对照服务端源码（`server/src/domain_emr.cj`、`http_p4.cj`）与 `FRONTEND-INTEGRATION.md` 后实现 + 编辑器 TS 语言服务逐文件消错 + 逐条 diff 人工核对后再提交；本机无 DevEco 工具链，HarmonyOS 编译由 DevEco 侧补验 |
+| **申宇乐**（项目负责人） | DeepSeek 模型（`deepseek-flash` / `deepseek-chat`）驱动的编码代理，运行于 DSH 终端/编辑器环境 —— **全程只使用这一个 AI 工具**，未用其它编辑器补全、问答或生成式工具 | 2026-10-07 ～ 2026-10-21 全部开发期工作：需求落地与模块实现、缺陷定位与修复、测试与门禁脚本（`server/tests/*.ps1`、`tools/check-*.ps1`）、文档与数字对账、构建与打包、模拟器取证；提交说明与"为什么"由本人确认后落笔 | 每批改动跑全量门禁（`accept` / `triagetest` / `final-verify` / `doc-counts` / `check-docs` / `check-snapshot`）+ 鸿蒙与安卓模拟器实跑截图 + 本人逐条核对 diff 与结论后再提交；对外承诺的数字口径由本人拍板 |
+| **郭俊杰**（界面设计和鸿蒙 APP 开发） | WorkBuddy 编码代理（模型 `deepseek-V4.1-Flash`） | 2026-10-14 ～ 2026-10-16 客户端设计与公共层工作：① **界面设计** —— 医疗青绿主题的浅/深双色板、fp 字阶、4/8 基线间距、40vp 热区、公共组件库 10 件，并产出设计规范（现名 `docs/UI-DESIGN.md`）；② **鸿蒙 APP 开发** —— `common-core` 公共层（主题管理、键值/文件持久化、登录守卫）、患者/医生/管理三端页面收口与热区字号 token 化、就诊状态语义单一来源（`model/VisitStatus.ets`）与 Mock 夹具 7 态补齐；③ **git 版本控制与代码托管** —— 分支与 worktree 隔离、按主题拆分提交、main 快进同步与内容一致性核对 | 客户端语义层门禁（脚本为本地执行、未入库；6 条判据，含"故意植入病征应报错"的正向验证）+ `common-core` 导出符号核对 + 逐文件 diff 比对 + 人工审阅 diff 后再提交 |
+| **lyz1679**（医生端 `feature-doctor`） | Claude Code 编码代理（终端 / VSCode 扩展），底层接入 DeepSeek 模型（`deepseek-v4-pro` / `deepseek-v4-flash`） | 2026-10-13 ～ 2026-10-19 医生端病历与队列工作：七段病历编辑器升级为工作台（乐观锁 `expected_updated_at` 回传、`EMR_CHANGED`/`EMR_LOCKED` 分流、七段 Scroller 锚点导航、脏标记与离开保护、提交前预览、冲突逐段核对、版本历史入口）、病历修订历史只读页（列表 → 详情 → 逐段对比）、接诊队列就诊状态机按钮与 `done` 单入口；公共层 `AppRouter` 参数栈修复与 `ErrorCode` 扩充；后端对接问题清单（未入库，结论已并入 `docs/FRONTEND-INTEGRATION.md` §5.29/§5.30）与 `FRONTEND-INTEGRATION.md` §5.29/§5.30 更正 | 乐观锁 409 语义、修订历史稀疏版本、患者身份字段等契约逐条对照服务端源码（`server/src/domain_emr.cj`、`http_p4.cj`）与 `FRONTEND-INTEGRATION.md` 后实现 + 编辑器 TS 语言服务逐文件消错 + 逐条 diff 人工核对后再提交；本机无 DevEco 工具链，HarmonyOS 编译由 DevEco 侧补验 |
 | 其它成员 | （如有使用，由本人补充） | — | — |
 
 **申宇乐 确认**：上述范围属实；本项目所有对外表述（评审材料、答辩稿、交付说明）中的技术结论均经本人核对，AI 产出不构成"未经复核即对外承诺"。确认日期：2026-10-18。

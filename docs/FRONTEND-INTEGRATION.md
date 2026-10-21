@@ -568,7 +568,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | 5.31 | `GET /api/v1/admin/ai/triage-stats`、`GET /api/v1/admin/ai/triage-calls/:requestId` | 是 | **仅 admin** | **AI 分诊遥测**：质量聚合（分位数/降级率/分组）+ 单次调用全链路排障（★ 2026-10-15 新增，见 §5.31；同节含 `POST /api/v1/triage` 响应新增的 `request_id`） |
 | 5.32 | `POST /api/v1/doctor/visits/:id/arrive`、`POST /api/v1/doctor/visits/:id/waiting` | 是 | **仅医生（本单）** | **就诊时间线**：到院/候诊两步 + 七态状态机 + `arrived_at`/`started_at`/`finished_at`（★ 2026-10-15 新增，见 §5.32；同节含队列排序变化与 `start` 前置状态收紧） |
 
-> 权限判定收敛在**单一函数** `can(role, action)`（`http_app.cj:162-230`）。相关动作与角色：
+> 权限判定收敛在**单一函数** `can(role, action)`（`http_app.cj:255`；动作共 18 个，见同文件 `Action` 枚举）。相关动作与角色：
 > `book` = 仅 patient；`view_schedule` = 三端；`query_own_medical_record` = patient | doctor；
 > `cancel_own` = 仅 patient；`cancel_any` = 仅 admin。
 
@@ -908,7 +908,7 @@ $me.data | Format-List          # user_id / role / patient_id / doctor_id / devi
 | 409 | `APPOINTMENT_NOT_CANCELLABLE` | ★ **2026-10-12 新增**：单存在、也是自己的，但当前状态**不允许退号**。`message` 里带中文状态名，如 `该挂号单当前状态为「接诊中」，不能退号` |
 | 400 | `VALIDATION_FAILED` | `:id` 非正整数 |
 
-> ★ **只有 `status = 'booked'` 的单能退**（2026-10-12 修，见 `docs/CODE-REVIEW-2026-10-12.md` 第 1 条）。
+> ★ **只有 `status = 'booked'` 的单能退**（2026-10-12 修；该次评审记录已按文档整理移出仓库，结论保留在 §5.16）。
 > `visiting`（接诊中）/ `done`（已完成）/ `no_show`（爽约）/ `cancelled` 都退不了：
 > 前三个返回 **409 `APPOINTMENT_NOT_CANCELLABLE`**（`cancelled` 仍走下面的幂等 200）。
 > 口径唯一来自状态机的显式流转表（`domain_emr.cj` 的 `visitTransitionAllowed`），
@@ -2145,11 +2145,11 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
 | --- | --- | --- | --- |
 | 1 | `server/README.md` 的启动示例用 `--port 8091` / `8443`，容易让人以为这是默认端口 | **默认端口已于 2026-10-17 改为 8091**（`main.cj:707`，原先 8080 与客户端不一致，评审 P2-15）；`8443` 只是 TLS 启动参数约定 | §1、§2.2 明确写"默认 8091；8443 只是约定" |
 | 2 | 一般文档措辞会让人以为"患者可搜知识库" | `GET /api/v1/kb/search` 需要 `query_knowledge_base`（admin\|doctor）⇒ **患者 403**（`http_app.cj:206-218` 有明确设计说明） | §6.3 |
-| 3 | `docs/PHASE-HANDOFFS.md`（P4）未提 `record/reopen` 的实际鉴权 | 原为 `http_p4.cj:363` 借 `requireCan(p.role, Action.ManageSchedule)`；**2026-10-15（改进 3）改为语义动作 `Action.ManageRecordRevision`**（`http_p4.cj:633`）⇒ **reopen 仍是管理员动作、医生仍 403**（授权结果不变，只是动作名不再含混） | §6.2、§5.29.7 |
-| 4 | 登录响应里的 `patient_id` 容易被读成"患者 id" | 实现是 `u.refId` 且**不判角色**（`http_app.cj:774`）⇒ 医生/管理员登录时它只是各自的档案 id | §4.2（含实测） |
+| 3 | `docs/PHASE-HANDOFFS.md`（P4）未提 `record/reopen` 的实际鉴权 | 原为 `http_p4.cj:363` 借 `requireCan(p.role, Action.ManageSchedule)`；**2026-10-15（改进 3）改为语义动作 `Action.ManageRecordRevision`**（`http_p4.cj:822`）⇒ **reopen 仍是管理员动作、医生仍 403**（授权结果不变，只是动作名不再含混） | §6.2、§5.29.7 |
+| 4 | 登录响应里的 `patient_id` 容易被读成"患者 id" | **2026-10-18 起按角色给值**：只有患者回 `ref_id`，其它角色回 `0`（`http_app.cj:1272-1276`）⇒ 与 `/auth/me` 口径一致 | §4.2（含实测） |
 | 5 | 错误码表里可能登记着 `AUTH_TOKEN_INVALID` | **`apiErrorSpec` 里没有这个码**（`http_common.cj:55-197`）：令牌无效/过期一律 `AUTH_TOKEN_EXPIRED` 401，message「令牌无效或已过期，请重新登录」（`http_app.cj:313-316`） | §14.1 只列实现里真实存在的码 |
 | 6 | 文档写"连续失败 5 次后锁定"，容易被读成"第 6 次才 429" | 实现在 `recordFailure` 之后判 `fail_count >= 5` ⇒ **第 5 次失败就返回 429**（`auth_repo.cj:381-386`）。实测确认 | §4.2 |
-| 7 | 错误码表里登记着 409 `SLOT_NOT_RESTORED` | 该码在当前实现路径中**不会被抛出**（**死条目**）：归还失败走的是 **200 + `warning`**（`http_app.cj:1501-1512`）。`apiErrorSpec` 里有它，但没有任何 handler 抛它 | §14.1 标"死条目"；§5.16 写清实际形态 |
+| 7 | 错误码表里登记着 409 `SLOT_NOT_RESTORED` | 该码在当前实现路径中**不会被抛出**（**死条目**）：归还失败走的是 **200 + `warning`**（`http_app.cj:2735` 的 `warning` 分支）。`apiErrorSpec` 里有它，但没有任何 handler 抛它 | §14.1 标"死条目"；§5.16 写清实际形态 |
 
 > 另外两条**版本口径**提示：
 > * `version` 返回 `"0.2.0-p1"`（`main.cj:31`），但功能上 P2（分诊/预问诊）/P4（病历/接诊/看板）/P5（知识库）
@@ -2178,7 +2178,7 @@ data: {"event":"done","data":{"session_id":"ab12…","next_slot":"duration"}}\n\
   ▲ 本节此前写的"实测 `GET /api/v1/health` → 404"是 **2026-10-12 之前**的记录，**已作废**
   （2026-10-14 由 `tests\health-check.ps1` 实测两个路径均为 200 且字段一致）。
 * ★ **2026-10-17 起多一个 `db` 块，且 `ok` 变成"进程活着且库通"**：库不通 → **503** + `ok:false` + `db.ok:false`。
-  实测见 `docs/REVERIFY-AND-FIXES-2026-10-17.md` §十一（S4：拔库 → 503，恢复后自动重连且 `reconnects` 递增）。
+  实测见 `server/tests/health-check.ps1`（拔库 → 503，恢复后自动重连且 `reconnects` 递增；原复验记录已按文档整理移出仓库）。
 * 是普通 `content-length` JSON，**不是 chunked**（只有 `/previsit/stream` 是 chunked）。
 * ★ `today` 的口径由脚本钉住：`tests\health-check.ps1` 断言它等于 **UTC+8 当天**（不是设备本地日期）。
 
@@ -2329,7 +2329,7 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 
 ## 14. 附录
 
-### 14.1 错误码总表（`http_common.cj:55-197`，**包含枚举值**）
+### 14.1 错误码总表（`http_common.cj:55-330`，**包含枚举值**）
 
 | HTTP | code | message（服务端默认文案） | 患者端会不会遇到 |
 | --- | --- | --- | --- |
@@ -2341,6 +2341,7 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 | 400 | `VALIDATION_FAILED` | 参数校验失败（**具体原因在 `error.message`**）；**`413` 请求体过大也用这个 code**，message 是「请求体过大，超出服务端允许的上限」（§3.2 形状 6，2026-10-17 起） | ✅ |
 | 404 | `SCHEDULE_NOT_FOUND` | 排班不存在或已停诊 | ✅ |
 | 409 | `SLOT_GONE` | 号源已被抢完，请选择其它排班 | ✅ |
+| 409 | `SCHEDULE_EXISTS` | 同一科室/医生/日期/时段已有排班（`http_common.cj:97`，管理端建排班） | ❌（管理端） |
 | 404 | `APPOINTMENT_NOT_FOUND` | 挂号单不存在 | ✅ |
 | 409 | `APPOINTMENT_NOT_CANCELLABLE` | 该挂号单当前状态不允许退号（只有「已挂号」可以退）—— **`message` 实际带中文状态名**，如「该挂号单当前状态为「接诊中」，不能退号」（2026-10-12 新增，§5.16/§8.2） | ✅ |
 | 404 | `PREVISIT_NOT_FOUND` | 预问诊会话不存在或已失效 | ✅ |
@@ -2350,12 +2351,15 @@ curl -s -i http://127.0.0.1:8091/api/v1/aprpointments -H "Authorization: Bearer 
 | 409 | `EMR_CHANGED` | 病历已被他人修改（乐观锁：请求里的 `expected_updated_at` 不是当前版本）—— **`error.fields` 带 `{updated_at, updated_by, record_id}`**（2026-10-15 起真的会带，§5.30.2） | ❌（医生端） |
 | 409 | `EMR_NOT_LOCKED` | 完成就诊前必须先提交锁定病历 | ❌（医生端） |
 | 409 | `VISIT_BAD_STATE` | 当前就诊状态不允许该操作 | ❌（医生端） |
+| 409 | `VISIT_DATE_FUTURE` | 该号的就诊日还没到，不能到院登记或接诊（`http_common.cj:225`；2026-10-20 新增的服务端硬门槛） | ❌（医生端） |
 | 404 | `ROUTE_NOT_FOUND` | 接口不存在 / **静态资源不存在**（**同一个 code**，靠 `message` 区分） | ✅（**2026-10-15 起真的会被抛**：兜底中间件把未匹配的 `/api/v1/**` 改写成它，`http_app.cj:3054-3057`；2026-10-17 起静态层未命中也是它；旧版"实现里未见"的说法已作废） |
 | 405 | `METHOD_NOT_ALLOWED` | Method Not Allowed（允许的方法：GET）—— **`allow` 在响应头，体里没有 `allow` 字段**（2026-10-17 新增，§3.2 形状 5） | ✅（HTTP 方法用错） |
 | 416 | `RANGE_NOT_SATISFIABLE` | Range 请求超出文件大小（带 `content-range: bytes */<文件大小>`；2026-10-17 新增，§3.2 形状 7） | ❌（静态层断点续传路径） |
-| 409 | `SLOT_NOT_RESTORED` | 已退号，但号源归还异常，请联系人工处理 | ❌ **死条目**：登记在表里但当前实现路径**不抛**（归还失败走 200 + `warning`，`http_app.cj:1501-1512`） |
+| 409 | `SLOT_NOT_RESTORED` | 已退号，但号源归还异常，请联系人工处理 | ❌ **死条目**：登记在表里但当前实现路径**不抛**（归还失败走 200 + `warning`，`http_app.cj:2735`） |
 | 404 | `USER_NOT_FOUND` | 账号不存在 | ❌（管理端） |
 | 409 | `USER_EXISTS` | 登录名已存在 | ❌（管理端） |
+| 404 | `NOTICE_NOT_FOUND` | 公告不存在（`http_common.cj:274`） | ❌（管理端） |
+| 409 | `NOTICE_TITLE_TAKEN` | 公告标题已存在（`http_common.cj:278`） | ❌（管理端） |
 | 404 | `BASE_NOT_FOUND` | 科室或医生不存在 | ❌（管理端） |
 | 409 | `BASE_NAME_TAKEN` | 同名已存在 | ❌（管理端） |
 | 409 | `BASE_CODE_TAKEN` | 该编码已被占用 | ❌（管理端） |

@@ -175,8 +175,8 @@ public func aiSettingSpecs(): Array<AiSettingSpec> {
          *   内置密钥引用），开箱即可调用 —— 评审的"零模型调用"一项因此不再成立。
          * ⚠ 与 `docs/Q6-合规决策记录.md` 的关系：该文档记的是"未获批准前生产保持关"的
          *   **合规建议**；用户（项目负责人）已明确要求默认接入，故此处取 1，并在
-         *   `docs/整改方案-2026-10-17.md` 里写明"对外生产发布前请复核 Q6 结论、
-         *   必要时把 `ai.enabled` 改回 0"。
+         *   此处注明：**对外生产发布前请复核 Q6 结论、
+         *   必要时把 `ai.enabled` 改回 0**。
          */
         AiSettingSpec(SET_AI_ENABLED, "AI 功能总开关（1/0；默认 1，开箱即用）", "1"),
         AiSettingSpec(SET_AI_ENDPOINT, "OpenAI 兼容的完整 URL（必须 https://）", AI_BUILTIN_DEFAULT_ENDPOINT),

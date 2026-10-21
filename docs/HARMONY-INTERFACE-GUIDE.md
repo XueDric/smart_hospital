@@ -18,8 +18,8 @@ entry               壳工程：Ability、首页入口、装配注册
 | `entry` | entry（HAP） | `EntryAbility`、`pages/Index`、`AppBootstrap.initialize`、`register*Feature` | A |
 | `common-core` | HAR | `HttpClient`、`SseClient`、`ApiError`、`ApiConfig`、`SessionStore`、`AppRouter` | A / C |
 | `feature-patient` | HAR | 患者端页面、`PatientRepository`、`MockPatientRepository`、模型 | A |
-| `feature-doctor`（待建） | HAR | 医生端页面与仓储 | B |
-| `feature-admin`（待建） | HAR | 管理端页面与仓储 | B |
+| `feature-doctor` | HAR | 医生端页面与仓储（依赖 `common-core`） | B |
+| `feature-admin` | HAR | 管理端页面与仓储（依赖 `common-core`） | B |
 
 **硬性约束**
 
@@ -57,7 +57,7 @@ AppRouter.getInstance().back();                              // 回上一页，�
 * 参数用 `Record<string, Object>`，通过 `getParam(key)` 读取；值统一是字符串/数字。
 * **新增路由**：在 `common-core` 的 `RouteName` 加常量；不要在各 feature 里私自定义字符串。
 * **底部 tab 与详情页的分界**：`PatientRoot` 里 `isTabRoute()` 决定是否显示 `BottomNav`；详情页自带 `PageHeader({ showBack: true })`。
-* B 的医生端建议在 `PatientRoot` 同级再加一个 `DoctorRoot`，由 `entry` 按登录角色选择，而不是把两端页面装进同一个根。
+* 现状：`entry` 已按登录角色分根（患者/医生/管理端各一），医生端与患者端页面没有装进同一个根。
 
 ---
 
@@ -132,7 +132,7 @@ try {
 ```ets
 import { SessionStore } from 'common-core';
 
-SessionStore.saveLogin(token, expiresAt, userId, role, refId, patientId, displayName);
+await SessionStore.saveLogin(token, expiresAt, userId, role, refId, patientId, displayName);
 SessionStore.hasToken();  SessionStore.getRole();  SessionStore.getPatientId();
 SessionStore.clearLogin();
 ```
@@ -224,7 +224,7 @@ SessionStore.setApiConfig(ApiConfig.mode, ApiConfig.baseUrl); // 持久化
 | 13 | 分诊结果无法跳详情 | —— | 分诊结果页**就地展示号源并允许挂号** |
 | 14 | 无 **AI 流式分诊** | 分诊不能逐字输出 | 分诊用 loading 态即可 |
 
-**「今天」的口径差异**：服务端用 **UTC** 的今天，客户端拼 `work_date` 用**本地时区**，跨零点可能差一天。服务端**没有**接口返回「服务端的今天」，所以客户端做「今天之后」过滤时用**宽松过滤**（如保留 `>= 本地今天 - 1 天`），并以**分诊返回的 `work_date`** 为权威展示。「当天查不到」最终以分诊 `reason_code === 'NO_BOOKABLE'` 为准。
+**「今天」的口径差异**：服务端用 **Asia/Shanghai** 的今天（`http_app.cj` 的 `hDateStringOf`，全服务端唯一时区口径），客户端拼 `work_date` 用**本地时区**，跨零点可能差一天。服务端**没有**接口返回「服务端的今天」，所以客户端做「今天之后」过滤时用**宽松过滤**（如保留 `>= 本地今天 - 1 天`），并以**分诊返回的 `work_date`** 为权威展示。「当天查不到」最终以分诊 `reason_code === 'NO_BOOKABLE'` 为准。
 
 ---
 
@@ -234,7 +234,7 @@ SessionStore.setApiConfig(ApiConfig.mode, ApiConfig.baseUrl); // 持久化
 * **组件参数命名避坑**：不要用 `enabled` / `background` 当 `@Param` 名（与 ArkUI 内置属性冲突）。现有组件用 `isEnabled`、`chipBackground`。
 * **列表刷新**：ArkTS V2 对数组做整体**重新赋值**触发刷新（`this.list = next`），不要原地 `push` 后指望刷新。
 * **`Row` 没有 `minHeight`**：需要固定高度用 `.height(...)`。
-* **日期工具**：`todayString()` / `nowToken()` / `formatEpoch()` / `periodText()` 等都在 `feature-patient/ui/Theme.ets`；B 若需要，建议把公共部分上移到 `common-core`，避免各 feature 各写一份。
+* **日期工具**：`todayString()` / `nowToken()` / `formatEpoch()` / `periodText()` 等都在 `common-core/src/main/ets/ui/Theme.ets`；B 若需要，建议把公共部分上移到 `common-core`，避免各 feature 各写一份。
 * **颜色/尺寸**：沿用医疗青绿主题（`#00A9A7`），字号/间距见 `Theme.ets` 的 `AppText` / `AppSize`。C 的主题规范落地后以规范为准。
 
 ---

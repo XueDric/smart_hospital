@@ -136,7 +136,7 @@ Invoke-WebRequest -Uri http://127.0.0.1:8091/health -UseBasicParsing | Select-Ob
 Invoke-WebRequest -Uri http://127.0.0.1:8091/admin/ -UseBasicParsing | Select-Object StatusCode
 ```
 
-本机实测：`200`（3516 字节）。
+本机实测：`200`（**4,794 字节**，即 `server/admin-web/index.html` 的当前体积）。
 
 ---
 
@@ -173,7 +173,7 @@ $env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Stud
 </details>
 
 - **成功标志** `BUILD SUCCESSFUL`（本机实测 65 tasks / 约 23 s 首编、4 s 增量），产物 `entry/build/default/outputs/default/entry-default-unsigned.hap`（约 1.7 MB）+ `pack.info`。
-- **已入库的构建与运行证据**：[release/harmony/](../release/harmony/README.md) —— `entry-default-unsigned.hap`（1758110 B，SHA256 `5DA919EBAC234CA80E2E3D7053455574AC15F2E928A3E728DD391CC0C3366AD0`）、`pack.info`、`build-log-2026-10-17.txt`（剥掉 ANSI 的完整日志）+ `screenshots/` **10 张模拟器实跑截图**（每张都有对应 `uitest dumpLayout` 文本实测）。这是「客户端可构建、可运行」的现场证据，不是二次生成的转述。
+- **已入库的构建与运行证据**：[release/harmony/](../release/harmony/README.md) —— `entry-default-unsigned.hap`（1758110 B，SHA256 `5DA919EBAC234CA80E2E3D7053455574AC15F2E928A3E728DD391CC0C3366AD0`）、`pack.info`、`build-log-2026-10-21.txt`（剥掉 ANSI 的完整日志，4,664 B）+ `screenshots/` **16 张模拟器实跑截图**（每张都有对应 `uitest dumpLayout` 文本实测）。这是「客户端可构建、可运行」的现场证据，不是二次生成的转述。
 - **装进模拟器（未签名也能装）**：在华为模拟器（Pura 90 / HarmonyOS 6.1.1 / API 24）实测 `hdc install -r …hap` 直接成功，**不需要先签名**；启动前若屏幕锁定，`aa start` 会报 `10106102 The device screen is locked…`，先 `hdc shell power-shell wakeup`（注意 `Emulator.exe -instance … -power` 是关屏，别用）：
   ```powershell
   & "D:\DevEco Studio\sdk\default\openharmony\toolchains\hdc.exe" install -r .\entry\build\default\outputs\default\entry-default-unsigned.hap
@@ -236,8 +236,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\package-release.ps1
 
 - 产物：`release\hospital-server-<Version>-win-x64.zip`（`-Version` 默认读 `server/src/main.cj:34` 的 `SERVER_VERSION`，读不到退 git 短 SHA，再退 `dev`）。
 - `release\` 是**生成物，不入库**（已收录于 `.gitignore`；需要交付时用脚本重新生成，或直接把 zip 作为附件提交）。
-- 本机实测：编译 21.1 s，整包 23.6 s，**15 个文件**，zip **7.81 MB**，解压后 **22.18 MB**。
-- 包内清单：`hospital-server.exe`、`libcangjie-runtime.dll`、`libboundscheck.dll`、`libcrypto-3-x64.dll`、`libssl-3-x64.dll`、`SOURCE-MANIFEST.sha256`、`admin-web/`（7 个文件）、`README-运行说明.txt`、`start-dev.cmd`。
+- 本机实测（2026-10-21）：**25 个文件**，zip **8,254,661 B（7.86 MB）**，解压后 **22.32 MB**；只改文档、跳过重编时整包 1.6 s。
+- 包内清单：`hospital-server.exe`、`libcangjie-runtime.dll`、`libboundscheck.dll`、`libcrypto-3-x64.dll`、`libssl-3-x64.dll`、`SOURCE-MANIFEST.sha256`、`admin-web/`（7 个文件）、`README-运行说明.txt`、`start-dev.cmd`、`LICENSE.txt`、`NOTICE.txt`、`THIRD-PARTY.md`、`licenses/`（6 份：轻舟、MariaDB 驱动、OpenSSL 的 LICENSE 与 NOTICE、仓颉运行时 LICENSE 与 NOTICE）。
 - 用法：解压到 **ASCII 路径** → 改 `start-dev.cmd` 里的 `DSN`/`PORT` → 起库（§2①）→ 双击 `start-dev.cmd`（或命令行 `.\hospital-server.exe serve <dsn> --dev-auth`，默认端口 8091）→ `http://127.0.0.1:8091/health`。
 - 实测验证：解压到 `%TEMP%` 后 `hospital-server.exe version` → `0.2.0-p1`；`selftest` → 51 项通过；`serve` 起来后 `/health` 200 且 `db.ok=true`、`/admin/` 200。
 

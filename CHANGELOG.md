@@ -2,8 +2,9 @@
 
 > **仓库**：<https://github.com/XueDric/smart_hospital.git>（默认分支 `main`）
 > **版本口径**：服务端 `SERVER_VERSION = 0.2.0-p1`（`server/src/main.cj:34`）；`-p<N>` 表示 P0–P5 六阶段全部交付后的维护批次。
-> **提交跨度**：2026-10-07 → 2026-10-17，107 个提交（截至 tag `v0.2.0-p1-rev`），6 位贡献者。完整历史见 `git log`，本文件只记录**对外可见的能力变化**与**关键缺陷修复**。
+> **提交跨度**：2026-10-07 → 2026-10-21，143 个提交（tag `v0.2.0-p1-rev` 打在 2026-10-17 的第 107 个提交上），6 个署名（`fallensp` 与 `FallenSP78` 同一邮箱，按邮箱合并为 5 位）。完整历史见 `git log`，本文件只记录**对外可见的能力变化**与**关键缺陷修复**。
 > 格式参考 [Keep a Changelog](https://keepachangelog.com/)，按日期倒序。
+> **2026-10-21 文档整理**：评审反馈、整改方案、复验记录、同事提交审查、录屏说明，以及安卓两份过程交接记录已移出仓库（历史内容见 `git log`）；下文条目提到这些文件名时只表示"当时的记录动作"，链接已降级为纯文本。
 
 ---
 
@@ -49,13 +50,13 @@
 
 ### 变更
 
-- **HAP 重建**：**1,758,110 B**，SHA256 `5DA919EBAC234CA80E2E3D7053455574AC15F2E928A3E728DD391CC0C3366AD0`（`BUILD SUCCESSFUL in 13 s 722 ms`，65 tasks / 29 executed）；`release/harmony/` 只保留最新一份日志 `build-log-2026-10-21.txt`（8,048 B）；`docs/交付快照.md` 与各文档体积/哈希同步，`doc-counts` 实测 `hapsize=1758110`。
+- **HAP 重建**：**1,758,110 B**，SHA256 `5DA919EBAC234CA80E2E3D7053455574AC15F2E928A3E728DD391CC0C3366AD0`（`BUILD SUCCESSFUL in 2 s 381 ms`，65 tasks / 27 executed）；`release/harmony/` 只保留最新一份日志 `build-log-2026-10-21.txt`（4,664 B）；`docs/交付快照.md` 与各文档体积/哈希同步，`doc-counts` 实测 `hapsize=1758110`。
 
 ### 新增（文档与录屏）
 
-- **`docs/录屏说明-2026-10-20.md`**：记录答辩录屏的规格（H.264 High@4.1 / 1920×1280 / 30 fps / −15.9 LUFS / 287.9 s / 21.86 MB / SHA256 `345A246D…`）、片头 3 秒"演示数据"说明卡的文案与理由、本次只动编码层的六项处理、**仍然存在的五个问题**（硬字幕压 UI、时间轴多段拼接、内容为 Mock、无安卓端、无起库起服务画面）、重录清单与复现命令。
+- **答辩录屏记录（现已并入 `docs/录屏脚本-2026-10-21.md` §6）**：记录答辩录屏的规格（H.264 High@4.1 / 1920×1280 / 30 fps / −15.9 LUFS / 287.9 s / 21.86 MB / SHA256 `345A246D…`）、片头 3 秒"演示数据"说明卡的文案与理由、本次只动编码层的六项处理、**仍然存在的五个问题**（硬字幕压 UI、时间轴多段拼接、内容为 Mock、无安卓端、无起库起服务画面）、重录清单与复现命令。
 - **成品录屏**：`E:\harmonyOS\harmony-demo-1080p-h264-with-notice.mp4`（**不入库**，随交付单独提交）；由原始 HEVC 3240×2160 转码而来，并加片头说明卡。
-- **`docs/AI-工具使用声明.md`**：把"未使用 AI 生成视频素材"一句改为如实口径——画面是真实渲染，但 mp4 由剪辑工具合成、容器带 `AIGC` 元数据，并指向录屏说明。
+- **`docs/AI-工具使用声明.md`**：把"未使用 AI 生成视频素材"一句改为如实口径——画面是真实渲染，但 mp4 由剪辑工具合成、容器带 `AIGC` 元数据，并指向 `docs/录屏脚本-2026-10-21.md` §6。
 
 ### 已知未改
 
@@ -67,7 +68,7 @@
 
 - **鸿蒙 HAP 重建**：队友 `177ed59` 改了医生端两个页面（`EmrEditPage.ets` 既往病历排序、`RecordHistoryPage.ets` 修订历史排版），而入库的 HAP 是 10-18 21:28 构建的 —— 二进制落后于源码。本次重编后：**1,757,426 B**，SHA256 `63D02775386A2D9004AA6B8035F62ECF16355EE85C553549F4DD6C37F795A88C`（`BUILD SUCCESSFUL in 20 s 735 ms`，65 tasks / 44 executed）。⚠ 该次产物已被 [0.2.0-p1-rev.7] 的重建取代（原因是 rev.7 修了分诊页 Mock 文案），现行口径见 `docs/交付快照.md`。
 - **构建日志只留最新一份**：`release/harmony/build-log-2026-10-19.txt`（8,435 B），删除 `-10-17` 与 `-10-18` 两份旧日志 —— 多份日志对应同一份产物会让"这份 HAP 到底怎么来的"无从判断。
-- **`docs/交付快照.md`** 由 `tools/check-snapshot.ps1 -Update` 刷新（hap_size / hap_sha256 / commit=9f8a8a4）；`README.md`、`docs/DEPLOYMENT.md`、`docs/整改方案-2026-10-17.md`、`release/harmony/README.md` 的体积与哈希同步；`server/tests/doc-counts.ps1` 实测 `hapsize=1757426`、`accept=794`、`triagetest=150` 全绿。
+- **`docs/交付快照.md`** 由 `tools/check-snapshot.ps1 -Update` 刷新（hap_size / hap_sha256 / commit=9f8a8a4）；`README.md`、`docs/DEPLOYMENT.md`、`docs/交付快照.md`、`release/harmony/README.md` 的体积与哈希同步；`server/tests/doc-counts.ps1` 实测 `hapsize=1757426`、`accept=794`、`triagetest=150` 全绿。
 
 ### 修复
 
@@ -155,7 +156,7 @@
 
 ### 文档
 
-- `README.md` / `docs/DEPLOYMENT.md` / `docs/Q6-合规决策记录.md` §2.1 / `docs/整改方案-2026-10-17.md` §6 /
+- `README.md` / `docs/DEPLOYMENT.md` / `docs/Q6-合规决策记录.md` §2.1 / `docs/交付快照.md` §3 /
   `docs/答辩材料-2026-10-17.md`（讲稿与 Q&A 第 4 问）/ `tools/README.md` 同步"限时 + 可一键替换"的口径。
 
 ---
@@ -179,12 +180,12 @@
 
 ### 文档
 
-- `docs/审查-同事提交-2026-10-18.md` 新增 §七"记账项的处置"：四条逐条写清设计取舍（为什么只拦未来、为什么把门槛放 HTTP 边界、为什么不推倒重写主题机制）与实测数字。
+- 同事提交的记账项处置（§七 四条）：逐条写清设计取舍（为什么只拦未来、为什么把门槛放 HTTP 边界、为什么不推倒重写主题机制）与实测数字。
 - 全仓 `accept` 断言数同步 **782 → 786**（README / DEPLOYMENT / PROJECT-OVERVIEW / SYSTEM-DESIGN / 联调记录 / 整改方案 / 答辩材料 / server README / ADR-0001 / P1-HANDOFF）。
 ## [0.2.0-p1-rev.1] 2026-10-18 —— 三端联调与同事提交审查批次
 
 > 本轮做了两件事：① 鸿蒙患者/医生/管理端 + 安卓端同一条服务端上跑全流程（记录见 [docs/联调记录-2026-10-18.md](docs/联调记录-2026-10-18.md)）；
-> ② 审查同事 `2cbf080` / `de47f6f` / `4265188` 三个提交并修掉其带入的缺陷（记录见 [docs/审查-同事提交-2026-10-18.md](docs/审查-同事提交-2026-10-18.md)）。
+> ② 审查同事 `2cbf080` / `de47f6f` / `4265188` 三个提交并修掉其带入的缺陷（记录见 `docs/联调记录-2026-10-18.md`）。
 > 接口契约的破坏性变更：**无**；新增两个加法字段（病历 `version`、看板沿用既有 `trend_days`）。
 
 ### 修复（三端联调轮，7 条）
@@ -218,13 +219,13 @@
 ### 变更
 
 - 医生队列在安卓侧补上日期守卫与"接诊队列"标题，与鸿蒙行为一致。
-- `release/android/` 证据刷新：APK 1,186,278 B（SHA256 `0835107B…306F95E`）+ 新增医生工作台两张截图。
+- `release/android/` 证据刷新：APK 1,186,278 B（当时 SHA256 `0835107B…306F95E`；现行 `0F2AEFAF…EBDCA9FE`，见交付快照）+ 新增医生工作台两张截图。
 
 ### 文档
 
 - 新增 [docs/联调记录-2026-10-18.md](docs/联调记录-2026-10-18.md)：BUG-1…BUG-10 的位置/现象/根因/处置、验证门禁、复现命令、7 条工具坑。
-- 新增 [docs/审查-同事提交-2026-10-18.md](docs/审查-同事提交-2026-10-18.md)：适配性核对表、A1/A2/A3 详解、观察项、遗留。
-- [docs/整改方案-2026-10-17.md](docs/整改方案-2026-10-17.md) 增「§九 三端联调轮」。
+- 新增同事提交的适配性核对：核对表、A1/A2/A3 详解、观察项、遗留（结论并入 `docs/联调记录-2026-10-18.md`）。
+- 整改台账增「三端联调轮」（结论见 `docs/联调记录-2026-10-18.md`）。
 
 ### 已知遗留（已记账，未在本轮修）
 
@@ -238,7 +239,7 @@
 
 ## [0.2.0-p1-rev] 2026-10-17 —— 评审整改批次（可运行证据 / AI 开箱即用 / 功能缺陷修正 / 文档一致）
 
-> 依据 `docs/评审反馈-2026-10-17.md`（72/100）。逐条处置与验收口径见 [docs/整改方案-2026-10-17.md](docs/整改方案-2026-10-17.md)。
+> 依据外部评审（72/100）整改；逐条处置与验收口径见 `docs/交付快照.md` 与本文件各批次记录。
 > 本批次**有业务行为变化**三处：服务端默认端口、AI 默认开启（`builtin:demo`）、三端首屏路由。接口契约无破坏性变更（仅新增 `by_source` 等加法字段）。
 
 ### 新增
@@ -261,7 +262,7 @@
 - **`tools/check-docs.ps1` + `.github/workflows/repo-hygiene.yml`**：文档相对链接、`.ps1` BOM、
   `.bat` 纯 ASCII、旧仓库路径残留四项门禁，每次 push/PR 自动跑（回应「无 CI」）。
   2026-10-18 增**第 5 项**：源码注释正文里的 `/*` 未同行闭合（Kotlin/仓颉块注释可嵌套，见下条缺陷）。
-- **`docs/整改方案-2026-10-17.md`** 与 **`docs/答辩材料-2026-10-17.md`**：P0/P1/P2 全 27 条处置与验收口径；
+- **`docs/答辩材料-2026-10-17.md`**：答辩口径、5 段讲稿与 12 个追问；
   9 分钟讲稿 + 现场演示脚本 + 12 问 Q&A（回应「答辩材料为零」）。
 - **客户端安全存储**：鸿蒙 `common-core/src/main/ets/storage/SecureStore.ets`（`AssetStoreKit`）、
   安卓 `android-patient/.../data/SecretStore.kt`（`AndroidKeyStore` AES-256-GCM）—— 令牌不再明文落盘。
@@ -403,7 +404,7 @@
 
 - 契约：3 个错误样例重新导出、`schema-map` 改指 `envelope-error`、新增退号 `already_cancelled` 的 Schema 约束；`contract/CHANGELOG.md` 三条变更记录。
 - 回归守卫：`p1-extra-check.ps1` 新增 `[3c]` 段（8 条断言）覆盖 S16，并修掉测试夹具不清理导致的二次运行失败。
-- 文档：`docs/REVERIFY-AND-FIXES-2026-10-17.md`（复验报告 + 同日修复记录，12 节）。
+- 文档：复验与同日修复记录（12 节；结论已并入 `docs/交付快照.md` 与 `docs/PHASE-HANDOFFS.md`）。
 
 ### 清理
 
@@ -477,5 +478,5 @@
 | 形态 | 含义 |
 | --- | --- |
 | `0.2.0-p1` | 当前版本：P0–P5 全部交付 + 第 1 个维护批次 |
-| `P0`–`P5` | 阶段标识，见 [README 进度表](README.md) 与 `docs/P*-HANDOFF.md` |
+| `P0`–`P5` | 阶段标识，见 [README 进度表](README.md) 与 `docs/PHASE-HANDOFFS.md` |
 | `rev.N` | ADR-0001 的修订号（架构决策改动一次 +1） |
