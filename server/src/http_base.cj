@@ -10,7 +10,8 @@ import std.time.*
  * ===== http_base.cj —— 基础数据域的管理端接口（科室 / 医生）==============
  *
  * ADR-0001 rev.7 拆掉内存 Store 时，我如实记下一条边界：
- * **`department`/`doctor`/`patient` 没有写入端点，靠人工 SQL 维护**。
+ * **`department`/`doctor`/`patient` 没有写入端点，靠人工 SQL 维护**
+ * （这句今天只对 `patient` 成立：科室与医生已由本文件补上管理端 CRUD）。
  * 本文件还的是其中**科室与医生**那部分。
  *
  * ## 为什么"分诊推荐科室"必须有这个文件才能真的跑起来

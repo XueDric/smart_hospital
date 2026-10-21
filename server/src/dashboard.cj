@@ -118,11 +118,10 @@ public class DashboardRepo {
 
         /* ---------- ① 规模（科室 / 医生 / 患者）---------- */
         /*
-         * ⚠ `department` / `doctor` / `patient` 三张表属**内存 Store**，
-         *   而内存 Store 在生产路径上**不刷盘**（P4 已确认，见 docs/PHASE-HANDOFFS.md）
-         *   ⇒ 这里读到的可能是**旧数据**（上一次刷盘时的快照）。
-         *   如实标注：`scale.source` = "mysql（内存 Store 的表，生产未刷盘 ⇒ 可能滞后）"。
-         *   📌 这比"悄悄给个数字"诚实得多 —— 运维看到这句就知道为什么数字不动。
+         * ⚠ 口径变更史（当前口径见下面 rev.7 那段）：rev.7 之前这三张表属**内存 Store**，
+         *   生产路径上不刷盘 ⇒ 读到的是「上次刷盘的快照」，所以旧文案标过「可能滞后」；
+         *   rev.7 拆掉 Store 后改直接 SQL 读，那句标注已撤掉 —— 保留此说明，
+         *   是为了让读到历史文档里旧文案的人知道它为什么曾经那样写。
          */
         let scale = JsonObject()
         scale.put("departments", JsonInt(count1("SELECT COUNT(*) FROM department", Array<DbValue>())))
@@ -130,14 +129,16 @@ public class DashboardRepo {
         scale.put("patients", JsonInt(count1("SELECT COUNT(*) FROM patient", Array<DbValue>())))
         /*
          * ★ ADR-0001 rev.7：内存 Store 已整体拆除 ⇒ 这三张表现在是**直接 SQL 读**，
-         *   **不再是"上次刷盘的快照"**，所以原先那句"可能滞后"的标注已不成立。
-         *   ⚠ 但仍要标注来源：它们目前**没有写入端点**（靠人工 SQL 维护），
-         *     所以数字反映的是"库里现有的参考数据"，不是"系统自动积累的规模"。
-         *     这两件事对看板读者是**不同的信息**，不能混。
+         *   **不再是「上次刷盘的快照」**，所以原先那句「可能滞后」的标注已不成立。
+         *   ⚠ 但「能不能维护」仍要标注，而且要标准：科室/医生由 P5 的 bb0e792 补上了
+         *     管理端 CRUD（`http_base.cj` 的 /api/v1/admin/departments|doctors），
+         *     患者档案至今**没有写入端点**，只能靠人工 SQL / 导入维护。
+         *   📌 看板读者要分清「库里有数据」与「系统会自动积累数据」——前者是现状，
+         *     后者对 patient 不成立，这两句话都不能省。
          */
         scale.put("source", JsonString(
             "mysql 直接读（rev.7 起不再经内存 Store，无滞后）；" +
-            "⚠ 但这三张表目前**没有写入端点**，靠人工 SQL 维护 ⇒ 数字反映库中现有参考数据"))
+            "科室/医生有管理端 CRUD，患者档案靠人工 SQL ⇒ 数字反映库中现有数据"))
         o.put("scale", scale)
 
         /* ---------- ② 挂号总览（含取消率）---------- */

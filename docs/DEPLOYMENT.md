@@ -236,7 +236,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\package-release.ps1
 
 - 产物：`release\hospital-server-<Version>-win-x64.zip`（`-Version` 默认读 `server/src/main.cj:34` 的 `SERVER_VERSION`，读不到退 git 短 SHA，再退 `dev`）。
 - `release\` 是**生成物，不入库**（已收录于 `.gitignore`；需要交付时用脚本重新生成，或直接把 zip 作为附件提交）。
-- 本机实测（2026-10-21）：**25 个文件**，zip **8,254,661 B（7.86 MB）**，解压后 **22.32 MB**；只改文档、跳过重编时整包 1.6 s。
+- 本机实测（2026-10-21）：**25 个文件**，zip **8,254,778 B（7.87 MB）**，解压后 **22.34 MB**；只改文档、跳过重编时整包 1.6 s。
 - 包内清单：`hospital-server.exe`、`libcangjie-runtime.dll`、`libboundscheck.dll`、`libcrypto-3-x64.dll`、`libssl-3-x64.dll`、`SOURCE-MANIFEST.sha256`、`admin-web/`（7 个文件）、`README-运行说明.txt`、`start-dev.cmd`、`LICENSE.txt`、`NOTICE.txt`、`THIRD-PARTY.md`、`licenses/`（6 份：轻舟、MariaDB 驱动、OpenSSL 的 LICENSE 与 NOTICE、仓颉运行时 LICENSE 与 NOTICE）。
 - 用法：解压到 **ASCII 路径** → 改 `start-dev.cmd` 里的 `DSN`/`PORT` → 起库（§2①）→ 双击 `start-dev.cmd`（或命令行 `.\hospital-server.exe serve <dsn> --dev-auth`，默认端口 8091）→ `http://127.0.0.1:8091/health`。
 - 实测验证：解压到 `%TEMP%` 后 `hospital-server.exe version` → `0.2.0-p1`；`selftest` → 51 项通过；`serve` 起来后 `/health` 200 且 `db.ok=true`、`/admin/` 200。

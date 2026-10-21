@@ -362,10 +362,11 @@ func selftest(): Int64 {
      */
     let bookingTables = BOOKING_DOMAIN_TABLES.size
     /*
-     * ★ 基础数据域（rev.7 新分类，**取代**原来的"配套域（走内存 Store）"）：
-     *   department / doctor / patient —— 直接 SQL 读；**目前没有写入端点**，
-     *   靠人工 SQL 维护（见 README 表集说明与 docs/PHASE-HANDOFFS.md 的遗留表）。
-     *   ⚠ 这条纪律要写明，否则读者会以为"系统会自动积累科室/医生数据"。
+     * ★ 基础数据域（rev.7 新分类，**取代**原来的「配套域（走内存 Store）」）：
+     *   department / doctor / patient —— 直接 SQL 读；科室与医生有管理端 CRUD
+     *   （`http_base.cj`，P5 的 bb0e792 补上），**患者档案仍没有写入端点**，
+     *   只能人工 SQL / 导入维护（见 README 表集说明与 docs/PHASE-HANDOFFS.md 的遗留表）。
+     *   ⚠ 这条纪律要写明，否则读者会以为「系统会自动积累科室/医生数据」。
      */
     let baseTables = 3
     let authTables = 3

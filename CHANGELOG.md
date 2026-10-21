@@ -8,6 +8,29 @@
 
 ---
 
+## [0.2.0-p1-rev.10] 2026-10-21 —— 看板口径与代码注释同步到现状（患者档案无写入端点）
+
+### 变更（注释与用户可见文案，无逻辑改动）
+
+- 代码里有五处仍在说「`department`/`doctor`/`patient` 三张表**没有写入端点**」，其中
+  **一处是用户可见的**：运营看板「聚合指标」里的 `scale.source` 文案。科室与医生早在
+  P5 `bb0e792` 就有了管理端 CRUD（`server/src/http_base.cj` 的
+  `/api/v1/admin/departments`、`/api/v1/admin/doctors` 各四个方法），这句话现在只对
+  `patient` 成立。
+- 改法：`scale.source` 改为「mysql 直接读（rev.7 起不再经内存 Store，无滞后）；
+  科室/医生有管理端 CRUD，患者档案靠人工 SQL ⇒ 数字反映库中现有数据」；
+  `server/src/dashboard.cj`、`server/src/main.cj`、`server/src/domain_base.cj`、
+  `server/src/http_base.cj` 四处注释同步改为「科室/医生有 CRUD、患者档案仍靠人工 SQL」，
+  并保留 rev.7 之前「内存 Store 可能滞后」的历史说明。
+
+### 重新打包与校验
+
+- 服务端重编：38 个 `.cj` → `hospital-server.exe`，源码清单 76 个文件。
+- 分发包重打：25 个文件，zip **8,254,778 B（7.87 MB）**，解压 **22.34 MB**，
+  SHA256 `C8D1B9271CC4B30C875604AF3DCD839CF7A11E99B9623984CE0F887AE019B24D`。
+- `accept` 801/0、`triagetest` 全绿；`check-docs`（145 条相对链接）、`check-snapshot`、
+  `doc-counts` 25 条对账全绿。
+
 ## [0.2.0-p1-rev.9] 2026-10-21 —— 轻舟口径更正：参与开发，不是纯第三方
 
 ### 变更（口径，非代码）
