@@ -7,6 +7,25 @@
 
 ---
 
+## [0.2.0-p1-rev.8] 2026-10-21 —— 医生端「一键预填」不再是假复制
+
+### 修复
+
+- **`一键预填` 点完只弹提示、输入框仍是空的**（联调实测）。三处叠加成因，缺一处都修不好：
+  1. `server/src/domain_emr.cj` 的 `saveDraft` 把整段预填包在 `if (!exists)` 里 ⇒ 病历行一旦存在（点过一次预填就会建单）预填**永不发生**；
+  2. 预填判据是 `if (!patch.contains(k))`，而客户端 `valuesMap()` **七段全量发送**（没写的段是空串）⇒ 首次点击也一段都进不去；
+  3. 预填之后才套用 `patch` ⇒ 刚补上的患者自述被那串空值**当场擦掉**。
+  修法（顺序即语义）：先 `patch` 落库，再遍历预填"只补空段"（`rec.get(k).trimAscii().size > 0` 就跳过），最后写 `previsit_ref`；`exists` 分支的 `UPDATE medical_record` 原本不含 `previsit_ref`，一并补上（否则"已有病历后补的预填"记不下来源）。
+- **`feature-doctor/src/main/ets/pages/EmrEditPage.ets`** 两处文案从"仅首次"改为如实描述：`:347` 提示 `已用预问诊单补齐空段（医生已写的内容不覆盖）`；`:900` 按钮说明 `可由预问诊单补齐空段（已写的内容不会被覆盖）`。
+
+### 新增
+
+- **`server/src/acceptance_p4.cj`** AC-P4-5 增 ⑧⑨⑩ 共 7 条断言：① 用客户端真实请求形状（七个 key 全空串）调用后，主诉/现病史/既往史/过敏史被补齐、体格检查与诊断仍空；② 先落一张空病历再预填，空段照样补齐且 `previsit_ref` 含 session id；③ 医生已写主诉时，主诉保持医生原文、其余空段被补齐。`accept` 794 → **801**。
+
+### 证据
+
+- 模拟器实跑（Pura 90 / HarmonyOS 6.1.1）：医生端 `doc2e2e` 登录 → 队列 → 到院登记 → 转入候诊 → 开始接诊 → 写病历 → 点「一键预填」→ 现病史/既往史/过敏史当场填上，截图 `release/harmony/screenshots/17-doctor-emr-prefilled.jpeg`。
+- 落库核对 `medical_record`（appointment 970001）：`chief_complaint=咳嗽伴咽痛三天`、`present_illness=病程：三天；程度：中度，影响睡眠；伴随：发热38.2℃、咽干`、`past_history=高血压五年`、`allergy_history=青霉素过敏`、`physical_exam`/`diagnosis` 为空、`previsit_ref={"session_id":"e2e-prefill-1021","sections":["chief_complaint","present_illness","past_history","allergy_history"],"at":…}`。
 ## [0.2.0-p1-rev.7] 2026-10-20 —— 分诊页两处 Mock 文案不再冒充"服务端实时校验"
 
 ### 修复
@@ -18,7 +37,7 @@
 
 ### 变更
 
-- **HAP 重建**：**1,758,094 B**，SHA256 `D7509236EBA4EBC5964B4BB5FE7906A3B9420B0CC76B44E9DACC828230539235`（`BUILD SUCCESSFUL in 13 s 722 ms`，65 tasks / 29 executed）；`release/harmony/` 只保留最新一份日志 `build-log-2026-10-20.txt`（8,048 B）；`docs/交付快照.md` 与各文档体积/哈希同步，`doc-counts` 实测 `hapsize=1758094`。
+- **HAP 重建**：**1,758,110 B**，SHA256 `5DA919EBAC234CA80E2E3D7053455574AC15F2E928A3E728DD391CC0C3366AD0`（`BUILD SUCCESSFUL in 13 s 722 ms`，65 tasks / 29 executed）；`release/harmony/` 只保留最新一份日志 `build-log-2026-10-21.txt`（8,048 B）；`docs/交付快照.md` 与各文档体积/哈希同步，`doc-counts` 实测 `hapsize=1758110`。
 
 ### 新增（文档与录屏）
 

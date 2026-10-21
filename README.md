@@ -59,7 +59,7 @@ git log --oneline --graph | head -30      # 版本历史（截至 v0.2.0-p1-rev 
 | **客户端** | **鸿蒙患者端 / 医生端 / 管理端**（`entry` + `common-core` + `feature-*`）+ **安卓患者端**（`android-patient`）+ **管理台网页**（`server/admin-web`，挂载在 `/admin`） | ✅ 已实现并可构建；**2026-10-17 已在华为模拟器（Pura 90 / HarmonyOS 6.1.1 / API 24）跑通患者全流程与管理端看板**（[证据](release/harmony/README.md)）；**2026-10-18 安卓端已用 JDK 21 编译并装进 Android 模拟器登录成功**（[证据](release/android/README.md)） |
 | **维护批次** | 2026-10-17 复验修复 10 条（S1/S2/S3/S5/S6/S8/S12/S14/S16 + S4/S13）、契约与文档同步 | ✅ 完成（[复验报告](docs/REVERIFY-AND-FIXES-2026-10-17.md)） |
 
-> **验收口径**：`selftest` 51 + `authtest` 17 + `triagetest` 150 + `accept` **794 条断言** + `server/tests/` 26 个测试文件（19 个可独立运行的门禁套件）+ 契约门禁（24 Schema / 67 样例）+ `final-verify` 18/18 全绿。
+> **验收口径**：`selftest` 51 + `authtest` 17 + `triagetest` 150 + `accept` **801 条断言** + `server/tests/` 26 个测试文件（19 个可独立运行的门禁套件）+ 契约门禁（24 Schema / 67 样例）+ `final-verify` 18/18 全绿。
 > ⚠ 文档里的项数以 **`server/tests/doc-counts.ps1` 的实测输出为准**，不靠人记。
 
 > **自动门禁**：CI（`.github/workflows/repo-hygiene.yml`）每次 push/PR 跑 `tools/check-docs.ps1` ——
@@ -121,7 +121,7 @@ cd smart_hospital
 ```
 
 > **已入库的构建与运行证据**：[release/harmony/](release/harmony/README.md) 内有 2026-10-17 的
-> `entry-default-unsigned.hap`（1758094 B，SHA256 `D7509236…30539235`）、`pack.info`、完整构建日志
+> `entry-default-unsigned.hap`（1758110 B，SHA256 `5DA919EB…C3366AD0`）、`pack.info`、完整构建日志
 > （`BUILD SUCCESSFUL`，65 tasks），以及**模拟器实跑的 14 张截图 + 对应 `dumpLayout` 文本实测**
 > （患者登录 → 首页 → 智能分诊 → 选号 → 挂号成功 → 我的就诊；管理端登录 → 运营看板 → AI 能力中心）。
 > **未签名 HAP 可直接装进模拟器**（`hdc install -r …hap`），签名只在分发给真机时需要。

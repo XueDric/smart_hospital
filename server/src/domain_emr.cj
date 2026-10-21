@@ -833,8 +833,18 @@ public class MedicalRecordRepo {
         // ③ 合并
         /*
          * ★ 这次**真的**由患者自述写进病历的段（2026-10-14，改进 1）。
-         *   用它构造 `previsit_ref`：只有"预填时既不在 patch 里、又通过校验被写入"
-         *   的段才算患者自述 —— 医生在同一次请求的 patch 里写过的段不算。
+         *   用它构造 `previsit_ref`：只有"预填时该段本来就没有内容"的段才算患者自述
+         *   —— 医生写过的段不算（医生的判断优先于患者自述）。
+         *
+         * ★★ 2026-10-21 修（医生端"一键预填"实际是假复制）：
+         *   原实现把整段预填包在 `if (!exists)` 里，判据是 `!patch.contains(k)`。
+         *   而客户端保存时**总是把七段一起发**（没写的段发空串，见
+         *   `EmrEditPage.valuesMap()`），于是两个问题叠在一起：
+         *     · 首次点"一键预填"：patch 里七段齐全 ⇒ 一段都预填不进，反而建了一张空病历；
+         *     · 再点一次：病历行已存在 ⇒ 整段预填被跳过。
+         *   表现就是提示"已预填"、输入框仍然全空（联调实测）。
+         *   ⇒ 判据改成**看这一段有没有内容**：patch 里该段为空/空白，且库里该段也为空，
+         *     才用患者自述补上。医生写过的段一字不动；病历是否已存在不再是前提。
          */
         let prefilled = ArrayList<String>()
         if (!exists) {
@@ -842,33 +852,42 @@ public class MedicalRecordRepo {
             rec.doctorId = doctorId
             rec.patientId = 0      // 由 ④ 从 appointment 补齐（**不从客户端取**）
             rec.createdAt = now
-            // 仅在本次实际建单时预填，不能用建单前的外部查询结果覆盖已有病历。
-            for ((k, v) in prefill) {
-                if (!patch.contains(k)) {
-                    match (emrSectionOf(k)) {
-                        case None =>
-                            out.unknownSection = true
-                            out.detail = k
-                            return out
-                        case Some(sec) =>
-                            let n = previsitCharLen(v)
-                            if (n > sec.maxLen) {
-                                out.tooLong = true
-                                out.detail = "${sec.label}（${n} 字，上限 ${sec.maxLen}）"
-                                return out
-                            }
-                    }
-                    if (rec.set(k, v)) {
-                        prefilled.add(k)
-                    }
-                }
-            }
-            if (prefilled.size > 0 && previsitSessionId.size > 0) {
-                rec.previsitRef = emrPrevisitRefJson(previsitSessionId, prefilled.toArray(), now)
-            }
         }
+        /*
+         * 医生写的内容**先落**：预填只补"该段仍然为空"的段。
+         * ⚠ 这一段的顺序是本轮修复的关键 —— 客户端保存时**七段全发**（没写的段发空串），
+         *   若先预填再套 patch，刚补上的患者自述会被那串空值当场擦掉（假复制的另一半）。
+         */
         for ((k, v) in patch) {
             let _ = rec.set(k, v)
+        }
+        for ((k, v) in prefill) {
+            if (rec.get(k).trimAscii().size > 0) {
+                continue
+            }
+            match (emrSectionOf(k)) {
+                case None =>
+                    out.unknownSection = true
+                    out.detail = k
+                    return out
+                case Some(sec) =>
+                    let n = previsitCharLen(v)
+                    if (n > sec.maxLen) {
+                        out.tooLong = true
+                        out.detail = "${sec.label}（${n} 字，上限 ${sec.maxLen}）"
+                        return out
+                    }
+            }
+            if (rec.set(k, v)) {
+                prefilled.add(k)
+            }
+        }
+        /*
+         * 来源痕迹只在**还没有痕迹**时写：它是"初值来源"的快照，后补空段不该把
+         * 医生已经改过的段的来源记录整段重写（审计要的是"最初是谁说的"）。
+         */
+        if (prefilled.size > 0 && previsitSessionId.size > 0 && rec.previsitRef.size == 0) {
+            rec.previsitRef = emrPrevisitRefJson(previsitSessionId, prefilled.toArray(), now)
         }
         rec.updatedBy = actorId
         /* ★ 严格递增（见 emrNextStamp）：同一秒内两次保存也要让版本号前进。 */
@@ -878,7 +897,8 @@ public class MedicalRecordRepo {
             let values = ArrayList<DbValue>()
             let updates: Array<DbValue> = [DbStr(rec.chiefComplaint), DbStr(rec.presentIllness), DbStr(rec.pastHistory),
                        DbStr(rec.allergyHistory), DbStr(rec.physicalExam), DbStr(rec.diagnosis),
-                       DbStr(rec.treatment), DbInt(rec.updatedBy), DbInt(rec.updatedAt), DbInt(rec.id)]
+                       DbStr(rec.treatment), DbInt(rec.updatedBy), DbInt(rec.updatedAt),
+                       DbStr(rec.previsitRef), DbInt(rec.id)]
             for (x in updates) {
                 values.add(x)
             }
@@ -896,7 +916,8 @@ public class MedicalRecordRepo {
             }
             let n = db.exec("UPDATE medical_record SET chief_complaint = ?, present_illness = ?, " +
                     "past_history = ?, allergy_history = ?, physical_exam = ?, diagnosis = ?, " +
-                    "treatment = ?, updated_by = ?, updated_at = ? WHERE id = ? AND " + draftSnapshotSql +
+                    "treatment = ?, updated_by = ?, updated_at = ?, previsit_ref = ? " +
+                    "WHERE id = ? AND " + draftSnapshotSql +
                     guard,
                     values.toArray())
             out.recordId = rec.id

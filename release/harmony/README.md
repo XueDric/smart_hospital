@@ -7,10 +7,10 @@
 ## 一、文件清单
 | 文件 | 大小 | 说明 |
 |---|---|---|
-| `entry-default-unsigned.hap` | 1,758,094 B | 未签名 HAP（SHA256 `D7509236EBA4EBC5964B4BB5FE7906A3B9420B0CC76B44E9DACC828230539235`，2026-10-20 19:34 构建，含分诊页 Mock 文案修复）|
+| `entry-default-unsigned.hap` | 1,758,110 B | 未签名 HAP（SHA256 `5DA919EBAC234CA80E2E3D7053455574AC15F2E928A3E728DD391CC0C3366AD0`，2026-10-20 19:34 构建，含分诊页 Mock 文案修复）|
 | `pack.info` | 565 B | 打包信息（bundle `com.smart.hospital.patient`、versionCode/versionName、模块列表）|
-| `build-log-2026-10-20.txt` | 8,435 B | 2026-10-19 合并队友提交（含医生端排序修复）后重建的日志（ANSI 已剥离，末行 `BUILD SUCCESSFUL in 20 s 735 ms`；65 tasks / 44 executed / 21 up-to-date）|
-| `screenshots/*.jpeg` | 15 张 | 见下表 |
+| `build-log-2026-10-21.txt` | 8,435 B | 2026-10-19 合并队友提交（含医生端排序修复）后重建的日志（ANSI 已剥离，末行 `BUILD SUCCESSFUL in 20 s 735 ms`；65 tasks / 44 executed / 21 up-to-date）|
+| `screenshots/*.jpeg` | 16 张 | 见下表 |
 
 ## 二、截图索引
 | # | 文件 | 端 | 画面内容（dump 实测摘要）|
@@ -30,6 +30,7 @@
 | 13 | `screenshots/13-doctor-queue-gated.jpeg` | 医生端 | **三端联调新增**：队列分段改为 `全部 / 上午 / 下午`，副标题 `按状态展示接诊顺序（含历史与未来日期）`；2026-10-18 那张已 `已到院`、2026-12-24 那张仍 `已挂号`（点它的「到院登记」会被日期守卫拦下，红条文案见 [docs/联调记录-2026-10-18.md](../../docs/联调记录-2026-10-18.md) BUG-5）|
 | 14 | `screenshots/14-admin-dashboard-triage-calls.jpeg` | 管理端 | **三端联调新增**：`累计挂号 2`、`号源使用率 40%`、**`分诊调用 0`**（替换原来恒为 0 的"分诊命中率"）、`预问诊完成率 50%`、**`近 14 日挂号趋势`**（标题跟随 `trend_days`，未来日期已不再计入）、`聚合指标 号源 剩余 3 / 共 5（排班 2 条）` |
 | `screenshots/16-patient-triage-mock-subtitle.jpeg` | 202,795 B | 分诊页两处 Mock 文案修复：副标题「按本地演示数据给出结论（不连服务端）」+ 第 3 条「来自本地演示数据（Mock），未经服务端校验」|
+| `screenshots/17-doctor-emr-prefilled.jpeg` | 184,497 B | 医生端「一键预填」修复后：提示「已用预问诊单补齐空段（医生已写的内容不覆盖）」，现病史/既往史/过敏史当场填上，体格检查仍空 |
 
 ## 三、怎么复现（不需要 DevEco 界面）
 

@@ -173,7 +173,7 @@ $env:Path = "D:\DevEco Studio\jbr\bin;D:\DevEco Studio\tools\node;D:\DevEco Stud
 </details>
 
 - **成功标志** `BUILD SUCCESSFUL`（本机实测 65 tasks / 约 23 s 首编、4 s 增量），产物 `entry/build/default/outputs/default/entry-default-unsigned.hap`（约 1.7 MB）+ `pack.info`。
-- **已入库的构建与运行证据**：[release/harmony/](../release/harmony/README.md) —— `entry-default-unsigned.hap`（1758094 B，SHA256 `D7509236EBA4EBC5964B4BB5FE7906A3B9420B0CC76B44E9DACC828230539235`）、`pack.info`、`build-log-2026-10-17.txt`（剥掉 ANSI 的完整日志）+ `screenshots/` **10 张模拟器实跑截图**（每张都有对应 `uitest dumpLayout` 文本实测）。这是「客户端可构建、可运行」的现场证据，不是二次生成的转述。
+- **已入库的构建与运行证据**：[release/harmony/](../release/harmony/README.md) —— `entry-default-unsigned.hap`（1758110 B，SHA256 `5DA919EBAC234CA80E2E3D7053455574AC15F2E928A3E728DD391CC0C3366AD0`）、`pack.info`、`build-log-2026-10-17.txt`（剥掉 ANSI 的完整日志）+ `screenshots/` **10 张模拟器实跑截图**（每张都有对应 `uitest dumpLayout` 文本实测）。这是「客户端可构建、可运行」的现场证据，不是二次生成的转述。
 - **装进模拟器（未签名也能装）**：在华为模拟器（Pura 90 / HarmonyOS 6.1.1 / API 24）实测 `hdc install -r …hap` 直接成功，**不需要先签名**；启动前若屏幕锁定，`aa start` 会报 `10106102 The device screen is locked…`，先 `hdc shell power-shell wakeup`（注意 `Emulator.exe -instance … -power` 是关屏，别用）：
   ```powershell
   & "D:\DevEco Studio\sdk\default\openharmony\toolchains\hdc.exe" install -r .\entry\build\default\outputs\default\entry-default-unsigned.hap
@@ -254,7 +254,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\package-release.ps1
 | `… check-db <dsn>` | 连库 + 幂等建表 + 打印表清单 | `建表：执行 17 条 DDL（IF NOT EXISTS，幂等）` + 表清单 | **1.7 s** |
 | `tests\contract-check.ps1 -Base … -AdminPw …` | ①重新导出契约与 `contract/examples/**` **逐字节**比对 ②用 `contract/schema/*.json` 校验形状与分类 | 全部一致 / 校验通过；`-SkipExport` 只跑校验（`server/tests/contract-check.ps1:3-27`） | 需实例 + 管理员口令；**本机实测全绿**：载入 Schema 24 个、样例 67 条、`PASS 69 / FAIL 0` |
 | `tests\final-verify.ps1` | 一次跑完 **18 项** HTTP 门禁（三种实例：18092 `--dev-auth`、18095 裸、18096 `--prod`；末项 `doc-counts` 对账文档数字）+ 汇总 `EXIT` 表 | 全 `EXIT=0`；脚本自己起停三个实例并生成管理员口令（`server/tests/final-verify.ps1:1-13,63-93`） | 分钟级；**本机实测 18/18 `EXIT=0`**（端口须 ≥15001；`contract-check` 必须排在 `p1-extra-check` 之前，后者会重设管理员口令） |
-| `… accept <dsn>` | AC-1…AC-17 全量验收（794 项），**会清空业务表** | 只允许库名含 `test`；非测试库直接退 2（`server/src/main.cj:274-301`） | 长；**禁止在业务库跑** |
+| `… accept <dsn>` | AC-1…AC-17 全量验收（801 项），**会清空业务表** | 只允许库名含 `test`；非测试库直接退 2（`server/src/main.cj:274-301`） | 长；**禁止在业务库跑** |
 
 > 测试项数以 `server/tests/doc-counts.ps1` 的实测输出为准；上表的 `0.14 s / 4.39 s / 0.08 s / 1.7 s` 是本机 `0.2.0-p1` 包的实测值。
 

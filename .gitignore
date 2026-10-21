@@ -97,3 +97,5 @@ BuildProfile.ets
 /release/*
 !/release/harmony/
 !/release/android/
+# 答辩录屏工作目录（原始素材/剪辑中间产物/成片都很大，按"录屏不入库"的既定口径忽略）
+/video/

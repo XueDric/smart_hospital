@@ -344,7 +344,7 @@ export struct EmrEditPage {
       this.applyRecord(record);
       this.dirty = false;
       this.conflicted = false;
-      this.notice = '已用预问诊单预填（use_intake_session，仅首次）';
+      this.notice = '已用预问诊单补齐空段（医生已写的内容不覆盖）';
       this.noticeTone = 'success';
     } catch (error) {
       this.handleError(error as Error);
@@ -897,7 +897,7 @@ export struct EmrEditPage {
 
         if (!this.locked && this.previsit.sessionId.length > 0) {
           InfoBanner({
-            message: '可由预问诊单预填（use_intake_session，仅首次）',
+            message: '可由预问诊单补齐空段（已写的内容不会被覆盖）',
             tone: 'info',
             actionText: this.saving ? '预填中…' : '一键预填',
             onAction: () => this.prefill()

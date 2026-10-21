@@ -546,8 +546,8 @@ public func acP4_4(runner: TestRunner, db: DbBackend): Unit {
  *      不算患者自述。否则病历上会挂着一个名不副实的"患者自述"角标 ——
  *      而病历是**法律文书**，来源标注错了比没有标注更坏。
  *
- *   ④ ★ **预填只在建单那一次发生**：已有病历不吃预填（医生判断优先），
- *      因此来源痕迹也不会被后续保存改掉（它是"初值来源"的快照，不是"当前作者"）。
+ *   ④ ★ **预填只填空段、不覆盖已写内容**（2026-10-21 修）：病历是否已存在不是前提，
+ *      医生写过的段一字不动；来源痕迹是"初值来源"的快照，后补段不会改写它。
  */
 public func acP4_5(runner: TestRunner, db: DbBackend): Unit {
     println("=== AC-P4-5 ★★ 预问诊 → 病历：绑定唯一、归属严格、来源如实 ===")
@@ -635,6 +635,54 @@ public func acP4_5(runner: TestRunner, db: DbBackend): Unit {
                      out3.ok && emr.findByAppointment(a3).getOrThrow().chiefComplaint.size == 0)
         runner.check("★★ ⑦ 且这张单的来源痕迹为空（不会凭空宣称有患者自述）",
                      emr.findByAppointment(a3).getOrThrow().previsitRef.size == 0)
+        /*
+         * ⑧ ★★ 客户端真实行为回归（2026-10-21 缺陷：一键预填是假复制）：
+         *   医生端点"一键预填"时发的是**七段全量的 patch**（没写的段是空串），
+         *   原实现用 `patch.contains(k)` 当判据 ⇒ 一段都预填不进，还顺手建了张空病历。
+         *   这里就按客户端的真实请求形状复现。
+         */
+        let clientPatch = HashMap<String, String>()
+        for (k in ["chief_complaint", "present_illness", "past_history", "allergy_history",
+                   "physical_exam", "diagnosis", "treatment"]) {
+            clientPatch[k] = ""
+        }
+        let a4 = hSeedAppointmentForDoctor(db, 8, 9505, VISIT_BOOKED)
+        let out4 = emr.saveDraftWithIntake(a4, 900008, sid, 9505, clientPatch, now, 9901)
+        let rec4 = emr.findByAppointment(a4).getOrThrow()
+        runner.check("★★ ⑧ 客户端式请求（七段全发空串）后，主诉仍被预填（实得「${rec4.chiefComplaint}」）",
+                     out4.ok && rec4.chiefComplaint == "答-chief")
+        runner.check("★★ ⑧ 且过敏史/既往史也被预填（不是只有一段生效）",
+                     rec4.allergyHistory == "答-allergy" && rec4.pastHistory == "答-history")
+        runner.check("★ ⑧ 医生要写的段不被预填（诊断/体格检查仍为空）",
+                     rec4.diagnosis.size == 0 && rec4.physicalExam.size == 0)
+
+        /*
+         * ⑨ ★★ 病历**已存在**时再点"一键预填"，空段也要补齐（这才叫"预填"，不是"仅首次"）。
+         */
+        let a5 = hSeedAppointmentForDoctor(db, 9, 9505, VISIT_BOOKED)
+        let out5a = emr.saveDraft(a5, 900009, clientPatch, now, 9901)   // 先落一张空病历
+        let out5b = emr.saveDraftWithIntake(a5, 900009, sid, 9505, clientPatch, now, 9901)
+        let rec5 = emr.findByAppointment(a5).getOrThrow()
+        runner.check("★★ ⑨ 先存过空草稿，再点预填 ⇒ 空段被补齐（实得「${rec5.chiefComplaint}」）",
+                     out5a.ok && out5b.ok && rec5.chiefComplaint == "答-chief")
+        runner.check("★ ⑨ 且来源痕迹记了下来（后补的段也算患者自述）", rec5.previsitRef.contains(sid))
+
+        /*
+         * ⑩ ★★ 医生已写的内容**一字不动**（预填只填空段，不覆盖）。
+         */
+        let a6 = hSeedAppointmentForDoctor(db, 10, 9505, VISIT_BOOKED)
+        let docPatch = HashMap<String, String>()
+        for (k in ["chief_complaint", "present_illness", "past_history", "allergy_history",
+                   "physical_exam", "diagnosis", "treatment"]) {
+            docPatch[k] = ""
+        }
+        docPatch["chief_complaint"] = "医生自己写的主诉"
+        let out6 = emr.saveDraftWithIntake(a6, 900010, sid, 9505, docPatch, now, 9901)
+        let rec6 = emr.findByAppointment(a6).getOrThrow()
+        runner.check("★★ ⑩ 医生写过的段不被覆盖（实得「${rec6.chiefComplaint}」）",
+                     out6.ok && rec6.chiefComplaint == "医生自己写的主诉")
+        runner.check("★ ⑩ 同一次请求里没写的段照样被补齐（实得「${rec6.allergyHistory}」）",
+                     rec6.allergyHistory == "答-allergy")
     })
 }
 
