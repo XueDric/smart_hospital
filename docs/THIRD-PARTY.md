@@ -140,7 +140,7 @@ CI 的编译层需要两样上游不给稳定直链的东西，因此把**未经
 
 | 资产 | 体积 | 内容 | 为什么要托管 | 许可义务 |
 | --- | --- | --- | --- | --- |
-| `cangjie-sdk-windows-x64-1.2.0.zip` | 97,512,136 B | 官方 SDK 安装包（`cjc` / `cjpm` / 运行时 / 上游 LICENSE） | 官方下载直链由前端签名生成、不定期变化，CI 解析不到 | 原包未改，包内含 Apache-2.0 with Runtime Library Exception 全文；我们只托管，不主张任何权利 |
+| `cangjie-sdk-windows-x64-1.2.0.exe` | 97,512,136 B | 官方 SDK 安装包（NSIS 安装器；`cjc` / `cjpm` / 运行时 / 上游 LICENSE） | 官方下载直链由前端签名生成、不定期变化，CI 解析不到 | 原包未改，包内含 Apache-2.0 with Runtime Library Exception 全文；我们只托管，不主张任何权利 |
 | `cangjie-stdx-1.1.3.1-windows-x64-static.zip` | 6.76 MB | stdx 静态库（官方 SDK **不自带**） | 本项目要链 `stdx.net.http` / `stdx.encoding.json` | Apache-2.0，同上 |
 | `openssl-3.5.7-x64-dlls.zip` | 2.64 MB | OpenSSL 3.5.7 运行期 DLL | CI 上三件套「失败但零输出」的真因就是缺这两个 DLL | Apache-2.0；仓内另有全文 `server/third_party/openssl/LICENSE.txt` |
 
