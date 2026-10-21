@@ -1,7 +1,6 @@
 # 智慧医院客户端 UI 设计规范（UI-DESIGN）
 
 > 适用范围：鸿蒙端（`common-core` / `feature-patient` / `feature-doctor` / `feature-admin` / `entry`）与 Android 患者端（`android-patient`）。
-> 维护者：角色 C（公共模块与设计规范）。
 
 ---
 
@@ -11,8 +10,7 @@
 2. **尺寸与字号单一来源**：间距走 `AppSize`，字号走 `AppText`，同样禁止字面量。
 3. **公共组件优先**：`AppButton / PageHeader / SectionTitle / InfoBanner / EmptyState / LoadingBlock / StatusChip / FieldLabel / BottomNav` 已有实现时，禁止在页面里重写一份样式。
 4. **可点击元素热区 ≥ 40vp**（`AppSize.TOUCH_MIN`）；图标按钮不足 40vp 时必须用 `constraintSize({ minHeight })` 或透明容器补齐。
-5. **深浅双模式必须同时可验证**：新增任何颜色槽位，必须同时给出浅色与深色取值，否则深色模式下会出现"黑底黑字"。
-6. **页面状态四态齐备**：每个数据页至少覆盖 加载中 / 空 / 错误 / 有数据 四种表现。
+5. **深浅双模式必须同时可验证**：新增任何颜色槽位，必须同时给出浅色与深色取值，否则深色模式下会出现"黑底黑字"。**页面状态四态齐备**：每个数据页至少覆盖 加载中 / 空 / 错误 / 有数据 四种表现。
 
 > 当前状态：全仓硬编码色值 0 处、硬编码字号 0 处、小于 40vp 的按钮热区 0 处。
 
@@ -81,11 +79,10 @@
 
 ## 5. 深色模式机制
 
-- **状态**：`ThemeMode.AUTO | LIGHT | DARK`，存于 `KeyValueStore` 的 `theme_mode`，重启保持。
-- **系统跟随**：`AUTO` 下通过 `mediaquery.matchMediaSync('(prefers-color-scheme: dark)')` 监听，系统切换时自动刷新（`ThemeManager.initialize()` 注册）。
-**刷新机制**：`AppColor` 是**静态 getter，非响应式**。`ThemeManager` 通过 `@ObservedV2` + `@Trace paletteVersion` 通知刷新，`Index.ets` 不需要 `themeTick` 奇偶双分支销毁重建整树。⚠ **已知限制**：已绘制的页面在切换主题后仍可能不重绘（数据取值正确，是依赖收集没触发），根治要改 `AppStorageV2`/`@Monitor`，见 `common-core/.../ThemeManager.ets` 的说明。
-  - 因此：**新增页面无需关心主题**，只要颜色走 `AppColor` 就会自动生效；但页面内若有"一次性计算并存字段"的颜色变量，会在重建前保持旧值，应避免这种写法。
-- **用户入口**：患者端「我的 → 外观」提供 跟随系统 / 浅色 / 深色 三选一。
+- **状态**：`ThemeMode.AUTO | LIGHT | DARK`，存于 `KeyValueStore` 的 `theme_mode`，重启保持；**系统跟随**在 `AUTO` 下通过 `mediaquery.matchMediaSync('(prefers-color-scheme: dark)')` 监听，系统切换时自动刷新（`ThemeManager.initialize()` 注册）。
+- **刷新**：`AppColor` 是**静态 getter、非响应式**；`ThemeManager` 通过 `@ObservedV2` + `@Trace paletteVersion` 通知刷新，`Index.ets` 不需要 `themeTick` 奇偶双分支销毁重建整树。**已知限制**：已绘制的页面在切换主题后仍可能不重绘（数据取值正确，是依赖收集没触发），根治要改 `AppStorageV2`/`@Monitor`，见 `common-core/.../ThemeManager.ets` 的说明。
+- **写页面时**：新增页面无需关心主题，颜色走 `AppColor` 即自动生效；页面内若有"一次性计算并存字段"的颜色变量，会在重建前保持旧值，应避免这种写法。
+- **用户入口**：患者端「我的 → 外观」提供 跟随系统 / 浅色 / 深色 三选一；该分段控件用 `SURFACE_ALT` 底 + `PRIMARY_SOFT` 选中块，可作为后续所有分段控件的范式。
 
 ---
 
@@ -104,14 +101,11 @@
 | `BottomNav` | `currentRoute` | 固定 5 项（首页/分诊/挂号/就诊/我的），高 `64`，选中 `PRIMARY_DARK` |
 | `RoutePage` | `content`（`@BuilderParam`） | 全屏容器骨架 |
 
-患者端「我的 → 外观」的三选一分段控件使用 `SURFACE_ALT` 底 + `PRIMARY_SOFT` 选中块，可作为后续所有分段控件的范式。
-
 ---
 
 ## 7. 状态管理约定（ArkUI V2）
 
-- 页面统一 **`@ComponentV2`**，组件内局部状态用 **`@Local`**，对外入参用 **`@Param`**，回调用 **`@Event`**。
-- 禁止跨页面共享可变单例状态；跨页数据通过 `AppRouter.getParams()` 传递或进 `SessionStore`。
+- 页面统一 **`@ComponentV2`**，组件内局部状态用 **`@Local`**，对外入参用 **`@Param`**，回调用 **`@Event`**；禁止跨页面共享可变单例状态，跨页数据通过 `AppRouter.getParams()` 传递或进 `SessionStore`。
 - 异步加载统一模式：`loading` 布尔 + `errorMessage` 字符串 + `InfoBanner` 呈现错误；接口异常一律 `ApiError.from(error).userMessage()`，禁止把原始堆栈显示给用户。
 
 ---
@@ -119,11 +113,7 @@
 ## 8. 路由与登录拦截
 
 - 路由常量集中在 `RouteName`（患者 10 / 医生 4 / 管理 8），跳转统一 `AppRouter.replace|push|back|reset`。
-- **统一守卫**：`AuthGuard.reroute()` 在 `AppRouter.replace()` 内生效（由 `AppBootstrap` 注册）：
-  - 三个登录页免检；
-  - `doctor-*` 需 `token + role=doctor`，否则回落 `doctor-login`；
-  - `admin-*` 需 `token + role=admin`，否则回落 `admin-login`；
-  - 其余需 `token + role=patient`，否则回落 `login`。
+- **统一守卫**：`AuthGuard.reroute()` 在 `AppRouter.replace()` 内生效（由 `AppBootstrap` 注册）：三个登录页免检；`doctor-*` 需 `token + role=doctor`，否则回落 `doctor-login`；`admin-*` 需 `token + role=admin`，否则回落 `admin-login`；其余需 `token + role=patient`，否则回落 `login`。
 - 因此**各端 Root 内不重复写登录检查**，统一由 `AuthGuard` 负责。
 - 冷启动分流：`entry/pages/Index.ets` 依据 `SessionStore` 的 token 与 role 决定首路由；`EntryAbility` 无条件注册三个 feature（否则首装 `role` 为空会让医生/管理端入口不可达）。
 
@@ -141,29 +131,11 @@
 
 ## 10. 核心页面骨架标注
 
-患者端标准页（首页 / 分诊 / 挂号等）统一结构：
+患者端标准页（首页 / 分诊 / 挂号等）统一结构：`PageHeader`（高 56，title 24 / subtitle 13）→ `Scroll`（左右 padding 16；区块间距 20、元素间距 12；卡片 `SURFACE` / radius 8，`SectionTitle` 高 40，控件高 44，热区 ≥40）→ `BottomNav`（高 64，图标 20 / 文字 12）。
 
-```
-┌──────────────────────────────────────┐
-│ PageHeader                    高 56  │  title 24 / subtitle 13
-├──────────────────────────────────────┤
-│ Scroll                               │  左右 padding 16
-│  ┌────────────────────────────────┐  │
-│  │ 卡片  SURFACE / radius 8       │  │  区块间距 20，元素间距 12
-│  │  SectionTitle 高 40            │  │
-│  │  内容…                          │  │  控件高 44，热区 ≥40
-│  └────────────────────────────────┘  │
-├──────────────────────────────────────┤
-│ BottomNav                     高 64  │  图标 20 / 文字 12
-└──────────────────────────────────────┘
-```
-
-- **登录页**：大标题 `DISPLAY 30` + 服务模式说明；快捷填充/演示账号按钮统一 `TOUCH_MIN`；错误用 `InfoBanner(tone='error')`。
-- **首页**：快捷入口为 5 宫格图标（`LEAD 20`，容器 `40×40`）+ 公告/就诊卡片。
-- **分诊页**：长文本输入 + 提交主按钮；危险征象走 `DANGER` 与 `DANGER_SOFT`。
-- **挂号页**：科室/日期/午别为分段筛选（高 `TOUCH_MIN`），号源列表为卡片行，余号数为强调数字。
-
-医生端、管理端去掉 `BottomNav`；管理端改为左侧栏（`NAV_BACKGROUND` 底、`NAV_TEXT` 字，宽固定、选中项 `PRIMARY_SOFT` 底）。
+- **登录页**：大标题 `DISPLAY 30` + 服务模式说明；快捷填充/演示账号按钮统一 `TOUCH_MIN`；错误用 `InfoBanner(tone='error')`。**首页**：快捷入口为 5 宫格图标（`LEAD 20`，容器 `40×40`）+ 公告/就诊卡片。
+- **分诊页**：长文本输入 + 提交主按钮；危险征象走 `DANGER` 与 `DANGER_SOFT`。**挂号页**：科室/日期/午别为分段筛选（高 `TOUCH_MIN`），号源列表为卡片行，余号数为强调数字。
+- 医生端、管理端去掉 `BottomNav`；管理端改为左侧栏（`NAV_BACKGROUND` 底、`NAV_TEXT` 字，宽固定、选中项 `PRIMARY_SOFT` 底）。
 
 ---
 
@@ -185,7 +157,6 @@
 | 圆角 | 卡片 8 / 控件 8 | `shape.small` 8 / `shape.medium` 12 |
 
 差异要点：
-1. 鸿蒙用 `vp/fp`，Android 用 `dp/sp`；**数值可对齐，单位不可混写**。
-2. 鸿蒙深浅模式需手动重建页面树（见 §5）；Android 由 `colorScheme` + `isSystemInDarkTheme()` 自动重组。
-3. 鸿蒙端当前字符图标（⌂ ◎ ＋ □ 人）为占位方案，Android 端应使用矢量图标；两端最终需统一为图标资源。
+1. 鸿蒙用 `vp/fp`，Android 用 `dp/sp`；**数值可对齐，单位不可混写**；Android 深浅色由 `colorScheme` + `isSystemInDarkTheme()` 自动重组。
+2. 鸿蒙端字符图标（⌂ ◎ ＋ □ 人）是占位方案，Android 端用矢量图标；两端图标资源尚未统一。
 

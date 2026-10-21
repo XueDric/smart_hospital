@@ -1,10 +1,7 @@
 # 服务端托管的后台管理台（`/admin/`）
 
-> 一句话：`server/admin-web/` 是**零构建的纯静态浏览器管理台**，由服务端自己挂在 `/admin`，
-> 与 REST API **同源同端口**；数据一律走 `/api/v1/admin/*`，页面本身不做任何鉴权。
->
-> 需求来自「智慧医院导诊后台」的设计稿：**AI 模型配置**（多模型、类型、提供方、
-> 温度、上限、启停、连通性测试、失效配置缓存）+ 侧栏其余页面。
+> 一句话：`server/admin-web/` 是**零构建的纯静态浏览器管理台**，由服务端自己挂在 `/admin`，与 REST API **同源同端口**；数据一律走 `/api/v1/admin/*`，页面本身不做任何鉴权。
+> 需求来自「智慧医院导诊后台」设计稿：**AI 模型配置**（多模型、类型、提供方、温度、上限、启停、连通性测试、失效配置缓存）+ 侧栏其余页面。
 
 ---
 
@@ -16,8 +13,7 @@
 | ❌ 另起一个前端工程（Vue/React + npm 构建） | 引入 `node_modules` 与打包产物 ⇒ 出现"源码是新的、跑起来是旧的"，并且本仓的管理台**没有任何前端构建链**（`server/admin-web/` 内没有 `package.json`，也不参与 `build.ps1`；vendored 的轻舟快照里另有一份上游 Vue3 演示 `admin-web/`，与本管理台无关、不参与构建）；为 11 个页面引入一整套工具链，维护成本远大于收益 |
 | ✅ **服务端托管的纯静态 SPA** | 同源同端口 ⇒ **没有 CORS、没有证书、没有反向代理**话题；改完刷新即生效；仓里只多出几个 `.html/.css/.js` 文本文件；`git diff` 看得见每一行 |
 
-**代价（明确接受）**：没有框架 ⇒ 没有响应式与虚拟 DOM，页面用原生 `document.createElement`
-风格的 `h()` 助手拼装（`js/ui.js`）；数据量按"管理台"规模假设（一页 ≤ 200 行）。
+**代价（明确接受）**：没有框架 ⇒ 没有响应式与虚拟 DOM，页面用原生 `document.createElement` 风格的 `h()` 助手拼装（`js/ui.js`）；数据量按"管理台"规模假设（一页 ≤ 200 行）。
 
 ---
 
@@ -35,31 +31,16 @@ start http://127.0.0.1:8091/admin
 ```
 
 - 启动 banner 会打印 `管理台：http://<addr>:<port>/admin/`。
-- **找不到目录时不会静默降级**：`pickAdminWebDir()` 依次找 `admin-web` / `server/admin-web` /
-  `../admin-web`（相对**进程工作目录**），找不到就打印告警并**不挂载**（API 不受影响）。
-  ⇒ 从仓库根目录起服务端时，第 2 个候选会命中；从 `server/` 起是第 1 个。
-- 为什么判"目录存在"而不是"`index.html` 存在"：部署不全时应该报"管理台不可用"，
-  而不是让它表现为"功能没做"。
+- **找不到目录时不会静默降级**：`pickAdminWebDir()` 依次找 `admin-web` / `server/admin-web` / `../admin-web`（相对**进程工作目录**），找不到就打印告警并**不挂载**（API 不受影响）。从仓库根目录起服务端时第 2 个候选命中，从 `server/` 起是第 1 个。
+- 判"目录存在"而不是"`index.html` 存在"：部署不全时应该报"管理台不可用"，而不是让它表现为"功能没做"。
 
 ---
 
 ## 三、目录结构
 
-```
-server/admin-web/
-├── index.html          壳页面（登录视图 + 顶栏/侧栏/内容区 + modal/toast 挂载点）
-├── favicon.svg         纯文本 SVG 图标（不引二进制资源）
-├── css/style.css       无框架样式（CSS 变量 + 十几个组件类）
-└── js/
-    ├── api.js          fetch 封装：统一信封拆包、ApiError、令牌存取、401 回调
-    ├── ui.js           h/table/card/toast/openModal/confirmBox/fmtTime/fmtPermille…
-    ├── pages.js        11 个页面（注册进 window.HOSPITAL_PAGES）
-    └── app.js          登录流程 + 侧栏生成 + #/<id> 哈希路由 + 面包屑
-```
+`server/admin-web/`：`index.html`（壳页面：登录视图 + 顶栏/侧栏/内容区 + modal/toast 挂载点）、`favicon.svg`（纯文本 SVG 图标，不引二进制资源）、`css/style.css`（无框架样式：CSS 变量 + 十几个组件类）、`js/api.js`（fetch 封装：统一信封拆包、ApiError、令牌存取、401 回调）、`js/ui.js`（`h/table/card/toast/openModal/confirmBox/fmtTime/fmtPermille`…）、`js/pages.js`（11 个页面，注册进 `window.HOSPITAL_PAGES`）、`js/app.js`（登录流程 + 侧栏生成 + `#/<id>` 哈希路由 + 面包屑）。
 
-⚠ `index.html` 里的资源**必须写绝对路径**（`/admin/css/style.css`）：裸 `/admin`（不带尾斜杠）
-会被静态层按目录认领并回 `index.html`，此时相对路径会被解析成 `/css/style.css` ⇒ 404。
-理由见 [../server/README.md](../../server/README.md) 坑 **AL**。
+`index.html` 里的资源**必须写绝对路径**（`/admin/css/style.css`）：裸 `/admin`（不带尾斜杠）会被静态层按目录认领并回 `index.html`，此时相对路径会被解析成 `/css/style.css` ⇒ 404。理由见 [../server/README.md](../../server/README.md) 坑 **AL**。
 
 ---
 
@@ -71,7 +52,7 @@ server/admin-web/
 | 用户管理 `users` | `GET/POST /api/v1/admin/users`、`POST /:id/password` | 列表模式（`limit/offset/role/status`）；口令材料**永不出现**在响应里 |
 | 科室管理 `departments` | `GET/POST/PUT/DELETE /api/v1/admin/departments` | 删除遇 `BASE_IN_USE` 时追问是否 `?force=true` 软删；列表底部有**条数行**（`共 N 个科室，本页 M 条`，截断时追加警告） |
 | 医生管理 `doctors` | `GET/POST/PUT/DELETE /api/v1/admin/doctors` | 科室下拉**加载完成才渲染**（失败原因写在控件旁的 hint 上）；列表底部有**条数行**（`共 N 位医生`） |
-| 排班号源 `schedules` | `GET /api/v1/schedules`、`POST/PUT /api/v1/admin/schedules[/:id]` | 页面自算 `已约 = 放号 − 余量`；编辑弹窗里的 `version` 标注"乐观锁，不要改"；底部写的是**「本页 N 条」**（该接口只回 `count`，没有 `total`） |
+| 排班号源 `schedules` | `GET /api/v1/schedules`、`POST/PUT /api/v1/admin/schedules[/:id]` | 页面自算 `已约 = 放号 − 余量`；编辑弹窗里的 `version` 标注"乐观锁，不要改"；底部写「本页 N 条」（该接口只回 `count`，没有 `total`） |
 | **AI 模型配置** `ai-models` | `GET/POST/PUT/DELETE /api/v1/admin/ai/models[/:id]`、`POST /invalidate`、`POST /:id/test` | 温度只对 `CHAT` 有意义，`EMBEDDING` 行显示 `—` |
 | AI 全局设置 `ai-settings` | `GET/PUT/DELETE /api/v1/admin/ai/settings[/:key]` | 密钥项只显示"是否已设置 + 引用类型"，可回默认值 |
 | Prompt 模板 `ai-prompts` | `GET/PUT/DELETE /api/v1/admin/ai/prompts[/:name]` | 三项：`dept` / `previsit` / `redflag`；**空串 = 删行恢复默认**；服务端校验必需占位符与长度 |
@@ -82,41 +63,24 @@ server/admin-web/
 
 ### 4.1 列表条数与"截断"的显示纪律
 
-服务端分页给了 `total`，但**没有 `limit` 的请求不等于"全都要"**：`limit <= 0` 走默认值，
-默认也是 200（`server/src/http_base.cj` 的 `BASE_LIST_DEFAULT_LIMIT` / `BASE_LIST_MAX_LIMIT`）。
-所以前端（`js/pages.js`）定下三条规矩：
+服务端分页给了 `total`，但**不带 `limit` 的请求不等于"全都要"**：`limit <= 0` 走默认值，默认也是 200（`server/src/http_base.cj` 的 `BASE_LIST_DEFAULT_LIMIT` / `BASE_LIST_MAX_LIMIT`）。前端（`js/pages.js`）因此定下三条规矩：
 
-1. **凡列表/下拉一律显式传 `limit: PAGE_MAX`**（`const PAGE_MAX = 200`，与服务端上限对齐）。
-   不传时"被截断"在界面上完全看不出来——这是最危险的一种静默。
-2. **列表页底部必须有条数行**：`共 N <单位>，本页 M 条（offset=…，limit=…）`；
-   仅当 `total > offset + count` 时才追加一句红字警告「还有 K 个未显示（单页上限 200）」。
-   把"库里就这么多"和"上限挡住了一部分"分开——前者正常，后者使用者必须知道。
-3. **下拉被截断时用控件旁的 hint 说明**（下拉里只能显示 `items`，装不下"还有多少条"）：
-   `⚠ 仅显示前 200 个科室（共 431 个科室，超出单页上限 200）—— 请先用搜索/筛选缩小范围`。
-   典型受害场景：排班表单的**医生**下拉是必填项，超过 200 位时排在后面的科室会显示成"没有医生"。
+1. **凡列表/下拉一律显式传 `limit: PAGE_MAX`**（`const PAGE_MAX = 200`，与服务端上限对齐）。不传时"被截断"在界面上完全看不出来 —— 这是最危险的一种静默。
+2. **列表页底部必须有条数行**：`共 N <单位>，本页 M 条（offset=…，limit=…）`；仅当 `total > offset + count` 时追加一句红字警告「还有 K 个未显示（单页上限 200）」—— 把"库里就这么多"和"上限挡住了一部分"分开，前者正常，后者使用者必须知道。
+3. **下拉被截断时用控件旁的 hint 说明**（下拉里只能显示 `items`，装不下"还有多少条"）：`仅显示前 200 个科室（共 431 个科室，超出单页上限 200）—— 请先用搜索/筛选缩小范围`。典型受害场景：排班表单的**医生**下拉是必填项，超过 200 位时排在后面的科室会显示成"没有医生"。
 
-⚠ 这条纪律被钉进了冒烟：`tests/admin-web-smoke.mjs` 的 `REQUIRED_TEXT` 要求科室页正文含
-`共 … 个科室`、医生页含 `共 … 位医生`、排班页含 `本页 … 条`。这些字眼掉了页面照样能渲染、
-正文照样够长，只有真的点进去才会发现，所以必须由冒烟拦。
+这条纪律被钉进了冒烟：`tests/admin-web-smoke.mjs` 的 `REQUIRED_TEXT` 要求科室页正文含 `共 … 个科室`、医生页含 `共 … 位医生`、排班页含 `本页 … 条`。这些字眼掉了页面照样能渲染、正文照样够长，只有真的点进去才会发现，所以必须由冒烟拦。
 
 ---
 
 ## 五、鉴权与安全口径
 
-1. **静态页面本身不鉴权**：任何人拿到 `index.html` 都能打开登录页。这是刻意的——
-   页面里没有任何数据，数据全部来自逐条校验的 `/api/v1/admin/*`。
-2. **令牌**：`POST /api/v1/auth/login` 拿不透明令牌，存 `localStorage`（键 `hospital_admin_token`），
-   之后所有请求带 `Authorization: Bearer`。`401` ⇒ 清会话 + 回登录页（`API.setUnauthorizedHandler`）。
-   启动时用 `/auth/me` **验证**既有令牌并要求 `role === 'admin'`（不是"有令牌就当登录成功"）。
-3. **密钥永不回显**：配置里只存引用（`env:变量名` / `file:路径`），接口只回
-   `key_ref_set`（有没有）/ `key_ref_kind`（env|file）/ `key_source`（本条|全局）。
-   连 `env:变量名` 本身也不回——变量名会泄露部署约定。
-4. **账号列表不读口令材料**：`AuthRepo.listUsers()` 的 SELECT **故意不选** `pw_salt/pw_hash`，
-   "列表被整页导出"是最常见的泄露路径（`auth-check.ps1` 有断言钉住）。
-5. **连通性测试不泄漏密钥**：探测失败时的 `reason` 是脱敏后的（`aiRedact`），
-   且**失败也是结果**（恒 `200` + `probe.ok=false`），不会被误当成服务故障。
-6. **同源**：页面与 API 同端口 ⇒ 不涉及 CORS；服务端 CORS 中间件仍是默认值（`origin="*"`），
-   因为页面本身不使用跨源请求。
+1. **静态页面本身不鉴权**：任何人拿到 `index.html` 都能打开登录页。这是刻意的 —— 页面里没有任何数据，数据全部来自逐条校验的 `/api/v1/admin/*`。
+2. **令牌**：`POST /api/v1/auth/login` 拿不透明令牌，存 `localStorage`（键 `hospital_admin_token`），之后所有请求带 `Authorization: Bearer`。`401` ⇒ 清会话 + 回登录页（`API.setUnauthorizedHandler`）。启动时用 `/auth/me` **验证**既有令牌并要求 `role === 'admin'`（不是"有令牌就当登录成功"）。
+3. **密钥永不回显**：配置里只存引用（`env:变量名` / `file:路径`），接口只回 `key_ref_set`（有没有）/ `key_ref_kind`（env|file）/ `key_source`（本条|全局）。连 `env:变量名` 本身也不回 —— 变量名会泄露部署约定。
+4. **账号列表不读口令材料**：`AuthRepo.listUsers()` 的 SELECT **故意不选** `pw_salt/pw_hash`，"列表被整页导出"是最常见的泄露路径（`auth-check.ps1` 有断言钉住）。
+5. **连通性测试不泄漏密钥**：探测失败时的 `reason` 是脱敏后的（`aiRedact`），且**失败也是结果**（恒 `200` + `probe.ok=false`），不会被误当成服务故障。
+6. **同源**：页面与 API 同端口 ⇒ 不涉及 CORS；服务端 CORS 中间件仍是默认值（`origin="*"`），因为页面本身不使用跨源请求。
 
 ---
 
@@ -133,55 +97,33 @@ server/admin-web/
 | `POST /api/v1/admin/ai/models/invalidate` | 同时失效模型与全局设置两份缓存，回 `{invalidated, model_cache_ttl_secs, settings_cache_ttl_secs, next_call_reloads, cleared_at}` |
 | `POST /api/v1/admin/ai/models/:id/test` | 从**库里**取该行（不接受请求体里的临时值，否则"测通了但存的是另一份"），恒 `200`，回 `{id, probe:{ok,kind,model,request_url,elapsed_ms,http_status,key_source,reason,sample}}`；**刻意绕过 `ai.enabled`** —— 排查"配置对不对"不该被总开关挡住 |
 
-校验闸门（写入前）：`https://` 强制（明文调用大模型 = 密钥裸奔）、`temperature ∈ [0,2]`、
-`max_tokens ∈ [64,8192]`、名称/提供方/地址/模型名非空且不含控制字符、`key_ref` 非空时必须是
-`env:` / `file:` 引用。
+校验闸门（写入前）：`https://` 强制（明文调用大模型 = 密钥裸奔）、`temperature ∈ [0,2]`、`max_tokens ∈ [64,8192]`、名称/提供方/地址/模型名非空且不含控制字符、`key_ref` 非空时必须是 `env:` / `file:` 引用。
 
 ### 6.2 账号列表（`GET /api/v1/admin/users` 双模式）
 
 - 给了 `login_name` ⇒ **精确查询**（找不到仍 `404 USER_NOT_FOUND`）。
-- 没给 ⇒ 列表模式：`limit`（默认 50，越界回默认）、`offset`、`role`、`status`（白名单外的值 =
-  不筛），回 `{items, count, total, limit, offset}`；列表项键名与精确查询**保持一致**（`user_id`）。
+- 没给 ⇒ 列表模式：`limit`（默认 50，越界回默认）、`offset`、`role`、`status`（白名单外的值 = 不筛），回 `{items, count, total, limit, offset}`；列表项键名与精确查询**保持一致**（`user_id`）。
 
 ### 6.3 排班可改（`PUT /api/v1/admin/schedules/:id`）
 
-号源写错或医生停诊时可以改，不必另开一条排班（另开会留下老排班连同已经约出去的号继续可约）。
-支持 PATCH `total_num` / `enabled` + `version` 乐观锁：
+号源写错或医生停诊时可以改，不必另开一条排班（另开会留下老排班连同已经约出去的号继续可约）。支持 PATCH `total_num` / `enabled` + `version` 乐观锁：
 
-- 不变量"放号数 ≥ 已约数"放在**一条原子 SQL 里**（`remain_num + (? - total_num) >= 0`），
-  影响 0 行时回读分辨"不存在 / 版本冲突 / 数太小"三类，**不猜**；
+- 不变量"放号数 ≥ 已约数"放在**一条原子 SQL 里**（`remain_num + (? - total_num) >= 0`），影响 0 行时回读分辨"不存在 / 版本冲突 / 数太小"三类，**不猜**；
 - 改 `total_num` 时 `remain_num` 同步加减同一差值 ⇒ 已约数保持不变（不会超卖）；
 - `404 SCHEDULE_NOT_FOUND` / `409 SCHEDULE_CONFLICT`（消息带上双方版本号）/ `400`。
 
 ### 6.4 设置的写入闸门
 
-`aiSettingKeyKnown()` 认 `prompt.*` / `ai.tool.*`，因此不能拿它当闸门 —— 否则
-`PUT /api/v1/admin/ai/settings/prompt.dept` 能**绕过** `PromptRepo` 的占位符/长度校验直接落库。
-`PUT .../ai/settings/:key` 只接受**登记表里的 `ai.*` 项**，其余一律 `400` 并在消息里
-指路（Prompt 走 `PUT /admin/ai/prompts/:name`，工具走 `PUT /admin/ai/tools/:name`）。
+`aiSettingKeyKnown()` 认 `prompt.*` / `ai.tool.*`，因此不能拿它当闸门 —— 否则 `PUT /api/v1/admin/ai/settings/prompt.dept` 能**绕过** `PromptRepo` 的占位符/长度校验直接落库。`PUT .../ai/settings/:key` 只接受**登记表里的 `ai.*` 项**，其余一律 `400` 并在消息里指路（Prompt 走 `PUT /admin/ai/prompts/:name`，工具走 `PUT /admin/ai/tools/:name`）。
 
 ---
 
 ## 七、运行时怎么用这些配置
 
-```
-ai_model 表（多条命名配置，每种类型一个默认）
-   │  defaultOf(kind)：优先 enabled + is_default，取 id 最小；否则该类型第一条 enabled；都没有 ⇒ None
-   ▼
-AiSettingsRepo.options(now)  ← KV 里的 ai.enabled / 旧 ai.endpoint / ai.model / ai.key_ref
-   │  默认模型行**整体覆盖** KV（端点、模型、密钥、温度、上限）
-   │  · key_ref 为空 = 回落全局 ai.key_ref（不覆盖）
-   │  · endpoint 过 aiModelRequestUrl() 拼成**完整请求 URL**（/chat/completions）
-   ▼
-AiRuntimeOptions（含 temperature）
-   ▼
-ai_call.cj：请求体 model / max_tokens / messages / **temperature**
-```
+`ai_model` 表（多条命名配置，每种类型一个默认）→ `defaultOf(kind)`：优先 `enabled + is_default`，取 id 最小；否则该类型第一条 enabled；都没有 ⇒ `None`。默认模型行**整体覆盖** `AiSettingsRepo.options(now)` 读到的 KV（`ai.enabled` / 旧 `ai.endpoint` / `ai.model` / `ai.key_ref`）：端点、模型、密钥、温度、上限全部以模型行为准，唯 `key_ref` 为空时回落全局 `ai.key_ref`；`endpoint` 经 `aiModelRequestUrl()` 拼成**完整请求 URL**（`/chat/completions`）。最终 `AiRuntimeOptions`（含 temperature）交给 `ai_call.cj`，请求体带 `model` / `max_tokens` / `messages` / **`temperature`**。
 
-- **不发 `temperature`** 等于把决定性交给服务商默认值（通常是 1.0）⇒ 同一份主诉在
-  不同服务商上表现不一致，因此请求体随行下发，缺省 `0.3`。
-- 缓存 TTL 5 秒（`aiModel.reload` / `AiSettingsRepo.reload`），任何写操作都会 `invalidate()`
-  ⇒ "保存后自动失效缓存，下一次请求动态构建实例，无需重启"（页面提示语说的就是这件事）。
+- **不发 `temperature`** 等于把决定性交给服务商默认值（通常是 1.0）⇒ 同一份主诉在不同服务商上表现不一致，因此请求体随行下发，缺省 `0.3`。
+- 缓存 TTL 5 秒（`aiModel.reload` / `AiSettingsRepo.reload`），任何写操作都会 `invalidate()` ⇒ 保存后自动失效缓存，下一次请求动态构建实例，无需重启。
 
 ---
 
@@ -203,34 +145,19 @@ ai_call.cj：请求体 model / max_tokens / messages / **temperature**
 #       --wait / --net-idle / --min-chars（页面静置与正文长度门禁；默认按**网络空闲**等待）
 ```
 
-> ⚠ 本机 **1024–15000 是 Windows 动态端口范围**（`netsh int ipv4 show dynamicport tcp`），
-> 显式 bind 该区间会拿到 `WSAEACCES(10013)`「以一种访问权限不允许的方式做了一个访问套接字的尝试」。
-> 服务端/冒烟脚本请用 **≥15001** 的端口（文档里的 8091 是给正常机器写的）。
+本机 **1024–15000 是 Windows 动态端口范围**（`netsh int ipv4 show dynamicport tcp`），显式 bind 该区间会拿到 `WSAEACCES(10013)`「以一种访问权限不允许的方式做了一个访问套接字的尝试」。服务端/冒烟脚本请用 **≥15001** 的端口（文档里的 8091 是给正常机器写的）。
 
 ---
 
 ## 九、已知边界（明确未做）
 
 1. **患者档案 / 症状标签库 / Agent 执行观测** 三页未实现：后端没有对应接口（`triage_stat` 只有聚合）。
-2. **`EMBEDDING` 只做"配置 + 连通性测试"**：不做批量向量化回填；生产检索仍走关键词路
-   （`embedding_note` 在知识库页原样显示这个事实）。
-3. **`ai.ca_bundle_path` 仍不支持**：stdx 1.1.3.1 的 `TlsClientConfig` 只有 mTLS、没有信任锚入口，
-   写入会被 400 拒绝（写明"不会生效，故拒绝写入"）。
+2. **`EMBEDDING` 只做"配置 + 连通性测试"**：不做批量向量化回填；生产检索仍走关键词路（`embedding_note` 在知识库页原样显示这个事实）。
+3. **`ai.ca_bundle_path` 仍不支持**：stdx 1.1.3.1 的 `TlsClientConfig` 只有 mTLS、没有信任锚入口，写入会被 400 拒绝（写明"不会生效，故拒绝写入"）。
 4. 管理台**不做**多用户/角色区分：能登录管理台的就是 `admin`（与 `/api/v1/admin/*` 的权限口径一致）。
-5. **权限动作**：AI 全套端点用 **`Action.ManageAi`**，`/admin/users` 用 **`Action.ManageUser`**（都仍是 admin-only；
-   403 的 message 里会打印要求的动作名，可直接看到是哪一个）。
-   例外：`http_p4.cj:421` 的"复诊重开"用 `Action.ManageSchedule`（属排班域动作）；
-   `/auth/sessions/*`（查看/踢设备）**不做**动作检查 —— 它们只作用于调用者自己的 `userId`，是自服务。
-6. **列表分页**：`/admin/departments`、`/admin/doctors` 支持 `limit`/`offset`，响应带 `total`
-   （同 `include_disabled`/`department_id` 过滤下的**真总数**）、`limit`、`offset`；
-   `limit` 缺省/非数字/<1/>200 ⇒ **200**，`offset` 非法 ⇒ 0。注意：① 公共 `/api/v1/departments`、
-   `/api/v1/doctors` **不分页**（截断的下拉框对患者不可见；要控规模请用 `enabled=0`）；
-   ② 管理台只有用户管理有上一页/下一页，其余列表按显式 `limit=200` 拉取，**超出部分在界面上有红字警告**
-   （见 §4.1）；排班号源接口只回 `count`，所以页面写的是"本页 N 条"而不是"共 N 条"。
-7. **窄屏（手机 / 竖屏）**：侧栏横过来当标签条、表格在卡片内部横向滚动、弹窗全宽、顶栏换行（见 §十一）。
-   已知不足：① 表格的「操作」列要**横向滑一下**才看得到（表内滚动，属预期）；
-   ② `启用` 这种 2 字复选框标签在窄屏会**竖排折行**（能读，不好看，没为它单独调样式）；
-   ③ 端内 `feature-admin` 看板**没有** arrived/waiting 计数（网页看板有）。
+5. **权限动作**：AI 全套端点用 **`Action.ManageAi`**，`/admin/users` 用 **`Action.ManageUser`**（都仍是 admin-only；403 的 message 里会打印要求的动作名，可直接看到是哪一个）。例外：`http_p4.cj:421` 的"复诊重开"用 `Action.ManageSchedule`（属排班域动作）；`/auth/sessions/*`（查看/踢设备）**不做**动作检查 —— 它们只作用于调用者自己的 `userId`，是自服务。
+6. **列表分页**：`/admin/departments`、`/admin/doctors` 支持 `limit`/`offset`，响应带 `total`（同 `include_disabled`/`department_id` 过滤下的**真总数**）、`limit`、`offset`；`limit` 缺省/非数字/<1/>200 ⇒ **200**，`offset` 非法 ⇒ 0。① 公共 `/api/v1/departments`、`/api/v1/doctors` **不分页**（截断的下拉框对患者不可见；要控规模请用 `enabled=0`）；② 管理台只有用户管理有上一页/下一页，其余列表按显式 `limit=200` 拉取，**超出部分在界面上有红字警告**（见 §4.1）；排班号源接口只回 `count`，所以页面写的是"本页 N 条"而不是"共 N 条"。
+7. **窄屏（手机 / 竖屏）**：侧栏横过来当标签条、表格在卡片内部横向滚动、弹窗全宽、顶栏换行（见 §十一）。已知不足：① 表格的「操作」列要**横向滑一下**才看得到（表内滚动，属预期）；② `启用` 这种 2 字复选框标签在窄屏会**竖排折行**（能读，不好看，没为它单独调样式）；③ 端内 `feature-admin` 看板**没有** arrived/waiting 计数（网页看板有）。
 
 ---
 
@@ -252,8 +179,7 @@ ai_call.cj：请求体 model / max_tokens / messages / **temperature**
 
 ## 十一、窄屏（手机 / 模拟器）适配
 
-**窄屏视口**：HarmonyOS 模拟器 Pura 90，1320×2856 @560dpi ⇒ 浏览器视口约 **377 CSS px**。
-`@media (max-width: 820px)` 下侧栏需要替代导航，规则如下：
+**窄屏视口**：HarmonyOS 模拟器 Pura 90，1320×2856 @560dpi ⇒ 浏览器视口约 **377 CSS px**。`@media (max-width: 820px)` 下侧栏需要替代导航，规则如下：
 
 | # | 现象 | 根因 | 规则 |
 | --- | --- | --- | --- |
@@ -271,10 +197,9 @@ ai_call.cj：请求体 model / max_tokens / messages / **temperature**
 # 3) 浏览器进 http://127.0.0.1:18097/admin/ ，用管理员账号登录
 ```
 
-> ⚠ 模拟器驱动有三个坑（息屏上锁 / IME 吞字 / 浏览器缓存），见 §十 的 AP、AQ、AR 三行。
+模拟器驱动有三个坑（息屏上锁 / IME 吞字 / 浏览器缓存），见 §十 的 AP、AQ、AR 三行。
 
 ### 11.1 配套门禁
 
 - `tests\admin-web-smoke.mjs`（无头 Edge + CDP，见 §八）：退出码 **0**，11 页渲染 + 写路径全绿，四个错误数组全空。
-- 模拟器逐页：`#/dashboard`、`#/users`（含新增弹窗）、`#/ai-models`（含新增弹窗）。
-  其余页共用同一批组件（顶栏/标签条/表格/弹窗），由上面的冒烟脚本覆盖。
+- 模拟器逐页：`#/dashboard`、`#/users`（含新增弹窗）、`#/ai-models`（含新增弹窗）。其余页共用同一批组件（顶栏/标签条/表格/弹窗），由上面的冒烟脚本覆盖。

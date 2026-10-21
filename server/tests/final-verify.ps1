@@ -106,7 +106,7 @@ try {
         @{ n = 'rate-limit-check'; p = @{ Base = $dev; AdminPw = $pw } },
         @{ n = 'p1-extra-check'; p = @{ Base = $dev; AdminPw = $pw } },
         # doc-counts（评审 P1-6）：**文档里的数字必须是实测出来的**。它自己会跑 accept 与
-        # triagetest 数 [PASS] 行，再和 README/CHANGELOG/项目说明 里的数字对账；
+        # triagetest 数 [PASS] 行，再和 README/项目说明 里的数字对账；
         # 数字对不上就 exit 1。原先它只"能手动跑"、没进任何门禁 —— 所以文档能一直烂着。
         @{ n = 'doc-counts'; p = @{ Dsn = $dsn } }
     )

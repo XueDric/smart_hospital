@@ -192,7 +192,7 @@ $checks = @(
     @{ File = "docs\部署说明.md";       Pattern = '`通过 (?<n>\d+) 项，失败 0 项`'; Want = 'triagetest' },
     # ── 提交数：三处都锚在 tag 上，用 tag 指向的提交数核对（见 $actual['commits'] 的注释）──
     @{ File = "README.md";                Pattern = '\| 提交历史 \| (?<n>\d+) 个提交'; Want = 'commits' },
-    @{ File = "docs\项目说明.md"; Pattern = '共 (?<n>\d+) 个提交）'; Want = 'commits' },
+    @{ File = "docs\项目说明.md"; Pattern = '共 (?<n>\d+) 个提交'; Want = 'commits' },
     # ── SYSTEM-DESIGN 的"51 + 17 + N 项"曾漏改 triagetest（110 → 139）──
     @{ File = "docs\系统设计.md";    Pattern = '51 \+ 17 \+ (?<n>\d+) 项'; Want = 'triagetest' },
     # ── HAP 字节数（带千位分隔，比较时剥掉逗号）──

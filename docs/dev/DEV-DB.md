@@ -1,8 +1,6 @@
 # 仓库自管的开发数据库（devdb）
 
-> **为什么要有它**：项目早期借用本机另一台便携 MariaDB（端口 **3307**、库 `hospital`），
-> 结果数据混在一起、权限也受那台的 root 口令牵制（本项目账号**没有建库权限**，
-> 补测试库时卡住）。现在本仓库自带一套，**与本机其它项目完全隔离**。
+> **为什么要有它**：项目早期借用本机另一台便携 MariaDB（端口 **3307**、库 `hospital`），数据混在一起、权限也受那台的 root 口令牵制（本项目账号**没有建库权限**，补测试库时卡住）。所以本仓库自带一套，**与本机其它项目完全隔离**。
 
 ---
 
@@ -19,20 +17,13 @@
 | 库 | `hospital`（开发）、`hospital_test`（**测试专用**，`accept` 只认它） |
 | 版本 | MariaDB **11.4.13**（复用本机已有便携包，**不需要联网下载**） |
 
-### ⚠ 安全：口令写在仓库里是可以的，**前提是它只绑回环**
+### 安全：口令写在仓库里是可以的，**前提是它只绑回环**
 
-本文件把 root 口令**明文写出来**，这是刻意的（本机隔离实例，便于照做）。
-但它成立有个**硬前提**：`devdb.ps1` 启动时带 `--bind-address=127.0.0.1`。
+root 口令明文写在这里是刻意的（本机隔离实例，便于照做），硬前提是 `devdb.ps1` 启动时带 `--bind-address=127.0.0.1`：不带它时 mysqld 监听 `0.0.0.0:3317`，同局域网任何人都能连，只靠账号 host 授权（`'hospital'@'localhost'`）是**单层**防护，一旦有人补了 `@'%'` 账号就对外敞开；绑回环则是**结构性**隔离——网络层根本连不到，与"有哪些账号"无关。
 
-- 实测过：**不带**这个参数时 mysqld 监听 `0.0.0.0:3317`，同局域网任何人都能连；
-  只靠账号的 host 授权（`'hospital'@'localhost'`）兜着 ——
-  那是**单层**防护，一旦有人补了 `@'%'` 账号就对外敞开。
-- 绑回环是**结构性**隔离：网络层根本连不到，与"有哪些账号"无关。
+> 自查：`Get-NetTCPConnection -State Listen | Where-Object LocalPort -eq 3317` —— `LocalAddress` 必须是 `127.0.0.1`，**不该**是 `0.0.0.0`。
 
-> 自查：`Get-NetTCPConnection -State Listen | Where-Object LocalPort -eq 3317`
-> —— `LocalAddress` 必须是 `127.0.0.1`，**不该**是 `0.0.0.0`。
-
-> ⚠ **绝不要**把这个实例暴露到公网。
+> **绝不要**把这个实例暴露到公网。
 
 ---
 
@@ -51,7 +42,7 @@ cd server
 .\devdb.ps1 stop
 ```
 
-首次初始化用 `.\devdb.ps1 init`（`start` 会自动检测并调用）。
+首次初始化用 `.\devdb.ps1 init`（`start` 会自动检测并调用）。`\devdb.ps1 status` 看状态、`stop` 停止，见上面的代码块。
 
 ---
 
@@ -74,10 +65,7 @@ mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital_test  # 测试（acce
 
 ## 四、测试脚本怎么指向它
 
-测试脚本的连接参数**全部从 `-Dsn` 派生**（见 `tests\common.ps1` 顶部说明）——
-这是修过的一个真缺陷：原先 DSN 与 `-MySqlPort/-MySqlDb` 是**两份独立参数**，
-很容易"服务端写 A 库、脚本查 B 库"，实测就踩了（断言一直读到空结果，
-看起来像 SQL 坏了，其实是查错了库）。
+测试脚本的连接参数**全部从 `-Dsn` 派生**（见 `tests\common.ps1` 顶部说明）：DSN 与 `-MySqlPort/-MySqlDb` 若是两份独立参数，很容易"服务端写 A 库、脚本查 B 库"，断言读到空结果、看起来像 SQL 坏了。
 
 ```powershell
 $dsn = "mysql://hospital:hospital_dev_2026@127.0.0.1:3317/hospital_test"
@@ -95,26 +83,17 @@ $pw = "<上一步打印的管理员口令>"
 .\tests\stress-booking.ps1 -Base http://127.0.0.1:8091 -Tokens 50 -ScheduleTotal 50 -Dsn $dsn -AdminPw $pw
 ```
 
-### ⚠ 前提：这些脚本必须跑在**独占的测试库**上
+### 前提：这些脚本必须跑在**独占的测试库**上
 
-多条门禁在 `[0] 准备夹具` 里直接写库，其中几条是**不带 WHERE 的全表删**
-（`emr-check.ps1:115-117` 删 `medical_record`/`appointment`/`schedule`、`:121-122` 删
-`previsit_session`/`triage_stat`；`workbench-check.ps1:103`、`revision-check.ps1:103-104`
-删 `medical_record(_revision)`；`previsit-bridge-check.ps1:121-122`、
-`previsit-check.ps1:35/242/397-399`；`stress-booking.ps1:104-111` 连
-`doctor`/`department`/`patient` 一起删）。同一个脚本里更细的夹具反倒都带 WHERE
-（`id >= 703000`/`704000`/`707000`），所以全表删看着不整齐 —— 但它的前提一直是同一句话，
-只是这些前提一直没被写下来：
+多条门禁在 `[0] 准备夹具` 里直接写库，其中几条是**不带 WHERE 的全表删**（`emr-check.ps1:115-117` 删 `medical_record`/`appointment`/`schedule`、`:121-122` 删 `previsit_session`/`triage_stat`；`workbench-check.ps1:103`、`revision-check.ps1:103-104` 删 `medical_record(_revision)`；`previsit-bridge-check.ps1:121-122`、`previsit-check.ps1:35/242/397-399`；`stress-booking.ps1:104-111` 连 `doctor`/`department`/`patient` 一起删）；同脚本里更细的夹具带 WHERE（`id >= 703000`/`704000`/`707000`）。
 
-> **跑这些脚本的库必须是可以随时清空的测试库**（本文一直用的 `hospital_test`），
-> **不要**指向 `hospital`（开发库），更不要指向任何有真实数据的库。
+> **跑这些脚本的库必须是可以随时清空的测试库**（`hospital_test`），**不要**指向 `hospital`（开发库），更不要指向任何有真实数据的库。
 
-`accept` 只认显式测试库是同一口径的另一半（见 §一）；`final-verify.ps1` 之所以自己起
-临时实例、自己 `create-admin`、跑完即停，也是为了不把"环境"变成对人肉操作的依赖。
+`accept` 只认显式测试库是同一口径的另一半（见 §一）；`final-verify.ps1` 自己起临时实例、自己 `create-admin`、跑完即停，也是为了让环境不依赖人肉操作。
 
-### ⚠ 新建**第三个**库时，`create-db` 必须带 `--admin-dsn`
+### 新建**第三个**库时，`create-db` 必须带 `--admin-dsn`
 
-`hospital` 账号的实际授权是**按库逐个授**的（本机实测）：
+`hospital` 账号的授权是**按库逐个授**的：
 
 ```
 GRANT CREATE ON *.*                          ← 全局：只能"建库"
@@ -122,7 +101,7 @@ GRANT ALL PRIVILEGES ON `hospital`.*         ← 库级：权限在这里
 GRANT ALL PRIVILEGES ON `hospital_test`.*
 ```
 
-所以**它能建出第三个库，却对新库没有任何权限**。`create-db` 现在会当场探测并告诉你：
+所以**它能建出第三个库，却对新库没有任何权限**。`create-db` 会当场探测并告诉你：
 
 ```powershell
 # ✅ 推荐：给一个有 GRANT OPTION 的 DSN，一步授好
@@ -132,27 +111,19 @@ $adm = "mysql://root:devroot2026@127.0.0.1:3317/"    # 管理员 DSN 可以不�
 # 不给 --admin-dsn 时：它**明确失败**（exit=2），并打印出可复制的 GRANT 命令
 ```
 
-> ⚠ **这一步不做，`check-db` / `accept` / `serve` 都会在 `migrateSchema` 的
-> `ALTER` 上被拒**。原缺陷正是「`create-db` 报『库已就绪』、下一条命令才炸」——
-> 失败被推迟，而且**报错的地方不是出错的地方**。现在 `create-db` **不会**再把
-> "不可用"报成"就绪"。
+> **这一步不做，`check-db` / `accept` / `serve` 都会在 `migrateSchema` 的 `ALTER` 上被拒**；`create-db` **不会**把"不可用"报成"就绪"。
 >
-> 📌 业务账号**不能**给自己授权，这是**正确**的安全设计（服务进程不该长期持有
-> 授权能力）—— 所以正确做法是**显式提供**一个管理员 DSN（一次性使用），
-> 而不是想办法让业务账号拿到 GRANT OPTION。
+> 📌 业务账号**不能**给自己授权，这是**正确**的安全设计（服务进程不该长期持有授权能力）—— 正确做法是**显式提供**一个管理员 DSN（一次性使用），而不是让业务账号拿到 GRANT OPTION。
 
 ---
 
-## 五、为什么不复用本机已有的 3307 实例（历史原因，留档）
+## 五、为什么不复用本机已有的 3307 实例
 
-1. **权限**：本项目账号 `hospital` 在那台上**没有 CREATE DATABASE**，
-   而测试库是跑 `accept` 的前提（`accept` 会清空业务表，所以只允许跑在显式测试库上）。
-   补权限要 root，而那台的 **root 口令未知**。
+1. **权限**：本项目账号 `hospital` 在那台上**没有 CREATE DATABASE**（测试库是跑 `accept` 的前提），补权限要 root，而那台的 **root 口令未知**。
 2. **隔离**：那台的数据目录里是**其它项目**的库，混用容易误操作。
 3. **可复现**：自管实例的端口/口令/库名都写在本文件里，换机器照着做就行。
 
-> 补充：那台仍在 3307 跑着，**本项目不再依赖它**。
-> 若你确要用它，把 `-Dsn` 换成 3307 那套即可 —— 脚本不写死端口。
+那台仍在 3307 跑着，**本项目不再依赖它**；确要用它就把 `-Dsn` 换成 3307 那套（脚本不写死端口）。
 
 ---
 
@@ -164,4 +135,4 @@ Remove-Item -Recurse -Force .\devdb\data
 .\devdb.ps1 start     # 重新初始化空的实例
 ```
 
-⚠ `Remove-Item` 前先确认路径是 `server\devdb\data`（本脚本的 `stop` 会先停服务）。
+`Remove-Item` 前先确认路径是 `server\devdb\data`（本脚本的 `stop` 会先停服务）。
