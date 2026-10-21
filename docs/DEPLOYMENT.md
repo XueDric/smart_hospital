@@ -81,7 +81,7 @@ $env:SSL_CERT_FILE = "$PWD\ca-bundle.pem"
   --dev-auth --bind 127.0.0.1
 ```
 
-- **AI 开箱即用**：默认 `ai.enabled=1` + 密钥引用 `builtin:demo` + DeepSeek `deepseek-chat`，启动日志会打印 `AI：已启用 — 模型「默认对话模型」，endpoint https://api.deepseek.com/chat/completions，密钥引用 builtin`。`builtin:demo` 是演示密钥、随源码分发，**有效期至 2026-12-31**（`AI_BUILTIN_DEMO_VALID_UNTIL`，到期后服务端拒绝并给出换法）；想立刻用自己的密钥：`.\tools\set-ai-key.ps1 -ApiKey sk-… -AdminPw <管理员口令>`（写 `server\ai-key.txt` → 改 `ai.key_ref=file:…` → 自检），详见 [Q6-合规决策记录](Q6-合规决策记录.md)。
+- **AI 开箱即用**：默认 `ai.enabled=1` + 密钥引用 `builtin:demo` + DeepSeek `deepseek-chat`，启动日志会打印 `AI：已启用 — 模型「默认对话模型」，endpoint https://api.deepseek.com/chat/completions，密钥引用 builtin`。`builtin:demo` 是演示密钥、随源码分发，**有效期至 2026-12-31**（`AI_BUILTIN_DEMO_VALID_UNTIL`，到期后服务端拒绝并给出换法）；想立刻用自己的密钥：`.\tools\set-ai-key.ps1 -ApiKey sk-… -AdminPw <管理员口令>`（写 `server\ai-key.txt` → 改 `ai.key_ref=file:…` → 自检），详见 [Q6-合规决策记录(archive/Q6-合规决策记录.md)。
 - **`SSL_CERT_FILE` 不设会怎样**：AI 出站报 `出站调用异常：TLS handshake failed (client): certificate verify failed (134), TLS alert unknown CA(F)`，而同一 endpoint 用 `curl` / .NET 访问都正常 —— 因为 OpenSSL 不读 `Cert:\LocalMachine\Root`。`export-ca-bundle.ps1` 把三个存储去重导出成 PEM（本机 76 张证）；**换网络（换代理/换 CA）后要重导**。分发包里带的是脚本不是 PEM（PEM 可能含企业内网根证书，绝不随包分发）。
 - 端口默认 **8091**（`server/src/main.cj:707`），绑定默认 **127.0.0.1**（`server/src/main.cj:708`）。
 - **服务端与客户端默认端口已对齐为 8091**（2026-10-17 由 8080 改为 8091，评审 P2-15）：鸿蒙 `common-core/src/main/ets/config/ApiConfig.ets:8` 与安卓 `DEFAULT_BASE_URL` 的默认值都是 `http://127.0.0.1:8091`，所以按上面这条命令起来客户端**零配置即可连**；要换端口就 `--port N` 并同步改客户端（见 §4/§5）。
@@ -236,7 +236,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\package-release.ps1
 
 - 产物：`release\hospital-server-<Version>-win-x64.zip`（`-Version` 默认读 `server/src/main.cj:34` 的 `SERVER_VERSION`，读不到退 git 短 SHA，再退 `dev`）。
 - `release\` 是**生成物，不入库**（已收录于 `.gitignore`；需要交付时用脚本重新生成，或直接把 zip 作为附件提交）。
-- 本机实测（2026-10-21）：**25 个文件**，zip **8,260,344 B（7.88 MB）**，解压后 **22.35 MB**；只改文档、跳过重编时整包 1.6 s。
+- 本机实测（2026-10-21）：**25 个文件**，zip **8,261,119 B（7.88 MB）**，解压后 **22.35 MB**；只改文档、跳过重编时整包十余秒。
+  体积与哈希以 [交付快照](交付快照.md) 为唯一来源（`tools/check-snapshot.ps1` 机器校验）。
 - 包内清单：`hospital-server.exe`、`libcangjie-runtime.dll`、`libboundscheck.dll`、`libcrypto-3-x64.dll`、`libssl-3-x64.dll`、`SOURCE-MANIFEST.sha256`、`admin-web/`（7 个文件）、`README-运行说明.txt`、`start-dev.cmd`、`LICENSE.txt`、`NOTICE.txt`、`THIRD-PARTY.md`、`licenses/`（6 份：轻舟、MariaDB 驱动、OpenSSL 的 LICENSE 与 NOTICE、仓颉运行时 LICENSE 与 NOTICE）。
 - 用法：解压到 **ASCII 路径** → 改 `start-dev.cmd` 里的 `DSN`/`PORT` → 起库（§2①）→ 双击 `start-dev.cmd`（或命令行 `.\hospital-server.exe serve <dsn> --dev-auth`，默认端口 8091）→ `http://127.0.0.1:8091/health`。
 - 实测验证：解压到 `%TEMP%` 后 `hospital-server.exe version` → `0.2.0-p1`；`selftest` → 51 项通过；`serve` 起来后 `/health` 200 且 `db.ok=true`、`/admin/` 200。

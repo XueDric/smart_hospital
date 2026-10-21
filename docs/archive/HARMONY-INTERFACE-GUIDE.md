@@ -278,13 +278,13 @@ cd E:\harmonyOS\smart_hospital
   离线环境会失败。本仓库改为复用本机 DevEco 自带的 hvigor 6.26.4，不下载任何东西。
 * ⚠ **仓库目录改名后要重连一次 `oh_modules` 软链**（绝对路径的 junction 会悬空，症状是
   `10505001 ArkTS Compiler Error: Cannot find module 'common-core'`）：`ohpm install`，或手工
-  `mklink /J` 重连 7 个链接。详见 [docs/DEPLOYMENT.md](DEPLOYMENT.md) §4。
+  `mklink /J` 重连 7 个链接。详见 [docs/DEPLOYMENT.md(../DEPLOYMENT.md) §4。
 * `signingConfigs` 为空时，`build-profile.json5` 的 `products[0]` 已**不再引用** `signingConfig`，
   只报 `WARN: No signingConfig found for product default`，产物是**未签名 HAP**——要装机得先用
   DevEco 自动签名或本机调试证书签名。
 * 若需要把 hvigor 的缓存/工具链装到别处（C 盘清理、CI 隔离），设 `HVIGOR_USER_HOME=<绝对路径>` 即可；
   该目录默认是 `%USERPROFILE%\.hvigor`。
-* 2026-10-17 的构建证据已入库：[release/harmony/](../release/harmony/)
+* 2026-10-17 的构建证据已入库：[release/harmony/(../../release/harmony/)
   （HAP + `pack.info` + 完整日志）。
 * 模拟器安装、UI 自动化、与真实服务端联调的完整命令与实测结论见
   [docs/FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) §5.33。

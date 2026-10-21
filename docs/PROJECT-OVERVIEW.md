@@ -3,7 +3,7 @@
 > **一句话**：患者输入一句主诉 → AI 多步推理取证 → 推荐科室与医生 → **校验真实有号** → 一键挂号 → 医生接诊 → 生成七段式电子病历，全程落库、可追溯、可观测。
 >
 > 本文是**面向评审/验收的项目说明**（背景、需求、功能模块、创新点、应用价值）。
-> 工程决策与阶段交付细节见 [PHASE-HANDOFFS.md](PHASE-HANDOFFS.md)，技术实现见 [SYSTEM-DESIGN.md](SYSTEM-DESIGN.md)。
+> 工程决策与阶段交付细节见 [PHASE-HANDOFFS.md(archive/PHASE-HANDOFFS.md)，技术实现见 [SYSTEM-DESIGN.md](SYSTEM-DESIGN.md)。
 
 ---
 
@@ -15,7 +15,7 @@
 
 **本项目的技术背景**：团队具备**仓颉（Cangjie）+ 轻舟（QingZhou）**能力。仓颉是华为自研的国产化语言；**轻舟是仓颉生态的 Koa 风格 Web 框架，本团队参与其开发**（向内提交过路由/静态错误体可注入、数据库断链自愈与探活、MySQL 参数化绑定等框架级修复，且已并入上游，证据见 [轻舟共建说明](轻舟共建说明.md)）。因此本作品同时具备**两层产出**：框架侧的设计与实现，以及跑在该框架上的完整门诊业务闭环——既验证了仓颉在真实业务（并发、事务、流式、AI 编排）上的工程可用性，也是一份可直接交付的信创改造参考实现。
 
-**为什么是"读一个参考系统 + 重写"**：项目启动时以某开源智慧医院方案为能力基线（19 个路由模块 / 21 张业务表 / 约 80 个 REST / 三端角色），逐条判断"哪些能力本仓库已有、哪些要新写、哪些是仓颉侧做不到的"，再按 P0–P5 六个阶段落地。**逐条映射与取舍**留在 [PHASE-HANDOFFS.md](PHASE-HANDOFFS.md) 附录的「参考系统的两个关键技术方案」与「五个硬骨头」，不在此重复。
+**为什么是"读一个参考系统 + 重写"**：项目启动时以某开源智慧医院方案为能力基线（19 个路由模块 / 21 张业务表 / 约 80 个 REST / 三端角色），逐条判断"哪些能力本仓库已有、哪些要新写、哪些是仓颉侧做不到的"，再按 P0–P5 六个阶段落地。**逐条映射与取舍**留在 [PHASE-HANDOFFS.md(archive/PHASE-HANDOFFS.md) 附录的「参考系统的两个关键技术方案」与「五个硬骨头」，不在此重复。
 
 ---
 
@@ -52,12 +52,12 @@
 | **并发** | 抢号不能超卖，退号不能丢号 | 参数化原子 `UPDATE … WHERE remain_num > 0` + 唯一键 + 同事务 INSERT |
 | **可用** | AI 挂了业务不能挂；数据库闪断不能全站 500 到重启 | 三态降级（`rules` / `model` / `model:invalid`）；DB 断链自愈 + `/health` 探库（503） |
 | **可运维** | 改 AI 配置不重启；升级不加手工步骤 | 配置落库 + 缓存失效；自动建表 + 编号迁移（幂等） |
-| **合规** | 明确"发什么出站、默认关不关、谁能打开" | [Q6-合规决策记录.md](Q6-合规决策记录.md) |
+| **合规** | 明确"发什么出站、默认关不关、谁能打开" | [Q6-合规决策记录.md(archive/Q6-合规决策记录.md) |
 | **可验证** | 单元/验收/契约/压测/全量 live 门禁 | `selftest` 51 + `authtest` 17 + `triagetest` 150 + `accept` 821 断言 + `final-verify` 18 项门禁 + 契约门禁（24 Schema / 67 样例） |
 
 ### 2.4 范围边界（本期**不做**）
 
-自助注册 / 改密、支付与医保结算、多院区与多租户、短信/推送、离线队列（**挂号与 AI 调用必须在线直连**，排队等于超卖）、医生排班的图形化编辑器。理由与替代方案见 [PHASE-HANDOFFS.md](PHASE-HANDOFFS.md) 附录「启动时的 6 个待决问题」。
+自助注册 / 改密、支付与医保结算、多院区与多租户、短信/推送、离线队列（**挂号与 AI 调用必须在线直连**，排队等于超卖）、医生排班的图形化编辑器。理由与替代方案见 [PHASE-HANDOFFS.md(archive/PHASE-HANDOFFS.md) 附录「启动时的 6 个待决问题」。
 
 ---
 
@@ -141,7 +141,7 @@
 
 > 合计 **107** 个提交（截至 tag `v0.2.0-p1-rev`）。`fallensp` 与 `FallenSP78` 是两个不同的提交身份（不同邮箱），未合并统计。
 
-协作方式：服务端（仓颉）与三端客户端（鸿蒙 ArkTS / 安卓 Kotlin / 管理台）并行推进，接口以 [contract/](../contract/) 的可执行契约 + [FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) 为唯一口径，跨端分歧以契约门禁红/绿判定。
+协作方式：服务端（仓颉）与三端客户端（鸿蒙 ArkTS / 安卓 Kotlin / 管理台）并行推进，接口以 [contract/](../contract/) 的可执行契约 + [FRONTEND-INTEGRATION.md(archive/FRONTEND-INTEGRATION.md) 为唯一口径，跨端分歧以契约门禁红/绿判定。
 
 ---
 
@@ -154,7 +154,7 @@
 | 源码仓库与版本历史 | [README](../README.md) · [CHANGELOG](../CHANGELOG.md) |
 | 部署、环境配置、可运行包 | [DEPLOYMENT.md](DEPLOYMENT.md) |
 | 开源组件 / 模型 / 外部 API / 数据集 | [THIRD-PARTY.md](THIRD-PARTY.md) |
-| 接口逐字段口径（前端唯一口径） | [FRONTEND-INTEGRATION.md](FRONTEND-INTEGRATION.md) |
+| 接口逐字段口径（前端唯一口径） | [FRONTEND-INTEGRATION.md(archive/FRONTEND-INTEGRATION.md) |
 | 架构决策记录 | [adr/ADR-0001](adr/ADR-0001-号源与挂号独立MySQL路径.md) |
-| 阶段交付与验收证据 | [PHASE-HANDOFFS.md](PHASE-HANDOFFS.md)（P0–P5 合并稿）· [联调记录](联调记录-2026-10-18.md) |
-| AI 出站合规 | [Q6-合规决策记录.md](Q6-合规决策记录.md) |
+| 阶段交付与验收证据 | [PHASE-HANDOFFS.md(archive/PHASE-HANDOFFS.md)（P0–P5 合并稿）· [联调记录(archive/联调记录-2026-10-18.md) |
+| AI 出站合规 | [Q6-合规决策记录.md(archive/Q6-合规决策记录.md) |

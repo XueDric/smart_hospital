@@ -59,7 +59,7 @@ server/admin-web/
 
 ⚠ `index.html` 里的资源**必须写绝对路径**（`/admin/css/style.css`）：裸 `/admin`（不带尾斜杠）
 会被静态层按目录认领并回 `index.html`，此时相对路径会被解析成 `/css/style.css` ⇒ 404。
-理由见 [../server/README.md](../server/README.md) 坑 **AL**。
+理由见 [../server/README.md(../../server/README.md) 坑 **AL**。
 
 ---
 
@@ -248,7 +248,7 @@ $node = "D:\DevEco Studio\tools\node\node.exe"   # 或任何 ≥18 的 node
 
 ---
 
-## 十、这一轮踩到的坑（详细版见 [../server/README.md](../server/README.md) 坑表）
+## 十、这一轮踩到的坑（详细版见 [../server/README.md(../../server/README.md) 坑表）
 
 | 编号 | 一句话 |
 | --- | --- |

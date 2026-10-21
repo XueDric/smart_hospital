@@ -107,7 +107,7 @@
 | 轻舟 QingZhou | v0.12.0+HEAD | 服务端 Web 框架（**本团队参与开发**，并提交过框架级修复） | **MIT**（版权归上游） | 使用副本（源码快照，已含我们的修复） |
 | MariaDB 驱动 | 2.0.2 | 数据库协议驱动 | **Apache-2.0** | 使用副本（静态编译） |
 | Cangjie 运行时 DLL | 随 SDK 1.2.0 | 运行时（随包分发） | **Apache-2.0 with Runtime Library Exception** | 随包分发；全文 `server/third_party/cangjie-runtime/LICENSE.txt`（进包） |
-| Cangjie 编译器 / stdx | 1.2.0 / 1.1.3.1 | 构建期编译与标准库 | Apache-2.0 with Runtime Library Exception（同上） | SDK 安装（构建期，不分发） |
+| Cangjie 编译器 / stdx | 1.2.0 / 1.1.3.1 | 构建期编译与标准库 | Apache-2.0 with Runtime Library Exception（同上） | 构建期本地安装（`CANGJIE_HOME`）；CI 用的**原包未改**副本托管在 release `sdk-cache-1.2.0` 供下载（包内含上游 LICENSE），**不随交付物分发**。详见 §8.2 |
 | OpenSSL 3 | 3.x（实测 3.5.7 的 DLL） | TLS / 加密（随包分发 DLL） | **Apache-2.0** | 构建机取 DLL；全文 `server/third_party/openssl/LICENSE.txt`（进包） |
 | MariaDB Server | 11.4.13 | 数据库实例 | **GPLv2**（上游，仓库内无文本） | 便携版，不入库、不对外分发 |
 | HarmonyOS 系统 Kit | SDK 内置 | 网络 / 存储 / UI / 日志 | 华为 SDK 协议 | 系统内置 |
@@ -131,7 +131,23 @@
 | DevEco Studio / HarmonyOS SDK | 华为 SDK 协议 | 构建鸿蒙 HAP | HAP 构建物见 `release/harmony/`，SDK 本身不随包。 |
 | Android SDK / AGP / Gradle / Kotlin | Apache-2.0 | 构建安卓 APK | APK 构建物见 `release/android/`，构建链不随包。 |
 | JDK（Temurin 21 / JBR 25） | GPL-2.0 + Classpath Exception | 构建安卓 / 运行 Gradle | 只在 `.build-tools/jdk17`（已 gitignore）里，构建期使用。 |
-| DeepSeek / 百炼 API | 商业服务条款 | AI 分诊与向量（出站调用） | 不是可分发的"组件"，见 §5 与 `docs/Q6-合规决策记录.md`。 |
+| DeepSeek / 百炼 API | 商业服务条款 | AI 分诊与向量（出站调用） | 不是可分发的"组件"，见 §5 与 `docs/archive/Q6-合规决策记录.md`。 |
+
+### 8.2 CI 取用第三方构建件的托管方式（2026-10-21 补）
+
+CI 的编译层需要两样上游不给稳定直链的东西，因此把**未经修改的原始包**挂在本仓库 release
+`sdk-cache-1.2.0` 下。这不是"随包分发"，但确实是"对外可下载"，所以单列一节说清楚：
+
+| 资产 | 体积 | 内容 | 为什么要托管 | 许可义务 |
+| --- | --- | --- | --- | --- |
+| `cangjie-sdk-windows-x64-1.2.0.zip` | 97,512,136 B | 官方 SDK 安装包（`cjc` / `cjpm` / 运行时 / 上游 LICENSE） | 官方下载直链由前端签名生成、不定期变化，CI 解析不到 | 原包未改，包内含 Apache-2.0 with Runtime Library Exception 全文；我们只托管，不主张任何权利 |
+| `cangjie-stdx-1.1.3.1-windows-x64-static.zip` | 6.76 MB | stdx 静态库（官方 SDK **不自带**） | 本项目要链 `stdx.net.http` / `stdx.encoding.json` | Apache-2.0，同上 |
+| `openssl-3.5.7-x64-dlls.zip` | 2.64 MB | OpenSSL 3.5.7 运行期 DLL | CI 上三件套「失败但零输出」的真因就是缺这两个 DLL | Apache-2.0；仓内另有全文 `server/third_party/openssl/LICENSE.txt` |
+
+**边界**：这三份资产只服务 `.github/workflows/repo-hygiene.yml` 的 `build-and-test` job，**不进任何交付物** ——
+`release/hospital-server-0.2.0-p1-win-x64.zip` 的 25 个文件里没有它们。上游若日后给出稳定直链，
+用仓库变量 `CANGJIE_SDK_URL` / `CANGJIE_STDX_URL` 覆盖即可，不必改代码。
+
 ## 9. 证据不足 / 需人工确认
 
 1. ~~**Cangjie 运行时 + OpenSSL 3 许可证文本缺失**~~ **已修（2026-10-18）**：`server/third_party/cangjie-runtime/` 与 `server/third_party/openssl/` 各含 LICENSE.txt + NOTICE.txt，`tools/package-release.ps1` 打进 `licenses/`，`NOTICE.txt` 指向包内全文。

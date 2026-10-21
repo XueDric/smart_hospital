@@ -222,7 +222,7 @@ $env:HOSP_ADMIN_PW = "<管理员口令>"
 
 各脚本**互不依赖执行顺序**（自建夹具、自清数据）。
 > ⚠ 必须用 `curl -K` config 文件传 header/body —— `Start-Process -ArgumentList` 会拆坏
-> 含空格的参数（详见 [../docs/PHASE-HANDOFFS.md](../docs/PHASE-HANDOFFS.md) 的「P1 运行手册」）。
+> 含空格的参数（详见 [../docs/PHASE-HANDOFFS.md(../docs/archive/PHASE-HANDOFFS.md) 的「P1 运行手册」）。
 > ⚠ `tls-check.ps1` **不用** `curl --cacert` 做主校验：Windows 的 Schannel 对自签证书的
 > `--cacert` 支持不完整（实测 `schannel: error 0x00000010`，而同刻 `curl -k` 是 200），
 > 所以它走 .NET `SslStream` + 显式链校验 + 自解析 SAN。理由与两个坑写在脚本头注释里。
@@ -271,7 +271,7 @@ start http://127.0.0.1:8091/admin
 | 密钥 | 配置里只存 `env:变量名` / `file:路径` 这类**引用**；列表接口只回 `key_ref_set` / `key_ref_kind`，**永不回显**引用本体 |
 | 改配置要重启吗 | 不用。写库后立即 `invalidate()`，下一次 AI 请求按新配置动态构建模型实例（页面上的「失效配置缓存」按钮是同一件事的手动兜底） |
 
-细节（页面 ↔ 接口映射、安全口径、为什么不用前端框架/不加构建步骤）见 [../docs/ADMIN-WEB.md](../docs/ADMIN-WEB.md)。
+细节（页面 ↔ 接口映射、安全口径、为什么不用前端框架/不加构建步骤）见 [../docs/ADMIN-WEB.md(../docs/archive/ADMIN-WEB.md)。
 
 ### 验收依据：源码哈希，不是产物哈希
 
@@ -326,7 +326,7 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 | `tests/ai-telemetry-check.ps1` | **分诊遥测与排障端到端**（53 项，2026-10-15，改进 7；2026-10-16 复核补 D2/红标口径）：鉴权 / 参数闸门（`group_by` 白名单、`from>to`、**非数字与 >366 天跨度 ⇒ 400**、上限夹取）/ 一次真调用后按 `request_id` 捞全链路（**17 字段**齐 + `degraded` 与 `red_flag_bypass` **互补**）/ **超长 `X-Request-Id` 端到端**（D2：写侧截 64、读侧同口径仍查得到）/ **隐私否定断言**（聚合与单次体里都搜不到主诉指纹）/ 聚合分位数与降级率**（`RED_FLAG` 不计入降级，另立 `red_flag`/`red_flag_rate`）**/ 版本号严格前进 / 夹具自清（残留为 0 会真的红） |
 | `tests/ai-eval/run-ai-eval.ps1` | **AI 分诊评测**（改进 7，2026-10-15）：默认**回放**（读 `recorded/`，离线可重复，连跑两次指纹须一致）；`-Mode live [-Record]` 打真实服务端并录制样本；报告落 `../docs/ai-eval/<date>.md` + `.metrics.json`。**不进 `final-verify`**（依赖真实模型，见 [../docs/ai-eval/README.md](../docs/ai-eval/README.md)） |
 | `tests/admin-web-smoke.mjs` | **管理台前端冒烟**（2026-10-14）：无头 Edge + CDP，11 个页面逐个真实渲染 + 控制台/异常/`>=400` 全收集 + 逐页截图；任一项失败 `exit 1` |
-| `admin-web/` | **后台管理台的静态资源**（零构建：`index.html` + `css/` + `js/` 四个脚本），由服务端按 `/admin` 前缀托管；页面本身不鉴权，数据全走 `/api/v1/admin/*`（详见 [../docs/ADMIN-WEB.md](../docs/ADMIN-WEB.md)） |
+| `admin-web/` | **后台管理台的静态资源**（零构建：`index.html` + `css/` + `js/` 四个脚本），由服务端按 `/admin` 前缀托管；页面本身不鉴权，数据全走 `/api/v1/admin/*`（详见 [../docs/ADMIN-WEB.md(../docs/archive/ADMIN-WEB.md)） |
 
 **最小表集（16 张 / 10 域）**：
 
@@ -487,9 +487,9 @@ cjc 的产物**不逐字节可复现**（实测：同一份源码连续两次构
 
 ### 当前真实的「未做」清单 —— 只此一处
 
-- **[docs/PHASE-HANDOFFS.md](../docs/PHASE-HANDOFFS.md) 的「P2 遗留」** —— P2 范围内未做 / 待决项
+- **[docs/PHASE-HANDOFFS.md(../docs/archive/PHASE-HANDOFFS.md) 的「P2 遗留」** —— P2 范围内未做 / 待决项
   （接真模型阻塞于 Q6 合规、词表临床完备性、RAG 等）
-- **[docs/PHASE-HANDOFFS.md](../docs/PHASE-HANDOFFS.md) 的「P1 运维交接」** —— 两项**运维**未做
+- **[docs/PHASE-HANDOFFS.md(../docs/archive/PHASE-HANDOFFS.md) 的「P1 运维交接」** —— 两项**运维**未做
   （证书信任分发、轮换与到期监控）
 - **根 [README.md](../README.md) 的里程碑表** —— P3 / P4 尚未开始
 - ❌ AI 分诊与预问诊 SSE（P2/P4）
